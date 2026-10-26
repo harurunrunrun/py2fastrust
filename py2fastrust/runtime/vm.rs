@@ -3352,10 +3352,14 @@ impl Runtime {
                     pending.extend(c.bases.iter().cloned());
                     pending.push(c.metaclass.clone())
                 }
-                Object::Instance { class, attrs }
-                | Object::BuiltinInstance { class, attrs, .. } => {
+                Object::Instance { class, attrs } => {
                     pending.push(class.clone());
                     pending.push(Value::Obj(*attrs))
+                }
+                Object::BuiltinInstance { class, attrs, payload } => {
+                    pending.push(class.clone());
+                    pending.push(Value::Obj(*attrs));
+                    pending.push(payload.clone());
                 }
                 Object::Bound(a, b) => {
                     pending.push(a.clone());
