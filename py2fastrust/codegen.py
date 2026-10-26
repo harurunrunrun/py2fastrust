@@ -100,6 +100,8 @@ def operation(instruction):
         return f"Op::MakeTypeAlias {{ name:{string(args[0])} }}"
     elif name == "MakeClass":
         return f"Op::MakeClass {{ name:{string(args[0])},code:{args[1]},bases:{args[2]},keywords:{strings(args[3])} }}"
+    elif name == "MakeClassEx":
+        return f"Op::MakeClassEx {{ name:{string(args[0])},code:{args[1]} }}"
     elif name == "Import":
         return f"Op::Import {{ module:{string(args[0])},names:{strings(args[1])},level:{args[2]} }}"
     elif name == "FormatValue":

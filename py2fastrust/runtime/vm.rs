@@ -109,6 +109,7 @@ enum Op {
         bases: usize,
         keywords: Vec<String>,
     },
+    MakeClassEx { name: String, code: usize },
     Unpack(usize),
     ListAppend(usize),
     SetAdd(usize),
@@ -2206,10 +2207,15 @@ impl Runtime {
             }
             Op::TypeUnpack => {
                 let inner=Self::pop(f)?;
-                let iterator=self.iter(inner)?;
-                let unpack=self.next(iterator.clone())?.ok_or_else(||pyerr("ValueError","not enough values to unpack (expected 1, got 0)"))?;
-                if self.next(iterator)?.is_some(){return Err(pyerr("ValueError","too many values to unpack (expected 1)"));}
-                f.stack.push(unpack);
+                let root=self.roots.len();self.roots.push(vec![inner.clone()]);
+                let result=(||{
+                    let iterator=self.iter(inner)?;self.roots[root].push(iterator.clone());
+                    let unpack=self.next(iterator.clone())?.ok_or_else(||pyerr("ValueError","not enough values to unpack (expected 1, got 0)"))?;
+                    self.roots[root].push(unpack.clone());
+                    if self.next(iterator)?.is_some(){return Err(pyerr("ValueError","too many values to unpack (expected 1)"));}
+                    f.stack.push(unpack);Ok(())
+                })();
+                self.roots.truncate(root);result?;
             }
             Op::Return => {
                 let v = if f.stack.is_empty() {
@@ -2374,6 +2380,19 @@ impl Runtime {
                 let kw: Vec<_> = keywords.into_iter().zip(kv).collect();
                 let cls = self.make_class(f, name, code, bases, kw)?;
                 f.stack.push(cls)
+            }
+            Op::MakeClassEx { name, code } => {
+                let keywords=Self::pop(f)?;
+                let bases=Self::pop(f)?;
+                let root=self.roots.len();
+                self.roots.push(vec![bases.clone(),keywords.clone()]);
+                let result=(||{
+                    let bases=self.to_vec(bases)?;
+                    let keywords=self.keyword_items(keywords)?;
+                    self.make_class(f,name,code,bases,keywords)
+                })();
+                self.roots.truncate(root);
+                f.stack.push(result?);
             }
             Op::Unpack(n) => {
                 let v = Self::pop(f)?;
@@ -4510,6 +4529,10 @@ impl Runtime {
             let mut p = rest.split(':');
             let typ = p.next().unwrap_or("");
             let method = p.next().unwrap_or("");
+            if typ=="object" && method=="__init_subclass__"{
+                if args.len()!=1 || !kwargs.is_empty(){return Err(pyerr("TypeError","__init_subclass__() takes no keyword arguments"));}
+                return Ok(Value::None);
+            }
             if typ == "object"
                 && ["__getattribute__", "__setattr__", "__delattr__"].contains(&method)
             {
@@ -5683,7 +5706,7 @@ impl Runtime {
         &mut self,
         metaclass: Value,
         args: Vec<Value>,
-        _kw: Vec<(String, Value)>,
+        kw: Vec<(String, Value)>,
     ) -> PyResult<Value> {
         if args.len() < 3 {
             return Err(pyerr("TypeError", "type() takes 1 or 3 arguments"));
@@ -5693,6 +5716,7 @@ impl Runtime {
             _ => return Err(pyerr("TypeError", "type() argument 1 must be str")),
         };
         let mut bases = self.to_vec(args[1].clone())?;
+        if bases.iter().any(|base|!matches!(base,Value::Builtin(_)|Value::Type(_)) && !matches!(base,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))){return Err(pyerr("TypeError","bases must be types"));}
         for base in &bases {if matches!(base,Value::Builtin(name)if template_type_name(name)){return Err(pyerr("TypeError",format!("type '{}' is not an acceptable base type",self.class_name(base))));}}
         if bases.is_empty() {
             bases.push(Value::Builtin("object".into()))
@@ -5726,7 +5750,7 @@ impl Runtime {
         };
         let mut items = self.dict_items(Value::Obj(ns))?;
         for (key,value) in &mut items {
-            if matches!(key,Value::Str(name)if name=="__class_getitem__") && matches!(value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Function(_)))) {
+            if matches!(key,Value::Str(name)if name=="__class_getitem__"||name=="__init_subclass__") && matches!(value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Function(_)))) {
                 *value=self.obj_value(Object::ClassMethod(value.clone()));
             }
         }
@@ -5886,6 +5910,62 @@ impl Runtime {
                     }
                 }
             }
+            let mro=self.class_mro(&out,0).ok_or_else(||pyerr("TypeError","invalid class MRO"))?;
+            let mut hook=None;
+            for base in mro.into_iter().skip(1){
+                if let Value::Obj(index)=base{
+                    if let Object::Class(class)=self.object(index)?{
+                        if let Some(method)=self.ns_get(class.attrs,"__init_subclass__"){
+                            hook=Some(self.bind_descriptor(method,None,out.clone())?);
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(hook)=hook{self.call(hook,Vec::new(),kw.clone(),None)?;}
+            else if !kw.is_empty(){return Err(pyerr("TypeError","__init_subclass__() takes no keyword arguments"));}
+            Ok(out)
+        })();
+        self.roots.truncate(root);
+        result
+    }
+    fn merge_keyword_arguments(&mut self,left:Value,right:Value)->PyResult<Value>{
+        let root=self.roots.len();
+        self.roots.push(vec![left.clone(),right.clone()]);
+        let result=(||{
+            let items=self.dict_items(left)?;
+            let out=self.obj_value(Object::Dict(items));
+            self.roots[root].push(out.clone());
+            let payload=if let Some(payload)=self.native_payload(&right){
+                if self.object_class(&right).and_then(|class|self.class_lookup(&class,"__iter__",0)).is_none(){payload}else{right.clone()}
+            }else{right.clone()};
+            let direct=if let Value::Obj(index)=payload{
+                match self.object(index)?{Object::Dict(items)=>Some(items),Object::Namespace(items,_)=>Some(items.ident_items()),_=>None}
+            }else{None};
+            if let Some(items)=direct{
+                for(key,value)in items{
+                    let keys=self.dict_items(out.clone())?;
+                    if self.find_key(&keys,&key)?.is_some(){return Err(pyerr("TypeError","multiple values for keyword argument"));}
+                    self.setitem(out.clone(),key,value)?;
+                }
+            }else{
+                let keys=match self.getattr(right.clone(),"keys"){
+                    Ok(keys)=>keys,
+                    Err(error) if self.exception_has_native_class(&error,"AttributeError")=>return Err(pyerr("TypeError",format!("argument after ** must be a mapping, not {}",self.typename(&right)))),
+                    Err(error)=>return Err(error),
+                };
+                let keys=self.call(keys,Vec::new(),Vec::new(),None)?;
+                self.roots[root].push(keys.clone());
+                let keys=self.to_vec(keys)?;
+                self.roots[root].extend(keys.iter().cloned());
+                for key in keys{
+                    self.builtin("hash",vec![key.clone()],Vec::new(),None)?;
+                    let previous=self.dict_items(out.clone())?;
+                    if self.find_key(&previous,&key)?.is_some(){return Err(pyerr("TypeError","multiple values for keyword argument"));}
+                    let value=self.getitem(right.clone(),key.clone())?;
+                    self.setitem(out.clone(),key,value)?;
+                }
+            }
             Ok(out)
         })();
         self.roots.truncate(root);
@@ -5907,10 +5987,14 @@ impl Runtime {
         for base in bases {
             let is_type=matches!(&base,Value::Builtin(_) | Value::Type(_)) || matches!(&base,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))));
             if is_type {resolved_bases.push(base);continue;}
-            let entries=self.getattr(base.clone(),"__mro_entries__")?;
+            let entries=match self.getattr(base.clone(),"__mro_entries__"){
+                Ok(entries)=>entries,
+                Err(error) if self.exception_has_native_class(&error,"AttributeError")=>{resolved_bases.push(base);continue;},
+                Err(error)=>return Err(error),
+            };
             let entries=self.call(entries,vec![original_bases.clone()],Vec::new(),Some(f))?;
             let payload=self.native_payload(&entries).unwrap_or(entries);
-            if let Value::Obj(index)=payload {if let Object::Tuple(values)=self.object(index)? {resolved_bases.extend(values);bases_changed=true;continue;}}
+            if let Value::Obj(index)=payload {if let Object::Tuple(values)=self.object(index)? {self.roots[root].extend(values.iter().cloned());resolved_bases.extend(values);bases_changed=true;continue;}}
             return Err(pyerr("TypeError","__mro_entries__ must return a tuple"));
         }
         let bases=resolved_bases;
@@ -5919,16 +6003,24 @@ impl Runtime {
             .find(|(k, _)| k == "metaclass")
             .map(|(_, v)| v.clone())
             .unwrap_or(Value::Builtin("type".into()));
-        if matches!(&metaclass,Value::Builtin(n)if n=="type") {
-            if let Some(Value::Obj(i)) = bases.first() {
-                if let Object::Class(c) = self.object(*i)? {
-                    metaclass = c.metaclass
-                }
+        let metaclass_is_type=matches!(&metaclass,Value::Type(_))||matches!(&metaclass,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))||matches!(&metaclass,Value::Builtin(name)if ["type","object","int","bool","float","str","bytes","list","tuple","dict","set","complex"].contains(&name.as_str()));
+        if metaclass_is_type{
+            for base in &bases{
+                let base_meta=self.object_class(base).filter(|_|matches!(base,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))).unwrap_or(Value::Builtin("type".into()));
+                if self.is_subclass(&metaclass,&base_meta)?{continue;}
+                if self.is_subclass(&base_meta,&metaclass)?{metaclass=base_meta;continue;}
+                return Err(pyerr("TypeError","metaclass conflict: the metaclass of a derived class must be a subclass of the metaclasses of all its bases"));
             }
         }
         let keywords: Vec<_> = kw.into_iter().filter(|(k, _)| k != "metaclass").collect();
         let basesvalue = self.obj_value(Object::Tuple(bases.clone()));
-        let namespace = if let Ok(prepare) = self.getattr(metaclass.clone(), "__prepare__") {
+        self.roots[root].push(basesvalue.clone());
+        let prepare=match self.getattr(metaclass.clone(), "__prepare__"){
+            Ok(prepare)=>Some(prepare),
+            Err(error) if self.exception_has_native_class(&error,"AttributeError")=>None,
+            Err(error)=>return Err(error),
+        };
+        let namespace = if let Some(prepare) = prepare {
             let v = self.call(
                 prepare,
                 vec![Value::Str(name.clone().into()), basesvalue.clone()],
@@ -5942,6 +6034,7 @@ impl Runtime {
         } else {
             self.alloc(Object::Dict(Vec::new()))
         };
+        self.roots[root].push(Value::Obj(namespace));
         self.mapping_set(
             namespace,
             "__module__".into(),
@@ -5949,8 +6042,6 @@ impl Runtime {
                 .unwrap_or(Value::Str("__main__".into())),
         )?;
         self.mapping_set(namespace, "__qualname__".into(), Value::Str(name.clone().into()))?;
-        self.roots[root].push(Value::Obj(namespace));
-        self.roots[root].push(basesvalue.clone());
         let parent = if self.codes[f.code].kind == ScopeKind::Class {
             f.closure
         } else {
@@ -6013,15 +6104,20 @@ impl Runtime {
             keywords,
             Some(f),
         )?;
-        if let Some(cell) = classcell {
-            if !matches!(self.object(cell)?, Object::Cell(Some(_))) {
+        if let Some(cell) = classcell.filter(|_|matches!(&cls,Value::Type(_))||matches!(&cls,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))||matches!(&cls,Value::Builtin(name)if ["type","object","int","bool","float","str","bytes","list","tuple","dict","set","frozenset","complex","typing.Generic","string.templatelib.Template","string.templatelib.Interpolation"].contains(&name.as_str()))) {
+            match self.object(cell)?{
+                Object::Cell(Some(value)) if value.same_identity(&cls)=>{},
+                Object::Cell(Some(_))=>return Err(pyerr("TypeError","__class__ set to a different object when defining class")),
+                _=>{
                 return Err(pyerr(
                     "RuntimeError",
                     "__class__ not set; was __classcell__ propagated to type.__new__?",
                 ));
+                }
             }
         }
-        self.ns_set(env, "__class__".into(), cls.clone());
+        let class_binding=if let Some(cell)=classcell{match self.object(cell)?{Object::Cell(value)=>value,_=>None}}else{Some(cls.clone())};
+        if let Some(value)=class_binding{self.ns_set(env,"__class__".into(),value);}
         if let Value::Obj(index)=&cls {if let Object::Class(class)=self.object(*index)?{self.annotation_namespaces.insert(namespace,class.attrs);}}
         Ok(cls)
         })();self.roots.truncate(root);result
@@ -6513,7 +6609,7 @@ impl Runtime {
                 }
                 if [
                     "int", "str", "list", "tuple", "dict", "set", "float", "complex", "bool", "type",
-                    "object", "bytes", "dict_keys", "dict_values", "dict_items", "mappingproxy", "GenericAlias",
+                    "object", "bytes", "dict_keys", "dict_values", "dict_items", "mappingproxy", "GenericAlias", "staticmethod", "classmethod", "property",
                 ]
                 .contains(&n.as_str())
                 {
@@ -6524,6 +6620,9 @@ impl Runtime {
             }
             Value::Type(_) => "type".into(),
             Value::Obj(i) => match self.heap.get(*i).and_then(|o| o.as_ref()) {
+                Some(Object::Static(_))=>"staticmethod".into(),
+                Some(Object::ClassMethod(_))=>"classmethod".into(),
+                Some(Object::Property{..})=>"property".into(),
                 Some(Object::Template{..})=>"string.templatelib.Template".into(),
                 Some(Object::Interpolation{..})=>"string.templatelib.Interpolation".into(),
                 Some(Object::Iterator(IteratorState::Template(..)))=>"TemplateIter".into(),
@@ -7086,7 +7185,8 @@ impl Runtime {
                 }
             }
         }
-        if op == "dict_merge" || op == "kwargs_merge" {
+        if op == "kwargs_merge" {return self.merge_keyword_arguments(a,b);}
+        if op == "dict_merge" {
             let out = self.obj_value(Object::Dict(Vec::new()));
             for (k, v) in self.dict_items(a)? {
                 self.setitem(out.clone(), k, v)?
@@ -7770,7 +7870,7 @@ impl Runtime {
     fn keyword_items(&mut self, v: Value) -> PyResult<Vec<(String, Value)>> {
         let mut out = Vec::new();
         for (k, v) in self.dict_items(v)? {
-            if let Value::Str(k) = k {
+            if let Value::Str(k) = self.native_payload(&k).unwrap_or(k) {
                 out.push((k.into_inner(), v))
             } else {
                 return Err(pyerr("TypeError", "keywords must be strings"));
@@ -8533,7 +8633,8 @@ impl Runtime {
                                         return Ok(if name == "__new__" {
                                             value
                                         } else {
-                                            self.obj_value(Object::Bound(value, recv))
+                                            let function=if let Value::Obj(index)=&value{if let Object::Bound(function,_)=self.object(*index)?{function}else{value}}else{value};
+                                            self.obj_value(Object::Bound(function, recv))
                                         });
                                     }
                                     continue;
@@ -8952,6 +9053,10 @@ impl Runtime {
                     if let Some(mro) = self.class_mro(&v, 0) {
                         return Ok(self.obj_value(Object::Tuple(mro)));
                     }
+                }
+                if n == "object"
+                    && name=="__init_subclass__"{
+                    return Ok(self.obj_value(Object::Bound(Value::Builtin("type_method:object:__init_subclass__".into()),v)));
                 }
                 if n == "object"
                     && ["__getattribute__", "__setattr__", "__delattr__"].contains(&name)

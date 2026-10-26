@@ -28,7 +28,7 @@ enum DStmtKind {
     TypeParameter(DTypeParam), TypeDefinition(Box<DStmtKind>),
     Expr(DExpr), Assign(Vec<DExpr>, DExpr), AnnAssign(DExpr, DExpr, Option<DExpr>, bool), AugAssign(DExpr, String, DExpr), Delete(Vec<DExpr>),
     If(DExpr, Vec<DStmt>, Vec<DStmt>), While(DExpr, Vec<DStmt>, Vec<DStmt>), For(DExpr, DExpr, Vec<DStmt>, Vec<DStmt>),
-    Function(String, DParams, Vec<DStmt>, Vec<DExpr>), Class(String, Vec<DExpr>, Vec<(String, DExpr)>, Vec<DStmt>, Vec<DExpr>),
+    Function(String, DParams, Vec<DStmt>, Vec<DExpr>), Class(String, Vec<DExpr>, Vec<(Option<String>, DExpr)>, Vec<DStmt>, Vec<DExpr>),
     Return(Option<DExpr>), Break, Continue, Pass, Raise(Option<DExpr>, Option<DExpr>), Assert(DExpr, Option<DExpr>),
     Global(Vec<String>), Nonlocal(Vec<String>),
     Try(Vec<DStmt>, Vec<(Option<DExpr>, Option<String>, Vec<DStmt>)>, Vec<DStmt>, Vec<DStmt>),
@@ -655,7 +655,7 @@ impl DCompiler {
         let parameters:Vec<String>=parameters.positional.iter().chain(parameters.kwonly.iter()).chain(parameters.vararg.iter()).chain(parameters.kwarg.iter()).cloned().collect();
         let mut cells=Vec::new();
         for instruction in &self.codes[index].ops {
-            let child=match &instruction.op { Op::MakeFunction { code,.. } | Op::MakeClass { code,.. }=>code.checked_sub(self.offset),_=>None };
+            let child=match &instruction.op { Op::MakeFunction { code,.. } | Op::MakeClass { code,.. } | Op::MakeClassEx { code,.. }=>code.checked_sub(self.offset),_=>None };
             if let Some(child)=child.and_then(|child|self.codes.get(child)) {
                 for name in &child.frees { if self.codes[index].locals.contains(name) && !parameters.contains(name) { d_push_name(&mut cells,name); } }
             }
@@ -780,11 +780,10 @@ impl DCompiler {
                         for base in bases.iter().chain(keywords.iter().map(|(_,value)|value)) {
                             if let Some(message)=d_annotation_violation(base){return Err(self.error(line,message));}
                         }
-                        for base in bases{self.expr(ctx,base)?;}
-                        self.emit(ctx,Op::Load(".type_params".to_owned()),line,col);self.emit(ctx,Op::GenericBase,line,col);
-                        for (_,value) in keywords{self.expr(ctx,value)?;}
+                        let expanded=self.class_arguments(ctx,bases,keywords,true,line,col)?;
                         let code=self.code(name,ScopeKind::Class,&DParams::default(),body,ctx,line)?;
-                        self.emit(ctx,Op::MakeClass{name:name.clone(),code:self.offset+code,bases:bases.len()+1,keywords:keywords.iter().map(|(name,_)|name.clone()).collect()},line,col);
+                        let op=if expanded{Op::MakeClassEx{name:name.clone(),code:self.offset+code}}else{Op::MakeClass{name:name.clone(),code:self.offset+code,bases:bases.len()+1,keywords:keywords.iter().map(|(name,_)|name.clone().unwrap()).collect()}};
+                        self.emit(ctx,op,line,col);
                     },
                     DStmtKind::TypeAlias(name,_,value)=>{
                         self.emit(ctx,Op::Load(".type_params".to_owned()),line,col);self.lazy_expression(ctx,name,value,line,col)?;
@@ -875,9 +874,11 @@ impl DCompiler {
                 self.emit(ctx,Op::Store(name.clone()),line,col);
             }
             DStmtKind::Class(name,bases,keywords,body,decorators) => {
-                for decorator in decorators { self.expr(ctx,decorator)?; } for base in bases { self.expr(ctx,base)?; } for (_,value) in keywords { self.expr(ctx,value)?; }
+                for decorator in decorators { self.expr(ctx,decorator)?; }
+                let expanded=self.class_arguments(ctx,bases,keywords,false,line,col)?;
                 let code = self.code(name,ScopeKind::Class,&DParams::default(),body,ctx,line)?;
-                self.emit(ctx,Op::MakeClass { name:name.clone(),code:self.offset+code,bases:bases.len(),keywords:keywords.iter().map(|(name,_)|name.clone()).collect() },line,col);
+                let op=if expanded{Op::MakeClassEx{name:name.clone(),code:self.offset+code}}else{Op::MakeClass { name:name.clone(),code:self.offset+code,bases:bases.len(),keywords:keywords.iter().map(|(name,_)|name.clone().unwrap()).collect() }};
+                self.emit(ctx,op,line,col);
                 for _ in decorators { self.emit(ctx,Op::Call { pos:1,keywords:Vec::new() },line,col); } self.emit(ctx,Op::Store(name.clone()),line,col);
             }
             DStmtKind::Return(value) => {
@@ -1116,6 +1117,33 @@ impl DCompiler {
         self.emit(ctx,Op::Load(exit_tmp),line,col); for _ in 0..3 { self.emit(ctx,Op::Const(Const::None),line,col); }
         self.emit(ctx,Op::Call { pos:3,keywords:Vec::new() },line,col); self.emit(ctx,Op::Pop,line,col); self.patch(ctx,skip,self.here(ctx)); self.emit(ctx,Op::EndFinally,line,col); Ok(())
     }
+    fn class_arguments(&mut self,ctx:&mut DCtx,bases:&[DExpr],keywords:&[(Option<String>,DExpr)],generic:bool,line:usize,col:usize)->Result<bool,String>{
+        let expanded=bases.iter().any(|base|matches!(base.kind,DExprKind::Star(_)))||keywords.iter().any(|(name,_)|name.is_none());
+        for base in bases{
+            if let DExprKind::Star(value)=&base.kind{
+                self.expr(ctx,value)?;self.emit(ctx,Op::BuildTupleUnpack(1),base.line,base.column);
+            }else{
+                self.expr(ctx,base)?;if expanded{self.emit(ctx,Op::BuildTuple(1),base.line,base.column);}
+            }
+        }
+        if generic{
+            self.emit(ctx,Op::Load(".type_params".to_owned()),line,col);self.emit(ctx,Op::GenericBase,line,col);
+            if expanded{self.emit(ctx,Op::BuildTuple(1),line,col);}
+        }
+        if expanded{
+            self.emit(ctx,Op::BuildTupleUnpack(bases.len()+usize::from(generic)),line,col);
+            self.emit(ctx,Op::BuildDict(0),line,col);
+        }
+        for(name,value)in keywords{
+            if expanded{if let Some(name)=name{self.emit(ctx,Op::Const(Const::Str(name.clone())),value.line,value.column);}}
+            self.expr(ctx,value)?;
+            if expanded{
+                if name.is_some(){self.emit(ctx,Op::BuildDict(1),value.line,value.column);}
+                self.emit(ctx,Op::Binary("kwargs_merge".to_owned()),value.line,value.column);
+            }
+        }
+        Ok(expanded)
+    }
     fn store(&mut self, ctx: &mut DCtx, target: &DExpr) -> Result<(),String> {
         let line = target.line; let col = target.column;
         match &target.kind {
@@ -1234,7 +1262,10 @@ impl DCompiler {
             DExprKind::RawInterpolation(_,value)=>self.expr(ctx,value)?,
             DExprKind::Formatted(value,conversion,spec) => { self.expr(ctx,value)?; if let Some(spec) = spec { self.expr(ctx,spec)?; } self.emit(ctx,Op::FormatValue { conversion:*conversion,spec:spec.is_some() },line,col); }
             DExprKind::Comprehension { kind,element,value,generators } => self.comprehension(ctx,kind,element,value.as_deref(),generators,line,col)?,
-            DExprKind::Star(_) => return Err(self.error(line,"starred expression is not allowed here")),
+            DExprKind::Star(value) => {
+                if self.codes[ctx.index].kind!=ScopeKind::Annotation{return Err(self.error(line,"starred expression is not allowed here"));}
+                self.expr(ctx,value)?;self.emit(ctx,Op::TypeUnpack,line,col);
+            },
         }
         Ok(())
     }

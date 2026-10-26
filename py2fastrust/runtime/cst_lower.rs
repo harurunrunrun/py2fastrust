@@ -323,9 +323,8 @@ impl CstLower {
             "class_def_raw"=>{
                 let name=self.name(self.required(n,"a")?)?;self.check_binding(n,&name)?;
                 let(bases,keywords)=if let Some(b)=self.optional(n,"b"){if let Some(z)=self.optional(b,"z"){self.call_arguments(z)?}else{(Vec::new(),Vec::new())}}else{(Vec::new(),Vec::new())};
-                let mut named=Vec::new();for(key,value)in keywords{named.push((key.ok_or_else(||self.error(n,"class keyword unpacking is not implemented"))?,value));}
                 let body=self.statements(self.required(n,"c")?)?;let parameters=self.optional(n,"t").map(|t|self.type_parameters(t)).transpose()?.unwrap_or_default();
-                let definition=DStmtKind::Class(name,bases,named,body,Vec::new());if parameters.is_empty(){definition}else{DStmtKind::Generic(parameters,Box::new(definition))}
+                let definition=DStmtKind::Class(name,bases,keywords,body,Vec::new());if parameters.is_empty(){definition}else{DStmtKind::Generic(parameters,Box::new(definition))}
             },
             "type_alias"=>{let name=self.name(self.required(n,"n")?)?;self.check_binding(n,&name)?;let parameters=self.optional(n,"t").map(|t|self.type_parameters(t)).transpose()?.unwrap_or_default();DStmtKind::TypeAlias(name,parameters,self.expr(self.required(n,"b")?)?)},
             "match_stmt"=>{

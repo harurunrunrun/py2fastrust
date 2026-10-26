@@ -81,6 +81,11 @@ class Compiler:
         return self.program
 
     def stringify_annotation(self, expression):
+        if isinstance(expression, ast.Starred):
+            wrapped = ast.Tuple(elts=[expression], ctx=ast.Load())
+            # A tuple permits a starred expression in this inert annotation;
+            # the official printer supplies its exact precedence/parentheses.
+            return self.stringify_annotation(wrapped)[1:-2]
         # The official compiler's expression printer differs from ast.unparse
         # for e.g. sole generator arguments. Compile only an inert stringized
         # annotation and read its constant; no user expression is executed.
@@ -944,6 +949,9 @@ class Emitter:
             annotate.emit("Const", name, node=expression)
             if stringized:
                 annotate.emit("Const", self.compiler.stringify_annotation(expression), node=expression)
+            elif isinstance(expression, ast.Starred):
+                annotate.visit(expression.value)
+                annotate.emit("TypeUnpack", node=expression)
             else:
                 annotate.visit(expression)
         annotate.emit("BuildDict", len(annotations), node=node)
@@ -991,15 +999,29 @@ class Emitter:
             return
         for decorator in (() if type_scope else node.decorator_list):
             self.visit(decorator)
+        expanded = any(isinstance(base, ast.Starred) for base in node.bases) or any(
+            keyword.arg is None for keyword in node.keywords
+        )
         for base in node.bases:
-            self.visit(base)
+            self.visit(base.value if isinstance(base, ast.Starred) else base)
+            if expanded:
+                self.emit("BuildTupleUnpack" if isinstance(base, ast.Starred) else "BuildTuple", 1, node=base)
         if type_scope:
             self.emit("Load", ".type_params", node=node)
             self.emit("GenericBase", node=node)
+            if expanded:
+                self.emit("BuildTuple", 1, node=node)
+        if expanded:
+            self.emit("BuildTupleUnpack", len(node.bases) + int(type_scope), node=node)
+            self.emit("BuildDict", 0, node=node)
         for keyword in node.keywords:
-            if keyword.arg is None:
-                self.fail(node, "expanded class keywords are not implemented")
+            if expanded and keyword.arg is not None:
+                self.emit("Const", keyword.arg, node=keyword.value)
             self.visit(keyword.value)
+            if expanded:
+                if keyword.arg is not None:
+                    self.emit("BuildDict", 1, node=keyword.value)
+                self.emit("Binary", "kwargs_merge", node=keyword.value)
         emitter = self.child(node, node.name, "Class")
         first_line = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
         emitter.emit("Const", first_line, node=node)
@@ -1043,7 +1065,10 @@ class Emitter:
         emitter.emit("BuildTuple", len(attributes), node=node)
         emitter.emit("Store", "__static_attributes__", node=node)
         emitter.finish()
-        self.emit("MakeClass", node.name, emitter.code_id, len(node.bases) + int(type_scope), [k.arg for k in node.keywords], node=node)
+        if expanded:
+            self.emit("MakeClassEx", node.name, emitter.code_id, node=node)
+        else:
+            self.emit("MakeClass", node.name, emitter.code_id, len(node.bases) + int(type_scope), [k.arg for k in node.keywords], node=node)
         for decorator in reversed(() if type_scope else node.decorator_list):
             self.emit("Call", 1, [], node=decorator)
         if not type_scope:
