@@ -2,6 +2,10 @@ The bundled `py2fastrust/stdlib/heapq.py` and `bisect.py` are adapted from
 CPython 3.14.4. Optional C accelerators and the heapq doctest entry point were
 removed; the Python algorithm implementations are preserved.
 
+`py2fastrust/stdlib/__future__.py` is copied from the official CPython 3.14.4
+standard library to preserve feature constants and release metadata. It uses
+the same PSF license retained alongside the other bundled modules.
+
 They retain the Python Software Foundation license in
 `py2fastrust/stdlib/PYTHON_LICENSE.txt`. Generated general-runtime Rust files
 include that license alongside the MIT runtime notice.

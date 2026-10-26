@@ -799,23 +799,29 @@ class _SetView(_MappingView):
         return not any(item in self for item in other)
 
     def __eq__(self, other):
-        if not isinstance(other, (_SetView, set, frozenset)):
+        if not isinstance(other, _SET_VIEW_TYPES):
             return NotImplemented
         return len(self) == len(other) and all(item in other for item in self)
 
     def __le__(self, other):
-        if not isinstance(other, (_SetView, set, frozenset)):
+        if not isinstance(other, _SET_VIEW_TYPES):
             return NotImplemented
         return len(self) <= len(other) and all(item in other for item in self)
 
     def __lt__(self, other):
-        return self <= other and self != other
+        if not isinstance(other, _SET_VIEW_TYPES):
+            return NotImplemented
+        return len(self) < len(other) and all(item in other for item in self)
 
     def __ge__(self, other):
-        return other <= self
+        if not isinstance(other, _SET_VIEW_TYPES):
+            return NotImplemented
+        return len(self) >= len(other) and all(item in self for item in other)
 
     def __gt__(self, other):
-        return other < self
+        if not isinstance(other, _SET_VIEW_TYPES):
+            return NotImplemented
+        return len(self) > len(other) and all(item in self for item in other)
 
     def __and__(self, other):
         result = set()
@@ -850,6 +856,9 @@ class _SetView(_MappingView):
         return set(self) ^ set(other)
 
     __rxor__ = __xor__
+
+
+_SET_VIEW_TYPES = (_SetView, set, frozenset, type({}.keys()), type({}.items()))
 
 
 class _DictKeysView(_SetView):

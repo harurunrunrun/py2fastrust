@@ -2,7 +2,7 @@
 // format: dynamically compiled functions have exactly the same calling convention.
 #[derive(Clone, Debug, PartialEq)]
 enum DTokenKind {
-    Name(String), Number(String), String(String), Bytes(Vec<u8>), FString(String),
+    Name(String), Number(String), String(String), UString(String), Bytes(Vec<u8>), FString(String), TString(String),
     Symbol(String), Newline, Indent, Dedent, Eof,
 }
 #[derive(Clone, Debug)]
@@ -18,6 +18,8 @@ impl DLexer {
             line: 1, column: 0, nesting: 0, line_start: true, indents: vec![0], tokens: Vec::new() }
     }
     fn peek(&self, offset: usize) -> Option<char> { self.source.get(self.at + offset).copied() }
+    fn identifier_start(ch: char) -> bool { if ch.is_ascii() { ch.is_ascii_alphabetic() || ch == '_' } else { text_property(ch,TEXT_IDENTIFIER_START) } }
+    fn identifier_continue(ch: char) -> bool { if ch.is_ascii() { ch.is_ascii_alphanumeric() || ch == '_' } else { text_property(ch,TEXT_IDENTIFIER_CONTINUE) } }
     fn bump(&mut self) -> Option<char> {
         let ch = self.peek(0)?; self.at += 1;
         if ch == '\n' { self.line += 1; self.column = 0; } else { self.column += 1; }
@@ -31,8 +33,8 @@ impl DLexer {
         if triple { self.bump(); self.bump(); }
         let raw = prefix.contains('r') || prefix.contains('R');
         let bytes = prefix.contains('b') || prefix.contains('B');
-        let formatted = prefix.contains('f') || prefix.contains('F');
-        if prefix.contains('t') || prefix.contains('T') { return Err(self.error("template strings are not yet supported")); }
+        let templated = prefix.contains('t') || prefix.contains('T');
+        let formatted = prefix.contains('f') || prefix.contains('F') || templated;
         let mut text = String::new();
         let mut field_depth = 0usize;
         let mut field_quote = None;
@@ -90,7 +92,7 @@ impl DLexer {
             let mut result = Vec::new();
             for ch in text.chars() { if ch as u32 > 255 { return Err(self.error("bytes literals only contain byte characters")); } result.push(ch as u8); }
             Ok(DTokenKind::Bytes(result))
-        } else if formatted { Ok(DTokenKind::FString(text)) } else { Ok(DTokenKind::String(text)) }
+        } else if templated { Ok(DTokenKind::TString(text)) } else if formatted { Ok(DTokenKind::FString(text)) } else if prefix == "u" { Ok(DTokenKind::UString(text)) } else { Ok(DTokenKind::String(text)) }
     }
     fn lex(mut self) -> Result<Vec<DToken>, String> {
         while self.at < self.source.len() {
@@ -118,9 +120,9 @@ impl DLexer {
             if ch == '\n' { self.bump(); if self.nesting == 0 { self.emit(DTokenKind::Newline, line, column); self.line_start = true; } continue; }
             if ch == '\\' && self.peek(1) == Some('\n') { self.bump(); self.bump(); continue; }
             if ch == '\'' || ch == '"' { let token = self.string("", line, column)?; self.emit(token, line, column); continue; }
-            if ch == '_' || ch.is_alphabetic() {
+            if Self::identifier_start(ch) {
                 let start = self.at; self.bump();
-                while self.peek(0).is_some_and(|x| x == '_' || x.is_alphanumeric()) { self.bump(); }
+                while self.peek(0).is_some_and(Self::identifier_continue) { self.bump(); }
                 let name: String = self.source[start..self.at].iter().collect();
                 if matches!(self.peek(0), Some('\'') | Some('"')) && name.len() <= 2 && name.chars().all(|x| "rRbBuUfFtT".contains(x)) {
                     let lower = name.to_ascii_lowercase();
@@ -140,7 +142,7 @@ impl DLexer {
                 self.emit(DTokenKind::Number(number), line, column); continue;
             }
             let mut symbol = None;
-            for candidate in ["**=", "//=", "<<=", ">>=", "...", ":=", "==", "!=", "<=", ">=", "**", "//", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "@=", "->"] {
+            for candidate in ["**=", "//=", "<<=", ">>=", "...", ":=", "==", "!=", "<>", "<=", ">=", "**", "//", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "@=", "->"] {
                 if candidate.chars().enumerate().all(|(offset, c)| self.peek(offset) == Some(c)) { symbol = Some(candidate.to_owned()); break; }
             }
             let symbol = symbol.unwrap_or_else(|| ch.to_string());
@@ -161,13 +163,13 @@ impl DLexer {
 struct DExpr { kind: DExprKind, line: usize, column: usize }
 #[derive(Clone, Debug)]
 enum DExprKind {
-    Constant(Const), Name(String), List(Vec<DExpr>), Tuple(Vec<DExpr>), Set(Vec<DExpr>), Dict(Vec<(Option<DExpr>, DExpr)>),
+    Constant(Const), Imaginary(f64), UnicodeString(String), Ellipsis, Name(String), List(Vec<DExpr>), Tuple(Vec<DExpr>), Set(Vec<DExpr>), Dict(Vec<(Option<DExpr>, DExpr)>),
     Unary(String, Box<DExpr>), Binary(String, Box<DExpr>, Box<DExpr>), Bool(String, Vec<DExpr>),
     Compare(Box<DExpr>, Vec<(String, DExpr)>), Conditional(Box<DExpr>, Box<DExpr>, Box<DExpr>),
     Attribute(Box<DExpr>, String), Subscript(Box<DExpr>, Box<DExpr>), Slice(Option<Box<DExpr>>, Option<Box<DExpr>>, Option<Box<DExpr>>),
     Call(Box<DExpr>, Vec<DExpr>, Vec<(Option<String>, DExpr)>), Star(Box<DExpr>),
     Named(String, Box<DExpr>), Lambda(DParams, Box<DExpr>), Yield(Option<Box<DExpr>>, bool),
-    Joined(Vec<DExpr>), Formatted(Box<DExpr>, i32, Option<Box<DExpr>>),
+    Joined(Vec<DExpr>), Template(Vec<DExpr>), RawInterpolation(String,Box<DExpr>), Formatted(Box<DExpr>, i32, Option<Box<DExpr>>),
     Comprehension { kind: String, element: Box<DExpr>, value: Option<Box<DExpr>>, generators: Vec<DGenerator> },
 }
 #[derive(Clone, Debug)]
@@ -178,7 +180,7 @@ struct DParams { params: Params, defaults: Vec<DExpr>, kwdefaults: Vec<(String, 
 struct DStmt { kind: DStmtKind, line: usize, column: usize }
 #[derive(Clone, Debug)]
 enum DStmtKind {
-    Expr(DExpr), Assign(Vec<DExpr>, DExpr), AugAssign(DExpr, String, DExpr), Delete(Vec<DExpr>),
+    Expr(DExpr), Assign(Vec<DExpr>, DExpr), AnnAssign(DExpr, DExpr, Option<DExpr>, bool), AugAssign(DExpr, String, DExpr), Delete(Vec<DExpr>),
     If(DExpr, Vec<DStmt>, Vec<DStmt>), While(DExpr, Vec<DStmt>, Vec<DStmt>), For(DExpr, DExpr, Vec<DStmt>, Vec<DStmt>),
     Function(String, DParams, Vec<DStmt>, Vec<DExpr>), Class(String, Vec<DExpr>, Vec<(String, DExpr)>, Vec<DStmt>, Vec<DExpr>),
     Return(Option<DExpr>), Break, Continue, Pass, Raise(Option<DExpr>, Option<DExpr>), Assert(DExpr, Option<DExpr>),
@@ -189,9 +191,27 @@ enum DStmtKind {
     Import(Vec<(String, Option<String>)>), ImportFrom(String, Vec<(String, Option<String>)>, usize),
 }
 
-struct DParser { tokens: Vec<DToken>, at: usize }
+const D_FUTURE_ANNOTATIONS: u32 = 0x1000000;
+const D_FUTURE_BARRY: u32 = 0x400000;
+
+fn d_future_feature(name: &str) -> Result<u32,String> {
+    match name {
+        "nested_scopes" | "generators" | "division" | "absolute_import" | "with_statement" | "print_function" | "unicode_literals" | "generator_stop" => Ok(0),
+        "annotations" => Ok(D_FUTURE_ANNOTATIONS),
+        "barry_as_FLUFL" => Ok(D_FUTURE_BARRY),
+        "braces" => Err("not a chance".to_owned()),
+        _ => Err(format!("future feature {name} is not defined")),
+    }
+}
+
+struct DParser { tokens: Vec<DToken>, at: usize, future_flags: u32 }
+fn d_identifier(raw: &str) -> Result<String,String> {
+    let name=text_nfkc(raw);
+    if ["None","True","False"].contains(&name.as_str()) { return Err(format!("ValueError: identifier field can't represent '{name}' constant")); }
+    Ok(name)
+}
 impl DParser {
-    fn new(source: &str) -> Result<Self, String> { Ok(Self { tokens: DLexer::new(source).lex()?, at: 0 }) }
+    fn new(source: &str, future_flags: u32) -> Result<Self, String> { Ok(Self { tokens: DLexer::new(source).lex()?, at: 0,future_flags }) }
     fn token(&self) -> &DToken { &self.tokens[self.at.min(self.tokens.len() - 1)] }
     fn error(&self, message: &str) -> String { format!("SyntaxError: {message} (line {}, column {})", self.token().line, self.token().column + 1) }
     fn is(&self, word: &str) -> bool { matches!(&self.token().kind, DTokenKind::Name(x) | DTokenKind::Symbol(x) if x == word) }
@@ -199,12 +219,12 @@ impl DParser {
     fn eat(&mut self, word: &str) -> bool { if self.is(word) { self.at += 1; true } else { false } }
     fn expect(&mut self, word: &str) -> Result<(), String> { if self.eat(word) { Ok(()) } else { Err(self.error(&format!("expected {word:?}"))) } }
     fn name(&mut self) -> Result<String, String> {
-        match self.token().kind.clone() { DTokenKind::Name(name) if !d_reserved(&name) => { self.at += 1; Ok(name) }, _ => Err(self.error("expected an identifier")) }
+        match self.token().kind.clone() { DTokenKind::Name(name) if !d_reserved(&name) => { self.at += 1; d_identifier(&name) }, _ => Err(self.error("expected an identifier")) }
     }
     fn expr_at(&self, kind: DExprKind, token: &DToken) -> DExpr { DExpr { kind, line: token.line, column: token.column } }
     fn end_simple(&self) -> bool { matches!(self.token().kind, DTokenKind::Newline | DTokenKind::Dedent | DTokenKind::Eof) || self.is(";") }
     fn expression_end(&self) -> bool { self.end_simple() || [")", "]", "}", ":", "="].iter().any(|x| self.is(x)) }
-    fn parse(mut self) -> Result<Vec<DStmt>, String> {
+    fn parse(&mut self) -> Result<Vec<DStmt>, String> {
         let mut statements = Vec::new();
         while !matches!(self.token().kind, DTokenKind::Eof) {
             if matches!(self.token().kind, DTokenKind::Newline) { self.at += 1; continue; }
@@ -340,19 +360,22 @@ impl DParser {
             if self.eat("*") { names.push(("*".to_owned(), None)); }
             else { loop { let name = self.name()?; let alias = if self.eat("as") { Some(self.name()?) } else { None }; names.push((name, alias)); if !self.eat(",") { break; } if parenthesized && self.is(")") { break; } } }
             if parenthesized { self.expect(")")?; }
+            if level == 0 && module == "__future__" {
+                for (name,_) in &names { if let Ok(flags) = d_future_feature(name) { self.future_flags |= flags; } }
+            }
             DStmtKind::ImportFrom(module, names, level)
         } else {
+            let simple = matches!(&token.kind,DTokenKind::Name(_));
             let first = self.expression_list()?;
             if self.eat("=") {
                 let mut targets = vec![first]; let mut value = self.expression_list()?;
                 while self.eat("=") { targets.push(value); value = self.expression_list()?; }
                 DStmtKind::Assign(targets, value)
             } else if self.eat(":") {
-                self.expression()?;
-                if self.eat("=") { DStmtKind::Assign(vec![first], self.expression_list()?) } else {
-                    // Local annotations create a binding for scope analysis even without a value.
-                    DStmtKind::Assign(vec![first], DExpr { kind: DExprKind::Name("$unbound_annotation".to_owned()), line: token.line, column: token.column })
-                }
+                if !matches!(&first.kind,DExprKind::Name(_) | DExprKind::Attribute(..) | DExprKind::Subscript(..)) { return Err(self.error("illegal target for annotation")); }
+                let annotation = self.expression()?;
+                let value = if self.eat("=") { Some(self.expression_list()?) } else { None };
+                DStmtKind::AnnAssign(first, annotation, value, simple)
             } else if let DTokenKind::Symbol(op) = self.token().kind.clone() {
                 if op.ends_with('=') && ["+=", "-=", "*=", "/=", "//=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>=", "@="].contains(&op.as_str()) {
                     self.at += 1; DStmtKind::AugAssign(first, op[..op.len() - 1].to_owned(), self.expression_list()?)
@@ -418,7 +441,12 @@ impl DParser {
         loop {
             let op = if self.eat("not") { self.expect("in")?; Some("not in".to_owned()) }
             else if self.eat("is") { Some(if self.eat("not") { "is not" } else { "is" }.to_owned()) }
-            else if ["<", ">", "<=", ">=", "==", "!=", "in"].iter().any(|x| self.is(x)) { let op = match self.token().kind.clone() { DTokenKind::Name(x) | DTokenKind::Symbol(x) => x, _ => unreachable!() }; self.at += 1; Some(op) }
+            else if ["<", ">", "<=", ">=", "==", "!=", "<>", "in"].iter().any(|x| self.is(x)) {
+                let op = match self.token().kind.clone() { DTokenKind::Name(x) | DTokenKind::Symbol(x) => x, _ => unreachable!() };
+                if op == "<>" && self.future_flags & D_FUTURE_BARRY == 0 { return Err(self.error("invalid syntax")); }
+                if op == "!=" && self.future_flags & D_FUTURE_BARRY != 0 { return Err(self.error("with Barry as BDFL, use '<>' instead of '!='")); }
+                self.at += 1; Some(if op == "<>" { "!=".to_owned() } else { op })
+            }
             else { None };
             if let Some(op) = op { tail.push((op, self.bit_or()?)); } else { break; }
         }
@@ -462,7 +490,7 @@ impl DParser {
                 }
                 self.expect(")")?; value = self.expr_at(DExprKind::Call(Box::new(value), args, keywords), &token);
             } else if self.eat("[") {
-                let first = self.subscript()?; let mut values = vec![first]; let mut tuple = false;
+                let first = self.subscript()?; let mut tuple = matches!(&first.kind,DExprKind::Star(_)); let mut values = vec![first];
                 while self.eat(",") { tuple = true; if self.is("]") { break; } values.push(self.subscript()?); }
                 self.expect("]")?; let subscript = if tuple { self.expr_at(DExprKind::Tuple(values), &token) } else { values.pop().unwrap() };
                 value = self.expr_at(DExprKind::Subscript(Box::new(value), Box::new(subscript)), &token);
@@ -471,6 +499,7 @@ impl DParser {
         Ok(value)
     }
     fn subscript(&mut self) -> Result<DExpr,String> {
+        if self.is("*") { return self.star_expression(); }
         let token = self.token().clone(); let lower = if self.is(":") { None } else { Some(Box::new(self.expression()?)) };
         if !self.eat(":") { return lower.map(|x| *x).ok_or_else(|| self.error("expected subscript")); }
         let upper = if self.is(":") || self.is(",") || self.is("]") { None } else { Some(Box::new(self.expression()?)) };
@@ -480,27 +509,38 @@ impl DParser {
     fn atom(&mut self) -> Result<DExpr,String> {
         let token = self.token().clone();
         let kind = match token.kind.clone() {
-            DTokenKind::Number(number) => { self.at += 1; DExprKind::Constant(d_number(&number).map_err(|m| self.error(&m))?) }
-            DTokenKind::String(_) | DTokenKind::Bytes(_) | DTokenKind::FString(_) => {
+            DTokenKind::Number(number) => {
+                self.at += 1;
+                if number.ends_with('j') || number.ends_with('J') { DExprKind::Imaginary(d_imaginary(&number).map_err(|m|self.error(&m))?) }
+                else { DExprKind::Constant(d_number(&number).map_err(|m| self.error(&m))?) }
+            }
+            DTokenKind::String(_) | DTokenKind::UString(_) | DTokenKind::Bytes(_) | DTokenKind::FString(_) => {
                 let mut values = Vec::new(); let mut plain = String::new(); let mut bytes: Option<Vec<u8>> = None;
+                let unicode=matches!(&token.kind,DTokenKind::UString(_)); let mut formatted=false;
                 loop {
                     match self.token().kind.clone() {
-                        DTokenKind::String(text) => { if bytes.is_some() { return Err(self.error("cannot mix bytes and nonbytes literals")); } plain.push_str(&text); self.at += 1; }
+                        DTokenKind::String(text) | DTokenKind::UString(text) => { if bytes.is_some() { return Err(self.error("cannot mix bytes and nonbytes literals")); } plain.push_str(&text); self.at += 1; }
                         DTokenKind::Bytes(text) => { if !plain.is_empty() || !values.is_empty() { return Err(self.error("cannot mix bytes and nonbytes literals")); } bytes.get_or_insert_with(Vec::new).extend(text); self.at += 1; }
                         DTokenKind::FString(text) => {
+                            formatted=true;
                             if bytes.is_some() { return Err(self.error("cannot mix bytes and nonbytes literals")); }
                             if !plain.is_empty() { values.push(self.expr_at(DExprKind::Constant(Const::Str(std::mem::take(&mut plain))), &token)); }
-                            values.extend(d_fstring(&text, token.line, token.column)?); self.at += 1;
+                            values.extend(d_fstring(&text, token.line, token.column, self.future_flags,false)?); self.at += 1;
                         }
                         _ => break,
                     }
                 }
                 if let Some(bytes) = bytes { DExprKind::Constant(Const::Bytes(bytes)) }
-                else if values.is_empty() { DExprKind::Constant(Const::Str(plain)) }
+                else if values.is_empty() && !formatted { if unicode {DExprKind::UnicodeString(plain)}else{DExprKind::Constant(Const::Str(plain))} }
                 else { if !plain.is_empty() { values.push(self.expr_at(DExprKind::Constant(Const::Str(plain)), &token)); } DExprKind::Joined(values) }
             }
+            DTokenKind::TString(_) => {
+                let mut values=Vec::new();
+                while let DTokenKind::TString(text)=self.token().kind.clone() { values.extend(d_fstring(&text,token.line,token.column,self.future_flags,true)?);self.at+=1; }
+                DExprKind::Template(values)
+            }
             DTokenKind::Name(name) if name == "None" || name == "True" || name == "False" => { self.at += 1; DExprKind::Constant(match name.as_str() { "None" => Const::None, "True" => Const::Bool(true), _ => Const::Bool(false) }) }
-            DTokenKind::Name(name) if !d_reserved(&name) => { self.at += 1; DExprKind::Name(name) }
+            DTokenKind::Name(name) if !d_reserved(&name) => { self.at += 1; DExprKind::Name(d_identifier(&name)?) }
             DTokenKind::Symbol(symbol) if symbol == "(" => {
                 self.at += 1; if self.eat(")") { DExprKind::Tuple(Vec::new()) }
                 else {
@@ -531,7 +571,7 @@ impl DParser {
                     else { let mut items = vec![first]; while self.eat(",") { if self.is("}") { break; } items.push(self.star_expression()?); } self.expect("}")?; DExprKind::Set(items) }
                 }
             }
-            DTokenKind::Symbol(symbol) if symbol == "..." => { self.at+=1; DExprKind::Name("Ellipsis".to_owned()) },
+            DTokenKind::Symbol(symbol) if symbol == "..." => { self.at+=1; DExprKind::Ellipsis },
             _ => return Err(self.error("expected expression")),
         };
         Ok(self.expr_at(kind, &token))
@@ -633,7 +673,7 @@ impl DParser {
             }
             self.expect("}")?; return Ok(MatchPattern::Mapping { keys,patterns,rest });
         }
-        if self.is("-") || matches!(self.token().kind,DTokenKind::Number(_) | DTokenKind::String(_) | DTokenKind::Bytes(_)) || self.is("None") || self.is("True") || self.is("False") {
+        if self.is("-") || matches!(self.token().kind,DTokenKind::Number(_) | DTokenKind::String(_) | DTokenKind::UString(_) | DTokenKind::Bytes(_)) || self.is("None") || self.is("True") || self.is("False") {
             return self.pattern_literal();
         }
         let first = self.name()?; let mut path = vec![first.clone()]; while self.eat(".") { path.push(self.name()?); }
@@ -656,7 +696,7 @@ impl DParser {
         else { Ok(MatchPattern::As { pattern:None,name:if first=="_"{None}else{Some(first)} }) }
     }
     fn pattern_key(&mut self) -> Result<MatchPattern,String> {
-        if self.is("-") || matches!(self.token().kind,DTokenKind::Number(_) | DTokenKind::String(_) | DTokenKind::Bytes(_)) || self.is("None") || self.is("True") || self.is("False") { return self.pattern_literal(); }
+        if self.is("-") || matches!(self.token().kind,DTokenKind::Number(_) | DTokenKind::String(_) | DTokenKind::UString(_) | DTokenKind::Bytes(_)) || self.is("None") || self.is("True") || self.is("False") { return self.pattern_literal(); }
         let mut path = vec![self.name()?]; while self.eat(".") { path.push(self.name()?); }
         if path.len() < 2 { return Err(self.error("mapping pattern key must be a literal or an attribute path")); }
         Ok(MatchPattern::ValuePath(path))
@@ -666,6 +706,7 @@ impl DParser {
         if negative && !matches!(self.token().kind,DTokenKind::Number(_)) { return Err(self.error("negative pattern requires a numeric literal")); }
         let value = self.atom()?;
         let constant = match value.kind {
+            DExprKind::UnicodeString(text) if !negative => Const::Str(text),
             DExprKind::Constant(mut constant) => {
                 if negative { constant = match constant { Const::Int(value)=>Const::Int(format!("-{value}")),Const::Float(value)=>Const::Float(-value),_=>return Err(self.error("negative pattern requires a number")) }; }
                 constant
@@ -719,7 +760,8 @@ fn d_pattern_literal_equal(a: &MatchPattern, b: &MatchPattern) -> bool {
 fn d_contains_named(expr: &DExpr) -> bool {
     match &expr.kind {
         DExprKind::Named(..) => true,
-        DExprKind::List(values) | DExprKind::Tuple(values) | DExprKind::Set(values) | DExprKind::Joined(values) | DExprKind::Bool(_,values) => values.iter().any(d_contains_named),
+        DExprKind::List(values) | DExprKind::Tuple(values) | DExprKind::Set(values) | DExprKind::Joined(values) | DExprKind::Template(values) | DExprKind::Bool(_,values) => values.iter().any(d_contains_named),
+        DExprKind::RawInterpolation(_,value)=>d_contains_named(value),
         DExprKind::Dict(items) => items.iter().any(|(key,value)|key.as_ref().is_some_and(d_contains_named) || d_contains_named(value)),
         DExprKind::Unary(_,value) | DExprKind::Star(value) | DExprKind::Attribute(value,_) => d_contains_named(value),
         DExprKind::Binary(_,a,b) | DExprKind::Subscript(a,b) => d_contains_named(a) || d_contains_named(b),
@@ -749,6 +791,7 @@ fn d_static_attributes(body: &[DStmt], in_function: bool, names: &mut Vec<String
             DStmtKind::Function(_,_,body,_) => d_static_attributes(body,true,names),
             DStmtKind::Class(..) => (),
             DStmtKind::Assign(targets,value) if in_function && !matches!(&value.kind,DExprKind::Name(name) if name == "$unbound_annotation") => for target in targets { d_static_target(target,names); },
+            DStmtKind::AnnAssign(target,_,Some(_),_) if in_function => d_static_target(target,names),
             DStmtKind::If(_,body,tail) | DStmtKind::While(_,body,tail) => { d_static_attributes(body,in_function,names); d_static_attributes(tail,in_function,names); },
             DStmtKind::For(target,_,body,tail) => { if in_function { d_static_target(target,names); } d_static_attributes(body,in_function,names); d_static_attributes(tail,in_function,names); },
             DStmtKind::Try(body,handlers,tail,finally) => { d_static_attributes(body,in_function,names); for (_,_,body) in handlers { d_static_attributes(body,in_function,names); } d_static_attributes(tail,in_function,names); d_static_attributes(finally,in_function,names); },
@@ -757,6 +800,161 @@ fn d_static_attributes(body: &[DStmt], in_function: bool, names: &mut Vec<String
             _ => (),
         }
     }
+}
+
+fn d_validate_futures(body: &[DStmt], filename: &str, top_level: bool) -> Result<(),String> {
+    let mut allowed = top_level;
+    for (index,stmt) in body.iter().enumerate() {
+        if let DStmtKind::ImportFrom(module,names,0) = &stmt.kind {
+            if module == "__future__" {
+                if !allowed { return Err(format!("SyntaxError: from __future__ imports must occur at the beginning of the file ({filename}:{})",stmt.line)); }
+                for (name,_) in names { d_future_feature(name).map_err(|message|format!("SyntaxError: {message} ({filename}:{})",stmt.line))?; }
+                continue;
+            }
+        }
+        if !(top_level && index == 0 && d_docstring(stmt).is_some()) { allowed = false; }
+        match &stmt.kind {
+            DStmtKind::Function(_,_,body,_) | DStmtKind::Class(_,_,_,body,_) => d_validate_futures(body,filename,false)?,
+            DStmtKind::If(_,body,tail) | DStmtKind::While(_,body,tail) | DStmtKind::For(_,_,body,tail) => { d_validate_futures(body,filename,false)?; d_validate_futures(tail,filename,false)?; },
+            DStmtKind::Try(body,handlers,tail,finally) => { d_validate_futures(body,filename,false)?; for (_,_,body) in handlers { d_validate_futures(body,filename,false)?; } d_validate_futures(tail,filename,false)?; d_validate_futures(finally,filename,false)?; },
+            DStmtKind::With(_,body) => d_validate_futures(body,filename,false)?,
+            DStmtKind::Match(_,cases) => for (_,_,body) in cases { d_validate_futures(body,filename,false)?; },
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
+fn d_docstring(statement: &DStmt) -> Option<&String> {
+    match &statement.kind { DStmtKind::Expr(DExpr { kind:DExprKind::Constant(Const::Str(text)) | DExprKind::UnicodeString(text),.. })=>Some(text),_=>None }
+}
+
+fn d_has_annotations(body: &[DStmt]) -> bool {
+    body.iter().any(|stmt| match &stmt.kind {
+        DStmtKind::AnnAssign(..) => true,
+        DStmtKind::If(_,body,tail) | DStmtKind::While(_,body,tail) | DStmtKind::For(_,_,body,tail) => d_has_annotations(body) || d_has_annotations(tail),
+        DStmtKind::Try(body,handlers,tail,finally) => d_has_annotations(body) || handlers.iter().any(|(_,_,body)|d_has_annotations(body)) || d_has_annotations(tail) || d_has_annotations(finally),
+        DStmtKind::With(_,body) => d_has_annotations(body),
+        DStmtKind::Match(_,cases) => cases.iter().any(|(_,_,body)|d_has_annotations(body)),
+        _ => false,
+    })
+}
+
+fn d_annotation_violation(expression: &DExpr) -> Option<&'static str> {
+    let scan=|values:&[DExpr]|values.iter().find_map(d_annotation_violation);
+    match &expression.kind {
+        DExprKind::Named(..)=>Some("named expression cannot be used within an annotation"),
+        DExprKind::Yield(..)=>Some("yield expression cannot be used within an annotation"),
+        // Lambda defaults run in the enclosing annotation scope. Its body has
+        // its own scope and may contain assignment expressions or yields.
+        DExprKind::Lambda(params,_)=>scan(&params.defaults).or_else(||params.kwdefaults.iter().find_map(|(_,value)|d_annotation_violation(value))),
+        DExprKind::List(values)|DExprKind::Tuple(values)|DExprKind::Set(values)|DExprKind::Joined(values)|DExprKind::Template(values)|DExprKind::Bool(_,values)=>scan(values),
+        DExprKind::RawInterpolation(_,value)=>d_annotation_violation(value),
+        DExprKind::Dict(items)=>items.iter().find_map(|(key,value)|key.as_ref().and_then(d_annotation_violation).or_else(||d_annotation_violation(value))),
+        DExprKind::Unary(_,value)|DExprKind::Star(value)|DExprKind::Attribute(value,_)=>d_annotation_violation(value),
+        DExprKind::Binary(_,a,b)|DExprKind::Subscript(a,b)=>d_annotation_violation(a).or_else(||d_annotation_violation(b)),
+        DExprKind::Compare(a,tail)=>d_annotation_violation(a).or_else(||tail.iter().find_map(|(_,value)|d_annotation_violation(value))),
+        DExprKind::Conditional(a,b,c)=>d_annotation_violation(a).or_else(||d_annotation_violation(b)).or_else(||d_annotation_violation(c)),
+        DExprKind::Slice(a,b,c)=>[a,b,c].iter().find_map(|value|value.as_ref().and_then(|value|d_annotation_violation(value))),
+        DExprKind::Call(fun,args,keywords)=>d_annotation_violation(fun).or_else(||scan(args)).or_else(||keywords.iter().find_map(|(_,value)|d_annotation_violation(value))),
+        DExprKind::Formatted(value,_,spec)=>d_annotation_violation(value).or_else(||spec.as_ref().and_then(|value|d_annotation_violation(value))),
+        DExprKind::Comprehension{element,value,generators,..}=>d_annotation_violation(element).or_else(||value.as_ref().and_then(|value|d_annotation_violation(value))).or_else(||generators.iter().find_map(|generator|d_annotation_violation(&generator.iter).or_else(||scan(&generator.filters)))),
+        _=>None,
+    }
+}
+
+// Canonical expression strings used by CO_FUTURE_ANNOTATIONS. Precedence and
+// spacing follow CPython's AST expression printer, rather than source slices.
+fn d_annotation_string(expression: &DExpr) -> String { d_unparse(expression,0) }
+fn d_unparse_tuple(items: &[DExpr], parenthesized: bool) -> String {
+    let mut body=items.iter().map(|item|d_unparse(item,2)).collect::<Vec<_>>().join(", ");
+    if items.len()==1 { body.push(','); }
+    if parenthesized || items.is_empty() { format!("({body})") } else { body }
+}
+fn d_unparse_params(parameters: &DParams) -> String {
+    let p=&parameters.params; let mut values=Vec::new(); let start=p.positional.len()-parameters.defaults.len();
+    for (index,name) in p.positional.iter().enumerate() {
+        let mut text=name.clone(); if index>=start { text.push('=');text.push_str(&d_unparse(&parameters.defaults[index-start],2)); } values.push(text);
+        if index+1==p.posonly { values.push("/".to_owned()); }
+    }
+    if let Some(name)=&p.vararg { values.push(format!("*{name}")); } else if !p.kwonly.is_empty() { values.push("*".to_owned()); }
+    for name in &p.kwonly { let mut text=name.clone();if let Some((_,value))=parameters.kwdefaults.iter().find(|(key,_)|key==name){text.push('=');text.push_str(&d_unparse(value,2));}values.push(text); }
+    if let Some(name)=&p.kwarg { values.push(format!("**{name}")); }
+    values.join(", ")
+}
+fn d_unparse_generators(generators: &[DGenerator]) -> String {
+    let mut result=String::new();
+    for generator in generators {
+        result.push_str(" for ");
+        result.push_str(&match &generator.target.kind { DExprKind::Tuple(items)=>d_unparse_tuple(items,false),_=>d_unparse(&generator.target,0) });
+        result.push_str(" in ");result.push_str(&d_unparse(&generator.iter,5));
+        for filter in &generator.filters { result.push_str(" if ");result.push_str(&d_unparse(filter,5)); }
+    }
+    result
+}
+fn d_unparse_fstring(values: &[DExpr]) -> String {
+    let mut result=String::new();
+    for value in values {
+        match &value.kind {
+            DExprKind::Constant(Const::Str(text))=>result.push_str(&text.replace('{',"{{").replace('}',"}}")),
+            DExprKind::Formatted(value,conversion,spec)=>{
+                result.push('{');result.push_str(&d_unparse(value,2));
+                if *conversion!=-1 { result.push('!');if let Some(ch)=char::from_u32(*conversion as u32){result.push(ch);} }
+                if let Some(spec)=spec { result.push(':');if let DExprKind::Joined(values)=&spec.kind {result.push_str(&d_unparse_fstring(values));} }
+                result.push('}');
+            },
+            _=>(),
+        }
+    }
+    result
+}
+fn d_unparse(expression: &DExpr, required: u8) -> String {
+    let (precedence,text)=match &expression.kind {
+        DExprKind::Constant(value)=>(18,match value {
+            Const::None=>"None".to_owned(),Const::Bool(value)=>if *value{"True"}else{"False"}.to_owned(),Const::Int(value)=>value.clone(),
+            Const::Float(value)=>if value.is_infinite(){if value.is_sign_negative(){"-1e309"}else{"1e309"}.to_owned()}else{let text=format!("{value:?}");if let Some((mantissa,exponent))=text.split_once('e'){format!("{mantissa}e{:+03}",exponent.parse::<i32>().unwrap_or(0))}else{text}},
+            Const::Str(value)=>text_repr_str(value),Const::Bytes(value)=>text_repr_bytes(value),
+        }),
+        DExprKind::UnicodeString(value)=>(18,format!("u{}",text_repr_str(value))),
+        DExprKind::Imaginary(value)=>{
+            let mut text=if value.is_infinite(){"1e309".to_owned()}else{let text=format!("{value:?}");if let Some((mantissa,exponent))=text.split_once('e'){format!("{mantissa}e{:+03}",exponent.parse::<i32>().unwrap_or(0))}else{text.strip_suffix(".0").unwrap_or(&text).to_owned()}};
+            text.push('j');(18,text)
+        },
+        DExprKind::Ellipsis=>(18,"...".to_owned()),
+        DExprKind::Name(name)=>(18,name.clone()),
+        DExprKind::List(items)=>(18,format!("[{}]",items.iter().map(|item|d_unparse(item,2)).collect::<Vec<_>>().join(", "))),
+        DExprKind::Tuple(items)=>(18,d_unparse_tuple(items,true)),
+        DExprKind::Set(items)=>(18,format!("{{{}}}",items.iter().map(|item|d_unparse(item,2)).collect::<Vec<_>>().join(", "))),
+        DExprKind::Dict(items)=>(18,format!("{{{}}}",items.iter().map(|(key,value)|match key {Some(key)=>format!("{}: {}",d_unparse(key,2),d_unparse(value,2)),None=>format!("**{}",d_unparse(value,2))}).collect::<Vec<_>>().join(", "))),
+        DExprKind::Unary(op,value)=>{let p=if op=="not"{7}else{15};(p,format!("{}{}{}",op,if op=="not"{" "}else{""},d_unparse(value,p)))},
+        DExprKind::Binary(op,a,b)=>{let p=match op.as_str(){"|"=>9,"^"=>10,"&"=>11,"<<"|">>"=>12,"+"|"-"=>13,"*"|"@"|"/"|"//"|"%"=>14,_=>16};let power=op=="**";(p,format!("{} {op} {}",d_unparse(a,p+if power{1}else{0}),d_unparse(b,p+if power{0}else{1})))},
+        DExprKind::Bool(op,values)=>{let p=if op=="or"{5}else{6};(p,values.iter().map(|value|d_unparse(value,p+1)).collect::<Vec<_>>().join(&format!(" {op} ")))},
+        DExprKind::Compare(a,tail)=>{let mut text=d_unparse(a,9);for(op,b)in tail{text.push(' ');text.push_str(op);text.push(' ');text.push_str(&d_unparse(b,9));}(8,text)},
+        DExprKind::Conditional(condition,a,b)=>(4,format!("{} if {} else {}",d_unparse(a,5),d_unparse(condition,5),d_unparse(b,4))),
+        DExprKind::Attribute(value,name)=>{let mut value_text=d_unparse(value,18);if matches!(&value.kind,DExprKind::Constant(Const::Int(_))){value_text.push(' ');}(18,format!("{value_text}.{name}"))},
+        DExprKind::Subscript(value,index)=>{let index=match &index.kind{DExprKind::Tuple(items)=>d_unparse_tuple(items,false),_=>d_unparse(index,0)};(18,format!("{}[{index}]",d_unparse(value,18)))},
+        DExprKind::Slice(lower,upper,step)=>{let part=|value:&Option<Box<DExpr>>|value.as_ref().map(|value|d_unparse(value,0)).unwrap_or_default();let mut text=format!("{}:{}",part(lower),part(upper));if step.is_some(){text.push(':');text.push_str(&part(step));}(18,text)},
+        DExprKind::Call(value,args,keywords)=>{
+            let mut items=Vec::new();
+            for arg in args { if args.len()==1 && keywords.is_empty() { if let DExprKind::Comprehension {kind,element,generators,..}=&arg.kind {if kind=="generator"{items.push(format!("{}{}",d_unparse(element,2),d_unparse_generators(generators)));continue;}} }items.push(d_unparse(arg,2)); }
+            for(name,value)in keywords{items.push(match name{Some(name)=>format!("{name}={}",d_unparse(value,2)),None=>format!("**{}",d_unparse(value,2))});}
+            (18,format!("{}({})",d_unparse(value,18),items.join(", ")))
+        },
+        DExprKind::Star(value)=>(2,format!("*{}",d_unparse(value,3))),
+        DExprKind::Named(name,value)=>(18,format!("({name} := {})",d_unparse(value,0))),
+        DExprKind::Lambda(parameters,value)=>{let args=d_unparse_params(parameters);(3,format!("lambda{}: {}",if args.is_empty(){String::new()}else{format!(" {args}")},d_unparse(value,3)))},
+        DExprKind::Yield(value,from)=>(2,format!("yield{}{}",if *from{" from"}else{""},value.as_ref().map(|value|format!(" {}",d_unparse(value,0))).unwrap_or_default())),
+        DExprKind::Joined(values)=>(18,format!("f{}",text_repr_str(&d_unparse_fstring(values)))),
+        DExprKind::Template(values)=>(18,format!("t{}",text_repr_str(&d_unparse_fstring(values)))),
+        DExprKind::RawInterpolation(source,_)=>(18,source.clone()),
+        DExprKind::Formatted(..)=>(18,String::new()),
+        DExprKind::Comprehension{kind,element,value,generators}=>{
+            let (open,close)=match kind.as_str(){"list"=>("[","]"),"generator"=>("(",")"),_=>("{","}")};
+            let head=if let Some(value)=value{format!("{}: {}",d_unparse(element,2),d_unparse(value,2))}else{d_unparse(element,2)};
+            (18,format!("{open}{head}{}{close}",d_unparse_generators(generators)))
+        },
+    };
+    if precedence<required {format!("({text})")}else{text}
 }
 
 fn d_reserved(name: &str) -> bool {
@@ -792,7 +990,16 @@ fn d_number(raw: &str) -> Result<Const,String> {
     Ok(Const::Int(text))
 }
 
-fn d_fstring(text: &str, line: usize, column: usize) -> Result<Vec<DExpr>,String> {
+fn d_imaginary(raw: &str) -> Result<f64,String> {
+    let body=&raw[..raw.len()-1];
+    if body.contains('.') || body.contains('e') || body.contains('E') {
+        return match d_number(body)? { Const::Float(value)=>Ok(value),_=>Err("invalid imaginary literal".to_owned()) };
+    }
+    if body.is_empty() || body.starts_with('_') || body.ends_with('_') || body.contains("__") || !body.chars().all(|ch|ch.is_ascii_digit() || ch=='_') { return Err("invalid imaginary literal".to_owned()); }
+    body.replace('_',"").parse::<f64>().map_err(|_|"invalid imaginary literal".to_owned())
+}
+
+fn d_fstring(text: &str, line: usize, column: usize, future_flags: u32, templated: bool) -> Result<Vec<DExpr>,String> {
     let chars: Vec<char> = text.chars().collect(); let mut at = 0; let mut literal = String::new(); let mut values = Vec::new();
     let expr = |kind| DExpr { kind, line, column };
     while at < chars.len() {
@@ -812,14 +1019,15 @@ fn d_fstring(text: &str, line: usize, column: usize) -> Result<Vec<DExpr>,String
         }
         let mut source: String = chars[start..at].iter().collect(); let debug = source.trim_end().ends_with('=') && !source.trim_end().ends_with("==");
         if debug { values.push(expr(DExprKind::Constant(Const::Str(source.clone())))); source = source.trim_end().trim_end_matches('=').to_owned(); }
-        let mut parser = DParser::new(&source)?; let value = parser.expression_list()?;
+        let mut parser = DParser::new(&format!("({source})"),future_flags)?; let value = parser.expression_list()?;
         if !matches!(parser.token().kind,DTokenKind::Newline | DTokenKind::Eof) { return Err(parser.error("invalid f-string expression")); }
+        let value=if templated {expr(DExprKind::RawInterpolation(source.trim_end().to_owned(),Box::new(value)))} else {value};
         let mut conversion = if debug { 'r' as i32 } else { -1 };
         if chars.get(at) == Some(&'!') { at += 1; let ch = *chars.get(at).ok_or_else(|| "SyntaxError: invalid f-string conversion".to_owned())?; if !"sra".contains(ch) { return Err("SyntaxError: invalid f-string conversion".to_owned()); } conversion = ch as i32; at += 1; }
         let spec = if chars.get(at) == Some(&':') {
             at += 1; let start = at; let mut nesting = 0;
             while at < chars.len() { if chars[at] == '}' && nesting == 0 { break; } if chars[at] == '{' { nesting += 1; } else if chars[at] == '}' { nesting -= 1; } at += 1; }
-            let raw: String = chars[start..at].iter().collect(); Some(Box::new(expr(DExprKind::Joined(d_fstring(&raw,line,column)?))))
+            let raw: String = chars[start..at].iter().collect(); Some(Box::new(expr(DExprKind::Joined(d_fstring(&raw,line,column,future_flags,false)?))))
         } else { None };
         if chars.get(at) != Some(&'}') { return Err(format!("SyntaxError: expecting '}}' in f-string (line {line})")); } at += 1;
         values.push(expr(DExprKind::Formatted(Box::new(value), conversion, spec)));
@@ -828,7 +1036,7 @@ fn d_fstring(text: &str, line: usize, column: usize) -> Result<Vec<DExpr>,String
 }
 
 #[derive(Default)]
-struct DSymbols { locals: Vec<String>, globals: Vec<String>, nonlocals: Vec<String>, uses: Vec<String>, error: Option<String>, generator: bool, private: Option<String> }
+struct DSymbols { locals: Vec<String>, globals: Vec<String>, nonlocals: Vec<String>, uses: Vec<String>, annotated: Vec<String>, error: Option<String>, generator: bool, private: Option<String> }
 fn d_push_name(names: &mut Vec<String>, name: &str) { if !names.iter().any(|x| x == name) { names.push(name.to_owned()); } }
 
 // Mangling belongs to a lexical class context, including its nested functions
@@ -878,7 +1086,8 @@ impl DSymbols {
                 self.comprehension_named(element); if let Some(value) = value { self.comprehension_named(value); }
                 for generator in generators { self.comprehension_named(&generator.iter); for value in &generator.filters { self.comprehension_named(value); } }
             }
-            DExprKind::List(values) | DExprKind::Tuple(values) | DExprKind::Set(values) | DExprKind::Joined(values) | DExprKind::Bool(_,values) => for value in values { self.expr(value); },
+            DExprKind::List(values) | DExprKind::Tuple(values) | DExprKind::Set(values) | DExprKind::Joined(values) | DExprKind::Template(values) | DExprKind::Bool(_,values) => for value in values { self.expr(value); },
+            DExprKind::RawInterpolation(_,value)=>self.expr(value),
             DExprKind::Dict(items) => for (key,value) in items { if let Some(key) = key { self.expr(key); } self.expr(value); },
             DExprKind::Unary(_,value) | DExprKind::Star(value) | DExprKind::Attribute(value,_) => self.expr(value),
             DExprKind::Binary(_,a,b) | DExprKind::Subscript(a,b) => { self.expr(a); self.expr(b); },
@@ -911,6 +1120,11 @@ impl DSymbols {
     fn stmt(&mut self, stmt: &DStmt) {
         match &stmt.kind {
             DStmtKind::Assign(targets,value) => { self.expr(value); for target in targets { self.target(target); } },
+            DStmtKind::AnnAssign(target,_,value,_) => {
+                if let Some(value) = value { self.expr(value); }
+                self.target(target);
+                if let DExprKind::Name(name) = &target.kind { d_push_name(&mut self.annotated,&d_mangle(&self.private,name)); }
+            },
             DStmtKind::AugAssign(target,_,value) => { self.target(target); self.expr(value); },
             DStmtKind::Delete(targets) => for target in targets { self.target(target); },
             DStmtKind::Expr(value) => self.expr(value),
@@ -971,7 +1185,7 @@ fn d_scope_binds(scopes: &[(ScopeKind,Vec<String>,Vec<String>)], name: &str) -> 
     }
     false
 }
-struct DCompiler { codes: Vec<Code>, filename: String, offset: usize, temporary: usize, interactive: bool }
+struct DCompiler { codes: Vec<Code>, filename: String, offset: usize, temporary: usize, interactive: bool, future_flags: u32 }
 impl DCompiler {
     fn error(&self, line: usize, message: &str) -> String { format!("SyntaxError: {message} ({}:{line})",self.filename) }
     fn temporary(&mut self, ctx: &DCtx) -> String {
@@ -1035,6 +1249,12 @@ impl DCompiler {
         let private=if kind == ScopeKind::Class { Some(name.to_owned()) } else { enclosing.private.clone() };
         let mut symbols = DSymbols { private:private.clone(),..DSymbols::default() }; symbols.block(body);
         if let Some(error) = symbols.error { return Err(error); }
+        if kind == ScopeKind::Function {
+            for name in &symbols.annotated {
+                if symbols.globals.contains(name) { return Err(self.error(definition_line,&format!("annotated name '{name}' can't be global"))); }
+                if symbols.nonlocals.contains(name) { return Err(self.error(definition_line,&format!("annotated name '{name}' can't be nonlocal"))); }
+            }
+        }
         let mut parameters=params.params.clone();
         for name in parameters.positional.iter_mut().chain(parameters.kwonly.iter_mut()).chain(parameters.vararg.iter_mut()).chain(parameters.kwarg.iter_mut()) { *name=d_mangle(&private,name); }
         let mut parameter_names=Vec::new();
@@ -1059,15 +1279,16 @@ impl DCompiler {
             && enclosing.scopes.iter().any(|(kind,_,_)|*kind==ScopeKind::Class) { d_push_name(&mut frees,"__class__"); }
         if symbols.generator && kind == ScopeKind::Class { return Err(self.error(1,"yield outside function")); }
         let index = self.codes.len();
-        self.codes.push(Code { name:name.to_owned(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator });
+        self.codes.push(Code { name:name.to_owned(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator,future_flags:self.future_flags });
         let is_class = kind == ScopeKind::Class;
         let mut scopes = enclosing.scopes.clone(); scopes.push((kind,symbols.locals,symbols.globals));
         let mut ctx = DCtx { index,loops:Vec::new(),scopes,private };
         let mut body_start = 0;
         if is_class {
             self.emit(&ctx,Op::Const(Const::Int(definition_line.to_string())),definition_line,0); self.emit(&ctx,Op::Store("__firstlineno__".to_owned()),definition_line,0);
-            if let Some(DStmt { kind:DStmtKind::Expr(DExpr { kind:DExprKind::Constant(Const::Str(doc)),.. }),line,column }) = body.first() {
-                self.emit(&ctx,Op::Const(Const::Str(doc.clone())),*line,*column); self.emit(&ctx,Op::Store("__doc__".to_owned()),*line,*column); body_start = 1;
+            if self.future_flags & D_FUTURE_ANNOTATIONS != 0 && d_has_annotations(body) { self.emit(&ctx,Op::SetupAnnotations,definition_line,0); }
+            if let Some(first) = body.first() {
+                if let Some(doc) = d_docstring(first) { self.emit(&ctx,Op::Const(Const::Str(doc.clone())),first.line,first.column); self.emit(&ctx,Op::Store("__doc__".to_owned()),first.line,first.column); body_start = 1; }
             }
         }
         self.block(&mut ctx,&body[body_start..])?;
@@ -1091,6 +1312,23 @@ impl DCompiler {
                 if matches!(&value.kind,DExprKind::Name(name) if name == "$unbound_annotation") { for target in targets { if !matches!(target.kind,DExprKind::Name(_) | DExprKind::Attribute(..) | DExprKind::Subscript(..)) { return Err(self.error(line,"illegal target for annotation")); } } return Ok(()); }
                 self.expr(ctx,value)?;
                 for (index,target) in targets.iter().enumerate() { if index + 1 < targets.len() { self.emit(ctx,Op::Dup,line,col); } self.store(ctx,target)?; }
+            }
+            DStmtKind::AnnAssign(target,annotation,value,simple) => {
+                if let Some(message)=d_annotation_violation(annotation) { return Err(self.error(line,message)); }
+                if let Some(value) = value { self.expr(ctx,value)?; self.store(ctx,target)?; }
+                else { match &target.kind {
+                    DExprKind::Attribute(value,_)=>{self.expr(ctx,value)?;self.emit(ctx,Op::Pop,line,col);},
+                    DExprKind::Subscript(value,index)=>{self.expr(ctx,value)?;self.emit(ctx,Op::Pop,line,col);self.expr(ctx,index)?;self.emit(ctx,Op::Pop,line,col);},
+                    _=>(),
+                } }
+                if self.future_flags & D_FUTURE_ANNOTATIONS != 0 && matches!(self.codes[ctx.index].kind,ScopeKind::Module | ScopeKind::Class) && *simple {
+                    if let DExprKind::Name(name) = &target.kind {
+                        self.emit(ctx,Op::Const(Const::Str(d_annotation_string(annotation))),line,col);
+                        self.emit(ctx,Op::Load("__annotations__".to_owned()),line,col);
+                        self.emit(ctx,Op::Const(Const::Str(d_mangle(&ctx.private,name))),line,col);
+                        self.emit(ctx,Op::SetItem,line,col);
+                    }
+                }
             }
             DStmtKind::AugAssign(target,op,value) => {
                 let op = format!("{op}=");
@@ -1208,13 +1446,19 @@ impl DCompiler {
     fn annotations(&mut self, ctx: &mut DCtx, params: &DParams, line: usize, column: usize) -> Result<(),String> {
         if params.annotations.is_empty() { return Ok(()); }
         let make = |kind| DExpr { kind,line,column };
-        let condition=make(DExprKind::Compare(Box::new(make(DExprKind::Name("format".to_owned()))),vec![(">".to_owned(),make(DExprKind::Constant(Const::Int("2".to_owned()))))]));
+        let condition=make(DExprKind::Compare(Box::new(make(DExprKind::Name(".format".to_owned()))),vec![(">".to_owned(),make(DExprKind::Constant(Const::Int("2".to_owned()))))]));
         let error=make(DExprKind::Call(Box::new(make(DExprKind::Name("NotImplementedError".to_owned()))),Vec::new(),Vec::new()));
         let check=DStmt { kind:DStmtKind::If(condition,vec![DStmt { kind:DStmtKind::Raise(Some(error),None),line,column }],Vec::new()),line,column };
-        let annotations=make(DExprKind::Dict(params.annotations.iter().map(|(name,value)|(Some(make(DExprKind::Constant(Const::Str(d_mangle(&ctx.private,name))))),value.clone())).collect()));
+        let mut items=Vec::new();
+        for (name,value) in &params.annotations {
+            if let Some(message)=d_annotation_violation(value) { return Err(self.error(line,message)); }
+            let value = if self.future_flags & D_FUTURE_ANNOTATIONS != 0 { make(DExprKind::Constant(Const::Str(d_annotation_string(value)))) } else { value.clone() };
+            items.push((Some(make(DExprKind::Constant(Const::Str(d_mangle(&ctx.private,name))))),value));
+        }
+        let annotations=make(DExprKind::Dict(items));
         let returned=DStmt { kind:DStmtKind::Return(Some(annotations)),line,column };
-        let mut parameters=DParams::default();parameters.params.positional.push("format".to_owned());
-        let code=self.code("<annotate>",ScopeKind::Annotation,&parameters,&[check,returned],ctx,line)?;
+        let mut parameters=DParams::default();parameters.params.posonly=1;parameters.params.positional.push(".format".to_owned());
+        let code=self.code("__annotate__",ScopeKind::Annotation,&parameters,&[check,returned],ctx,line)?;
         self.emit(ctx,Op::Dup,line,column); self.emit(ctx,Op::MakeFunction { code:self.offset+code,defaults:0,kwdefaults:Vec::new() },line,column);self.emit(ctx,Op::Swap,line,column);self.emit(ctx,Op::SetAttr("__annotate__".to_owned()),line,column);
         Ok(())
     }
@@ -1271,6 +1515,9 @@ impl DCompiler {
         let line = expr.line; let col = expr.column;
         match &expr.kind {
             DExprKind::Constant(value) => { self.emit(ctx,Op::Const(value.clone()),line,col); }
+            DExprKind::UnicodeString(value) => { self.emit(ctx,Op::Const(Const::Str(value.clone())),line,col); }
+            DExprKind::Imaginary(_) => return Err(format!("NotImplementedError: complex values are not implemented ({}:{line})",self.filename)),
+            DExprKind::Ellipsis => { self.emit(ctx,Op::Load("Ellipsis".to_owned()),line,col); }
             DExprKind::Name(name) => { self.emit(ctx,Op::Load(name.clone()),line,col); }
             DExprKind::List(items) | DExprKind::Tuple(items) => {
                 let tuple = matches!(expr.kind,DExprKind::Tuple(_)); let unpack = items.iter().any(|x|matches!(x.kind,DExprKind::Star(_)));
@@ -1343,6 +1590,8 @@ impl DCompiler {
                 if *from { self.emit(ctx,Op::GetYieldFromIter,line,col); self.emit(ctx,Op::YieldFrom,line,col); } else { self.emit(ctx,Op::Yield,line,col); }
             }
             DExprKind::Joined(values) => { for value in values { self.expr(ctx,value)?; } self.emit(ctx,Op::BuildString(values.len()),line,col); }
+            DExprKind::Template(_) => return Err(format!("NotImplementedError: template values are not implemented ({}:{line})",self.filename)),
+            DExprKind::RawInterpolation(_,value)=>self.expr(ctx,value)?,
             DExprKind::Formatted(value,conversion,spec) => { self.expr(ctx,value)?; if let Some(spec) = spec { self.expr(ctx,spec)?; } self.emit(ctx,Op::FormatValue { conversion:*conversion,spec:spec.is_some() },line,col); }
             DExprKind::Comprehension { kind,element,value,generators } => self.comprehension(ctx,kind,element,value.as_deref(),generators,line,col)?,
             DExprKind::Star(_) => return Err(self.error(line,"starred expression is not allowed here")),
@@ -1371,7 +1620,7 @@ impl DCompiler {
         for name in &named.uses { if !symbols.locals.contains(name) && !globals.contains(name) && d_scope_binds(&outer.scopes,name) { d_push_name(&mut frees,name); } }
         if named.uses.iter().any(|name|name=="__class__" || name=="super") && outer.scopes.iter().any(|(kind,_,_)|*kind==ScopeKind::Class) { d_push_name(&mut frees,"__class__"); }
         let index = self.codes.len(); let mut params = Params::default(); params.positional.push(".0".to_owned());
-        self.codes.push(Code { name:format!("<{kind}comp>"),filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator" });
+        self.codes.push(Code { name:format!("<{kind}comp>"),filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator",future_flags:self.future_flags });
         let mut scopes = outer.scopes.clone(); scopes.push((ScopeKind::Comprehension,symbols.locals,globals)); let mut ctx = DCtx { index,loops:Vec::new(),scopes,private:outer.private.clone() };
         let result = if kind == "generator" { None } else { let tmp = self.temporary(&ctx); self.emit(&ctx,match kind { "list"=>Op::BuildList(0),"set"=>Op::BuildSet(0),_=>Op::BuildDict(0) },line,col); self.emit(&ctx,Op::Store(tmp.clone()),line,col); Some(tmp) };
         self.comprehension_loop(&mut ctx,kind,element,value,generators,0,result.as_deref(),line,col)?;
@@ -1397,24 +1646,33 @@ impl DCompiler {
     }
 }
 
-fn compile_dynamic(source: &str, filename: &str, mode: &str, code_offset: usize) -> Result<Vec<Code>,String> {
+fn compile_dynamic(source: &str, filename: &str, mode: &str, code_offset: usize, future_flags: u32) -> Result<Vec<Code>,String> {
     if !["exec","eval","single"].contains(&mode) { return Err("ValueError: compile() mode must be 'exec', 'eval' or 'single'".to_owned()); }
+    let mut parser = DParser::new(source,future_flags & !0x10)?;
     let body = if mode == "eval" {
-        let mut parser = DParser::new(source)?; while matches!(parser.token().kind,DTokenKind::Newline) { parser.at += 1; }
+        while matches!(parser.token().kind,DTokenKind::Newline) { parser.at += 1; }
         let value = parser.expression_list()?; while matches!(parser.token().kind,DTokenKind::Newline) { parser.at += 1; }
         if !matches!(parser.token().kind,DTokenKind::Eof) { return Err(parser.error("unexpected token after expression")); }
         vec![DStmt { line:value.line,column:value.column,kind:DStmtKind::Expr(value) }]
-    } else { DParser::new(source)?.parse()? };
+    } else { parser.parse()? };
+    let future_flags = parser.future_flags;
+    validate_python_peg(source,mode,future_flags)?;
+    d_validate_futures(&body,filename,true)?;
     if mode == "single" && (body.is_empty() || body.iter().any(|stmt| stmt.line != body[0].line)) { return Err(format!("SyntaxError: multiple statements found while compiling a single statement ({filename}:1)")); }
     let mut symbols = DSymbols::default(); symbols.block(&body);
     if let Some(error) = symbols.error { return Err(error); }
     if !symbols.nonlocals.is_empty() { return Err(format!("SyntaxError: nonlocal declaration not allowed at module level ({filename}:1)")); }
-    let code = Code { name:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false };
-    let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single" };
+    let code = Code { name:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags };
+    let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single",future_flags };
     let mut ctx = DCtx { index:0,loops:Vec::new(),scopes:vec![(ScopeKind::Module,symbols.locals,symbols.globals)],private:None };
     if mode == "eval" {
         if let DStmtKind::Expr(value) = &body[0].kind { compiler.expr(&mut ctx,value)?; }
     } else {
+        if future_flags & D_FUTURE_ANNOTATIONS != 0 && d_has_annotations(&body) {
+            compiler.emit(&ctx,Op::BuildSet(0),1,0);
+            compiler.emit(&ctx,Op::Store("__conditional_annotations__".to_owned()),1,0);
+            compiler.emit(&ctx,Op::SetupAnnotations,1,0);
+        }
         compiler.block(&mut ctx,&body)?;
         compiler.emit(&ctx,Op::Const(Const::None),body.last().map(|x|x.line).unwrap_or(1),0);
     }

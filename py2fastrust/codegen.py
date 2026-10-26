@@ -117,7 +117,7 @@ def generate(program: Program, integer="i64"):
     unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
     prefix += "\n".join("// " + line for line in unicode_license.splitlines()) + "\n"
     parts = [prefix]
-    for name in ("integer.rs", "vm.rs", "identity.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs"):
+    for name in ("integer.rs", "vm.rs", "identity.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs"):
         parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
     parts.append("\nfn main() {\nlet codes = vec![\n")
     source_map = []
@@ -127,7 +127,7 @@ def generate(program: Program, integer="i64"):
                      f"locals:{strings(code.locals)},globals:{strings(code.globals)},nonlocals:{strings(code.nonlocals)},frees:{strings(code.frees)},"
                      f"params:Params {{ posonly:{p.posonly},positional:{strings(p.positional)},kwonly:{strings(p.kwonly)},"
                      f"vararg:{optional(p.vararg)},kwarg:{optional(p.kwarg)} }},"
-                     f"is_generator:{str(code.is_generator).lower()},ops:vec![\n")
+                     f"is_generator:{str(code.is_generator).lower()},future_flags:{code.future_flags},ops:vec![\n")
         for index, instruction in enumerate(code.ops):
             parts.append(f"Instr {{ op:{operation(instruction)},line:{instruction.line},column:{instruction.column} }},\n")
             source_map.append(SourceLocation(code_id, index, code.filename, instruction.line, instruction.column))

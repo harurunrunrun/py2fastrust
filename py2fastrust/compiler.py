@@ -1,6 +1,7 @@
 """Compile the official Python AST to source-located executable instructions."""
 
 import ast
+import __future__
 import symtable
 import tokenize
 from importlib.resources import files
@@ -12,9 +13,11 @@ from .ir import Code, Instruction, Parameters, Pattern, Program
 
 BUILTIN_MODULES = {
     "sys", "math", "heapq", "bisect", "collections", "itertools", "functools",
-    "builtins", "operator", "types", "gc", "time", "_py2fastrust_functools",
+    "builtins", "operator", "types", "gc", "time", "_py2fastrust_functools", "__future__",
 }
-VENDORED_MODULES = {"heapq", "bisect", "collections", "functools"}
+VENDORED_MODULES = {"heapq", "bisect", "collections", "functools", "__future__"}
+FUTURE_ANNOTATIONS = __future__.annotations.compiler_flag
+FUTURE_MASK = sum(getattr(__future__, name).compiler_flag for name in __future__.all_feature_names) & ~0x10
 BINARY = {
     ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.FloorDiv: "//",
     ast.Mod: "%", ast.Pow: "**", ast.LShift: "<<", ast.RShift: ">>",
@@ -35,15 +38,19 @@ class Compiler:
         self.module_ids = {}
         self.file_modules = {filename: "__main__"}
         self.temp_id = 0
+        self.future_flags = {}
 
     def parse(self, source, filename):
         try:
             tree = ast.parse(source, filename=filename)
             table = symtable.symtable(source, filename, "exec")
             # ast.parse alone accepts contextually invalid return/yield/break.
-            compile(source, filename, "exec", dont_inherit=True)
+            compiled = compile(source, filename, "exec", dont_inherit=True)
         except SyntaxError as exc:
             raise CompilationError(Diagnostic(exc.msg, filename, exc.lineno or 1, exc.offset or 1, "E001")) from None
+        except ValueError as exc:
+            raise CompilationError(Diagnostic(str(exc), filename, 1, 1, "E001")) from None
+        self.future_flags[filename] = compiled.co_flags & FUTURE_MASK
         return tree, table
 
     def compile(self, source):
@@ -51,9 +58,24 @@ class Compiler:
         emitter = self.scope(tree, table, "__main__", "Module", self.filename)
         emitter.statements(tree.body)
         emitter.finish()
+        # Runtime exec/compile may contain a future statement even when the
+        # static source does not import the module itself.
+        self.load_module("__future__", tree, self.filename)
         for name in self.include_modules:
             self.load_module(name, tree, self.filename)
         return self.program
+
+    def stringify_annotation(self, expression):
+        # The official compiler's expression printer differs from ast.unparse
+        # for e.g. sole generator arguments. Compile only an inert stringized
+        # annotation and read its constant; no user expression is executed.
+        stub = ast.Module(body=[
+            ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
+            ast.AnnAssign(target=ast.Name(id="_annotation", ctx=ast.Store()),
+                          annotation=expression, value=None, simple=1),
+        ], type_ignores=[])
+        code = compile(ast.fix_missing_locations(stub), self.filename, "exec", dont_inherit=True)
+        return next(value for value in code.co_consts if isinstance(value, str))
 
     def scope(self, node, table, name, kind, filename):
         symbols = table.get_symbols()
@@ -73,10 +95,35 @@ class Compiler:
                     locals=local_names,
                     globals=[s.get_name() for s in symbols if s.is_declared_global()],
                     nonlocals=[s.get_name() for s in symbols if s.is_nonlocal()],
-                    frees=[s.get_name() for s in symbols if s.is_free()])
+                    frees=[s.get_name() for s in symbols if s.is_free()],
+                    future_flags=self.future_flags.get(filename, 0))
         code_id = len(self.program.codes)
         self.program.codes.append(code)
-        return Emitter(self, code_id, table)
+        emitter = Emitter(self, code_id, table)
+        if code.future_flags & FUTURE_ANNOTATIONS and kind in {"Module", "Class"}:
+            class Annotations(ast.NodeVisitor):
+                found = False
+
+                def visit_AnnAssign(self, annotation):
+                    self.found = True
+
+                def visit_FunctionDef(self, function):
+                    pass
+
+                visit_AsyncFunctionDef = visit_FunctionDef
+                visit_ClassDef = visit_FunctionDef
+                visit_Lambda = visit_FunctionDef
+            annotations = Annotations()
+            for statement in getattr(node, "body", ()):
+                annotations.visit(statement)
+            if annotations.found:
+                if kind == "Module":
+                    emitter.emit("BuildSet", 0, node=node)
+                    emitter.emit("Store", "__conditional_annotations__", node=node)
+                    emitter.emit("SetupAnnotations", node=node)
+                else:
+                    emitter.annotation_setup_pending = True
+        return emitter
 
     def find_module(self, name):
         parts = name.split(".")
@@ -122,6 +169,7 @@ class Emitter:
         self.loops = []
         self.enclosing = None
         self.private_class = None
+        self.annotation_setup_pending = False
 
     def mangle(self, name):
         if (self.private_class and name is not None and name.startswith("__")
@@ -260,6 +308,21 @@ class Emitter:
         if node.value is not None:
             self.visit(node.value)
             self.store(node.target)
+        elif isinstance(node.target, ast.Attribute):
+            self.visit(node.target.value)
+            self.emit("Pop", node=node)
+        elif isinstance(node.target, ast.Subscript):
+            self.visit(node.target.value)
+            self.emit("Pop", node=node)
+            self.visit(node.target.slice)
+            self.emit("Pop", node=node)
+        if (self.code.future_flags & FUTURE_ANNOTATIONS
+                and self.code.kind in {"Module", "Class"}
+                and node.simple and isinstance(node.target, ast.Name)):
+            self.emit("Const", self.compiler.stringify_annotation(node.annotation), node=node.annotation)
+            self.emit("Load", "__annotations__", node=node)
+            self.emit("Const", self.mangle(node.target.id), node=node)
+            self.emit("SetItem", node=node)
 
     def visit_NamedExpr(self, node):
         self.visit(node.value)
@@ -619,8 +682,17 @@ class Emitter:
             annotations.append(("return", node.returns))
         if not annotations:
             return
-        annotate = self.child(node, "__annotate__", "Annotation")
-        annotate.code.params = Parameters(positional=[".format"])
+        stringized = self.code.future_flags & FUTURE_ANNOTATIONS
+        if stringized:
+            # Future annotations have no annotation child in the official
+            # symbol table. Their helper contains strings and captures no names.
+            code_id = len(self.compiler.program.codes)
+            self.compiler.program.codes.append(Code("__annotate__", self.code.filename, "Annotation",
+                                                    future_flags=self.code.future_flags))
+            annotate = Emitter(self.compiler, code_id, self.table)
+        else:
+            annotate = self.child(node, "__annotate__", "Annotation")
+        annotate.code.params = Parameters(posonly=1, positional=[".format"])
         annotate.emit("Load", ".format", node=node)
         annotate.emit("Const", 2, node=node)
         annotate.emit("Compare", ">", node=node)
@@ -631,7 +703,10 @@ class Emitter:
         annotate.patch(valid)
         for name, expression in annotations:
             annotate.emit("Const", name, node=expression)
-            annotate.visit(expression)
+            if stringized:
+                annotate.emit("Const", self.compiler.stringify_annotation(expression), node=expression)
+            else:
+                annotate.visit(expression)
         annotate.emit("BuildDict", len(annotations), node=node)
         annotate.emit("Return", node=node)
         self.emit("Dup", node=node)
@@ -674,6 +749,8 @@ class Emitter:
         first_line = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
         emitter.emit("Const", first_line, node=node)
         emitter.emit("Store", "__firstlineno__", node=node)
+        if emitter.annotation_setup_pending:
+            emitter.emit("SetupAnnotations", node=node)
         body = node.body
         if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
             emitter.emit("Const", body[0].value.value, node=body[0])
@@ -993,8 +1070,6 @@ class Emitter:
             self.emit("Store", alias.asname or alias.name.split(".")[0], node=node)
 
     def visit_ImportFrom(self, node):
-        if node.module == "__future__":
-            self.fail(node, "__future__ imports are not implemented")
         module = self.absolute_import(self.mangle(node.module or ""), node.level)
         self.compiler.load_module(module, node, self.code.filename)
         for alias in node.names:

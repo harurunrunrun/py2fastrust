@@ -171,3 +171,10 @@ ChainMap、UserDict、UserList、UserStringは対象に含めていません。
 | `setrecursionlimit`、`getrecursionlimit` | 再帰制限の設定・取得 |
 
 一覧にないsysのAPIはサポート対象に含めていません。
+
+## 追加モジュール
+
+| モジュール | 対応 |
+|---|---|
+| `__future__` | 全既知feature・compiler_flag・release metadata、future文の配置検証とcompile/eval/execへの継承 |
+| `types.GenericAlias` | origin/args/parameters metadata、比較・hash・呼び出し、__class_getitem__、MRO接続。実TypeVar系の置換は未対応 |

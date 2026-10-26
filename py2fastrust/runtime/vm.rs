@@ -27,6 +27,7 @@ struct Code {
     params: Params,
     ops: Vec<Instr>,
     is_generator: bool,
+    future_flags: u32,
 }
 #[derive(Clone, Debug)]
 struct Instr {
@@ -114,6 +115,7 @@ enum Op {
     BuildString(usize),
     Nop,
     PrintExpr,
+    SetupAnnotations,
     Match(MatchPattern),
     ExceptionMatch,
     Break(usize),
@@ -255,6 +257,7 @@ struct CachedFunction {
 }
 #[derive(Clone, Debug)]
 enum IteratorState {
+    Associative(AssocIterator),
     Tools(Box<ToolsState>),
     Values(Vec<Value>, usize),
     List(usize, usize),
@@ -268,6 +271,9 @@ enum IteratorState {
 }
 #[derive(Clone, Debug)]
 enum Object {
+    GenericAlias { origin: Value, args: Vec<Value>, args_tuple: usize, parameters: usize },
+    DictView { owner: usize, kind: DictViewKind },
+    MappingProxy { owner: usize },
     Slot {
         owner: Value,
         name: String,
@@ -361,6 +367,7 @@ enum FrameExit {
     Yield(Value),
 }
 struct Runtime {
+    assoc_layouts: HashMap<usize, AssocLayout>,
     literal_pools: HashMap<usize, HashMap<LiteralKey, Value>>,
     identity_builtins: HashMap<String, u64>,
     identity_types: HashMap<String, u64>,
@@ -386,6 +393,7 @@ struct Runtime {
     finalized: std::collections::HashSet<usize>,
     instance_slots: HashMap<usize, HashMap<usize, Value>>,
     next_slot: usize,
+    active_future_flags: u32,
 }
 impl Runtime {
     fn new_exception(&mut self, kind: &str, args: Vec<Value>) -> PyResult<PyException> {
@@ -748,6 +756,7 @@ impl Runtime {
         self.truth(&value)
     }
     fn compare_value(&mut self, op: &str, a: &Value, b: &Value) -> PyResult<Value> {
+        if let Some(result)=self.generic_compare_value(op,a,b) {return result;}
         if let Some(value) = self.rich_comparison(op, a, b)? {
             return Ok(value);
         }
@@ -1153,6 +1162,7 @@ impl Runtime {
     }
     fn new(codes: Vec<Code>, modules: Vec<(String, usize)>) -> Self {
         let mut rt = Self {
+            assoc_layouts: HashMap::new(),
             literal_pools: HashMap::new(),
             identity_builtins: HashMap::new(),
             identity_types: HashMap::new(),
@@ -1178,6 +1188,7 @@ impl Runtime {
             finalized: std::collections::HashSet::new(),
             instance_slots: HashMap::new(),
             next_slot: 0,
+            active_future_flags: 0,
         };
         rt.builtins = rt.alloc(Object::Namespace(OrderedNamespace::new(), None));
         rt.globals = rt.alloc(Object::Namespace(OrderedNamespace::new(), None));
@@ -1307,17 +1318,17 @@ impl Runtime {
     }
     fn alloc(&mut self, obj: Object) -> usize {
         self.allocations += 1;
-        if let Some(i) = self.free.pop() {
+        let index=if let Some(i)=self.free.pop() {
             self.scope_bindings.remove(&i);
             self.scope_parents.remove(&i);
             self.finalized.remove(&i);
-            self.heap[i] = Some(obj);
+            self.heap[i]=Some(obj);
             i
         } else {
-            let i = self.heap.len();
-            self.heap.push(Some(obj));
-            i
-        }
+            let i=self.heap.len();self.heap.push(Some(obj));i
+        };
+        self.assoc_seed(index);
+        index
     }
     fn object(&self, i: usize) -> PyResult<Object> {
         self.heap
@@ -1339,41 +1350,34 @@ impl Runtime {
         }
     }
     fn ns_set(&mut self, i: usize, name: String, v: Value) {
-        if let Some(Some(o)) = self.heap.get_mut(i) {
+        let mut inserted=None;
+        if let Some(Some(o))=self.heap.get_mut(i) {
             match o {
-                Object::Namespace(m, _) => {
-                    m.insert(name, v);
-                }
-                Object::Dict(m) => {
-                    if let Some((_, old)) = m
-                        .iter_mut()
-                        .find(|(k, _)| matches!(k,Value::Str(s) if s==&name))
-                    {
-                        *old = v;
-                    } else {
-                        m.push((Value::Str(name.into()), v));
-                    }
-                }
-                _ => {}
+                Object::Namespace(m,_)=>{
+                    let new=!m.contains_key(&name);m.insert(name.clone(),v);
+                    if new {inserted=m.ident_items().into_iter().find(|(key,_)|matches!(key,Value::Str(key)if key==&name)).map(|(key,_)|key);}
+                },
+                Object::Dict(m)=>{
+                    if let Some((_,old))=m.iter_mut().find(|(key,_)|matches!(key,Value::Str(key)if key==&name)) {*old=v;}
+                    else {let key=Value::Str(name.into());inserted=Some(key.clone());m.push((key,v));}
+                },
+                _=>{},
             }
         }
+        if let Some(key)=inserted {self.assoc_inserted(i,key);}
     }
-    fn ns_del(&mut self, i: usize, name: &str) -> bool {
-        match self.heap.get_mut(i).and_then(|o| o.as_mut()) {
-            Some(Object::Namespace(m, _)) => m.remove(name).is_some(),
-            Some(Object::Dict(m)) => {
-                if let Some(p) = m
-                    .iter()
-                    .position(|(k, _)| matches!(k,Value::Str(s) if s==name))
-                {
-                    m.remove(p);
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => false,
+    fn ns_del(&mut self,i:usize,name:&str)->bool {
+        let mut removed=None;
+        match self.heap.get_mut(i).and_then(Option::as_mut) {
+            Some(Object::Namespace(m,_))=>{
+                if m.contains_key(name) {removed=m.ident_items().into_iter().find(|(key,_)|matches!(key,Value::Str(key)if key==name)).map(|(key,_)|key);m.remove(name);}
+            },
+            Some(Object::Dict(m))=>{
+                if let Some(position)=m.iter().position(|(key,_)|matches!(key,Value::Str(key)if key==name)) {removed=Some(m.remove(position).0);}
+            },
+            _=>{},
         }
+        if let Some(key)=removed {self.assoc_removed(i,&key);true}else{false}
     }
     fn ns_parent(&self, i: usize) -> Option<usize> {
         match self.heap.get(i).and_then(|o| o.as_ref()) {
@@ -1613,12 +1617,14 @@ impl Runtime {
         if self.recursion >= self.recursion_limit {
             return Err(pyerr("RecursionError", "maximum recursion depth exceeded"));
         }
+        let previous_flags=self.active_future_flags;
         let base_depth = self.recursion;
         let root = self.roots.len();
         self.roots.push(Vec::new());
         self.recursion += 1;
         let mut frames: Vec<Frame> = Vec::new();
         let result = (|| loop {
+            self.active_future_flags=self.codes[f.code].future_flags;
             let mut roots = Vec::new();
             Self::frame_roots(&f, &mut roots);
             let current = root + frames.len();
@@ -1673,6 +1679,7 @@ impl Runtime {
                     }
                 }
                 Err(mut e) => loop {
+                    self.active_future_flags=self.codes[f.code].future_flags;
                     if e.context.is_none() {
                         if let Some(mut previous) = f.exception.clone() {
                             let previous = self.exception_value(&mut previous);
@@ -1723,6 +1730,7 @@ impl Runtime {
             }
         })();
         self.roots.truncate(root);
+        self.active_future_flags=previous_flags;
         self.recursion = base_depth;
         result
     }
@@ -1766,6 +1774,12 @@ impl Runtime {
     }
     fn step(&mut self, f: &mut Frame, op: Op) -> PyResult<Option<FrameExit>> {
         match op {
+            Op::SetupAnnotations => {
+                if self.mapping_get(f.locals, "__annotations__")?.is_none() {
+                    let annotations=self.obj_value(Object::Dict(Vec::new()));
+                    self.mapping_set(f.locals,"__annotations__".into(),annotations)?;
+                }
+            }
             Op::Nop => {}
             Op::Match(p) => {
                 let subject = Self::pop(f)?;
@@ -2485,6 +2499,7 @@ impl Runtime {
                 ],
                 "_py2fastrust_functools" => &["reduce", "cache", "lru_cache", "partial"],
                 "functools" => &["reduce", "cache", "lru_cache", "partial"],
+                "types" => &["GenericAlias"],
                 "operator" => &[
                     "add",
                     "sub",
@@ -2511,6 +2526,7 @@ impl Runtime {
                     "setitem",
                     "itemgetter",
                     "attrgetter",
+                    "length_hint",
                 ],
                 "collections" => &["deque", "Counter", "defaultdict", "namedtuple"],
                 "sys" => &["setrecursionlimit", "getrecursionlimit", "exit"],
@@ -2542,6 +2558,7 @@ impl Runtime {
                 )),
             )
         }
+        if name=="types" {self.ns_set(attrs,"GenericAlias".into(),Value::Builtin("GenericAlias".into()));}
         if name == "_py2fastrust_functools"
             || (name == "functools" && !self.module_codes.contains_key(name))
         {
@@ -2981,6 +2998,7 @@ impl Runtime {
                 _ => Err(pyerr("NotImplementedError", fullname)),
             },
             "operator" => {
+                if name=="length_hint" {return self.assoc_length_hint(args,kwargs);}
                 let op = match name {
                     "add" => "+",
                     "sub" => "-",
@@ -3053,6 +3071,11 @@ impl Runtime {
                 None => continue,
             };
             match obj {
+                Object::GenericAlias { origin, args, args_tuple, parameters } => {
+                    pending.push(origin.clone());pending.extend(args.iter().cloned());
+                    pending.push(Value::Obj(*args_tuple));pending.push(Value::Obj(*parameters));
+                }
+                Object::DictView { owner, .. } | Object::MappingProxy { owner } => pending.push(Value::Obj(*owner)),
                 Object::Slot { owner, .. } => pending.push(owner.clone()),
                 Object::List(v) | Object::Tuple(v) | Object::Set(v) => {
                     pending.extend(v.iter().cloned())
@@ -3139,6 +3162,7 @@ impl Runtime {
                 }
                 Object::Generator(f) => Self::frame_roots(f, &mut pending),
                 Object::Iterator(it) => match it {
+                    IteratorState::Associative(state) => {if let Some(owner)=state.owner {pending.push(Value::Obj(owner));}},
                     IteratorState::Tools(state) => pending.extend(state.roots()),
                     IteratorState::Values(v, _) => pending.extend(v.iter().cloned()),
                     IteratorState::List(i, _) => pending.push(Value::Obj(*i)),
@@ -3207,6 +3231,7 @@ impl Runtime {
                 self.scope_parents.remove(&i);
                 self.finalized.remove(&i);
                 self.instance_slots.remove(&i);
+                self.assoc_layouts.remove(&i);
                 self.free.push(i);
                 count += 1;
             }
@@ -3225,6 +3250,12 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        if let Some(result)=self.dictview_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
+        if let Some(result)=self.generic_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
+        if name=="__class_getitem__" && (matches!(&receiver,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) || matches!(&receiver,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))) {
+            if args.len()!=1 || !kwargs.is_empty() {return Err(pyerr("TypeError","__class_getitem__() takes exactly one argument"));}
+            return self.generic_alias(receiver,args[0].clone());
+        }
         if let Value::Obj(index) = &receiver {
             if let Object::Range(start, stop, step) = self.object(*index)? {
                 if name == "__contains__" {
@@ -3838,81 +3869,39 @@ impl Runtime {
                 }
                 Object::Dict(mut xs) => {
                     match name {
-                        "get" => {
-                            return match self.getitem(receiver, arg(0)?) {
-                                Ok(v) => Ok(v),
-                                Err(e) if e.kind == "KeyError" => {
-                                    Ok(args.get(1).cloned().unwrap_or(Value::None))
-                                }
-                                Err(e) => Err(e),
+                        "get" => return match self.getitem(receiver,arg(0)?) {
+                            Ok(value)=>Ok(value),Err(error) if error.kind=="KeyError"=>Ok(args.get(1).cloned().unwrap_or(Value::None)),Err(error)=>Err(error),
+                        },
+                        "pop"=>{
+                            let key=arg(0)?;
+                            if let Some(position)=self.find_key(&xs,&key)? {
+                                let (key,value)=xs.remove(position);
+                                self.heap[i]=Some(Object::Dict(xs));self.assoc_removed(i,&key);return Ok(value);
                             }
-                        }
-                        "keys" | "values" | "items" => {
-                            let mut vs = Vec::new();
-                            for (k, v) in xs {
-                                vs.push(match name {
-                                    "keys" => k,
-                                    "values" => v,
-                                    _ => self.obj_value(Object::Tuple(vec![k, v])),
-                                })
-                            }
-                            return Ok(self.obj_value(Object::List(vs)));
-                        }
-                        "pop" => {
-                            let k = arg(0)?;
-                            if let Some(p) = self.find_key(&xs, &k)? {
-                                let v = xs.remove(p).1;
-                                self.heap[i] = Some(Object::Dict(xs));
-                                return Ok(v);
-                            }
-                            return if let Some(default) = args.get(1) {
-                                Ok(default.clone())
-                            } else {
-                                Err(self.new_exception("KeyError", vec![k])?)
-                            };
-                        }
-                        "popitem" => {
-                            let (k, v) = xs.pop().ok_or_else(|| {
-                                pyerr("KeyError", "popitem(): dictionary is empty")
-                            })?;
-                            self.heap[i] = Some(Object::Dict(xs));
-                            return Ok(self.obj_value(Object::Tuple(vec![k, v])));
-                        }
-                        "setdefault" => {
-                            let k = arg(0)?;
-                            if let Some(p) = self.find_key(&xs, &k)? {
-                                return Ok(xs[p].1.clone());
-                            }
-                            let v = args.get(1).cloned().unwrap_or(Value::None);
-                            xs.push((k, v.clone()));
-                            self.heap[i] = Some(Object::Dict(xs));
-                            return Ok(v);
-                        }
-                        "update" => {
-                            if let Some(v) = args.first() {
-                                for (k, v) in self.dict_items(v.clone())? {
-                                    if let Some(p) = self.find_key(&xs, &k)? {
-                                        xs[p].1 = v
-                                    } else {
-                                        xs.push((k, v))
-                                    }
-                                }
-                            }
-                            for (k, v) in kwargs {
-                                let k = Value::Str(k.into());
-                                if let Some(p) = self.find_key(&xs, &k)? {
-                                    xs[p].1 = v
-                                } else {
-                                    xs.push((k, v))
-                                }
-                            }
-                        }
-                        "clear" => xs.clear(),
-                        "copy" => return Ok(self.obj_value(Object::Dict(xs))),
-                        _ => return Err(pyerr("AttributeError", name)),
+                            return if let Some(default)=args.get(1){Ok(default.clone())}else{Err(self.new_exception("KeyError",vec![key])?)};
+                        },
+                        "popitem"=>{
+                            let (key,value)=xs.pop().ok_or_else(||pyerr("KeyError","popitem(): dictionary is empty"))?;
+                            self.heap[i]=Some(Object::Dict(xs));self.assoc_removed(i,&key);
+                            return Ok(self.obj_value(Object::Tuple(vec![key,value])));
+                        },
+                        "setdefault"=>{
+                            let key=arg(0)?;
+                            if let Some(position)=self.find_key(&xs,&key)? {return Ok(xs[position].1.clone());}
+                            let value=args.get(1).cloned().unwrap_or(Value::None);
+                            xs.push((key.clone(),value.clone()));self.heap[i]=Some(Object::Dict(xs));self.assoc_inserted(i,key);return Ok(value);
+                        },
+                        "update"=>{
+                            if args.len()>1 {return Err(pyerr("TypeError","update expected at most 1 argument"));}
+                            if let Some(source)=args.first(){for (key,value) in self.dict_items(source.clone())? {self.setitem(receiver.clone(),key,value)?;}}
+                            for (key,value) in kwargs {self.setitem(receiver.clone(),Value::Str(key.into()),value)?;}
+                            return Ok(Value::None);
+                        },
+                        "clear"=>{xs.clear();self.assoc_cleared(i);},
+                        "copy"=>return Ok(self.obj_value(Object::Dict(xs))),
+                        _=>return Err(pyerr("AttributeError",name)),
                     }
-                    self.heap[i] = Some(Object::Dict(xs));
-                    return Ok(Value::None);
+                    self.heap[i]=Some(Object::Dict(xs));return Ok(Value::None);
                 }
                 Object::Range(a, b, step) => {
                     return self.range_method(a.into_inner(), b.into_inner(), step.into_inner(), name, args, kwargs)
@@ -3934,6 +3923,9 @@ impl Runtime {
                     return result;
                 }
                 Object::Set(mut xs) => {
+                    if ["update","difference_update","intersection_update","symmetric_difference_update"].contains(&name) {
+                        return self.live_set_update(i,name,args,kwargs);
+                    }
                     match name {
                         "add" => {
                             let v = arg(0)?;
@@ -3970,9 +3962,10 @@ impl Runtime {
                                 .pop()
                                 .ok_or_else(|| pyerr("KeyError", "pop from empty set"))?;
                             self.heap[i] = Some(Object::Set(xs));
+                            self.assoc_removed(i,&v);
                             return Ok(v);
                         }
-                        "clear" => xs.clear(),
+                        "clear" => {xs.clear();self.assoc_cleared(i);},
                         "copy" => return Ok(self.obj_value(Object::Set(xs))),
                         "union" | "intersection" | "difference" | "symmetric_difference" => {
                             return self.binary(
@@ -4006,6 +3999,7 @@ impl Runtime {
                         _ => return Err(pyerr("AttributeError", name)),
                     }
                     self.heap[i] = Some(Object::Set(xs));
+                    self.assoc_sync(i)?;
                     return Ok(Value::None);
                 }
                 Object::Generator(mut frame) => {
@@ -4339,6 +4333,10 @@ impl Runtime {
                         .first()
                         .cloned()
                         .ok_or_else(|| pyerr("TypeError", "missing instance"))?;
+                    if typ=="set" {
+                        let payload=self.native_payload(&receiver).unwrap_or_else(||receiver.clone());
+                        if let Value::Obj(owner)=payload {self.assoc_cleared(owner);}
+                    }
                     return self.builtin_instance_init(typ, receiver, args[1..].to_vec(), kwargs);
                 }
                 return Ok(Value::None);
@@ -4531,6 +4529,18 @@ impl Runtime {
                     _ => Object::List(vs),
                 }))
             }
+            "GenericAlias" => {
+                if args.len()!=2 || !kwargs.is_empty() {return Err(pyerr("TypeError","GenericAlias expected 2 arguments"));}
+                self.generic_alias(args[0].clone(),args[1].clone())
+            }
+            "dict_keys" | "dict_values" | "dict_items" => Err(pyerr("TypeError",format!("cannot create '{}' instances",name))),
+            "mappingproxy" => {
+                if args.len()!=1 || !kwargs.is_empty() {return Err(pyerr("TypeError","mappingproxy() takes exactly one argument"));}
+                let mut source=args[0].clone();if let Some(payload)=self.native_payload(&source) {source=payload;}
+                if let Some(payload)=self.proxy_payload(&source) {source=payload;}
+                if let Value::Obj(owner)=source {if matches!(self.object(owner)?,Object::Dict(_)|Object::Namespace(..)){return Ok(self.obj_value(Object::MappingProxy{owner}));}}
+                Err(pyerr("TypeError","mappingproxy() argument must be a mapping"))
+            }
             "dict" => {
                 let d = self.obj_value(Object::Dict(Vec::new()));
                 if let Some(v) = args.first() {
@@ -4550,6 +4560,7 @@ impl Runtime {
             )),
             "len" => {
                 let v = arg(0)?;
+                if let Value::Obj(index)=&v {if let Object::DictView { owner, .. } | Object::MappingProxy { owner }=self.object(*index)? {return Ok(Value::Int(Int::from_i128(self.assoc_size(owner) as i128).into()));}}
                 let fastlen = if let Value::Obj(i) = &v {
                     match self.heap.get(*i).and_then(|o| o.as_ref()) {
                         Some(Object::List(xs) | Object::Tuple(xs) | Object::Set(xs)) => {
@@ -4575,7 +4586,9 @@ impl Runtime {
                         Object::Namespace(m, _) => m.len(),
                         Object::Range(a, b, s) => range_length(&a, &b, &s).map_err(int_error)?,
                         _ => {
-                            let fun = self.special_method(v, "__len__")?;
+                            let fun = self.special_method(v.clone(), "__len__").map_err(|error| {
+                                if error.kind=="AttributeError" && self.object_class(&v).and_then(|class|self.class_lookup(&class,"__len__",0)).is_none() {pyerr("TypeError",format!("object of type '{}' has no len()",self.typename(&v)))}else{error}
+                            })?;
                             return self.call(fun, Vec::new(), Vec::new(), caller);
                         }
                     },
@@ -4712,7 +4725,15 @@ impl Runtime {
                 Ok(self.obj_value(Object::List(out)))
             }
             "reversed" => {
+                if args.len()!=1 || !kwargs.is_empty() {return Err(pyerr("TypeError","reversed() takes exactly one argument"));}
                 if let Value::Obj(index) = arg(0)? {
+                    match self.object(index)? {
+                        Object::Dict(_) | Object::Namespace(..)=>return self.assoc_iterator(index,DictViewKind::Keys,true),
+                        Object::DictView { owner, kind }=>return self.assoc_iterator(owner,kind,true),
+                        Object::MappingProxy { owner }=>return self.assoc_iterator(owner,DictViewKind::Keys,true),
+                        Object::Set(_)=>return Err(pyerr("TypeError","'set' object is not reversible")),
+                        _=>{},
+                    }
                     if let Object::Range(start, stop, step) = self.object(index)? {
                         let (start, stop, step) = range_reversed(&start, &stop, &step);
                         return Ok(self
@@ -4896,7 +4917,19 @@ impl Runtime {
             "hash" => {
                 use std::hash::{Hash, Hasher};
                 let v = arg(0)?;
+                if let Value::Bool(value)=&v {return self.builtin("hash",vec![Value::Int(Int::from_i128(if *value{1}else{0}).into())],Vec::new(),None);}
+                if let Value::Float(value)=&v {if value.is_finite() && value.fract()==0.0 {return self.builtin("hash",vec![Value::Int(Int::from_f64(**value).map_err(int_error)?.into())],Vec::new(),None);}}
                 if let Value::Obj(index) = &v {
+                    if matches!(self.object(*index)?,Object::Tuple(_)) {
+                        let hash=self.generic_component_hash(&v)? as i64;
+                        return Ok(Value::Int(Int::from_i128(if hash==-1{-2}else{hash as i128}).into()));
+                    }
+                    if matches!(self.object(*index)?,Object::GenericAlias { .. }) {return self.generic_value_hash(&v);}
+                    if let Object::DictView { kind, .. }=self.object(*index)? {
+                        if kind!=DictViewKind::Values {return Err(pyerr("TypeError",format!("unhashable type: '{}'",kind.name())));}
+                        return Ok(Value::Int(Int::from_i128(*index as i128).into()));
+                    }
+                    if self.proxy_payload(&v).is_some() {return Err(pyerr("TypeError","unhashable type: 'mappingproxy'"));}
                     if let Object::Range(start, stop, step) = self.object(*index)? {
                         return self.range_hash(start.into_inner(), stop.into_inner(), step.into_inner());
                     }
@@ -4992,11 +5025,26 @@ impl Runtime {
                 Ok(self.obj_value(Object::List(names.into_iter().map(|value| Value::Str(value.into())).collect())))
             }
             "compile" => {
-                let src = self.str_value(&arg(0)?)?;
-                let filename = self.str_value(&arg(1)?)?;
-                let mode = self.str_value(&arg(2)?)?;
-                let offset = self.codes.len();
-                let codes = compile_dynamic(&src, &filename, &mode, offset).map_err(int_error)?;
+                let mut arguments=codec_bind("compile",args,kwargs,&["source","filename","mode","flags","dont_inherit","optimize","_feature_version"])?;
+                let source=arguments[0].take().ok_or_else(||pyerr("TypeError","compile() missing source"))?;
+                let filename=arguments[1].take().ok_or_else(||pyerr("TypeError","compile() missing filename"))?;
+                let mode=arguments[2].take().ok_or_else(||pyerr("TypeError","compile() missing mode"))?;
+                let flags=arguments[3].as_ref().map(|value|self.as_int(value)).transpose()?.unwrap_or_else(||Int::from_i128(0));
+                let flags=flags.to_i128().filter(|flags|*flags>=i32::MIN as i128 && *flags<=i32::MAX as i128).ok_or_else(||pyerr("OverflowError","Python int too large to convert to C int"))? as i32 as u32;
+                const FUTURE_MASK:u32=0x1fe0010;
+                const PYCF_MASK:u32=0xf600;
+                if flags & !(FUTURE_MASK|PYCF_MASK)!=0 {return Err(pyerr("ValueError","compile(): unrecognised flags"));}
+                if flags & PYCF_MASK!=0 {return Err(pyerr("NotImplementedError","compile() PyCF AST, incomplete input and top-level await modes are not implemented"));}
+                let dont_inherit=arguments[4].as_ref().map(|value|self.truth(value)).transpose()?.unwrap_or(false);
+                if let Some(optimize)=arguments[5].as_ref() {
+                    let optimize=self.as_int(optimize)?.to_i128().unwrap_or(-2);
+                    if !(-1..=2).contains(&optimize) {return Err(pyerr("ValueError","compile(): invalid optimize value"));}
+                    if optimize>0 {return Err(pyerr("NotImplementedError","compile() optimization levels are not implemented"));}
+                }
+                let flags=(flags & FUTURE_MASK & !0x10) | if dont_inherit {0}else{caller.map(|frame|self.codes[frame.code].future_flags).unwrap_or(self.active_future_flags)};
+                let src=self.str_value(&source)?;let filename=self.str_value(&filename)?;let mode=self.str_value(&mode)?;
+                let offset=self.codes.len();
+                let codes=compile_dynamic(&src,&filename,&mode,offset,flags).map_err(int_error)?;
                 self.codes.extend(codes);
                 Ok(self.obj_value(Object::Code(offset)))
             }
@@ -5024,6 +5072,7 @@ impl Runtime {
                         "<string>",
                         if name == "eval" { "eval" } else { "exec" },
                         offset,
+                        caller.map(|frame|self.codes[frame.code].future_flags).unwrap_or(self.active_future_flags),
                     )
                     .map_err(int_error)?;
                     self.codes.extend(codes);
@@ -5152,6 +5201,7 @@ impl Runtime {
         }
     }
     fn is_subclass(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
+        if self.generic_parts(b).is_some() {return Err(pyerr("TypeError","isinstance() argument 2 cannot be a parameterized generic"));}
         if let Value::Obj(i) = b {
             if let Object::Tuple(xs) = self.object(*i)? {
                 for x in xs {
@@ -5255,6 +5305,13 @@ impl Runtime {
                 Ok(self.exception_value(&mut error))
             }
             Value::Obj(i) => match self.object(i)? {
+                Object::GenericAlias { origin, .. } => {
+                    let result=self.call(origin,args,kwargs,caller)?;
+                    match self.setattr(result.clone(),"__orig_class__",Value::Obj(i)) {
+                        Ok(())=>{},Err(error) if error.kind=="AttributeError" || error.kind=="TypeError"=>{},Err(error)=>return Err(error),
+                    }
+                    Ok(result)
+                }
                 Object::Bound(f, receiver) => {
                     let mut a = vec![receiver];
                     a.extend(args);
@@ -5420,6 +5477,11 @@ impl Runtime {
             _ => return Err(pyerr("TypeError", "type namespace must be a dictionary")),
         };
         let mut items = self.dict_items(Value::Obj(ns))?;
+        for (key,value) in &mut items {
+            if matches!(key,Value::Str(name)if name=="__class_getitem__") && matches!(value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Function(_)))) {
+                *value=self.obj_value(Object::ClassMethod(value.clone()));
+            }
+        }
         if items
             .iter()
             .any(|(key, _)| matches!(key, Value::Str(name) if name == "__eq__"))
@@ -5585,6 +5647,18 @@ impl Runtime {
         bases: Vec<Value>,
         kw: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        let original_bases=self.obj_value(Object::Tuple(bases.clone()));
+        let mut resolved_bases=Vec::new();let mut bases_changed=false;
+        for base in bases {
+            let is_type=matches!(&base,Value::Builtin(_) | Value::Type(_)) || matches!(&base,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))));
+            if is_type {resolved_bases.push(base);continue;}
+            let entries=self.getattr(base.clone(),"__mro_entries__")?;
+            let entries=self.call(entries,vec![original_bases.clone()],Vec::new(),Some(f))?;
+            let payload=self.native_payload(&entries).unwrap_or(entries);
+            if let Value::Obj(index)=payload {if let Object::Tuple(values)=self.object(index)? {resolved_bases.extend(values);bases_changed=true;continue;}}
+            return Err(pyerr("TypeError","__mro_entries__ must return a tuple"));
+        }
+        let bases=resolved_bases;
         let mut metaclass = kw
             .iter()
             .find(|(k, _)| k == "metaclass")
@@ -5620,6 +5694,7 @@ impl Runtime {
                 .unwrap_or(Value::Str("__main__".into())),
         )?;
         self.mapping_set(namespace, "__qualname__".into(), Value::Str(name.clone().into()))?;
+        if bases_changed {self.mapping_set(namespace,"__orig_bases__".into(),original_bases)?;}
         let parent = if self.codes[f.code].kind == ScopeKind::Class {
             f.closure
         } else {
@@ -5661,7 +5736,7 @@ impl Runtime {
         let has_method = methods.iter().any(|i| {
             self.codes[*i].kind == ScopeKind::Function && !self.codes[*i].name.starts_with('<')
         });
-        if has_method {
+        if has_method && self.codes[code].future_flags & 0x1000000 == 0 {
             let cell = self.obj_value(Object::Cell(Some(Value::Obj(namespace))));
             self.mapping_set(namespace, "__classdictcell__".into(), cell)?;
         }
@@ -5794,6 +5869,7 @@ impl Runtime {
         Ok(false)
     }
     fn str_value(&mut self, v: &Value) -> PyResult<String> {
+        if let Some(payload)=self.proxy_payload(v) {return self.str_value(&payload);}
         match v {
             Value::Str(s) => Ok(s.to_string()),
             Value::None => Ok("None".into()),
@@ -5852,10 +5928,19 @@ impl Runtime {
             Value::Bytes(xs) => Ok(text_repr_bytes(xs)),
             Value::Obj(i) => {
                 if seen.contains(i) {
-                    return Ok("[...]".into());
+                    return Ok(match self.heap.get(*i).and_then(Option::as_ref) {
+                        Some(Object::DictView { .. })=>"...",
+                        Some(Object::Dict(_) | Object::Namespace(..))=>"{...}",
+                        Some(Object::Tuple(_))=>"(...)",
+                        Some(Object::MappingProxy { .. })=>"mappingproxy({...})",
+                        _=>"[...]",
+                    }.into());
                 }
                 seen.push(*i);
                 let s = match self.object(*i)? {
+                    Object::GenericAlias { origin, args, .. } => self.generic_repr(&origin,&args)?,
+                    Object::DictView { owner, kind } => self.dictview_repr(owner,Some(kind),seen)?,
+                    Object::MappingProxy { owner } => self.dictview_repr(owner,None,seen)?,
                     Object::List(xs) | Object::Tuple(xs) | Object::Set(xs) => {
                         let mut ss = Vec::new();
                         for x in &xs {
@@ -5977,6 +6062,7 @@ impl Runtime {
                 Ok(s)
             }
             Value::Builtin(n) => {
+                if n=="GenericAlias" {return Ok("<class 'types.GenericAlias'>".into());}
                 if n == "Ellipsis" || n == "NotImplemented" {
                     Ok(n.clone())
                 } else if n == "functools.Placeholder" {
@@ -5993,6 +6079,7 @@ impl Runtime {
                     "dict",
                     "set",
                     "frozenset",
+                    "dict_keys", "dict_values", "dict_items", "mappingproxy", "GenericAlias",
                     "slice",
                     "range",
                     "type",
@@ -6179,7 +6266,7 @@ impl Runtime {
                 }
                 if [
                     "int", "str", "list", "tuple", "dict", "set", "float", "bool", "type",
-                    "object", "bytes",
+                    "object", "bytes", "dict_keys", "dict_values", "dict_items", "mappingproxy", "GenericAlias",
                 ]
                 .contains(&n.as_str())
                 {
@@ -6192,6 +6279,10 @@ impl Runtime {
             Value::Obj(i) => match self.heap.get(*i).and_then(|o| o.as_ref()) {
                 Some(Object::List(_)) => "list".into(),
                 Some(Object::Tuple(_)) => "tuple".into(),
+                Some(Object::GenericAlias { .. }) => "GenericAlias".into(),
+                Some(Object::DictView { kind, .. }) => kind.name().into(),
+                Some(Object::MappingProxy { .. }) => "mappingproxy".into(),
+                Some(Object::Iterator(IteratorState::Associative(state))) => if state.is_set {"set_iterator".into()}else{format!("dict_{}{}iterator",if state.reversed {"reverse"}else{""},match state.kind{DictViewKind::Keys=>"key",DictViewKind::Values=>"value",DictViewKind::Items=>"item"})},
                 Some(Object::Dict(_)) | Some(Object::Namespace(..)) => "dict".into(),
                 Some(Object::Set(_)) => "set".into(),
                 Some(Object::Function(_)) => "function".into(),
@@ -6278,6 +6369,7 @@ impl Runtime {
                 Some(Object::List(xs) | Object::Tuple(xs) | Object::Set(xs)) => {
                     return Ok(!xs.is_empty())
                 }
+                Some(Object::DictView { owner, .. } | Object::MappingProxy { owner }) => return Ok(self.assoc_size(*owner)!=0),
                 Some(Object::Dict(xs)) => return Ok(!xs.is_empty()),
                 Some(Object::Namespace(xs, _)) => return Ok(!xs.is_empty()),
                 _ => {}
@@ -6327,6 +6419,13 @@ impl Runtime {
         Ok(false)
     }
     fn equal_default(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
+        if let Some(result)=self.view_compare("==",a,b) {return result;}
+        if let Some(result)=self.generic_equal(a,b) {return result;}
+        let ap=self.proxy_payload(a);let bp=self.proxy_payload(b);
+        if ap.is_some() || bp.is_some() {return self.equal_default(ap.as_ref().unwrap_or(a),bp.as_ref().unwrap_or(b));}
+        if let (Value::Obj(left),Value::Obj(right))=(a,b) {
+            if matches!(self.heap.get(*left).and_then(Option::as_ref),Some(Object::Dict(_)|Object::Namespace(..))) && matches!(self.heap.get(*right).and_then(Option::as_ref),Some(Object::Dict(_)|Object::Namespace(..))) {return self.assoc_mapping_equal(*left,*right);}
+        }
         if let (Value::Obj(left), Value::Obj(right)) = (a, b) {
             if let (Object::Range(a, b, s), Object::Range(c, d, t)) =
                 (self.object(*left)?, self.object(*right)?)
@@ -6468,6 +6567,9 @@ impl Runtime {
         }
     }
     fn compare_default(&mut self, op: &str, a: &Value, b: &Value) -> PyResult<bool> {
+        if let Some(result)=self.view_compare(op,a,b) {return result;}
+        let ap=self.proxy_payload(a);let bp=self.proxy_payload(b);
+        if ["==","!=","<","<=",">",">="].contains(&op) && (ap.is_some() || bp.is_some()) {return self.compare_default(op,ap.as_ref().unwrap_or(a),bp.as_ref().unwrap_or(b));}
         if ["<", "<=", ">", ">="].contains(&op) {
             let ap = self.native_payload(a);
             let bp = self.native_payload(b);
@@ -6583,6 +6685,22 @@ impl Runtime {
         }
     }
     fn binary(&mut self, op: &str, a: Value, b: Value) -> PyResult<Value> {
+        if let Some(result)=self.view_binary(op,a.clone(),b.clone()) {return result;}
+        let ap=self.proxy_payload(&a);let bp=self.proxy_payload(&b);
+        if ap.is_some() || bp.is_some() {
+            if op=="|=" && ap.is_some() {return Err(pyerr("TypeError","mappingproxy does not support in-place union"));}
+            return self.binary(op,ap.unwrap_or(a),bp.unwrap_or(b));
+        }
+        if let Value::Obj(index)=&a {
+            if op=="|=" && matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Dict(_)|Object::Namespace(..))) {
+                self.method("update",a.clone(),vec![b],Vec::new())?;return Ok(a);
+            }
+            if ["|=","&=","-=","^="].contains(&op) && matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Set(_))) {
+                let result=self.binary(&op[..op.len()-1],a.clone(),b)?;
+                if let Value::Obj(result)=result {self.heap[*index]=Some(self.object(result)?);self.assoc_sync(*index)?;}
+                return Ok(a);
+            }
+        }
         if let Some(base) = op.strip_prefix('i') {
             if !base.is_empty() {
                 return self.binary(&format!("{}=", base), a, b);
@@ -7023,6 +7141,20 @@ impl Runtime {
         Ok(None)
     }
     fn getitem(&mut self, obj: Value, key: Value) -> PyResult<Value> {
+        if self.generic_parts(&obj).is_some() {return self.generic_method(obj,"__getitem__",vec![key],Vec::new()).unwrap();}
+        if matches!(&obj,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) {return self.generic_alias(obj,key);}
+        if let Value::Obj(index)=&obj {
+            if let Object::Class(class)=self.object(*index)? {
+                if self.class_lookup(&class.metaclass,"__getitem__",0).is_some() {
+                    let method=self.special_method(obj,"__getitem__")?;return self.call(method,vec![key],Vec::new(),None);
+                }
+                match self.getattr(obj.clone(),"__class_getitem__") {
+                    Ok(method)=>return self.call(method,vec![key],Vec::new(),None),
+                    Err(error) if error.kind=="AttributeError"=>{},Err(error)=>return Err(error),
+                }
+            }
+        }
+        if let Some(payload)=self.proxy_payload(&obj) {return self.getitem(payload,key);}
         if let Value::Obj(index) = &obj {
             if let Object::Range(start, stop, step) = self.object(*index)? {
                 return self.range_getitem(start.into_inner(), stop.into_inner(), step.into_inner(), key);
@@ -7202,19 +7334,22 @@ impl Runtime {
                     {
                         return Err(pyerr("TypeError", "unhashable type"));
                     }
-                    if let Some(j) = self.find_key(&items, &key)? {
-                        items[j].1 = value
+                    let new=if let Some(j) = self.find_key(&items, &key)? {
+                        items[j].1 = value;false
                     } else {
-                        items.push((key, value))
-                    }
+                        items.push((key.clone(), value));true
+                    };
                     self.heap[i] = Some(Object::Dict(items));
+                    if new {self.assoc_inserted(i,key);}
                     return Ok(());
                 }
                 Object::Namespace(_, _) => {
                     if let Value::Str(s) = key {
+                        let mut inserted=false;
                         if let Some(Some(Object::Namespace(map, _))) = self.heap.get_mut(i) {
-                            map.insert_ident(s, value);
+                            inserted=!map.contains_key(&s);map.insert_ident(s.clone(), value);
                         }
+                        if inserted {self.assoc_inserted(i,Value::Str(s));}
                         return Ok(());
                     }
                 }
@@ -7271,8 +7406,9 @@ impl Runtime {
                     let j = self
                         .find_key(&items, &key)?
                         .ok_or_else(|| pyerr("KeyError", "key not found"))?;
-                    items.remove(j);
+                    let key=items.remove(j).0;
                     self.heap[i] = Some(Object::Dict(items));
+                    self.assoc_removed(i,&key);
                     return Ok(());
                 }
                 Object::Namespace(_, _) => {
@@ -7308,10 +7444,10 @@ impl Runtime {
                     return Ok(());
                 }
                 Object::Set(mut xs) => {
-                    if !self.contains_vec(&xs, &v)? {
-                        xs.push(v)
-                    }
+                    let new=!self.contains_vec(&xs,&v)?;
+                    if new {xs.push(v.clone());}
                     self.heap[i] = Some(Object::Set(xs));
+                    if new {self.assoc_inserted(i,v);}
                     return Ok(());
                 }
                 _ => {}
@@ -7320,8 +7456,14 @@ impl Runtime {
         Err(pyerr("TypeError", "invalid container"))
     }
     fn dict_items(&mut self, v: Value) -> PyResult<Vec<(Value, Value)>> {
+        if let Value::Obj(index)=&v {
+            if let Object::BuiltinInstance { class, payload, .. }=self.object(*index)? {
+                if self.class_lookup(&class,"__iter__",0).is_none() && matches!(&payload,Value::Obj(owner)if matches!(self.heap.get(*owner).and_then(Option::as_ref),Some(Object::Dict(_)))) {return self.dict_items(payload);}
+            }
+        }
         if let Value::Obj(i) = v.clone() {
             match self.object(i)? {
+                Object::MappingProxy { owner } => return self.dict_items(Value::Obj(owner)),
                 Object::Dict(xs) => return Ok(xs),
                 Object::Namespace(m, _) => {
                     return Ok(m.ident_items())
@@ -7416,13 +7558,10 @@ impl Runtime {
                 }
                 Object::List(_) => IteratorState::List(i, 0),
                 Object::Range(a, b, c) => IteratorState::Range(a.into_inner(), b.into_inner(), c.into_inner()),
-                Object::Tuple(v) | Object::Set(v) => IteratorState::Values(v, 0),
-                Object::Dict(v) => {
-                    IteratorState::Values(v.into_iter().map(|(k, _)| k).collect(), 0)
-                }
-                Object::Namespace(v, _) => {
-                    IteratorState::Values(v.ident_keys(), 0)
-                }
+                Object::Tuple(v) => IteratorState::Values(v, 0),
+                Object::Dict(_) | Object::Namespace(..) | Object::Set(_) => return self.assoc_iterator(i,DictViewKind::Keys,false),
+                Object::DictView { owner, kind } => return self.assoc_iterator(owner,kind,false),
+                Object::MappingProxy { owner } => return self.assoc_iterator(owner,DictViewKind::Keys,false),
                 Object::Iterator(_) | Object::Generator(_) => return Ok(v),
                 Object::Instance { .. } => {
                     if let Ok(fun) = self.special_method(v.clone(), "__iter__") {
@@ -7505,6 +7644,11 @@ impl Runtime {
         if let Value::Obj(i) = it.clone() {
             match self.object(i)? {
                 Object::Iterator(state) => match state {
+                    IteratorState::Associative(mut state) => {
+                        let result=self.assoc_next(&mut state);
+                        self.heap[i]=Some(Object::Iterator(IteratorState::Associative(state)));
+                        return result;
+                    }
                     IteratorState::Tools(mut state) => {
                         let result = self.tool_next(&mut state);
                         self.heap[i] = Some(Object::Iterator(IteratorState::Tools(state)));
@@ -7802,6 +7946,12 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if matches!(&v,Value::Builtin(value)if value=="GenericAlias") && name=="__module__" {return Ok(Value::Str("types".into()));}
+        if let Some(result)=self.dictview_attr(v.clone(),name) {return result;}
+        if let Some(result)=self.generic_attr(v.clone(),name) {return result;}
+        if name=="__class_getitem__" && (matches!(&v,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) || (matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) && self.class_lookup(&v,name,0).is_none() && self.class_mro(&v,0).unwrap_or_default().iter().any(|base|matches!(base,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str()))))) {
+            return Ok(self.obj_value(Object::Bound(Value::Builtin("method:__class_getitem__".into()),v)));
+        }
         if name == "__len__" && matches!(v, Value::Str(_) | Value::Bytes(_)) {
             return Ok(self.obj_value(Object::Bound(Value::Builtin("method:__len__".into()), v)));
         }
@@ -7869,6 +8019,7 @@ impl Runtime {
                     "items",
                     "pop",
                     "popitem",
+                    "__reversed__",
                     "setdefault",
                     "update",
                     "clear",
@@ -7890,6 +8041,7 @@ impl Runtime {
                     "intersection",
                     "difference",
                     "symmetric_difference",
+                    "difference_update", "intersection_update", "symmetric_difference_update",
                     "issubset",
                     "issuperset",
                     "isdisjoint",
@@ -7925,6 +8077,10 @@ impl Runtime {
         }
         if let Value::Obj(i) = v.clone() {
             match self.object(i)? {
+                Object::Code(code) => match name {
+                    "co_flags" => return Ok(Value::Int(Int::from_i128(self.codes[code].future_flags as i128).into())),
+                    _ => {},
+                },
                 Object::Range(start, stop, step) => match name {
                     "start" => return Ok(Value::Int(start.into())),
                     "stop" => return Ok(Value::Int(stop.into())),
@@ -8139,6 +8295,16 @@ impl Runtime {
                     }
                 }
                 Object::Class(c) => {
+                    if name=="__annotate__" {
+                        return Ok(self.ns_get(c.attrs,name).unwrap_or(Value::None));
+                    }
+                    if name=="__annotations__" {
+                        if let Some(annotations)=self.ns_get(c.attrs,name) {return Ok(annotations);}
+                        let annotations=if let Some(annotate)=self.ns_get(c.attrs,"__annotate__").filter(|value|!matches!(value,Value::None)) {
+                            self.call(annotate,vec![Value::Int(Int::from_i128(1).into())],Vec::new(),None)?
+                        }else{self.obj_value(Object::Dict(Vec::new()))};
+                        self.ns_set(c.attrs,name.into(),annotations.clone());return Ok(annotations);
+                    }
                     if name == "__mro__" {
                         let mro = self
                             .class_mro(&v, 0)
@@ -8154,7 +8320,7 @@ impl Runtime {
                             .unwrap_or(Value::Str(c.name.into())));
                     }
                     if name == "__dict__" {
-                        return Ok(Value::Obj(c.attrs));
+                        return Ok(self.obj_value(Object::MappingProxy { owner: c.attrs }));
                     }
                     if name == "__bases__" {
                         return Ok(self.obj_value(Object::Tuple(c.bases)));
@@ -8165,6 +8331,7 @@ impl Runtime {
                     if let Some(x) = self.class_lookup(&c.metaclass, name, 0) {
                         return self.bind_descriptor(x, Some(v.clone()), c.metaclass);
                     }
+                    if name=="__annotate__" {return Ok(Value::None);}
                 }
                 Object::Function(fun) => match name {
                     "__name__" => return Ok(Value::Str(fun.name.into())),
@@ -8322,6 +8489,7 @@ impl Runtime {
                             "intersection",
                             "difference",
                             "symmetric_difference",
+                            "difference_update", "intersection_update", "symmetric_difference_update",
                             "issubset",
                             "issuperset",
                             "isdisjoint",
@@ -8472,8 +8640,11 @@ impl Runtime {
                 if name == "encoding" && n.starts_with("stream:") {
                     return Ok(Value::Str("utf-8".into()));
                 }
-                if name == "__name__" {
-                    return Ok(Value::Str(n.clone().into()));
+                if name == "__name__" || name=="__qualname__" {
+                    return Ok(Value::Str(n.rsplit(':').next().unwrap_or(n).to_owned().into()));
+                }
+                if name=="__module__" {
+                    return Ok(Value::Str(if n=="GenericAlias" {"types".into()}else if let Some(rest)=n.strip_prefix("module:"){rest.split(':').next().unwrap_or("builtins").into()}else{"builtins".into()}));
                 }
                 if name == "__mro__" {
                     if let Some(mro) = self.class_mro(&v, 0) {
@@ -8848,7 +9019,8 @@ impl Runtime {
         self.scope_bindings.insert(ns, code_locals);
 
         let mut kw: Vec<(String, Value)> = Vec::new();
-        for (k, v) in kwargs {
+        for (mut k, v) in kwargs {
+            if self.codes[function.code].kind==ScopeKind::Annotation && k=="format" && params.positional.iter().any(|parameter|parameter==".format") {k=".format".into();}
             if kw.iter().any(|(n, _)| n == &k) {
                 return Err(pyerr(
                     "TypeError",
