@@ -259,7 +259,7 @@ impl Runtime {
             if type_name == "dict" {
                 let keys = match self.getattr(source.clone(), "keys") {
                     Ok(keys) => Some(keys),
-                    Err(error) if error.kind == "AttributeError" => None,
+                    Err(error) if self.exception_has_native_class(&error,"AttributeError") => None,
                     Err(error) => return Err(error),
                 };
                 if let Some(keys) = keys {

@@ -364,7 +364,7 @@ impl Runtime {
                     }
                     return Err(pyerr("TypeError", "__complex__ returned non-complex"));
                 }
-                Err(error) if error.kind == "AttributeError" => {}
+                Err(error) if self.missing_special_method(value,"__complex__",&error) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -389,7 +389,7 @@ impl Runtime {
                     }
                     return Ok((Complex::new(self.as_float(&payload)?, 0.0), false));
                 }
-                Err(error) if error.kind == "AttributeError" => {}
+                Err(error) if self.missing_special_method(value,method,&error) => {}
                 Err(error) => return Err(error),
             }
         }

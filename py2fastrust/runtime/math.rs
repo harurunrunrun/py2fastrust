@@ -465,7 +465,7 @@ impl Runtime {
         if matches!(value, Value::Float(_) | Value::Int(_) | Value::Bool(_)) {
             return self.as_float(value);
         }
-        match self.getattr(value.clone(), "__float__") {
+        match self.special_method(value.clone(), "__float__") {
             Ok(method) => {
                 let result = self.call(method, Vec::new(), Vec::new(), None)?;
                 if let Value::Float(x) = result {
@@ -473,8 +473,8 @@ impl Runtime {
                 }
                 return Err(pyerr("TypeError", "__float__ returned non-float"));
             }
-            Err(error) if error.kind != "AttributeError" => return Err(error),
-            _ => {}
+            Err(error) if self.missing_special_method(value,"__float__",&error) => {}
+            Err(error) => return Err(error),
         }
         let integer = self.as_int(value)?;
         self.as_float(&Value::Int(integer.into()))
@@ -647,9 +647,9 @@ impl Runtime {
                     return Ok(Value::Int(Int::from_i128(i128::from(*b)).into()));
                 }
                 if !matches!(args[0], Value::Float(_)) {
-                    match self.getattr(args[0].clone(), &format!("__{}__", name)) {
+                    match self.special_method(args[0].clone(), &format!("__{}__", name)) {
                         Ok(method) => return self.call(method, Vec::new(), Vec::new(), None),
-                        Err(error) if error.kind != "AttributeError" => return Err(error),
+                        Err(error) if !self.exception_has_native_class(&error,"AttributeError") => return Err(error),
                         _ => {}
                     }
                     if name == "trunc" {

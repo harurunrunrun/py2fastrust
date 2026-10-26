@@ -843,7 +843,7 @@ impl Runtime {
             })?;
         let result = match self.builtin("len", vec![args[0].clone()], Vec::new(), None) {
             Ok(length) => length,
-            Err(error) if error.kind == "TypeError" => {
+            Err(error) if self.exception_has_native_class(&error, "TypeError") => {
                 match self.special_method(args[0].clone(), "__length_hint__") {
                     Ok(method) => {
                         let hint = self.call(method, Vec::new(), Vec::new(), None)?;
@@ -852,7 +852,7 @@ impl Runtime {
                         }
                         hint
                     }
-                    Err(error) if error.kind == "AttributeError" => {
+                    Err(error) if self.missing_special_method(&args[0],"__length_hint__",&error) => {
                         return Ok(Value::Int(Int::from_i128(default).into()))
                     }
                     Err(error) => return Err(error),

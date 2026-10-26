@@ -685,7 +685,7 @@ impl Runtime {
                         self.exception_match(&value, &Value::Type("Exception".into()))?
                     }
                 } else {
-                    error.kind == "AttributeError" || error.kind == "TypeError"
+                    self.exception_has_native_class(&error,"AttributeError") || self.exception_has_native_class(&error,"TypeError")
                 };
                 if !suppress {
                     return Err(error);

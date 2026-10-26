@@ -186,7 +186,7 @@ impl Runtime {
                     let names = match self.getattr(class, "__match_args__") {
                         Ok(Value::Obj(index)) => match self.object(index)? { Object::Tuple(names) => names, _ => return Err(pyerr("TypeError", "__match_args__ must be a tuple")) },
                         Ok(_) => return Err(pyerr("TypeError", "__match_args__ must be a tuple")),
-                        Err(error) if error.kind == "AttributeError" => Vec::new(),
+                        Err(error) if self.exception_has_native_class(&error, "AttributeError") => Vec::new(),
                         Err(error) => return Err(error),
                     };
                     if positional.len() > names.len() { return Err(pyerr("TypeError", "too many positional subpatterns")); }
@@ -201,7 +201,7 @@ impl Runtime {
                 }
                 let position_patterns: &[MatchPattern] = if builtin_self { &[] } else { positional };
                 for (name, pattern) in attributes.iter().chain(keyword_names).zip(position_patterns.iter().chain(keyword_patterns)) {
-                    let value = match self.getattr(subject.clone(), name) { Ok(value) => value, Err(error) if error.kind == "AttributeError" => return Ok(false), Err(error) => return Err(error) };
+                    let value = match self.getattr(subject.clone(), name) { Ok(value) => value, Err(error) if self.exception_has_native_class(&error, "AttributeError") => return Ok(false), Err(error) => return Err(error) };
                     if !self.pattern_inner(frame, value, pattern, captures, root)? { return Ok(false); }
                 }
                 Ok(true)

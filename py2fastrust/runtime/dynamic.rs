@@ -1107,8 +1107,8 @@ impl DCompiler {
         self.with_statement(ctx,&items[1..],body,line,col)?;
         self.emit(ctx,Op::PopHandler,line,col); self.emit(ctx,Op::PopHandler,line,col); let normal_final = self.emit(ctx,Op::Jump(0),line,col);
         self.patch(ctx,except_setup,self.here(ctx)); self.emit(ctx,Op::Const(Const::Bool(true)),line,col); self.emit(ctx,Op::Store(exceptional_tmp.clone()),line,col);
-        self.emit(ctx,Op::Load(exit_tmp.clone()),line,col); self.emit(ctx,Op::Load("type".to_owned()),line,col); self.emit(ctx,Op::LoadException,line,col); self.emit(ctx,Op::Call { pos:1,keywords:Vec::new() },line,col);
-        self.emit(ctx,Op::LoadException,line,col); self.emit(ctx,Op::LoadException,line,col); self.emit(ctx,Op::GetAttr("__traceback__".to_owned()),line,col); self.emit(ctx,Op::Call { pos:3,keywords:Vec::new() },line,col);
+        self.emit(ctx,Op::Load(exit_tmp.clone()),line,col); self.emit(ctx,Op::LoadExceptionType,line,col);
+        self.emit(ctx,Op::LoadException,line,col); self.emit(ctx,Op::LoadExceptionTraceback,line,col); self.emit(ctx,Op::Call { pos:3,keywords:Vec::new() },line,col);
         let suppressed = self.emit(ctx,Op::JumpTrue(0),line,col); self.emit(ctx,Op::Raise(0),line,col); self.patch(ctx,suppressed,self.here(ctx));
         self.emit(ctx,Op::ClearException,line,col); self.emit(ctx,Op::PopHandler,line,col); let suppress_final = self.emit(ctx,Op::Jump(0),line,col);
         let final_start = self.here(ctx); self.patch(ctx,normal_final,final_start); self.patch(ctx,suppress_final,final_start); self.patch(ctx,final_setup,final_start);

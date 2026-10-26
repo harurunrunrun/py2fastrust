@@ -99,6 +99,8 @@ enum Op {
     PopHandler,
     ClearException,
     LoadException,
+    LoadExceptionType,
+    LoadExceptionTraceback,
     SetupFinally(usize),
     EndFinally,
     MakeClass {
@@ -846,13 +848,17 @@ impl Runtime {
         }
         self.getattr_default(v, name)
     }
+    fn missing_special_method(&self,value:&Value,name:&str,error:&PyException)->bool{
+        self.exception_has_native_class(error,"AttributeError")
+            && self.object_class(value).and_then(|class|self.class_lookup(&class,name,0)).is_none()
+    }
     fn getattr(&mut self, v: Value, name: &str) -> PyResult<Value> {
         if let Some(class) = self.object_class(&v) {
             if let Some(method) = self.class_lookup(&class, "__getattribute__", 0) {
                 let bound = self.obj_value(Object::Bound(method, v.clone()));
                 match self.call(bound, vec![Value::Str(name.into())], Vec::new(), None) {
                     Ok(value) => return Ok(value),
-                    Err(e) if e.kind == "AttributeError" => {
+                    Err(e) if self.exception_has_native_class(&e, "AttributeError") => {
                         if let Some(method) = self.class_lookup(&class, "__getattr__", 0) {
                             let bound = self.obj_value(Object::Bound(method, v));
                             return self.call(
@@ -1185,7 +1191,7 @@ impl Runtime {
         } else {
             match self.getitem(Value::Obj(i), Value::Str(n.into())) {
                 Ok(v) => Ok(Some(v)),
-                Err(e) if e.kind == "KeyError" => Ok(None),
+                Err(e) if self.exception_has_native_class(&e, "KeyError") => Ok(None),
                 Err(e) => Err(e),
             }
         }
@@ -1210,7 +1216,7 @@ impl Runtime {
         } else {
             match self.delitem(Value::Obj(i), Value::Str(n.into())) {
                 Ok(()) => Ok(true),
-                Err(e) if e.kind == "KeyError" => Ok(false),
+                Err(e) if self.exception_has_native_class(&e, "KeyError") => Ok(false),
                 Err(e) => Err(e),
             }
         }
@@ -1636,9 +1642,9 @@ impl Runtime {
         }
         let message=if let Some(value)=&e.value{self.str_value(value)}else{self.exception_object_message(e)}.unwrap_or_else(|_|"<exception str() failed>".into());
         if message.is_empty() {
-            eprintln!("{}", e.kind);
+            eprintln!("{}", self.exception_header_name(e));
         } else {
-            eprintln!("{}: {}", e.kind, message);
+            eprintln!("{}: {}", self.exception_header_name(e), message);
         }
     }
     fn pop(f: &mut Frame) -> PyResult<Value> {
@@ -2224,12 +2230,12 @@ impl Runtime {
                     .cloned()
                     .ok_or_else(|| pyerr("RuntimeError", "missing iterator"))?;
                 let result = if let Some(mut error) = f.injected_exception.take() {
-                    if error.kind == "GeneratorExit" {
+                    if self.exception_has_native_class(&error, "GeneratorExit") {
                         match self.getattr(it.clone(), "close") {
                             Ok(method) => {
                                 self.call(method, Vec::new(), Vec::new(), None)?;
                             }
-                            Err(missing) if missing.kind == "AttributeError" => {}
+                            Err(missing) if self.exception_has_native_class(&missing, "AttributeError") => {}
                             Err(error) => return Err(error),
                         }
                         return Err(error);
@@ -2239,7 +2245,7 @@ impl Runtime {
                             let exception = self.exception_value(&mut error);
                             self.call(method, vec![exception], Vec::new(), None)
                         }
-                        Err(missing) if missing.kind == "AttributeError" => return Err(error),
+                        Err(missing) if self.exception_has_native_class(&missing, "AttributeError") => return Err(error),
                         Err(error) => return Err(error),
                     }
                 } else {
@@ -2256,7 +2262,7 @@ impl Runtime {
                         f.pc -= 1;
                         return Ok(Some(FrameExit::Yield(value)));
                     }
-                    Err(error) if error.kind == "StopIteration" => {
+                    Err(error) if self.exception_has_native_class(&error, "StopIteration") => {
                         Self::pop(f)?;
                         f.stack.push(Self::stop_value(&error));
                     }
@@ -2332,6 +2338,16 @@ impl Runtime {
                 let v = self.exception_value(&mut e);
                 f.exception = Some(e);
                 f.stack.push(v)
+            }
+            Op::LoadExceptionType => {
+                let error=f.exception.as_ref().ok_or_else(||pyerr("RuntimeError","no active exception"))?;
+                f.stack.push(error.class.clone().unwrap_or_else(||Value::Type(error.kind.clone())));
+            }
+            Op::LoadExceptionTraceback => {
+                let mut error=f.exception.clone().ok_or_else(||pyerr("RuntimeError","no active exception"))?;
+                let trace=self.exception_native_traceback(&mut error);
+                f.exception=Some(error);
+                f.stack.push(trace);
             }
             Op::EndFinally => {
                 f.finally_regions.pop();
@@ -2844,7 +2860,7 @@ impl Runtime {
                 "exception" | "exc_info" => {
                     if !args.is_empty() || !kwargs.is_empty(){return Err(pyerr("TypeError",format!("sys.{}() takes no arguments",name)));}
                     let value=if let Some(mut error)=self.handled_exception.clone(){self.exception_value(&mut error)}else{Value::None};
-                    if name=="exception"{Ok(value)}else if matches!(value,Value::None){Ok(self.obj_value(Object::Tuple(vec![Value::None;3])))}else{let class=self.exception_actual_class(&value).unwrap_or(Value::None);let trace=self.getattr(value.clone(),"__traceback__")?;Ok(self.obj_value(Object::Tuple(vec![class,value,trace])))}
+                    if name=="exception"{Ok(value)}else if matches!(value,Value::None){Ok(self.obj_value(Object::Tuple(vec![Value::None;3])))}else{let class=self.exception_actual_class(&value).unwrap_or(Value::None);let mut error=self.exception_data(&value).ok_or_else(||pyerr("RuntimeError","invalid handled exception"))?;let trace=self.exception_native_traceback(&mut error);Ok(self.obj_value(Object::Tuple(vec![class,value,trace])))}
                 }
                 "getrecursionlimit" => Ok(Value::Int(Int::from_i128(self.recursion_limit as i128).into())),
                 "exit" => {
@@ -4071,8 +4087,12 @@ impl Runtime {
                 }
                 Object::Dict(mut xs) => {
                     match name {
-                        "get" => return match self.getitem(receiver,arg(0)?) {
-                            Ok(value)=>Ok(value),Err(error) if error.kind=="KeyError"=>Ok(args.get(1).cloned().unwrap_or(Value::None)),Err(error)=>Err(error),
+                        "get" => {
+                            let key=arg(0)?;
+                            return Ok(match self.find_key(&xs,&key)?{
+                                Some(index)=>xs[index].1.clone(),
+                                None=>args.get(1).cloned().unwrap_or(Value::None),
+                            });
                         },
                         "pop"=>{
                             let key=arg(0)?;
@@ -4245,7 +4265,7 @@ impl Runtime {
                                     Err(pyerr("RuntimeError", "generator ignored GeneratorExit"))
                                 }
                                 Err(e)
-                                    if e.kind == "GeneratorExit" || e.kind == "StopIteration" =>
+                                    if self.exception_has_native_class(&e, "GeneratorExit") || self.exception_has_native_class(&e, "StopIteration") =>
                                 {
                                     Ok(Value::None)
                                 }
@@ -4662,7 +4682,7 @@ impl Runtime {
                                     }
                                     return Err(pyerr("TypeError",format!("{method} returned non-int")));
                                 },
-                                Err(error) if error.kind=="AttributeError"=>(),
+                                Err(error) if self.missing_special_method(&v,method,&error)=>(),
                                 Err(error)=>return Err(error),
                             }
                         }
@@ -4688,7 +4708,7 @@ impl Runtime {
                                 match out { Value::Float(value)=>return Ok(Value::Float(value)),value=>if let Some(Value::Float(value))=self.native_payload(&value){return Ok(Value::Float(value.into_inner().into()));} }
                                 return Err(pyerr("TypeError","__float__ returned non-float"));
                             },
-                            Err(error) if error.kind=="AttributeError"=>(),
+                            Err(error) if self.missing_special_method(&v,"__float__",&error)=>(),
                             Err(error)=>return Err(error),
                         }
                         self.as_float(&v)?.into()
@@ -4844,7 +4864,7 @@ impl Runtime {
             }
             "next" => match self.iterator_next(arg(0)?) {
                 Ok(v) => Ok(v),
-                Err(error) if error.kind == "StopIteration" => {
+                Err(error) if self.exception_has_native_class(&error, "StopIteration") => {
                     if let Some(v) = args.get(1) {
                         Ok(v.clone())
                     } else {
@@ -4943,7 +4963,15 @@ impl Runtime {
             }
             "reversed" => {
                 if args.len()!=1 || !kwargs.is_empty() {return Err(pyerr("TypeError","reversed() takes exactly one argument"));}
-                if let Value::Obj(index) = arg(0)? {
+                let value=arg(0)?;
+                if let Some(class)=self.object_class(&value) {
+                    if self.class_lookup(&class,"__reversed__",0).is_some(){
+                        let method=self.special_method(value,"__reversed__")?;
+                        return self.call(method,Vec::new(),Vec::new(),caller);
+                    }
+                }
+                if let Value::Obj(index) = &value {
+                    let index=*index;
                     match self.object(index)? {
                         Object::Dict(_) | Object::Namespace(..)=>return self.assoc_iterator(index,DictViewKind::Keys,true),
                         Object::DictView { owner, kind }=>return self.assoc_iterator(owner,kind,true),
@@ -4957,9 +4985,12 @@ impl Runtime {
                             .obj_value(Object::Iterator(IteratorState::Range(start, stop, step))));
                     }
                 }
-                let mut xs = self.to_vec(arg(0)?)?;
-                xs.reverse();
-                Ok(self.obj_value(Object::Iterator(IteratorState::Values(xs, 0))))
+                let length=self.builtin("len",vec![value.clone()],Vec::new(),caller)?;
+                let length=self.as_int(&length)?.to_usize().filter(|size|*size<=isize::MAX as usize).ok_or_else(||pyerr("OverflowError","sequence is too large to reverse"))?;
+                if !matches!(&value,Value::Str(_)|Value::Bytes(_)) && !matches!(&value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_)|Object::Tuple(_)))) && self.object_class(&value).and_then(|class|self.class_lookup(&class,"__getitem__",0)).is_none(){
+                    return Err(pyerr("TypeError",format!("'{}' object is not reversible",self.typename(&value))));
+                }
+                Ok(self.obj_value(Object::Iterator(IteratorState::Reversed(value,length as isize-1))))
             }
             "abs" => {
                 let v = arg(0)?;
@@ -5065,7 +5096,7 @@ impl Runtime {
             "getattr" => {
                 let n = self.str_value(&arg(1)?)?;
                 match self.getattr(arg(0)?, &n) {
-                    Err(e) if e.kind == "AttributeError" && args.len() > 2 => Ok(args[2].clone()),
+                    Err(e) if self.exception_has_native_class(&e, "AttributeError") && args.len() > 2 => Ok(args[2].clone()),
                     v => v,
                 }
             }
@@ -5083,7 +5114,7 @@ impl Runtime {
                 let n = self.str_value(&arg(1)?)?;
                 match self.getattr(arg(0)?, &n) {
                     Ok(_) => Ok(Value::Bool(true)),
-                    Err(e) if e.kind == "AttributeError" => Ok(Value::Bool(false)),
+                    Err(e) if self.exception_has_native_class(&e, "AttributeError") => Ok(Value::Bool(false)),
                     Err(e) => Err(e),
                 }
             }
@@ -5213,7 +5244,7 @@ impl Runtime {
             "locals" | "vars" => {
                 if let Some(v) = args.first() {
                     return self.getattr(v.clone(), "__dict__").map_err(|error| {
-                        if error.kind == "AttributeError" {
+                        if self.exception_has_native_class(&error,"AttributeError") {
                             pyerr("TypeError", "vars() argument must have __dict__ attribute")
                         } else {
                             error
@@ -5812,10 +5843,10 @@ impl Runtime {
             || declared_slots.is_none()
             || slot_names.iter().any(|name| name == "__weakref__");
         if declared_slots.is_none() {
-            if !inherited_dict {
+            if !inherited_dict && !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__dict__")) {
                 slot_names.push("__dict__".into());
             }
-            if !inherited_weakref {
+            if !inherited_weakref && !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__weakref__")) {
                 slot_names.push("__weakref__".into());
             }
         }
@@ -6205,7 +6236,7 @@ impl Runtime {
                         for argument in &e.args {
                             args.push(self.repr_inner(argument, seen)?);
                         }
-                        format!("{}({})", e.kind, args.join(", "))
+                        format!("{}({})", self.exception_type_name(&e), args.join(", "))
                         }
                     }
                     Object::BuiltinInstance { payload, .. } => {
@@ -6541,7 +6572,7 @@ impl Runtime {
                     Some(Object::Class(c)) => c.name.to_string(),
                     _ => "object".into(),
                 },
-                Some(Object::Exception(e)) => e.kind.clone(),
+                Some(Object::Exception(e)) => self.exception_type_name(e),
                 Some(Object::Generator(_)) => "generator".into(),
                 Some(Object::Module { .. }) => "module".into(),
                 Some(Object::Iterator(_)) => "iterator".into(),
@@ -6560,11 +6591,13 @@ impl Runtime {
             Value::Int(n) => Ok(n.inner().clone()),
             Value::Bool(b) => Ok(Int::from_i128(if *b { 1 } else { 0 })),
             _ => {
-                if let Ok(m) = self.special_method(v.clone(), "__index__") {
-                    let x = self.call(m, Vec::new(), Vec::new(), None)?;
-                    if let Value::Int(i) = x {
-                        return Ok(i.into_inner());
+                match self.special_method(v.clone(), "__index__") {
+                    Ok(method)=>{
+                        let result=self.call(method,Vec::new(),Vec::new(),None)?;
+                        if let Value::Int(number)=result {return Ok(number.into_inner());}
                     }
+                    Err(error) if self.missing_special_method(v,"__index__",&error)=>{},
+                    Err(error)=>return Err(error),
                 }
                 Err(pyerr(
                     "TypeError",
@@ -7722,7 +7755,12 @@ impl Runtime {
                 _ => {}
             }
         }
-        if let Ok(keys) = self.getattr(v.clone(), "keys") {
+        let keys=match self.getattr(v.clone(), "keys"){
+            Ok(keys)=>Some(keys),
+            Err(error) if self.exception_has_native_class(&error,"AttributeError")=>None,
+            Err(error)=>return Err(error),
+        };
+        if let Some(keys) = keys {
             let keys = self.call(keys, Vec::new(), Vec::new(), None)?;
             let mut out = Vec::new();
             for k in self.to_vec(keys)? {
@@ -7872,7 +7910,11 @@ impl Runtime {
         }
     }
     fn next(&mut self, it: Value) -> PyResult<Option<Value>> {
-        let result = self.next_raw(it.clone())?;
+        let result = match self.next_raw(it.clone()) {
+            Ok(value)=>value,
+            Err(error) if self.exception_has_native_class(&error,"StopIteration")=>None,
+            Err(error)=>return Err(error),
+        };
         if result.is_none() {
             self.iterator_stop(&it)?;
         }
@@ -8002,6 +8044,7 @@ impl Runtime {
                         };
                     }
                     IteratorState::Reversed(obj, p) => {
+                        if p == -1 {return Ok(None);}
                         let k = if p <= -2 { -p - 2 } else { p };
                         let result =
                             self.getitem(obj.clone(), Value::Int(Int::from_i128(k as i128).into()));
@@ -8012,7 +8055,10 @@ impl Runtime {
                                     Some(Object::Iterator(IteratorState::Reversed(obj, np)));
                                 return Ok(Some(v));
                             }
-                            Err(e) if e.kind == "IndexError" => return Ok(None),
+                            Err(e) if self.exception_has_native_class(&e, "IndexError") || self.exception_has_native_class(&e, "StopIteration") => {
+                                self.heap[i]=Some(Object::Iterator(IteratorState::Reversed(Value::None,-1)));
+                                return Ok(None);
+                            },
                             Err(e) => return Err(e),
                         }
                     }
@@ -8045,7 +8091,7 @@ impl Runtime {
                             {
                                 frame.pc = usize::MAX;
                             }
-                            if e.kind == "StopIteration" {
+                            if self.exception_has_native_class(&e, "StopIteration") {
                                 let mut original = e;
                                 let value = self.exception_value(&mut original);
                                 let mut error =
@@ -8075,7 +8121,7 @@ impl Runtime {
                     let fun = self.special_method(it, "__next__")?;
                     match self.call(fun, Vec::new(), Vec::new(), None) {
                         Ok(v) => return Ok(Some(v)),
-                        Err(e) if e.kind == "StopIteration" => return Ok(None),
+                        Err(e) if self.exception_has_native_class(&e, "StopIteration") => return Ok(None),
                         Err(e) => return Err(e),
                     }
                 }
@@ -8516,7 +8562,7 @@ impl Runtime {
                         }
                         return Err(pyerr("AttributeError", name));
                     }
-                    if name == "__dict__" {
+                    if name == "__dict__" && self.class_lookup(&class,name,0).is_none() {
                         if !self.instance_allows_dict(i) {
                             return Err(pyerr("AttributeError", "object has no __dict__"));
                         }

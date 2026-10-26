@@ -216,7 +216,7 @@ impl Runtime {
                     }
                     Ok(self.as_int(&result)?.into())
                 }
-                Err(error) if error.kind == "AttributeError" => Ok(self.as_int(value)?.into()),
+                Err(error) if self.missing_special_method(value,"__index__",&error) => Ok(self.as_int(value)?.into()),
                 Err(error) => Err(error),
             },
         }

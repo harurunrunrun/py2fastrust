@@ -96,14 +96,14 @@ impl Runtime {
                         if let Some(Value::Bytes(_))=self.native_payload(&result) { return Ok(result); }
                         return Err(pyerr("TypeError","__bytes__ returned non-bytes"));
                     },
-                    Err(error) if error.kind=="AttributeError" => (),
+                    Err(error) if self.missing_special_method(&source,"__bytes__",&error) => (),
                     Err(error)=>return Err(error),
                 }
                 if matches!(payload,Value::Bytes(_)){return Ok(payload);}
                 let count=if matches!(payload,Value::Int(_) | Value::Bool(_)) { Some(self.as_int(&payload)?) }
                 else { match self.special_method(source.clone(),"__index__") {
                     Ok(method)=>{let value=self.call(method,Vec::new(),Vec::new(),None)?;match value{Value::Int(value)=>Some(value.into_inner()),Value::Bool(value)=>Some(Int::from_i128(if value{1}else{0})),_=>return Err(pyerr("TypeError","__index__ returned non-int"))}},
-                    Err(error) if error.kind=="AttributeError"=>None,Err(error)=>return Err(error),
+                    Err(error) if self.missing_special_method(&source,"__index__",&error)=>None,Err(error)=>return Err(error),
                 }};
                 if let Some(count)=count {
                     if count.is_negative(){return Err(pyerr("ValueError","negative count"));}
@@ -141,7 +141,7 @@ impl Runtime {
                 if matches!(result,Value::Str(_)) || matches!(self.native_payload(&result),Some(Value::Str(_))) {return Ok(result);}
                 return Err(pyerr("TypeError","__str__ returned non-string"));
             },
-            Err(error) if error.kind=="AttributeError"=>(),Err(error)=>return Err(error),
+            Err(error) if self.missing_special_method(&source,"__str__",&error)=>(),Err(error)=>return Err(error),
         }
         Ok(Value::Str(self.str_value(&source)?.into()))
     }

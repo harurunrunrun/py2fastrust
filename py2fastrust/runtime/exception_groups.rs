@@ -36,6 +36,39 @@ impl Runtime {
         let class=error.class.clone().unwrap_or_else(||Value::Type(error.kind.clone()));
         self.class_mro(&class,0).is_some_and(|mro|mro.iter().any(|class|matches!(class,Value::Type(kind)if kind==name)))
     }
+    fn exception_type_name(&self,error:&PyException)->String{
+        error.class.as_ref().map(|class|self.class_name(class)).unwrap_or_else(||error.kind.clone())
+    }
+    fn exception_header_name(&self,error:&PyException)->String{
+        if let Some(Value::Obj(index))=&error.class{
+            if let Some(Object::Class(class))=self.heap.get(*index).and_then(Option::as_ref){
+                let name=match self.ns_get(class.attrs,"__qualname__"){Some(Value::Str(name))=>name.to_string(),_=>class.name.to_string()};
+                let module=match self.ns_get(class.attrs,"__module__"){Some(Value::Str(module))=>module.to_string(),_=>"<unknown>".into()};
+                return if module=="builtins"||module=="__main__"{name}else{format!("{module}.{name}")};
+            }
+        }
+        self.exception_type_name(error)
+    }
+    fn exception_native_traceback(&mut self,error:&mut PyException)->Value{
+        let trace=self.exception_traceback(error);
+        error.attributes.insert("__traceback__".into(),trace.clone());
+        self.sync_exception(error);
+        trace
+    }
+    fn exception_new_for_class(&mut self,class:Value,args:Vec<Value>)->PyResult<PyException>{
+        let mut error=pyerr(&self.class_name(&class),"");
+        error.class=Some(class);
+        error.args=args;
+        self.exception_initialize_fields(&mut error,false);
+        error.message=self.exception_cached_message(&error)?;
+        Ok(error)
+    }
+    fn exception_message_kind(&self,error:&PyException)->&'static str{
+        for kind in ["KeyError","UnicodeDecodeError","UnicodeEncodeError","UnicodeTranslateError"]{
+            if self.exception_has_native_class(error,kind){return kind;}
+        }
+        "BaseException"
+    }
     fn exception_native_attribute(&self,error:&PyException,name:&str)->bool{
         match name{
             "value"=>self.exception_has_native_class(error,"StopIteration"),
@@ -122,7 +155,8 @@ impl Runtime {
                 if count == 1 { "" } else { "s" }
             ));
         }
-        self.exception_message(&error.kind, &error.args)
+        let kind=self.exception_message_kind(error);
+        self.exception_message(kind, &error.args)
     }
     fn exception_cached_message(&mut self, error: &PyException) -> PyResult<String> {
         if let Some(group) = &error.group {
@@ -141,12 +175,12 @@ impl Runtime {
                 if count == 1 { "" } else { "s" }
             ));
         }
-        if let Some(message) = codec_exception_message(&error.kind, &error.args) {
+        if let Some(message) = codec_exception_message(self.exception_message_kind(error), &error.args) {
             return Ok(message);
         }
         match error.args.as_slice() {
             [] => Ok(String::new()),
-            [Value::Str(text)] if error.kind == "KeyError" => Ok(text_repr_str(text)),
+            [Value::Str(text)] if self.exception_has_native_class(error,"KeyError") => Ok(text_repr_str(text)),
             [value @ (Value::None
             | Value::Bool(_)
             | Value::Int(_)
@@ -186,7 +220,7 @@ impl Runtime {
             self.roots[root].push(sequence.clone());
             Ok(format!(
                 "{}({}, {})",
-                error.kind,
+                self.exception_type_name(error),
                 self.repr_inner(&group.message, seen)?,
                 self.repr_inner(&sequence, seen)?
             ))
@@ -322,8 +356,7 @@ impl Runtime {
                     format!("{}() takes no keyword arguments", self.class_name(&class)),
                 ));
             }
-            let mut error = self.new_exception(&self.class_name(&class), args.clone())?;
-            error.class = Some(class.clone());
+            let mut error = self.exception_new_for_class(class.clone(), args.clone())?;
             self.exception_value(&mut error)
         };
         let root = self.roots.len();
@@ -406,16 +439,20 @@ impl Runtime {
             let error = self
                 .exception_data(&first)
                 .ok_or_else(|| pyerr("TypeError", "descriptor requires an exception instance"))?;
+            if (owner=="KeyError" && method=="__str__" || group_type_name(owner)) && !self.exception_has_native_class(&error,owner){
+                return Err(pyerr("TypeError",format!("descriptor '{method}' requires a '{owner}' object")));
+            }
             let text = if method == "__str__" {
-                self.exception_object_message(&error)?
-            } else if error.group.is_some() {
+                if group_type_name(owner) {self.exception_object_message(&error)?}
+                else {self.exception_message(if owner=="KeyError"{"KeyError"}else{"BaseException"},&error.args)?}
+            } else if group_type_name(owner) && error.group.is_some() {
                 self.exception_group_repr(&error, &mut Vec::new())?
             } else {
                 let mut values = Vec::new();
-                for arg in error.args {
-                    values.push(self.repr(&arg)?);
+                for arg in &error.args {
+                    values.push(self.repr(arg)?);
                 }
-                format!("{}({})", error.kind, values.join(", "))
+                format!("{}({})", self.exception_type_name(&error), values.join(", "))
             };
             return Ok(Value::Str(text.into()));
         }
@@ -426,10 +463,8 @@ impl Runtime {
             if group_type_name(owner) {
                 return self.exception_group_construct(first, args, Vec::new());
             }
-            let mut error = self.new_exception(&self.class_name(&first), args)?;
-            if matches!(first, Value::Obj(_)) {
-                error.class = Some(first);
-            }
+            let mut error = if matches!(first,Value::Obj(_)){self.exception_new_for_class(first,args)?}
+                else{self.new_exception(&self.class_name(&first),args)?};
             return Ok(self.exception_value(&mut error));
         }
         if method == "__init__" {
@@ -440,6 +475,9 @@ impl Runtime {
                 ));
             }
             let mut error = self.exception_data(&first).unwrap();
+            if (matches!(owner,"StopIteration"|"SystemExit") || group_type_name(owner)) && !self.exception_has_native_class(&error,owner){
+                return Err(pyerr("TypeError",format!("descriptor '__init__' requires a '{owner}' object")));
+            }
             error.args = args;
             error.args_tuple = None;
             if matches!(owner,"StopIteration"|"SystemExit"){self.exception_initialize_fields(&mut error,true);}

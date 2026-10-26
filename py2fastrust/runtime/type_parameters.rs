@@ -185,7 +185,7 @@ impl Runtime {
             })();
             let hash = match hash {
                 Ok(hash) => Some(hash),
-                Err(error) if error.kind == "TypeError" => None,
+                Err(error) if self.exception_has_native_class(&error,"TypeError") => None,
                 Err(error) => return Err(error),
             };
             if let Some(hash) = hash {
