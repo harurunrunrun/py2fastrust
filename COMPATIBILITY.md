@@ -6,16 +6,16 @@
 
 | 分類 | 対応 |
 |---|---|
-| 値 | None、bool、選択幅のint、float、str、bytes、list、tuple、dict、set、slice、range、動的dictビューとmappingproxy、GenericAlias、Union型、Template、Interpolation |
+| 値 | None、bool、選択幅のint、float、complex、str、bytes、list、tuple、dict、set、slice、range、動的dictビューとmappingproxy、GenericAlias、Union型、Template、Interpolation |
 | 変数 | 型変更、共有参照、多重・アンパック代入、global/nonlocal、未束縛エラー |
 | 制御 | if、while、for、break/continue、else、短絡演算、比較連鎖 |
 | 関数 | 既定値、位置専用・キーワード専用引数、可変長引数、再帰、lambda、クロージャ、型パラメータとその遅延評価する境界・既定値 |
 | コンテナ式 | 内包表記、ジェネレータ式、展開、負の添字、スライス |
 | 例外 | raise、except、except*、例外グループの分割・再結合、else、finally、assert、元のargs・cause/context・notes、例外対象変数の後始末、tracebackのソース情報 |
-| クラス | 継承、C3 MRO、descriptor、property、staticmethod/classmethod、super、メタクラス、__slots__、list/tuple/dict/set/str/intの継承 |
+| クラス | 継承、C3 MRO、descriptor、property、staticmethod/classmethod、super、メタクラス、__slots__、list/tuple/dict/set/str/int/complexの継承 |
 | 名前空間 | 任意mappingを返す__prepare__、private名、Unicode NFKC識別子、辞書の挿入順、内部一時変数の分離、free変数を含むPython 3.14関数localsのsnapshot |
 | その他 | with、ジェネレータのsend/throw/closeとyield from、f-string、t-string、match/case |
-| 動的実行 | compile/eval/exec、静的コードとの相互呼び出し、遅延評価するアノテーション・type文、__future__の全既知featureとフラグ継承 |
+| 動的実行 | compile/eval/exec、compileのoptimize=0/1/2、静的コードとの相互呼び出し、遅延評価するアノテーション・type文、__future__の全既知featureとフラグ継承 |
 | メモリ | オブジェクト同一性、循環参照、フレーム・一時値をルートとするmark-and-sweep GC、__del__と復活 |
 
 通常の関数再帰はヒープ上のフレームで処理します。プロトコルや組込み関数からの再入にはRust側の呼び出しが使われる経路もあります。
@@ -41,12 +41,12 @@ APIごとの名前は [API_SUPPORT.md](API_SUPPORT.md) を参照してくださ�
 ## 既知の制約
 
 - async/awaitは未対応です。
-- complex、未対のUnicodeサロゲートなど、基本値にも未対応範囲があります。
+- 未対のUnicodeサロゲートなど、基本値にも未対応範囲があります。
 - bytearray、memoryview、frozenset、openによるファイル入出力は未対応です。標準ストリームのtext/binary入出力を提供します。
 - 文字コード変換はUTF-8・ASCII・Latin-1を対象とし、利用可能なerrors指定にも制約があります。str subclassのencoding付き構築は未対応です。
-- 実行時の構文検査は公式文法から生成したPEG規則を使います。実行用の構文木へ変換する処理には未対応範囲があり、Unicodeの名前付きエスケープなどにも制約が残っています。
+- 実行時の構文検査と命令生成は公式文法から生成したPEGの構文木を使います。async構文などの実行処理、Unicodeの名前付きエスケープなどには制約が残っています。
 - annotationlibの全format、typingモジュール全体のAPIには未対応範囲があります。TypeVar・ParamSpec・TypeVarTuple、型エイリアス、GenericAliasの型変数置換とUnion型を提供します。
-- compile()のAST入出力、top-level await、incomplete input用フラグ、optimize=1/2は未対応です。
+- compile()のAST入出力、top-level await、incomplete input用フラグは未対応です。
 - 実行時に名前が決まるimport、外部C拡張、ネットワーク、スレッド、asyncio、CPython固有の内部APIは対象外です。
 - inspect、pickle、weakrefなど、一覧にない標準モジュールのAPIは提供していません。
 - namedtupleの呼出元moduleの推定、空の関数defaultsの表示、辞書subclassの基底descriptor操作には互換性の差が残っています。

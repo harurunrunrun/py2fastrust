@@ -1,154 +1,5 @@
 // Runtime Python compiler. This module deliberately shares the AOT VM's instruction
 // format: dynamically compiled functions have exactly the same calling convention.
-#[derive(Clone, Debug, PartialEq)]
-enum DTokenKind {
-    Name(String), Number(String), String(String), UString(String), Bytes(Vec<u8>), FString(String), TString(String),
-    Symbol(String), Newline, Indent, Dedent, Eof,
-}
-#[derive(Clone, Debug)]
-struct DToken { kind: DTokenKind, line: usize, column: usize }
-
-struct DLexer {
-    source: std::rc::Rc<Vec<char>>, at: usize, line: usize, column: usize,
-    nesting: usize, line_start: bool, indents: Vec<usize>, tokens: Vec<DToken>,
-}
-impl DLexer {
-    fn new(source: &str) -> Self {
-        Self { source: source.replace("\r\n", "\n").replace('\r', "\n").chars().collect::<Vec<_>>().into(), at: 0,
-            line: 1, column: 0, nesting: 0, line_start: true, indents: vec![0], tokens: Vec::new() }
-    }
-    fn peek(&self, offset: usize) -> Option<char> { self.source.get(self.at + offset).copied() }
-    fn identifier_start(ch: char) -> bool { if ch.is_ascii() { ch.is_ascii_alphabetic() || ch == '_' } else { text_property(ch,TEXT_IDENTIFIER_START) } }
-    fn identifier_continue(ch: char) -> bool { if ch.is_ascii() { ch.is_ascii_alphanumeric() || ch == '_' } else { text_property(ch,TEXT_IDENTIFIER_CONTINUE) } }
-    fn bump(&mut self) -> Option<char> {
-        let ch = self.peek(0)?; self.at += 1;
-        if ch == '\n' { self.line += 1; self.column = 0; } else { self.column += 1; }
-        Some(ch)
-    }
-    fn error(&self, message: &str) -> String { format!("SyntaxError: {message} (line {}, column {})", self.line, self.column + 1) }
-    fn emit(&mut self, kind: DTokenKind, line: usize, column: usize) { self.tokens.push(DToken { kind, line, column }); }
-    fn string(&mut self, prefix: &str, line: usize, column: usize) -> Result<DTokenKind, String> {
-        if prefix.to_ascii_lowercase().contains(['f','t']) {
-            // The grammar tokenizer recognizes fields before decoding escapes.
-            // Sharing its source buffer also avoids rescanning/copying the file
-            // for each formatted literal.
-            let start=self.at-prefix.chars().count();
-            let mut lexer=PegLexer::new("");lexer.source=self.source.clone();lexer.at=self.at;lexer.line=self.line;lexer.column=self.column;
-            lexer.string(prefix,start,line,column).map_err(|error|format!("{}: {} (line {}, column {})",error.kind,error.message,error.line,error.column+1))?;
-            self.at=lexer.at;self.line=lexer.line;self.column=lexer.column;
-            let raw=self.source[start..self.at].iter().collect();
-            return Ok(if prefix.to_ascii_lowercase().contains('t'){DTokenKind::TString(raw)}else{DTokenKind::FString(raw)});
-        }
-        let quote = self.bump().unwrap();
-        let triple = self.peek(0) == Some(quote) && self.peek(1) == Some(quote);
-        if triple { self.bump(); self.bump(); }
-        let raw = prefix.contains('r') || prefix.contains('R');
-        let bytes = prefix.contains('b') || prefix.contains('B');
-        let mut text = String::new();
-        loop {
-            let ch = self.bump().ok_or_else(|| format!("SyntaxError: unterminated string literal (line {line}, column {})", column + 1))?;
-            if ch == quote && (!triple || (self.peek(0) == Some(quote) && self.peek(1) == Some(quote))) {
-                if triple { self.bump(); self.bump(); } break;
-            }
-            if ch == '\n' && !triple { return Err(self.error("unterminated string literal")); }
-            if ch != '\\' { if bytes && !ch.is_ascii() { return Err(self.error("bytes can only contain ASCII literal characters")); } text.push(ch); continue; }
-            let escaped = self.bump().ok_or_else(|| self.error("unterminated string literal"))?;
-            if raw { text.push('\\'); text.push(escaped); continue; }
-            match escaped {
-                '\n' => (), '\\' => text.push('\\'), '\'' => text.push('\''), '"' => text.push('"'),
-                'n' => text.push('\n'), 'r' => text.push('\r'), 't' => text.push('\t'),
-                'a' => text.push('\x07'), 'b' => text.push('\x08'), 'f' => text.push('\x0c'), 'v' => text.push('\x0b'),
-                'x' | 'u' | 'U' if escaped == 'x' || !bytes => {
-                    let count = match escaped { 'x' => 2, 'u' => 4, _ => 8 };
-                    let mut value = 0u32;
-                    for _ in 0..count {
-                        let digit = self.bump().and_then(|x| x.to_digit(16)).ok_or_else(|| self.error("truncated hexadecimal escape"))?;
-                        value = value * 16 + digit;
-                    }
-                    text.push(char::from_u32(value).ok_or_else(|| self.error("invalid Unicode escape"))?);
-                }
-                '0'..='7' => {
-                    let mut value = escaped.to_digit(8).unwrap();
-                    for _ in 0..2 {
-                        if let Some(digit) = self.peek(0).and_then(|x| x.to_digit(8)) { self.bump(); value = value * 8 + digit; } else { break; }
-                    }
-                    text.push(char::from_u32(if bytes { value & 255 } else { value }).unwrap());
-                }
-                'N' if !bytes => return Err(self.error("named Unicode escapes are not yet supported by dynamic compilation")),
-                other => { text.push('\\'); text.push(other); }
-            }
-        }
-        if bytes {
-            let mut result = Vec::new();
-            for ch in text.chars() { if ch as u32 > 255 { return Err(self.error("bytes literals only contain byte characters")); } result.push(ch as u8); }
-            Ok(DTokenKind::Bytes(result))
-        } else if prefix == "u" { Ok(DTokenKind::UString(text)) } else { Ok(DTokenKind::String(text)) }
-    }
-    fn lex(mut self) -> Result<Vec<DToken>, String> {
-        while self.at < self.source.len() {
-            if self.line_start && self.nesting == 0 {
-                let mut width = 0;
-                while let Some(ch) = self.peek(0) {
-                    match ch { ' ' => { self.bump(); width += 1; }, '\t' => { self.bump(); width = (width / 8 + 1) * 8; }, '\x0c' => { self.bump(); width = 0; }, _ => break }
-                }
-                if matches!(self.peek(0), Some('#') | Some('\n') | None) {
-                    if self.peek(0) == Some('#') { while !matches!(self.peek(0), Some('\n') | None) { self.bump(); } }
-                    if self.peek(0) == Some('\n') { self.bump(); } continue;
-                }
-                let previous = *self.indents.last().unwrap();
-                if width > previous { self.indents.push(width); self.emit(DTokenKind::Indent, self.line, self.column); }
-                else if width < previous {
-                    while width < *self.indents.last().unwrap() { self.indents.pop(); self.emit(DTokenKind::Dedent, self.line, self.column); }
-                    if width != *self.indents.last().unwrap() { return Err(self.error("inconsistent indentation")); }
-                }
-                self.line_start = false;
-            }
-            let line = self.line; let column = self.column;
-            let ch = self.peek(0).unwrap();
-            if ch == ' ' || ch == '\t' || ch == '\x0c' { self.bump(); continue; }
-            if ch == '#' { while !matches!(self.peek(0), Some('\n') | None) { self.bump(); } continue; }
-            if ch == '\n' { self.bump(); if self.nesting == 0 { self.emit(DTokenKind::Newline, line, column); self.line_start = true; } continue; }
-            if ch == '\\' && self.peek(1) == Some('\n') { self.bump(); self.bump(); continue; }
-            if ch == '\'' || ch == '"' { let token = self.string("", line, column)?; self.emit(token, line, column); continue; }
-            if Self::identifier_start(ch) {
-                let start = self.at; self.bump();
-                while self.peek(0).is_some_and(Self::identifier_continue) { self.bump(); }
-                let name: String = self.source[start..self.at].iter().collect();
-                if matches!(self.peek(0), Some('\'') | Some('"')) && name.len() <= 2 && name.chars().all(|x| "rRbBuUfFtT".contains(x)) {
-                    let lower = name.to_ascii_lowercase();
-                    if !["r", "b", "u", "f", "t", "br", "rb", "fr", "rf", "tr", "rt"].contains(&lower.as_str()) { return Err(self.error("invalid string prefix")); }
-                    let token = self.string(&name, line, column)?; self.emit(token, line, column);
-                } else { self.emit(DTokenKind::Name(name), line, column); }
-                continue;
-            }
-            if ch.is_ascii_digit() || (ch == '.' && self.peek(1).is_some_and(|x| x.is_ascii_digit())) {
-                let start = self.at; self.bump();
-                while let Some(next) = self.peek(0) {
-                    if next.is_ascii_alphanumeric() || next == '_' || next == '.' { self.bump(); }
-                    else if (next == '+' || next == '-') && self.at > start && matches!(self.source[self.at - 1], 'e' | 'E') { self.bump(); }
-                    else { break; }
-                }
-                let number: String = self.source[start..self.at].iter().collect();
-                self.emit(DTokenKind::Number(number), line, column); continue;
-            }
-            let mut symbol = None;
-            for candidate in ["**=", "//=", "<<=", ">>=", "...", ":=", "==", "!=", "<>", "<=", ">=", "**", "//", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "@=", "->"] {
-                if candidate.chars().enumerate().all(|(offset, c)| self.peek(offset) == Some(c)) { symbol = Some(candidate.to_owned()); break; }
-            }
-            let symbol = symbol.unwrap_or_else(|| ch.to_string());
-            if !"+-*/%@&|^~<>=:;,.()[]{}!".contains(ch) { return Err(self.error(&format!("invalid character {ch:?}"))); }
-            if matches!(ch, '(' | '[' | '{') { self.nesting += 1; }
-            else if matches!(ch, ')' | ']' | '}') { if self.nesting == 0 { return Err(self.error("unmatched closing bracket")); } self.nesting -= 1; }
-            for _ in symbol.chars() { self.bump(); }
-            self.emit(DTokenKind::Symbol(symbol), line, column);
-        }
-        if self.nesting != 0 { return Err(self.error("unclosed bracket")); }
-        if !matches!(self.tokens.last().map(|x| &x.kind), Some(DTokenKind::Newline)) { self.emit(DTokenKind::Newline, self.line, self.column); }
-        while self.indents.len() > 1 { self.indents.pop(); self.emit(DTokenKind::Dedent, self.line, self.column); }
-        self.emit(DTokenKind::Eof, self.line, self.column); Ok(self.tokens)
-    }
-}
-
 #[derive(Clone, Debug)]
 struct DExpr { kind: DExprKind, line: usize, column: usize }
 #[derive(Clone, Debug)]
@@ -200,555 +51,10 @@ fn d_future_feature(name: &str) -> Result<u32,String> {
     }
 }
 
-struct DParser { tokens: Vec<DToken>, at: usize, future_flags: u32 }
 fn d_identifier(raw: &str) -> Result<String,String> {
     let name=text_nfkc(raw);
     if ["None","True","False"].contains(&name.as_str()) { return Err(format!("ValueError: identifier field can't represent '{name}' constant")); }
     Ok(name)
-}
-impl DParser {
-    fn new(source: &str, future_flags: u32) -> Result<Self, String> { Ok(Self { tokens: DLexer::new(source).lex()?, at: 0,future_flags }) }
-    fn token(&self) -> &DToken { &self.tokens[self.at.min(self.tokens.len() - 1)] }
-    fn error(&self, message: &str) -> String { format!("SyntaxError: {message} (line {}, column {})", self.token().line, self.token().column + 1) }
-    fn is(&self, word: &str) -> bool { matches!(&self.token().kind, DTokenKind::Name(x) | DTokenKind::Symbol(x) if x == word) }
-    fn next_is(&self, word: &str) -> bool { self.tokens.get(self.at + 1).is_some_and(|t| matches!(&t.kind, DTokenKind::Name(x) | DTokenKind::Symbol(x) if x == word)) }
-    fn eat(&mut self, word: &str) -> bool { if self.is(word) { self.at += 1; true } else { false } }
-    fn expect(&mut self, word: &str) -> Result<(), String> { if self.eat(word) { Ok(()) } else { Err(self.error(&format!("expected {word:?}"))) } }
-    fn name(&mut self) -> Result<String, String> {
-        match self.token().kind.clone() { DTokenKind::Name(name) if !d_reserved(&name) => { self.at += 1; d_identifier(&name) }, _ => Err(self.error("expected an identifier")) }
-    }
-    fn expr_at(&self, kind: DExprKind, token: &DToken) -> DExpr { DExpr { kind, line: token.line, column: token.column } }
-    fn end_simple(&self) -> bool { matches!(self.token().kind, DTokenKind::Newline | DTokenKind::Dedent | DTokenKind::Eof) || self.is(";") }
-    fn expression_end(&self) -> bool { self.end_simple() || [")", "]", "}", ":", "="].iter().any(|x| self.is(x)) }
-    fn parse(&mut self) -> Result<Vec<DStmt>, String> {
-        let mut statements = Vec::new();
-        while !matches!(self.token().kind, DTokenKind::Eof) {
-            if matches!(self.token().kind, DTokenKind::Newline) { self.at += 1; continue; }
-            statements.extend(self.statement()?);
-        }
-        Ok(statements)
-    }
-    fn suite(&mut self) -> Result<Vec<DStmt>, String> {
-        self.expect(":")?;
-        if !matches!(self.token().kind, DTokenKind::Newline) { return self.simple_line(); }
-        self.at += 1;
-        if !matches!(self.token().kind, DTokenKind::Indent) { return Err(self.error("expected an indented block")); }
-        self.at += 1; let mut body = Vec::new();
-        while !matches!(self.token().kind, DTokenKind::Dedent | DTokenKind::Eof) {
-            if matches!(self.token().kind, DTokenKind::Newline) { self.at += 1; continue; }
-            body.extend(self.statement()?);
-        }
-        if !matches!(self.token().kind, DTokenKind::Dedent) { return Err(self.error("expected end of indented block")); }
-        self.at += 1; Ok(body)
-    }
-    fn statement(&mut self) -> Result<Vec<DStmt>, String> {
-        let token = self.token().clone();
-        let mut decorators = Vec::new();
-        while self.eat("@") {
-            decorators.push(self.expression()?);
-            if !matches!(self.token().kind, DTokenKind::Newline) { return Err(self.error("expected newline after decorator")); }
-            self.at += 1;
-        }
-        let match_subject = if self.is("match") {
-            let saved = self.at; self.at += 1;
-            match self.expression_list() {
-                Ok(subject) if self.is(":") && self.tokens.get(self.at+1).is_some_and(|token|matches!(token.kind,DTokenKind::Newline)) => Some(subject),
-                _ => { self.at = saved; None }
-            }
-        } else { None };
-        let kind = if let Some(subject) = match_subject { self.match_statement(subject)? }
-        else if self.eat("if") { let condition = self.expression()?; let body = self.suite()?; let tail = self.if_tail()?; DStmtKind::If(condition, body, tail) }
-        else if self.eat("while") {
-            let condition = self.expression()?; let body = self.suite()?;
-            let tail = if self.eat("else") { self.suite()? } else { Vec::new() };
-            DStmtKind::While(condition, body, tail)
-        } else if self.eat("for") {
-            let target = self.target_list()?; self.expect("in")?; let iter = self.expression_list()?;
-            let body = self.suite()?; let tail = if self.eat("else") { self.suite()? } else { Vec::new() };
-            DStmtKind::For(target, iter, body, tail)
-        } else if self.eat("def") {
-            let name = self.name()?; let type_params=self.type_parameters()?;
-            self.expect("(")?; let mut params = self.parameters(")")?; self.expect(")")?;
-            if self.eat("->") { params.annotations.push(("return".to_owned(),self.expression()?)); }
-            let definition=DStmtKind::Function(name, params, self.suite()?, decorators.clone());
-            if type_params.is_empty(){definition}else{DStmtKind::Generic(type_params,Box::new(definition))}
-        } else if self.eat("class") {
-            let name = self.name()?; let type_params=self.type_parameters()?; let mut bases = Vec::new(); let mut keywords = Vec::new();
-            if self.eat("(") {
-                while !self.is(")") {
-                    if matches!(self.token().kind, DTokenKind::Name(_)) && self.next_is("=") { let key = self.name()?; self.expect("=")?; keywords.push((key, self.expression()?)); }
-                    else { bases.push(self.expression()?); }
-                    if !self.eat(",") { break; }
-                }
-                self.expect(")")?;
-            }
-            let definition=DStmtKind::Class(name, bases, keywords, self.suite()?, decorators.clone());
-            if type_params.is_empty(){definition}else{DStmtKind::Generic(type_params,Box::new(definition))}
-        } else if self.eat("try") {
-            let body = self.suite()?; let mut handlers = Vec::new();let mut starred=None;
-            while self.eat("except") {
-                let is_starred=self.eat("*");
-                if starred.is_some_and(|previous|previous!=is_starred){return Err(self.error("cannot have both 'except' and 'except*' on the same 'try'"));}
-                starred=Some(is_starred);
-                if is_starred&&self.is(":"){return Err(self.error("expected one or more exception types"));}
-                let exception = if self.is(":") { None } else { Some(self.expression_list()?) };
-                let name = if self.eat("as") { Some(self.name()?) } else { None };
-                let handler = self.suite()?; handlers.push((exception, name, handler));
-            }
-            let tail = if self.eat("else") { self.suite()? } else { Vec::new() };
-            let finally = if self.eat("finally") { self.suite()? } else { Vec::new() };
-            if handlers.is_empty() && finally.is_empty() { return Err(self.error("try requires except or finally")); }
-            if handlers.is_empty() && !tail.is_empty() { return Err(self.error("try/else requires except")); }
-            for (index, (exception, _, _)) in handlers.iter().enumerate() { if exception.is_none() && index + 1 < handlers.len() { return Err(self.error("default except must be last")); } }
-            if starred==Some(true){DStmtKind::TryStar(body, handlers, tail, finally)}else{DStmtKind::Try(body, handlers, tail, finally)}
-        } else if self.eat("with") {
-            let parenthesized = self.eat("("); let mut items = Vec::new();
-            loop {
-                let value = self.expression()?; let target = if self.eat("as") { Some(self.bit_or()?) } else { None };
-                items.push((value, target)); if !self.eat(",") { break; } if parenthesized && self.is(")") { break; }
-            }
-            if parenthesized { self.expect(")")?; }
-            DStmtKind::With(items, self.suite()?)
-        } else {
-            if !decorators.is_empty() { return Err(self.error("decorator must precede a function or class")); }
-            if self.is("async") { return Err(self.error("async statements are not supported by dynamic compilation")); }
-            return self.simple_line();
-        };
-        if !decorators.is_empty() && !matches!(kind, DStmtKind::Function(..) | DStmtKind::Class(..) | DStmtKind::Generic(..)) { return Err(self.error("decorator must precede a function or class")); }
-        Ok(vec![DStmt { kind, line: token.line, column: token.column }])
-    }
-    fn if_tail(&mut self) -> Result<Vec<DStmt>, String> {
-        if self.eat("elif") {
-            let token = self.tokens[self.at - 1].clone(); let condition = self.expression()?; let body = self.suite()?; let tail = self.if_tail()?;
-            Ok(vec![DStmt { kind: DStmtKind::If(condition, body, tail), line: token.line, column: token.column }])
-        } else if self.eat("else") { self.suite() } else { Ok(Vec::new()) }
-    }
-    fn simple_line(&mut self) -> Result<Vec<DStmt>, String> {
-        let mut result = Vec::new();
-        loop {
-            result.push(self.simple_statement()?);
-            if !self.eat(";") || self.end_simple() { break; }
-        }
-        if matches!(self.token().kind, DTokenKind::Newline) { self.at += 1; }
-        else if !matches!(self.token().kind, DTokenKind::Eof | DTokenKind::Dedent) { return Err(self.error("expected newline or semicolon")); }
-        Ok(result)
-    }
-    fn simple_statement(&mut self) -> Result<DStmt, String> {
-        let token = self.token().clone();
-        let kind = if self.is("type") && self.tokens.get(self.at+1).is_some_and(|token|matches!(&token.kind,DTokenKind::Name(name)if !d_reserved(name))) {
-            self.at+=1; let name=self.name()?;let params=self.type_parameters()?;self.expect("=")?;
-            DStmtKind::TypeAlias(name,params,self.expression()?)
-        } else if self.eat("pass") { DStmtKind::Pass }
-        else if self.eat("break") { DStmtKind::Break }
-        else if self.eat("continue") { DStmtKind::Continue }
-        else if self.eat("return") { DStmtKind::Return(if self.end_simple() { None } else { Some(self.expression_list()?) }) }
-        else if self.eat("raise") {
-            let exception = if self.end_simple() { None } else { Some(self.expression()?) };
-            let cause = if self.eat("from") { Some(self.expression()?) } else { None };
-            DStmtKind::Raise(exception, cause)
-        } else if self.eat("assert") {
-            let test = self.expression()?; let message = if self.eat(",") { Some(self.expression()?) } else { None }; DStmtKind::Assert(test, message)
-        } else if self.eat("global") || self.eat("nonlocal") {
-            let global = matches!(&self.tokens[self.at - 1].kind, DTokenKind::Name(x) if x == "global");
-            let mut names = vec![self.name()?]; while self.eat(",") { names.push(self.name()?); }
-            if global { DStmtKind::Global(names) } else { DStmtKind::Nonlocal(names) }
-        } else if self.eat("del") {
-            let target = self.expression_list()?; DStmtKind::Delete(match target.kind { DExprKind::Tuple(items) => items, _ => vec![target] })
-        } else if self.eat("import") {
-            let mut names = Vec::new();
-            loop { let module = self.dotted_name()?; let alias = if self.eat("as") { Some(self.name()?) } else { None }; names.push((module, alias)); if !self.eat(",") { break; } }
-            DStmtKind::Import(names)
-        } else if self.eat("from") {
-            let mut level = 0; while self.eat(".") || self.eat("...") { level += if self.tokens[self.at - 1].kind == DTokenKind::Symbol("...".to_owned()) { 3 } else { 1 }; }
-            let module = if self.is("import") { String::new() } else { self.dotted_name()? }; self.expect("import")?;
-            let parenthesized = self.eat("("); let mut names = Vec::new();
-            if self.eat("*") { names.push(("*".to_owned(), None)); }
-            else { loop { let name = self.name()?; let alias = if self.eat("as") { Some(self.name()?) } else { None }; names.push((name, alias)); if !self.eat(",") { break; } if parenthesized && self.is(")") { break; } } }
-            if parenthesized { self.expect(")")?; }
-            if level == 0 && module == "__future__" {
-                for (name,_) in &names { if let Ok(flags) = d_future_feature(name) { self.future_flags |= flags; } }
-            }
-            DStmtKind::ImportFrom(module, names, level)
-        } else {
-            let simple = matches!(&token.kind,DTokenKind::Name(_));
-            let first = self.expression_list()?;
-            if self.eat("=") {
-                let mut targets = vec![first]; let mut value = self.expression_list()?;
-                while self.eat("=") { targets.push(value); value = self.expression_list()?; }
-                DStmtKind::Assign(targets, value)
-            } else if self.eat(":") {
-                if !matches!(&first.kind,DExprKind::Name(_) | DExprKind::Attribute(..) | DExprKind::Subscript(..)) { return Err(self.error("illegal target for annotation")); }
-                let annotation = self.expression()?;
-                let value = if self.eat("=") { Some(self.expression_list()?) } else { None };
-                DStmtKind::AnnAssign(first, annotation, value, simple)
-            } else if let DTokenKind::Symbol(op) = self.token().kind.clone() {
-                if op.ends_with('=') && ["+=", "-=", "*=", "/=", "//=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>=", "@="].contains(&op.as_str()) {
-                    self.at += 1; DStmtKind::AugAssign(first, op[..op.len() - 1].to_owned(), self.expression_list()?)
-                } else { DStmtKind::Expr(first) }
-            } else { DStmtKind::Expr(first) }
-        };
-        Ok(DStmt { kind, line: token.line, column: token.column })
-    }
-    fn dotted_name(&mut self) -> Result<String, String> { let mut name = self.name()?; while self.eat(".") { name.push('.'); name.push_str(&self.name()?); } Ok(name) }
-    fn expression_list(&mut self) -> Result<DExpr, String> {
-        let first = self.star_expression()?;
-        if !self.eat(",") { return Ok(first); }
-        let token = DToken { kind: DTokenKind::Eof, line: first.line, column: first.column }; let mut values = vec![first];
-        while !self.expression_end() && !self.is("in") { values.push(self.star_expression()?); if !self.eat(",") { break; } }
-        Ok(self.expr_at(DExprKind::Tuple(values), &token))
-    }
-    fn target_list(&mut self) -> Result<DExpr, String> {
-        let token = self.token().clone(); let first = self.target_atom()?;
-        if !self.eat(",") { return Ok(first); } let mut values = vec![first];
-        while !self.is("in") { values.push(self.target_atom()?); if !self.eat(",") { break; } }
-        Ok(self.expr_at(DExprKind::Tuple(values), &token))
-    }
-    fn target_atom(&mut self) -> Result<DExpr, String> {
-        let token = self.token().clone(); if self.eat("*") { let value = self.target_atom()?; return Ok(self.expr_at(DExprKind::Star(Box::new(value)), &token)); }
-        if self.eat("(") || self.eat("[") {
-            let close = if matches!(&self.tokens[self.at - 1].kind,DTokenKind::Symbol(s) if s == "(") { ")" } else { "]" };
-            let mut items = Vec::new(); while !self.is(close) { items.push(self.target_atom()?); if !self.eat(",") { break; } } self.expect(close)?;
-            return Ok(self.expr_at(DExprKind::Tuple(items), &token));
-        }
-        self.postfix()
-    }
-    fn star_expression(&mut self) -> Result<DExpr, String> {
-        let token = self.token().clone(); if self.eat("*") { let value = self.bit_or()?; Ok(self.expr_at(DExprKind::Star(Box::new(value)), &token)) } else { self.expression() }
-    }
-    fn expression(&mut self) -> Result<DExpr, String> {
-        let token = self.token().clone();
-        if self.eat("lambda") { let params = self.parameters(":")?; self.expect(":")?; let body = self.expression()?; return Ok(self.expr_at(DExprKind::Lambda(params, Box::new(body)), &token)); }
-        if self.eat("yield") {
-            let from = self.eat("from"); let value = if self.expression_end() { None } else { Some(Box::new(self.expression_list()?)) };
-            if from && value.is_none() { return Err(self.error("yield from requires an expression")); }
-            return Ok(self.expr_at(DExprKind::Yield(value, from), &token));
-        }
-        let value = self.or_expr()?;
-        if self.eat(":=") {
-            let name = match value.kind { DExprKind::Name(name) => name, _ => return Err(self.error("assignment expression requires an identifier")) };
-            let value = self.expression()?;
-            return Ok(self.expr_at(DExprKind::Named(name, Box::new(value)), &token));
-        }
-        if self.eat("if") { let condition = self.or_expr()?; self.expect("else")?; let otherwise = self.expression()?; return Ok(self.expr_at(DExprKind::Conditional(Box::new(condition), Box::new(value), Box::new(otherwise)), &token)); }
-        Ok(value)
-    }
-    fn or_expr(&mut self) -> Result<DExpr, String> { self.bool_expr("or", Self::and_expr) }
-    fn and_expr(&mut self) -> Result<DExpr, String> { self.bool_expr("and", Self::not_expr) }
-    fn bool_expr(&mut self, op: &str, next: fn(&mut Self) -> Result<DExpr,String>) -> Result<DExpr,String> {
-        let token = self.token().clone(); let first = next(self)?; if !self.eat(op) { return Ok(first); } let mut values = vec![first, next(self)?]; while self.eat(op) { values.push(next(self)?); }
-        Ok(self.expr_at(DExprKind::Bool(op.to_owned(), values), &token))
-    }
-    fn not_expr(&mut self) -> Result<DExpr,String> {
-        let token = self.token().clone(); if self.eat("not") { let value = self.not_expr()?; Ok(self.expr_at(DExprKind::Unary("not".to_owned(), Box::new(value)), &token)) } else { self.comparison() }
-    }
-    fn comparison(&mut self) -> Result<DExpr, String> {
-        let token = self.token().clone(); let left = self.bit_or()?; let mut tail = Vec::new();
-        loop {
-            let op = if self.eat("not") { self.expect("in")?; Some("not in".to_owned()) }
-            else if self.eat("is") { Some(if self.eat("not") { "is not" } else { "is" }.to_owned()) }
-            else if ["<", ">", "<=", ">=", "==", "!=", "<>", "in"].iter().any(|x| self.is(x)) {
-                let op = match self.token().kind.clone() { DTokenKind::Name(x) | DTokenKind::Symbol(x) => x, _ => unreachable!() };
-                if op == "<>" && self.future_flags & D_FUTURE_BARRY == 0 { return Err(self.error("invalid syntax")); }
-                if op == "!=" && self.future_flags & D_FUTURE_BARRY != 0 { return Err(self.error("with Barry as BDFL, use '<>' instead of '!='")); }
-                self.at += 1; Some(if op == "<>" { "!=".to_owned() } else { op })
-            }
-            else { None };
-            if let Some(op) = op { tail.push((op, self.bit_or()?)); } else { break; }
-        }
-        if tail.is_empty() { Ok(left) } else { Ok(self.expr_at(DExprKind::Compare(Box::new(left), tail), &token)) }
-    }
-    fn binary_level(&mut self, ops: &[&str], next: fn(&mut Self) -> Result<DExpr,String>) -> Result<DExpr,String> {
-        let token = self.token().clone(); let mut left = next(self)?;
-        while ops.iter().any(|x| self.is(x)) { let op = match self.token().kind.clone() { DTokenKind::Symbol(x) => x, _ => unreachable!() }; self.at += 1; let right = next(self)?; left = self.expr_at(DExprKind::Binary(op, Box::new(left), Box::new(right)), &token); }
-        Ok(left)
-    }
-    fn bit_or(&mut self) -> Result<DExpr,String> { self.binary_level(&["|"], Self::bit_xor) }
-    fn bit_xor(&mut self) -> Result<DExpr,String> { self.binary_level(&["^"], Self::bit_and) }
-    fn bit_and(&mut self) -> Result<DExpr,String> { self.binary_level(&["&"], Self::shift) }
-    fn shift(&mut self) -> Result<DExpr,String> { self.binary_level(&["<<", ">>"], Self::sum) }
-    fn sum(&mut self) -> Result<DExpr,String> { self.binary_level(&["+", "-"], Self::term) }
-    fn term(&mut self) -> Result<DExpr,String> { self.binary_level(&["*", "/", "//", "%", "@"], Self::factor) }
-    fn factor(&mut self) -> Result<DExpr,String> {
-        let token = self.token().clone(); for op in ["+", "-", "~"] { if self.eat(op) { let value = self.factor()?; return Ok(self.expr_at(DExprKind::Unary(op.to_owned(), Box::new(value)), &token)); } } self.power()
-    }
-    fn power(&mut self) -> Result<DExpr,String> {
-        let token = self.token().clone(); let left = self.postfix()?; if self.eat("**") { let right = self.factor()?; Ok(self.expr_at(DExprKind::Binary("**".to_owned(), Box::new(left), Box::new(right)), &token)) } else { Ok(left) }
-    }
-    fn postfix(&mut self) -> Result<DExpr,String> {
-        let token = self.token().clone(); let mut value = self.atom()?;
-        loop {
-            if self.eat(".") { let name = self.name()?; value = self.expr_at(DExprKind::Attribute(Box::new(value), name), &token); }
-            else if self.eat("(") {
-                let mut args = Vec::new(); let mut keywords = Vec::new(); let mut seen_keyword = false;
-                while !self.is(")") {
-                    if self.eat("**") { keywords.push((None, self.expression()?)); seen_keyword = true; }
-                    else if matches!(self.token().kind, DTokenKind::Name(_)) && self.next_is("=") {
-                        let name = self.name()?; self.expect("=")?; if keywords.iter().any(|(key,_)| key.as_ref() == Some(&name)) { return Err(self.error("keyword argument repeated")); }
-                        keywords.push((Some(name), self.expression()?)); seen_keyword = true;
-                    } else {
-                        let arg = self.star_expression()?;
-                        if seen_keyword && !matches!(arg.kind, DExprKind::Star(_)) { return Err(self.error("positional argument follows keyword argument")); }
-                        if self.is("for") { if !args.is_empty() || !keywords.is_empty() { return Err(self.error("generator expression must be parenthesized")); } let generators = self.generators()?; args.push(self.expr_at(DExprKind::Comprehension { kind: "generator".to_owned(), element: Box::new(arg), value: None, generators }, &token)); }
-                        else { args.push(arg); }
-                    }
-                    if !self.eat(",") { break; }
-                }
-                self.expect(")")?; value = self.expr_at(DExprKind::Call(Box::new(value), args, keywords), &token);
-            } else if self.eat("[") {
-                let first = self.subscript()?; let mut tuple = matches!(&first.kind,DExprKind::Star(_)); let mut values = vec![first];
-                while self.eat(",") { tuple = true; if self.is("]") { break; } values.push(self.subscript()?); }
-                self.expect("]")?; let subscript = if tuple { self.expr_at(DExprKind::Tuple(values), &token) } else { values.pop().unwrap() };
-                value = self.expr_at(DExprKind::Subscript(Box::new(value), Box::new(subscript)), &token);
-            } else { break; }
-        }
-        Ok(value)
-    }
-    fn subscript(&mut self) -> Result<DExpr,String> {
-        if self.is("*") { return self.star_expression(); }
-        let token = self.token().clone(); let lower = if self.is(":") { None } else { Some(Box::new(self.expression()?)) };
-        if !self.eat(":") { return lower.map(|x| *x).ok_or_else(|| self.error("expected subscript")); }
-        let upper = if self.is(":") || self.is(",") || self.is("]") { None } else { Some(Box::new(self.expression()?)) };
-        let step = if self.eat(":") && !self.is(",") && !self.is("]") { Some(Box::new(self.expression()?)) } else { None };
-        Ok(self.expr_at(DExprKind::Slice(lower, upper, step), &token))
-    }
-    fn atom(&mut self) -> Result<DExpr,String> {
-        let token = self.token().clone();
-        let kind = match token.kind.clone() {
-            DTokenKind::Number(number) => {
-                self.at += 1;
-                if number.ends_with('j') || number.ends_with('J') { DExprKind::Imaginary(d_imaginary(&number).map_err(|m|self.error(&m))?) }
-                else { DExprKind::Constant(d_number(&number).map_err(|m| self.error(&m))?) }
-            }
-            DTokenKind::String(_) | DTokenKind::UString(_) | DTokenKind::Bytes(_) | DTokenKind::FString(_) => {
-                let mut values = Vec::new(); let mut plain = String::new(); let mut bytes: Option<Vec<u8>> = None;
-                let unicode=matches!(&token.kind,DTokenKind::UString(_)); let mut formatted=false;
-                loop {
-                    match self.token().kind.clone() {
-                        DTokenKind::String(text) | DTokenKind::UString(text) => { if bytes.is_some() { return Err(self.error("cannot mix bytes and nonbytes literals")); } plain.push_str(&text); self.at += 1; }
-                        DTokenKind::Bytes(text) => { if !plain.is_empty() || !values.is_empty() { return Err(self.error("cannot mix bytes and nonbytes literals")); } bytes.get_or_insert_with(Vec::new).extend(text); self.at += 1; }
-                        DTokenKind::FString(text) => {
-                            formatted=true;
-                            if bytes.is_some() { return Err(self.error("cannot mix bytes and nonbytes literals")); }
-                            if !plain.is_empty() { values.push(self.expr_at(DExprKind::Constant(Const::Str(std::mem::take(&mut plain))), &token)); }
-                            values.extend(d_formatted_literal(&text, token.line, token.column, self.future_flags,false)?); self.at += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                if let Some(bytes) = bytes { DExprKind::Constant(Const::Bytes(bytes)) }
-                else if values.is_empty() && !formatted { if unicode {DExprKind::UnicodeString(plain)}else{DExprKind::Constant(Const::Str(plain))} }
-                else { if !plain.is_empty() { values.push(self.expr_at(DExprKind::Constant(Const::Str(plain)), &token)); } DExprKind::Joined(values) }
-            }
-            DTokenKind::TString(_) => {
-                let mut values=Vec::new();
-                while let DTokenKind::TString(text)=self.token().kind.clone() { values.extend(d_formatted_literal(&text,token.line,token.column,self.future_flags,true)?);self.at+=1; }
-                DExprKind::Template(values)
-            }
-            DTokenKind::Name(name) if name == "None" || name == "True" || name == "False" => { self.at += 1; DExprKind::Constant(match name.as_str() { "None" => Const::None, "True" => Const::Bool(true), _ => Const::Bool(false) }) }
-            DTokenKind::Name(name) if !d_reserved(&name) => { self.at += 1; DExprKind::Name(d_identifier(&name)?) }
-            DTokenKind::Symbol(symbol) if symbol == "(" => {
-                self.at += 1; if self.eat(")") { DExprKind::Tuple(Vec::new()) }
-                else {
-                    let first = self.star_expression()?;
-                    if self.is("for") { let generators = self.generators()?; self.expect(")")?; DExprKind::Comprehension { kind: "generator".to_owned(), element: Box::new(first), value: None, generators } }
-                    else if self.eat(",") { let mut values = vec![first]; while !self.is(")") { values.push(self.star_expression()?); if !self.eat(",") { break; } } self.expect(")")?; DExprKind::Tuple(values) }
-                    else { self.expect(")")?; return Ok(first); }
-                }
-            }
-            DTokenKind::Symbol(symbol) if symbol == "[" => {
-                self.at += 1; if self.eat("]") { DExprKind::List(Vec::new()) }
-                else { let first = self.star_expression()?;
-                    if self.is("for") { let generators = self.generators()?; self.expect("]")?; DExprKind::Comprehension { kind: "list".to_owned(), element: Box::new(first), value: None, generators } }
-                    else { let mut values = vec![first]; while self.eat(",") { if self.is("]") { break; } values.push(self.star_expression()?); } self.expect("]")?; DExprKind::List(values) }
-                }
-            }
-            DTokenKind::Symbol(symbol) if symbol == "{" => {
-                self.at += 1; if self.eat("}") { DExprKind::Dict(Vec::new()) }
-                else if self.eat("**") {
-                    let mut items = vec![(None, self.expression()?)];
-                    while self.eat(",") { if self.is("}") { break; } if self.eat("**") { items.push((None,self.expression()?)); } else { let key = self.expression()?; self.expect(":")?; items.push((Some(key), self.expression()?)); } }
-                    self.expect("}")?; DExprKind::Dict(items)
-                } else { let first = self.star_expression()?;
-                    if self.eat(":") { let value = self.expression()?;
-                        if self.is("for") { let generators = self.generators()?; self.expect("}")?; DExprKind::Comprehension { kind: "dict".to_owned(), element: Box::new(first), value: Some(Box::new(value)), generators } }
-                        else { let mut items = vec![(Some(first), value)]; while self.eat(",") { if self.is("}") { break; } if self.eat("**") { items.push((None,self.expression()?)); } else { let key = self.expression()?; self.expect(":")?; items.push((Some(key),self.expression()?)); } } self.expect("}")?; DExprKind::Dict(items) }
-                    } else if self.is("for") { let generators = self.generators()?; self.expect("}")?; DExprKind::Comprehension { kind: "set".to_owned(), element: Box::new(first), value: None, generators } }
-                    else { let mut items = vec![first]; while self.eat(",") { if self.is("}") { break; } items.push(self.star_expression()?); } self.expect("}")?; DExprKind::Set(items) }
-                }
-            }
-            DTokenKind::Symbol(symbol) if symbol == "..." => { self.at+=1; DExprKind::Ellipsis },
-            _ => return Err(self.error("expected expression")),
-        };
-        Ok(self.expr_at(kind, &token))
-    }
-    fn generators(&mut self) -> Result<Vec<DGenerator>,String> {
-        let mut generators = Vec::new();
-        while self.eat("for") {
-            let target = self.target_list()?; self.expect("in")?; let iter = self.or_expr()?; let mut filters = Vec::new();
-            while self.eat("if") { filters.push(self.or_expr()?); }
-            generators.push(DGenerator { target, iter, filters });
-        }
-        Ok(generators)
-    }
-    fn type_parameters(&mut self)->Result<Vec<DTypeParam>,String> {
-        if !self.eat("["){return Ok(Vec::new());}
-        if self.is("]"){return Err(self.error("type parameter list cannot be empty"));}
-        let mut parameters:Vec<DTypeParam>=Vec::new();let mut saw_default=false;
-        loop {
-            let kind=if self.eat("**"){"paramspec"}else if self.eat("*"){"typevartuple"}else{"typevar"};
-            let name=self.name()?;
-            if parameters.iter().any(|parameter|parameter.name==name){return Err(self.error(&format!("duplicate type parameter '{name}'")));}
-            let mut bound=None;let mut constraints=None;
-            if self.eat(":"){
-                if kind!="typevar"{return Err(self.error(if kind=="paramspec"{"cannot use bound with ParamSpec"}else{"cannot use bound with TypeVarTuple"}));}
-                let value=self.expression()?;
-                if matches!(value.kind,DExprKind::Tuple(_)){constraints=Some(value);}else{bound=Some(value);}
-            }
-            let default=if self.eat("="){
-                saw_default=true;
-                if kind=="typevartuple" && self.eat("*") {
-                    let token=self.tokens[self.at-1].clone();let value=self.expression()?;
-                    Some(self.expr_at(DExprKind::Star(Box::new(value)),&token))
-                }else{Some(self.expression()?)}
-            }else{
-                if saw_default{return Err(self.error(&format!("non-default type parameter '{name}' follows default type parameter")));}
-                None
-            };
-            parameters.push(DTypeParam{name,kind:kind.to_owned(),bound,constraints,default});
-            if !self.eat(",") || self.is("]"){break;}
-        }
-        self.expect("]")?;Ok(parameters)
-    }
-    fn parameters(&mut self, closing: &str) -> Result<DParams,String> {
-        let mut params = DParams::default(); let mut keyword_only = false; let mut seen_default = false; let mut seen_slash = false;
-        while !self.is(closing) {
-            if self.eat("/") {
-                if seen_slash || keyword_only || params.params.positional.is_empty() { return Err(self.error("invalid positional-only separator")); }
-                params.params.posonly = params.params.positional.len(); seen_slash = true;
-            } else if self.eat("**") {
-                let name=self.name()?; params.params.kwarg = Some(name.clone()); if closing == ")" && self.eat(":") { params.annotations.push((name,self.expression()?)); }
-                if self.eat(",") && !self.is(closing) { return Err(self.error("arguments cannot follow **kwargs")); }
-                break;
-            } else if self.eat("*") {
-                if keyword_only { return Err(self.error("duplicate * parameter")); } keyword_only = true;
-                if !self.is(",") && !self.is(closing) { let name=self.name()?;params.params.vararg = Some(name.clone()); if closing == ")" && self.eat(":") { params.annotations.push((name,self.expression()?)); } }
-            } else {
-                let name = self.name()?;
-                if params.params.positional.contains(&name) || params.params.kwonly.contains(&name) || params.params.vararg.as_ref() == Some(&name) || params.params.kwarg.as_ref() == Some(&name) { return Err(self.error("duplicate parameter")); }
-                if closing == ")" && self.eat(":") { params.annotations.push((name.clone(),self.expression()?)); }
-                let default = if self.eat("=") { Some(self.expression()?) } else { None };
-                if keyword_only { params.params.kwonly.push(name.clone()); if let Some(default) = default { params.kwdefaults.push((name,default)); } }
-                else { params.params.positional.push(name); if let Some(default) = default { seen_default = true; params.defaults.push(default); } else if seen_default { return Err(self.error("nondefault argument follows default argument")); } }
-            }
-            if !self.eat(",") { break; }
-        }
-        if keyword_only && params.params.vararg.is_none() && params.params.kwonly.is_empty() { return Err(self.error("named arguments must follow bare *")); }
-        Ok(params)
-    }
-    fn match_statement(&mut self, subject: DExpr) -> Result<DStmtKind,String> {
-        self.expect(":")?;
-        if !matches!(self.token().kind,DTokenKind::Newline) { return Err(self.error("expected a newline after match subject")); } self.at += 1;
-        if !matches!(self.token().kind,DTokenKind::Indent) { return Err(self.error("expected an indented case block")); } self.at += 1;
-        let mut cases = Vec::new(); let mut irrefutable = false;
-        while !matches!(self.token().kind,DTokenKind::Dedent | DTokenKind::Eof) {
-            if matches!(self.token().kind,DTokenKind::Newline) { self.at += 1; continue; }
-            if irrefutable { return Err(self.error("irrefutable pattern makes remaining patterns unreachable")); }
-            self.expect("case")?; let first = self.pattern()?;
-            let pattern = if self.eat(",") {
-                let mut values = vec![first];
-                while !self.is(":") && !self.is("if") { values.push(self.pattern()?); if !self.eat(",") { break; } }
-                MatchPattern::Sequence(values)
-            } else { first };
-            d_pattern_bindings(&pattern).map_err(|message|self.error(&message))?;
-            if matches!(pattern,MatchPattern::Star(_)) { return Err(self.error("star pattern requires a sequence")); }
-            let guard = if self.eat("if") { Some(self.expression()?) } else { None };
-            irrefutable = guard.is_none() && d_pattern_irrefutable(&pattern);
-            let body = self.suite()?; cases.push((pattern,guard,body));
-        }
-        if cases.is_empty() { return Err(self.error("match statement requires at least one case")); }
-        if !matches!(self.token().kind,DTokenKind::Dedent) { return Err(self.error("expected end of case block")); } self.at += 1;
-        Ok(DStmtKind::Match(subject,cases))
-    }
-    fn pattern(&mut self) -> Result<MatchPattern,String> {
-        let first = self.closed_pattern()?;
-        let mut pattern = if self.eat("|") {
-            let mut alternatives = vec![first,self.closed_pattern()?]; while self.eat("|") { alternatives.push(self.closed_pattern()?); }
-            MatchPattern::Or(alternatives)
-        } else { first };
-        if self.eat("as") {
-            let name = self.name()?; if name == "_" { return Err(self.error("cannot use '_' as an as-pattern target")); }
-            pattern = MatchPattern::As { pattern:Some(Box::new(pattern)),name:Some(name) };
-        }
-        Ok(pattern)
-    }
-    fn closed_pattern(&mut self) -> Result<MatchPattern,String> {
-        if self.eat("*") { let name = self.name()?; return Ok(MatchPattern::Star(if name=="_"{None}else{Some(name)})); }
-        if self.eat("[") {
-            let mut values = Vec::new(); while !self.is("]") { values.push(self.pattern()?); if !self.eat(",") { break; } } self.expect("]")?; return Ok(MatchPattern::Sequence(values));
-        }
-        if self.eat("(") {
-            if self.eat(")") { return Ok(MatchPattern::Sequence(Vec::new())); }
-            let first = self.pattern()?;
-            if self.eat(",") { let mut values = vec![first]; while !self.is(")") { values.push(self.pattern()?); if !self.eat(",") { break; } } self.expect(")")?; return Ok(MatchPattern::Sequence(values)); }
-            self.expect(")")?;
-            if matches!(first,MatchPattern::Star(_)) { return Err(self.error("star pattern requires a sequence")); }
-            return Ok(first);
-        }
-        if self.eat("{") {
-            let mut keys = Vec::new(); let mut patterns = Vec::new(); let mut rest = None;
-            while !self.is("}") {
-                if self.eat("**") {
-                    let name = self.name()?; if name == "_" { return Err(self.error("mapping rest pattern cannot be '_'")); } rest = Some(name);
-                    self.eat(","); if !self.is("}") { return Err(self.error("mapping rest pattern must be last")); } break;
-                }
-                let key = self.pattern_key()?;
-                if keys.iter().any(|prior| d_pattern_literal_equal(prior,&key)) { return Err(self.error("mapping pattern checks duplicate key")); }
-                self.expect(":")?; keys.push(key); patterns.push(self.pattern()?); if !self.eat(",") { break; }
-            }
-            self.expect("}")?; return Ok(MatchPattern::Mapping { keys,patterns,rest });
-        }
-        if self.is("-") || matches!(self.token().kind,DTokenKind::Number(_) | DTokenKind::String(_) | DTokenKind::UString(_) | DTokenKind::Bytes(_)) || self.is("None") || self.is("True") || self.is("False") {
-            return self.pattern_literal();
-        }
-        let first = self.name()?; let mut path = vec![first.clone()]; while self.eat(".") { path.push(self.name()?); }
-        if self.eat("(") {
-            let mut positional = Vec::new(); let mut keyword_names = Vec::new(); let mut keyword_patterns = Vec::new();
-            while !self.is(")") {
-                if matches!(self.token().kind,DTokenKind::Name(_)) && self.next_is("=") {
-                    let name = self.name()?; self.expect("=")?;
-                    if keyword_names.contains(&name) { return Err(self.error("attribute name repeated in class pattern")); }
-                    keyword_names.push(name); keyword_patterns.push(self.pattern()?);
-                } else {
-                    if !keyword_names.is_empty() { return Err(self.error("positional patterns follow keyword patterns")); }
-                    positional.push(self.pattern()?);
-                }
-                if !self.eat(",") { break; }
-            }
-            self.expect(")")?; return Ok(MatchPattern::Class { path,positional,keyword_names,keyword_patterns });
-        }
-        if path.len() > 1 { Ok(MatchPattern::ValuePath(path)) }
-        else { Ok(MatchPattern::As { pattern:None,name:if first=="_"{None}else{Some(first)} }) }
-    }
-    fn pattern_key(&mut self) -> Result<MatchPattern,String> {
-        if self.is("-") || matches!(self.token().kind,DTokenKind::Number(_) | DTokenKind::String(_) | DTokenKind::UString(_) | DTokenKind::Bytes(_)) || self.is("None") || self.is("True") || self.is("False") { return self.pattern_literal(); }
-        let mut path = vec![self.name()?]; while self.eat(".") { path.push(self.name()?); }
-        if path.len() < 2 { return Err(self.error("mapping pattern key must be a literal or an attribute path")); }
-        Ok(MatchPattern::ValuePath(path))
-    }
-    fn pattern_literal(&mut self) -> Result<MatchPattern,String> {
-        let negative = self.eat("-");
-        if negative && !matches!(self.token().kind,DTokenKind::Number(_)) { return Err(self.error("negative pattern requires a numeric literal")); }
-        let value = self.atom()?;
-        let constant = match value.kind {
-            DExprKind::UnicodeString(text) if !negative => Const::Str(text),
-            DExprKind::Constant(mut constant) => {
-                if negative { constant = match constant { Const::Int(value)=>Const::Int(format!("-{value}")),Const::Float(value)=>Const::Float(-value),_=>return Err(self.error("negative pattern requires a number")) }; }
-                constant
-            }
-            _ => return Err(self.error("pattern requires a literal")),
-        };
-        Ok(MatchPattern::Literal(constant))
-    }
 }
 
 fn d_pattern_irrefutable(pattern: &MatchPattern) -> bool {
@@ -778,16 +84,29 @@ fn d_pattern_bindings(pattern: &MatchPattern) -> Result<Vec<String>,String> {
     }
     Ok(names)
 }
-fn d_pattern_literal_equal(a: &MatchPattern, b: &MatchPattern) -> bool {
-    match (a,b) {
-        (MatchPattern::Literal(a),MatchPattern::Literal(b)) => match (a,b) {
-            (Const::None,Const::None)=>true,(Const::Bool(a),Const::Bool(b))=>a==b,(Const::Str(a),Const::Str(b))=>a==b,(Const::Bytes(a),Const::Bytes(b))=>a==b,(Const::Int(a),Const::Int(b))=>Int::parse(a,10).ok()==Int::parse(b,10).ok(),
-            (Const::Bool(a),Const::Int(b))|(Const::Int(b),Const::Bool(a))=>Int::parse(b,10).ok()==Some(Int::from_i128(if *a{1}else{0})),
-            (Const::Float(a),Const::Float(b))=>a==b,(Const::Int(a),Const::Float(b))|(Const::Float(b),Const::Int(a))=>Int::parse(a,10).ok().is_some_and(|a|a.cmp_f64(*b)==Some(std::cmp::Ordering::Equal)),
-            (Const::Bool(a),Const::Float(b))|(Const::Float(b),Const::Bool(a))=>(if *a{1.0}else{0.0})==*b,
-            _=>false,
-        },
+fn d_const_numeric_equal(a:&Const,b:&Const)->bool{
+    let decimal=|value:&str|if value=="-0"{"0".to_owned()}else{value.to_owned()};
+    match(a,b){
+        (Const::Int(a),Const::Int(b))=>decimal(a)==decimal(b),
+        (Const::Float(a),Const::Float(b))=>a==b,
+        (Const::Bool(a),Const::Bool(b))=>a==b,
+        (Const::Bool(a),Const::Int(b))|(Const::Int(b),Const::Bool(a))=>decimal(b)==if *a{"1"}else{"0"},
+        (Const::Bool(a),Const::Float(b))|(Const::Float(b),Const::Bool(a))=>*b==if *a{1.0}else{0.0},
+        (Const::Int(a),Const::Float(b))|(Const::Float(b),Const::Int(a))=>b.is_finite()&&b.fract()==0.0&&decimal(a)==decimal(&format!("{b:.0}")),
         _=>false,
+    }
+}
+fn d_pattern_literal_equal(a:&MatchPattern,b:&MatchPattern)->bool{
+    let parts=|value:&MatchPattern|match value{
+        MatchPattern::ComplexNumber{real,imag}=>Some((real.clone(),*imag)),
+        MatchPattern::Literal(Const::Complex(real,imag))=>Some((Const::Float(*real),*imag)),
+        MatchPattern::Literal(value @ (Const::Int(_)|Const::Float(_)|Const::Bool(_)))=>Some((value.clone(),0.0)),_=>None,
+    };
+    if let(Some((ar,ai)),Some((br,bi)))=(parts(a),parts(b)){return ai==bi&&d_const_numeric_equal(&ar,&br);}
+    match(a,b){
+        (MatchPattern::Literal(Const::None),MatchPattern::Literal(Const::None))=>true,
+        (MatchPattern::Literal(Const::Str(a)),MatchPattern::Literal(Const::Str(b)))=>a==b,
+        (MatchPattern::Literal(Const::Bytes(a)),MatchPattern::Literal(Const::Bytes(b)))=>a==b,_=>false,
     }
 }
 
@@ -973,6 +292,7 @@ fn d_unparse(expression: &DExpr, required: u8) -> String {
         DExprKind::Constant(value)=>(18,match value {
             Const::None=>"None".to_owned(),Const::Bool(value)=>if *value{"True"}else{"False"}.to_owned(),Const::Int(value)=>value.clone(),
             Const::Float(value)=>if value.is_infinite(){if value.is_sign_negative(){"-1e309"}else{"1e309"}.to_owned()}else{let text=format!("{value:?}");if let Some((mantissa,exponent))=text.split_once('e'){format!("{mantissa}e{:+03}",exponent.parse::<i32>().unwrap_or(0))}else{text}},
+            Const::Complex(real,imag)=>format!("({real:?}{imag:+}j)"),
             Const::Str(value)=>text_repr_str(value),Const::Bytes(value)=>text_repr_bytes(value),
         }),
         DExprKind::UnicodeString(value)=>(18,format!("u{}",text_repr_str(value))),
@@ -1017,9 +337,6 @@ fn d_unparse(expression: &DExpr, required: u8) -> String {
     if precedence<required {format!("({text})")}else{text}
 }
 
-fn d_reserved(name: &str) -> bool {
-    ["False","None","True","and","as","assert","async","await","break","class","continue","def","del","elif","else","except","finally","for","from","global","if","import","in","is","lambda","nonlocal","not","or","pass","raise","return","try","while","with","yield"].contains(&name)
-}
 fn d_number(raw: &str) -> Result<Const,String> {
     if raw.ends_with('j') || raw.ends_with('J') { return Err("complex numbers are not yet supported".to_owned()); }
     if raw.starts_with('_') || raw.ends_with('_') || raw.contains("__") { return Err("invalid numeric literal".to_owned()); }
@@ -1083,71 +400,6 @@ fn d_decode_formatted_text(text:&str,raw:bool)->Result<String,String>{
         }
     }
     Ok(result)
-}
-struct DFormattedLower<'a>{source:Vec<char>,lines:Vec<usize>,tokens:&'a [PegToken],tree:&'a PegTree,comments:&'a [(usize,usize)],raw:bool,line:usize,column:usize,future_flags:u32}
-impl<'a>DFormattedLower<'a>{
-    fn offset(&self,token:usize)->usize{let token=&self.tokens[token];self.lines[token.line-1]+token.column}
-    fn location(&self,token:usize)->(usize,usize){let token=&self.tokens[token];(self.line+token.line-1,token.column+if token.line==1{self.column}else{0})}
-    fn expression(&self,kind:DExprKind,token:usize)->DExpr{let(line,column)=self.location(token);DExpr{kind,line,column}}
-    fn text(&self,start:usize,end:usize)->String{
-        self.source[start..end].iter().enumerate().filter_map(|(offset,ch)|if self.comments.iter().any(|(a,b)|*a<=start+offset&&start+offset<*b){None}else{Some(*ch)}).collect()
-    }
-    fn binding(&self,node:usize,name:&str)->Option<usize>{self.tree.nodes[node].children.iter().copied().find(|child|matches!(self.tree.nodes[*child].kind,PegNodeKind::Binding(value)if value==name))}
-    fn present(&self,node:Option<usize>)->Option<usize>{node.filter(|node|self.tree.nodes[*node].start<self.tree.nodes[*node].end)}
-    fn walk(&self,node:usize,templated:bool,values:&mut Vec<DExpr>,depth:usize)->Result<(),String>{
-        let value=&self.tree.nodes[node];
-        match value.kind{
-            PegNodeKind::Rule(rule) if matches!(PEG_RULES[rule].name,"fstring_replacement_field"|"tstring_replacement_field"|"tstring_format_spec_replacement_field")=>{
-                self.field(node,templated,values,depth)?;return Ok(());
-            },
-            PegNodeKind::Token(token)if matches!(self.tokens[token].kind.as_str(),"FSTRING_MIDDLE"|"TSTRING_MIDDLE")=>{
-                let text=d_decode_formatted_text(&self.tokens[token].text,self.raw)?;
-                if !text.is_empty(){values.push(self.expression(DExprKind::Constant(Const::Str(text)),token));}
-                return Ok(());
-            },
-            _=>{},
-        }
-        for child in &value.children{self.walk(*child,templated,values,depth)?;}Ok(())
-    }
-    fn field(&self,node:usize,templated:bool,values:&mut Vec<DExpr>,depth:usize)->Result<(),String>{
-        if depth>2{return Err("SyntaxError: formatted-string expressions nested too deeply".to_owned());}
-        let field=&self.tree.nodes[node];let token=field.start;
-        let debug=self.present(self.binding(node,"debug_expr"));let conversion=self.present(self.binding(node,"conversion"));let format=self.present(self.binding(node,"format"));
-        let closing=self.binding(node,"rbrace").ok_or_else(||"SyntaxError: missing formatted-string closing brace".to_owned())?;
-        let delimiter=debug.or(conversion).or(format).unwrap_or(closing);
-        let start=self.offset(token)+1;let end=self.offset(self.tree.nodes[delimiter].start);
-        let expression=self.text(start,end).trim_end().to_owned();
-        if debug.is_some(){
-            let end=self.offset(self.tree.nodes[conversion.or(format).unwrap_or(closing)].start);
-            values.push(self.expression(DExprKind::Constant(Const::Str(self.text(start,end))),token));
-        }
-        let raw:String=self.source[start..end].iter().collect();
-        let mut parser=DParser::new(&format!("({raw})"),self.future_flags)?;
-        let (line,column)=self.location(token);let first_column=column+1;
-        for token in &mut parser.tokens{if token.line==1{token.column=token.column.saturating_add(first_column).saturating_sub(1);}token.line+=line-1;}
-        let parsed=parser.expression_list()?;
-        if !matches!(parser.token().kind,DTokenKind::Newline|DTokenKind::Eof){return Err(parser.error("invalid formatted-string expression"));}
-        let parsed=if templated{self.expression(DExprKind::RawInterpolation(expression,Box::new(parsed)),token)}else{parsed};
-        let conversion=if let Some(conversion)=conversion{
-            let binding=&self.tree.nodes[conversion];let bang=&self.tokens[binding.start];let name=&self.tokens[binding.end-1];let text=&name.text;
-            if name.line!=bang.line || name.column!=bang.column+1{return Err("SyntaxError: conversion type must come right after the exclamation mark".to_owned());}
-            let ch=if matches!(text.as_str(),"s"|"r"|"a"){text.chars().next().unwrap()}else{return Err("SyntaxError: invalid formatted-string conversion".to_owned());};ch as i32
-        }else if debug.is_some()&&format.is_none(){'r' as i32}else{-1};
-        let spec=if let Some(format)=format{let mut parts=Vec::new();for child in &self.tree.nodes[format].children{self.walk(*child,false,&mut parts,depth+1)?;}Some(Box::new(self.expression(DExprKind::Joined(parts),token)))}else{None};
-        values.push(self.expression(DExprKind::Formatted(Box::new(parsed),conversion,spec),token));Ok(())
-    }
-}
-fn d_formatted_literal(source:&str,line:usize,column:usize,future_flags:u32,templated:bool)->Result<Vec<DExpr>,String>{
-    let mut lexer=PegLexer::new(source).with_flags(future_flags);
-    // Retain comment ranges along with tokens for the expression metadata.
-    while lexer.at<lexer.source.len(){lexer.one(false).map_err(|error|format!("{}: {} (line {}, column {})",error.kind,error.message,line+error.line-1,error.column+1))?;}
-    let comments=lexer.comments.clone();
-    let tokens=lexer.lex("eval").map_err(|error|format!("{}: {} (line {}, column {})",error.kind,error.message,line+error.line-1,error.column+1))?;
-    let tree=PegParser::new(&tokens).parse("eval").map_err(|error|format!("SyntaxError: invalid formatted-string syntax (line {}, column {})",line+error.line-1,error.column+1))?;
-    let source:Vec<char>=source.chars().collect();let mut lines=vec![0];for(index,ch)in source.iter().enumerate(){if *ch=='\n'{lines.push(index+1);}}
-    let raw=source.iter().take_while(|ch|!matches!(ch,'\''|'"')).any(|ch|matches!(ch,'r'|'R'));
-    let lower=DFormattedLower{source,lines,tokens:&tokens,tree:&tree,comments:&comments,raw,line,column,future_flags};
-    let mut values=Vec::new();lower.walk(tree.root,templated,&mut values,0)?;Ok(values)
 }
 
 #[derive(Default)]
@@ -1343,7 +595,22 @@ fn d_collect_annotations(body:&[DStmt],conditional:bool,records:&mut Vec<DAnnota
         _=>{},
     }}
 }
-struct DCompiler { codes: Vec<Code>, filename: String, offset: usize, temporary: usize, interactive: bool, future_flags: u32, scope_annotations:HashMap<usize,Vec<DAnnotation>>, stringized_annotation:bool }
+struct DCompiler { codes: Vec<Code>, filename: String, offset: usize, temporary: usize, interactive: bool, future_flags: u32, scope_annotations:HashMap<usize,Vec<DAnnotation>>, stringized_annotation:bool, optimize:u8 }
+// CPython 3.14 Python/compile.c, _PyCompile_CleanDoc (PSF license).
+// Common indentation is removed while blank lines retain their positions.
+fn d_clean_doc(value:&str)->String{
+    let mut expanded=String::new();let mut column=0usize;
+    for ch in value.chars(){match ch{
+        '\t'=>{let count=8-column%8;expanded.extend(std::iter::repeat(' ').take(count));column+=count;},
+        '\n'|'\r'=>{expanded.push(ch);column=0;},
+        _=>{expanded.push(ch);column+=1;},
+    }}
+    let mut lines:Vec<&str>=expanded.split('\n').collect();
+    let margin=lines.iter().skip(1).filter(|line|!line.trim_matches(' ').is_empty()).map(|line|line.len()-line.trim_start_matches(' ').len()).min().unwrap_or(0);
+    lines[0]=lines[0].trim_start_matches(' ');
+    if margin>0{for line in lines.iter_mut().skip(1){let count=margin.min(line.len()-line.trim_start_matches(' ').len());*line=&line[count..];}}
+    lines.join("\n")
+}
 impl DCompiler {
     fn error(&self, line: usize, message: &str) -> String { format!("SyntaxError: {message} ({}:{line})",self.filename) }
     fn temporary(&mut self, ctx: &DCtx) -> String {
@@ -1448,7 +715,8 @@ impl DCompiler {
             && enclosing.scopes.iter().any(|(kind,_,_)|*kind==ScopeKind::Class) { d_push_name(&mut frees,"__class__"); }
         if symbols.generator && kind == ScopeKind::Class { return Err(self.error(1,"yield outside function")); }
         let index = self.codes.len();
-        self.codes.push(Code { name:name.to_owned(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator,future_flags:self.future_flags });
+        let docstring=if self.optimize<2 && kind==ScopeKind::Function{body.first().and_then(d_docstring).map(|value|d_clean_doc(value))}else{None};
+        self.codes.push(Code { name:name.to_owned(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator,future_flags:self.future_flags,docstring });
         let is_class = kind == ScopeKind::Class;
         let mut scopes = enclosing.scopes.clone(); scopes.push((kind,symbols.locals,symbols.globals));
         let mut ctx = DCtx { index,loops:Vec::new(),scopes,private };
@@ -1459,8 +727,10 @@ impl DCompiler {
             if self.future_flags & D_FUTURE_ANNOTATIONS != 0 && d_has_annotations(body) { self.emit(&ctx,Op::SetupAnnotations,definition_line,0); }
             else if self.future_flags & D_FUTURE_ANNOTATIONS == 0 {self.prepare_scope_annotations(&mut ctx,body,definition_line,0)?;}
             if let Some(first) = body.first() {
-                if let Some(doc) = d_docstring(first) { self.emit(&ctx,Op::Const(Const::Str(doc.clone())),first.line,first.column); self.emit(&ctx,Op::Store("__doc__".to_owned()),first.line,first.column); body_start = 1; }
+                if let Some(doc) = d_docstring(first) { if self.optimize<2{self.emit(&ctx,Op::Const(Const::Str(d_clean_doc(doc))),first.line,first.column); self.emit(&ctx,Op::Store("__doc__".to_owned()),first.line,first.column);} body_start = 1; }
             }
+        } else if self.codes[index].kind==ScopeKind::Function && body.first().is_some_and(|stmt|d_docstring(stmt).is_some()) {
+            body_start=1;
         }
         self.block(&mut ctx,&body[body_start..])?;
         if is_class {
@@ -1619,6 +889,7 @@ impl DCompiler {
                 self.emit(ctx,Op::Raise(if cause.is_some() { 2 } else if value.is_some() { 1 } else { 0 }),line,col);
             }
             DStmtKind::Assert(test,message) => {
+                if self.optimize>0{return Ok(());}
                 self.expr(ctx,test)?; let end = self.emit(ctx,Op::JumpTrue(0),line,col); self.emit(ctx,Op::Load("AssertionError".to_owned()),line,col);
                 if let Some(message) = message { self.expr(ctx,message)?; } self.emit(ctx,Op::Call { pos:if message.is_some(){1}else{0},keywords:Vec::new() },line,col); self.emit(ctx,Op::Raise(1),line,col); self.patch(ctx,end,self.here(ctx));
             }
@@ -1878,9 +1149,9 @@ impl DCompiler {
         match &expr.kind {
             DExprKind::Constant(value) => { self.emit(ctx,Op::Const(value.clone()),line,col); }
             DExprKind::UnicodeString(value) => { self.emit(ctx,Op::Const(Const::Str(value.clone())),line,col); }
-            DExprKind::Imaginary(_) => return Err(format!("NotImplementedError: complex values are not implemented ({}:{line})",self.filename)),
+            DExprKind::Imaginary(value) => {self.emit(ctx,Op::Const(Const::Complex(0.0,*value)),line,col);}
             DExprKind::Ellipsis => { self.emit(ctx,Op::Load("Ellipsis".to_owned()),line,col); }
-            DExprKind::Name(name) => { self.emit(ctx,Op::Load(name.clone()),line,col); }
+            DExprKind::Name(name) => { self.emit(ctx,if name=="__debug__"{Op::Const(Const::Bool(self.optimize==0))}else{Op::Load(name.clone())},line,col); }
             DExprKind::List(items) | DExprKind::Tuple(items) => {
                 let tuple = matches!(expr.kind,DExprKind::Tuple(_)); let unpack = items.iter().any(|x|matches!(x.kind,DExprKind::Star(_)));
                 for item in items { if let DExprKind::Star(value) = &item.kind { self.expr(ctx,value)?; self.emit(ctx,Op::BuildListUnpack(1),line,col); } else { self.expr(ctx,item)?; if unpack { self.emit(ctx,Op::BuildTuple(1),line,col); } } }
@@ -1989,7 +1260,7 @@ impl DCompiler {
         for name in &named.uses { if !symbols.locals.contains(name) && !globals.contains(name) && d_scope_binds(&outer.scopes,name) { d_push_name(&mut frees,name); } }
         if named.uses.iter().any(|name|name=="__class__" || name=="super") && outer.scopes.iter().any(|(kind,_,_)|*kind==ScopeKind::Class) { d_push_name(&mut frees,"__class__"); }
         let index = self.codes.len(); let mut params = Params::default(); params.positional.push(".0".to_owned());
-        self.codes.push(Code { name:format!("<{kind}comp>"),filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator",future_flags:self.future_flags });
+        self.codes.push(Code { name:format!("<{kind}comp>"),filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator",future_flags:self.future_flags,docstring:None });
         let mut scopes = outer.scopes.clone(); scopes.push((ScopeKind::Comprehension,symbols.locals,globals)); let mut ctx = DCtx { index,loops:Vec::new(),scopes,private:outer.private.clone() };
         let result = if kind == "generator" { None } else { let tmp = self.temporary(&ctx); self.emit(&ctx,match kind { "list"=>Op::BuildList(0),"set"=>Op::BuildSet(0),_=>Op::BuildDict(0) },line,col); self.emit(&ctx,Op::Store(tmp.clone()),line,col); Some(tmp) };
         self.comprehension_loop(&mut ctx,kind,element,value,generators,0,result.as_deref(),line,col)?;
@@ -2016,24 +1287,19 @@ impl DCompiler {
 }
 
 fn compile_dynamic(source: &str, filename: &str, mode: &str, code_offset: usize, future_flags: u32) -> Result<Vec<Code>,String> {
+    compile_dynamic_optimized(source,filename,mode,code_offset,future_flags,0)
+}
+fn compile_dynamic_optimized(source: &str, filename: &str, mode: &str, code_offset: usize, future_flags: u32, optimize:u8) -> Result<Vec<Code>,String> {
     if !["exec","eval","single"].contains(&mode) { return Err("ValueError: compile() mode must be 'exec', 'eval' or 'single'".to_owned()); }
-    let mut parser = DParser::new(source,future_flags & !0x10)?;
-    let body = if mode == "eval" {
-        while matches!(parser.token().kind,DTokenKind::Newline) { parser.at += 1; }
-        let value = parser.expression_list()?; while matches!(parser.token().kind,DTokenKind::Newline) { parser.at += 1; }
-        if !matches!(parser.token().kind,DTokenKind::Eof) { return Err(parser.error("unexpected token after expression")); }
-        vec![DStmt { line:value.line,column:value.column,kind:DStmtKind::Expr(value) }]
-    } else { parser.parse()? };
-    let future_flags = parser.future_flags;
-    validate_python_peg(source,mode,future_flags)?;
+    let (body,future_flags)=lower_python_cst(source,filename,mode,future_flags&!0x10)?;
     d_validate_futures(&body,filename,true)?;
     d_validate_except_star(&body,filename,0,&[])?;
     if mode == "single" && (body.is_empty() || body.iter().any(|stmt| stmt.line != body[0].line)) { return Err(format!("SyntaxError: multiple statements found while compiling a single statement ({filename}:1)")); }
     let mut symbols = DSymbols::default(); symbols.block(&body);
     if let Some(error) = symbols.error { return Err(error); }
     if !symbols.nonlocals.is_empty() { return Err(format!("SyntaxError: nonlocal declaration not allowed at module level ({filename}:1)")); }
-    let code = Code { name:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags };
-    let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single",future_flags,scope_annotations:HashMap::new(),stringized_annotation:false };
+    let code = Code { name:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags,docstring:None };
+    let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single",future_flags,scope_annotations:HashMap::new(),stringized_annotation:false,optimize };
     let mut ctx = DCtx { index:0,loops:Vec::new(),scopes:vec![(ScopeKind::Module,symbols.locals,symbols.globals)],private:None };
     if mode == "eval" {
         if let DStmtKind::Expr(value) = &body[0].kind { compiler.expr(&mut ctx,value)?; }
@@ -2044,7 +1310,11 @@ fn compile_dynamic(source: &str, filename: &str, mode: &str, code_offset: usize,
             compiler.emit(&ctx,Op::SetupAnnotations,1,0);
         }
         if future_flags & D_FUTURE_ANNOTATIONS == 0 {compiler.prepare_scope_annotations(&mut ctx,&body,1,0)?;}
-        compiler.block(&mut ctx,&body)?;
+        let mut body_start=0;
+        if mode=="exec"{if let Some(first)=body.first(){if let Some(doc)=d_docstring(first){
+            if optimize<2{compiler.emit(&ctx,Op::Const(Const::Str(d_clean_doc(doc))),first.line,first.column);compiler.emit(&ctx,Op::Store("__doc__".to_owned()),first.line,first.column);}body_start=1;
+        }}}
+        compiler.block(&mut ctx,&body[body_start..])?;
         compiler.emit(&ctx,Op::Const(Const::None),body.last().map(|x|x.line).unwrap_or(1),0);
     }
     compiler.emit(&ctx,Op::Return,body.last().map(|x|x.line).unwrap_or(1),0); Ok(compiler.codes)

@@ -39,6 +39,7 @@ class Code:
     ops: list[Instruction] = field(default_factory=list)
     is_generator: bool = False
     future_flags: int = 0
+    docstring: str | None = None
     # Assignment versions are analysis metadata, separate from Python names.
     bindings: dict[str, int] = field(default_factory=dict)
 

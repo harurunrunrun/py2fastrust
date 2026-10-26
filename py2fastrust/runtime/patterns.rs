@@ -2,6 +2,7 @@
 #[derive(Clone, Debug)]
 enum MatchPattern {
     Literal(Const),
+    ComplexNumber { real: Const, imag: f64 },
     ValuePath(Vec<String>),
     Sequence(Vec<MatchPattern>),
     Mapping { keys: Vec<MatchPattern>, patterns: Vec<MatchPattern>, rest: Option<String> },
@@ -67,6 +68,10 @@ impl Runtime {
     fn pattern_key(&mut self, frame: &Frame, pattern: &MatchPattern, root: usize) -> PyResult<Value> {
         match pattern {
             MatchPattern::Literal(constant) => self.constant(constant.clone()),
+            MatchPattern::ComplexNumber{real,imag} => {
+                let value=self.constant(real.clone())?;
+                Ok(Value::Complex(Complex{real:self.as_float(&value)?,imag:*imag}.into()))
+            },
             MatchPattern::ValuePath(path) => self.pattern_path(frame, path, root),
             _ => Err(pyerr("SyntaxError", "mapping pattern keys must be literals or attribute paths")),
         }
@@ -78,6 +83,10 @@ impl Runtime {
                 let value = self.constant(constant.clone())?;
                 if matches!(constant, Const::None | Const::Bool(_)) { self.compare("is", &subject, &value) }
                 else { self.equal(&subject, &value) }
+            }
+            MatchPattern::ComplexNumber{..} => {
+                let value=self.pattern_key(frame,pattern,root)?;
+                self.equal(&subject,&value)
             }
             MatchPattern::ValuePath(path) => {
                 let value = self.pattern_path(frame, path, root)?;
@@ -158,7 +167,7 @@ impl Runtime {
                 if keyword_names.len() != keyword_patterns.len() { return Err(pyerr("SyntaxError", "invalid class pattern")); }
                 let class = self.pattern_path(frame, path, root)?;
                 let type_valid = match &class {
-                    Value::Builtin(name) => template_type_name(name) || ["bool","bytearray","bytes","dict","float","frozenset","int","list","object","range","set","slice","str","tuple","type","NoneType"].contains(&name.as_str()),
+                    Value::Builtin(name) => template_type_name(name) || ["bool","bytearray","bytes","complex","dict","float","frozenset","int","list","object","range","set","slice","str","tuple","type","NoneType"].contains(&name.as_str()),
                     Value::Type(_) => true,
                     Value::Obj(index) => matches!(self.object(*index)?, Object::Class(_)),
                     _ => false,

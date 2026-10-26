@@ -1003,17 +1003,9 @@ impl Runtime {
                 return Ok(hash ^ items.len() as u64);
             }
         }
-        let normalized = match value {
-            Value::Float(number) if number.is_finite() && number.fract() == 0.0 => {
-                Int::from_f64(**number)
-                    .ok()
-                    .map(|number| Value::Int(number.into()))
-            }
-            _ => None,
-        };
         let item = self.builtin(
             "hash",
-            vec![normalized.unwrap_or_else(|| value.clone())],
+            vec![value.clone()],
             Vec::new(),
             None,
         )?;

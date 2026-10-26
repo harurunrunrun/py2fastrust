@@ -35,6 +35,12 @@ def optional(value):
     return "None" if value is None else f"Some({string(value)})"
 
 
+def float_literal(value):
+    return ("f64::NAN" if math.isnan(value) else
+            "f64::INFINITY" if value == math.inf else
+            "f64::NEG_INFINITY" if value == -math.inf else repr(value) + "_f64")
+
+
 def constant(value):
     if value is None:
         return "Const::None"
@@ -43,10 +49,9 @@ def constant(value):
     if isinstance(value, int):
         return f"Const::Int({string(str(value))})"
     if isinstance(value, float):
-        literal = ("f64::NAN" if math.isnan(value) else
-                   "f64::INFINITY" if value == math.inf else
-                   "f64::NEG_INFINITY" if value == -math.inf else repr(value) + "_f64")
-        return f"Const::Float({literal})"
+        return f"Const::Float({float_literal(value)})"
+    if isinstance(value, complex):
+        return f"Const::Complex({float_literal(value.real)},{float_literal(value.imag)})"
     if isinstance(value, str):
         return f"Const::Str({string(value)})"
     if isinstance(value, bytes):
@@ -59,6 +64,8 @@ def pattern(value):
     patterns = lambda items: "vec![" + ",".join(pattern(item) for item in items) + "]"
     if kind == "Literal":
         body = constant(args[0])
+    elif kind == "ComplexNumber":
+        return f"MatchPattern::ComplexNumber {{ real:{constant(args[0])},imag:{float_literal(args[1])} }}"
     elif kind == "ValuePath":
         body = strings(args[0])
     elif kind in {"Sequence", "Or"}:
@@ -123,7 +130,7 @@ def generate(program: Program, integer="i64"):
     unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
     prefix += "\n".join("// " + line for line in unicode_license.splitlines()) + "\n"
     parts = [prefix]
-    for name in ("integer.rs", "vm.rs", "identity.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
+    for name in ("integer.rs", "complex.rs", "vm.rs", "identity.rs", "dynamic.rs", "cst_lower.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
         parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
     parts.append("\nfn main() {\nlet codes = vec![\n")
     source_map = []
@@ -133,7 +140,7 @@ def generate(program: Program, integer="i64"):
                      f"locals:{strings(code.locals)},globals:{strings(code.globals)},nonlocals:{strings(code.nonlocals)},frees:{strings(code.frees)},"
                      f"params:Params {{ posonly:{p.posonly},positional:{strings(p.positional)},kwonly:{strings(p.kwonly)},"
                      f"vararg:{optional(p.vararg)},kwarg:{optional(p.kwarg)} }},"
-                     f"is_generator:{str(code.is_generator).lower()},future_flags:{code.future_flags},ops:vec![\n")
+                     f"is_generator:{str(code.is_generator).lower()},future_flags:{code.future_flags},docstring:{optional(code.docstring)},ops:vec![\n")
         for index, instruction in enumerate(code.ops):
             parts.append(f"Instr {{ op:{operation(instruction)},line:{instruction.line},column:{instruction.column} }},\n")
             source_map.append(SourceLocation(code_id, index, code.filename, instruction.line, instruction.column))

@@ -30,6 +30,19 @@ COMPARE = {
 }
 
 
+def clean_docstring(value):
+    # CPython 3.14 Python/compile.c, _PyCompile_CleanDoc (PSF license):
+    # expand tabs, remove indentation, and retain blank lines/source offsets.
+    lines = value.expandtabs().split("\n")
+    margin = min((len(line) - len(line.lstrip(" ")) for line in lines[1:]
+                  if line.strip(" ")), default=0)
+    lines[0] = lines[0].lstrip(" ")
+    if margin:
+        lines[1:] = [line[min(margin, len(line) - len(line.lstrip(" "))):]
+                     for line in lines[1:]]
+    return "\n".join(lines)
+
+
 class Compiler:
     def __init__(self, filename="<input>", module_paths=(), include_modules=()):
         self.filename = filename
@@ -46,7 +59,7 @@ class Compiler:
             tree = ast.parse(source, filename=filename)
             table = symtable.symtable(source, filename, "exec")
             # ast.parse alone accepts contextually invalid return/yield/break.
-            compiled = compile(source, filename, "exec", dont_inherit=True)
+            compiled = compile(source, filename, "exec", dont_inherit=True, optimize=0)
         except SyntaxError as exc:
             raise CompilationError(Diagnostic(exc.msg, filename, exc.lineno or 1, exc.offset or 1, "E001")) from None
         except ValueError as exc:
@@ -58,7 +71,7 @@ class Compiler:
         tree, table = self.parse(source, self.filename)
         emitter = self.scope(tree, table, "__main__", "Module", self.filename)
         emitter.setup_scope_annotations(tree)
-        emitter.statements(tree.body)
+        emitter.module_statements(tree.body)
         emitter.finish()
         # Runtime exec/compile may contain a future statement even when the
         # static source does not import the module itself.
@@ -99,6 +112,13 @@ class Compiler:
                     nonlocals=[s.get_name() for s in symbols if s.is_nonlocal()],
                     frees=[s.get_name() for s in symbols if s.is_free()],
                     future_flags=self.future_flags.get(filename, 0))
+        if kind in {"Module", "Class", "Function"} and isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            docstring = ast.get_docstring(node, clean=False)
+            if docstring is not None and any(0xD800 <= ord(char) <= 0xDFFF for char in docstring):
+                first = node.body[0]
+                raise CompilationError(Diagnostic("unpaired Unicode surrogates are not supported", filename,
+                                                 getattr(first, "lineno", 1), getattr(first, "col_offset", 0) + 1, "E002"))
+            code.docstring = clean_docstring(docstring) if docstring is not None else None
         code_id = len(self.program.codes)
         self.program.codes.append(code)
         emitter = Emitter(self, code_id, table)
@@ -193,11 +213,18 @@ class Compiler:
         self.module_ids[name] = emitter.code_id
         self.program.modules.append((name, emitter.code_id))
         emitter.setup_scope_annotations(tree)
-        emitter.statements(tree.body)
+        emitter.module_statements(tree.body)
         emitter.finish()
 
 
 class Emitter:
+    def module_statements(self, body):
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+            self.emit("Const", clean_docstring(body[0].value.value), node=body[0])
+            self.emit("Store", "__doc__", node=body[0])
+            body = body[1:]
+        self.statements(body)
+
     def __init__(self, compiler, code_id, table):
         self.compiler = compiler
         self.code_id = code_id
@@ -322,15 +349,18 @@ class Emitter:
     def visit_Constant(self, node):
         if node.value is Ellipsis:
             self.emit("Load", "Ellipsis", node=node)
-        elif isinstance(node.value, (type(None), bool, int, float, str, bytes)):
+        elif isinstance(node.value, (type(None), bool, int, float, complex, str, bytes)):
             if isinstance(node.value, str) and any(0xD800 <= ord(char) <= 0xDFFF for char in node.value):
                 self.fail(node, "unpaired Unicode surrogates are not supported")
             self.emit("Const", node.value, node=node)
         else:
-            self.fail(node, "complex constants are not implemented")
+            self.fail(node, f"unsupported constant type: {type(node.value).__name__}")
 
     def visit_Name(self, node):
-        self.emit("Load", node.id, node=node)
+        if node.id == "__debug__":
+            self.emit("Const", True, node=node)
+        else:
+            self.emit("Load", node.id, node=node)
 
     def visit_Expr(self, node):
         self.visit(node.value)
@@ -544,12 +574,21 @@ class Emitter:
     def value_pattern(self, node):
         if isinstance(node, (ast.Name, ast.Attribute)):
             return Pattern("ValuePath", (self.pattern_path(node),))
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
+            # Keep integer components intact until the runtime applies the
+            # selected width. Folding to a host complex would lose that step.
+            try:
+                real = ast.literal_eval(node.left)
+                imaginary = ast.literal_eval(node.right)
+            except (ValueError, TypeError):
+                self.fail(node, "unsupported pattern constant")
+            if type(real) in (int, float) and isinstance(imaginary, complex) and imaginary.real == 0:
+                imag = imaginary.imag if isinstance(node.op, ast.Add) else -imaginary.imag
+                return Pattern("ComplexNumber", (real, imag))
         try:
             value = ast.literal_eval(node)
         except (ValueError, TypeError):
             self.fail(node, "unsupported pattern constant")
-        if isinstance(value, complex):
-            self.fail(node, "complex patterns are not implemented")
         return Pattern("Literal", (value,))
 
     def pattern(self, node):
@@ -973,7 +1012,7 @@ class Emitter:
         emitter.setup_scope_annotations(node)
         body = node.body
         if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
-            emitter.emit("Const", body[0].value.value, node=body[0])
+            emitter.emit("Const", clean_docstring(body[0].value.value), node=body[0])
             emitter.emit("Store", "__doc__", node=body[0])
             body = body[1:]
         emitter.statements(body)

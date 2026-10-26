@@ -100,6 +100,15 @@ except ExceptionGroup as remaining:
     print([type(error).__name__ for error in remaining.exceptions])
 exec("try: raise ValueError('dynamic')\\nexcept* ValueError as caught: print(caught.message, str(caught.exceptions[0]))", space)
 print(sys.exception())
+number = 3+4j
+print(number.real, number.imag, abs(number), number*number, complex("1-2j"))
+match number:
+    case 3+4j:
+        print("complex pattern")
+optimized = {}
+exec(compile('def function():\\n "removed"\\n assert False\\n return __debug__',
+             "optimized.py", "exec", optimize=2), optimized)
+print(optimized["function"](), optimized["function"].__doc__)
 print(sys.stdin.readline() == "\\n")
 sys.stdout.flush()
 sys.stdout.buffer.write(b"standalone\\n")

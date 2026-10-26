@@ -21,6 +21,12 @@ Type-parameter collection and substitution control flow in
 The source comments identify the upstream functions. These adaptations use the
 same retained PSF license, including its notice in generated Rust submissions.
 
+Docstring indentation handling in `py2fastrust/compiler.py` and
+`py2fastrust/runtime/dynamic.rs` is adapted from `_PyCompile_CleanDoc` in
+[CPython 3.14.4's Python/compile.c](https://github.com/python/cpython/blob/v3.14.4/Python/compile.c).
+These routines retain blank lines while removing common indentation and use
+the same bundled PSF license.
+
 The compiler uses the host Python's official `ast` and `symtable` APIs.
 The Rust PEG engine and tokenizer are independent implementations. Its grammar
 tables are generated from CPython 3.14.4's unmodified `Grammar/python.gram` and

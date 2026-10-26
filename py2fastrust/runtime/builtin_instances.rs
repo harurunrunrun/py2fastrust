@@ -43,7 +43,7 @@ impl Runtime {
         kwargs: Vec<(String, Value)>,
         root: usize,
     ) -> PyResult<Value> {
-        if !["tuple", "list", "dict", "set", "str", "int"].contains(&type_name) {
+        if !["tuple", "list", "dict", "set", "str", "int", "complex"].contains(&type_name) {
             return Err(pyerr(
                 "NotImplementedError",
                 format!("native payload for {} subclasses", type_name),
@@ -92,6 +92,7 @@ impl Runtime {
             }
         };
         let payload = match type_name {
+            "complex"=>self.complex_constructor(args,kwargs)?,
             "list" => self.obj_value(Object::List(Vec::new())),
             "dict" => self.obj_value(Object::Dict(Vec::new())),
             "set" => self.obj_value(Object::Set(Vec::new())),

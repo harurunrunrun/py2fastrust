@@ -29,6 +29,7 @@ struct Code {
     ops: Vec<Instr>,
     is_generator: bool,
     future_flags: u32,
+    docstring: Option<String>,
 }
 #[derive(Clone, Debug)]
 struct Instr {
@@ -42,6 +43,7 @@ enum Const {
     Bool(bool),
     Int(String),
     Float(f64),
+    Complex(f64, f64),
     Str(String),
     Bytes(Vec<u8>),
 }
@@ -178,6 +180,7 @@ enum Value {
     Bool(bool),
     Int(Ident<Int>),
     Float(Ident<f64>),
+    Complex(Ident<Complex>),
     Str(Ident<String>),
     Bytes(Ident<Vec<u8>>),
     Obj(usize),
@@ -638,7 +641,7 @@ impl Runtime {
         for base in self.class_mro(class, 0)? {
             match &base {
                 Value::Builtin(name)
-                    if ["tuple", "list", "dict", "set", "str", "int"].contains(&name.as_str()) =>
+                    if ["tuple", "list", "dict", "set", "str", "int", "complex"].contains(&name.as_str()) =>
                 {
                     return Some(base)
                 }
@@ -834,7 +837,7 @@ impl Runtime {
                 return self.bind_descriptor(method, Some(v), class);
             }
             if let Some(payload) = self.native_payload(&v) {
-                let payload = if matches!(name, "__int__" | "__index__" | "conjugate") {
+                let payload = if matches!(name, "__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") {
                     payload.fresh_primitive()
                 } else { payload };
                 return self.getattr_default(payload, name);
@@ -1272,6 +1275,7 @@ impl Runtime {
             "exec",
             "filter",
             "float",
+            "complex",
             "format",
             "frozenset",
             "getattr",
@@ -1342,6 +1346,8 @@ impl Runtime {
             "RuntimeError",
             "StopIteration",
             "SyntaxError",
+            "IndentationError",
+            "TabError",
             "TypeError",
             "UnboundLocalError",
             "ValueError",
@@ -1652,6 +1658,7 @@ impl Runtime {
             Const::Bool(v) => Value::Bool(v),
             Const::Int(s) => Value::Int(Int::parse(&s, 0).map_err(int_error)?.into()),
             Const::Float(v) => Value::Float(v.into()),
+            Const::Complex(real,imag) => Value::Complex(Complex::new(real,imag).into()),
             Const::Str(v) => Value::Str(v.into()),
             Const::Bytes(v) => Value::Bytes(v.into()),
         })
@@ -2145,8 +2152,8 @@ impl Runtime {
                 };
                 let qualname = name.clone();
                 let module = self.ns_get(f.globals, "__name__").unwrap_or(Value::None);
-                let doc = match self.codes[code].ops.first().map(|i| i.op.clone()) {
-                    Some(Op::Const(Const::Str(s))) => self.code_constant(code, Const::Str(s))?,
+                let doc = match self.codes[code].docstring.clone() {
+                    Some(s) => self.code_constant(code, Const::Str(s))?,
                     _ => Value::None,
                 };
                 let fun = self.obj_value(Object::Function(Function {
@@ -3438,6 +3445,7 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        if matches!(&receiver,Value::Complex(_)){return self.complex_method(receiver,name,args,kwargs).unwrap();}
         if self.is_exception_value(&receiver){if let Some(result)=self.exception_group_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if self.is_template_value(&receiver){if let Some(result)=self.template_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if self.is_typing_value(&receiver){if let Some(result)=self.typing_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
@@ -3468,7 +3476,7 @@ impl Runtime {
             }
         }
         if let Some(payload) = self.native_payload(&receiver) {
-            if matches!(name,"__int__" | "__index__" | "conjugate") && matches!(payload,Value::Int(_)) {
+            if matches!(name,"__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") && matches!(payload,Value::Int(_)) {
                 return self.method(name,payload.fresh_primitive(),args,kwargs);
             }
             return self.method(name, payload, args, kwargs);
@@ -4312,6 +4320,8 @@ impl Runtime {
         kwargs: Vec<(String, Value)>,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if name=="complex:from_number"{return self.complex_from_number(args,kwargs);}
+        if name=="complex"{return self.complex_constructor(args,kwargs);}
         if template_type_name(name){return self.template_constructor(name,args,kwargs).unwrap();}
         if name=="module:string.templatelib:convert" {return self.template_convert(args,kwargs);}
         if typing_constructor_name(name){return self.typing_constructor(name,args,kwargs,caller).unwrap();}
@@ -4364,7 +4374,7 @@ impl Runtime {
             if let Some(Value::Obj(i)) = args.first() {
                 if let Object::BuiltinInstance { payload, .. } = self.object(*i)? {
                     if self.typename(&payload) == owner {
-                        args[0] = if matches!(method, "__int__" | "__index__" | "conjugate") {
+                        args[0] = if matches!(method, "__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") {
                             payload.fresh_primitive()
                         } else { payload }
                     }
@@ -4373,6 +4383,7 @@ impl Runtime {
             if args.is_empty() {
                 return Err(pyerr("TypeError", "unbound descriptor needs an instance"));
             }
+            if owner=="complex" && !matches!(&args[0],Value::Complex(_)){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'complex' object",method)));}
             if method == "__delitem__" {
                 if args.len()!=2 || !kwargs.is_empty(){return Err(pyerr("TypeError","__delitem__() takes exactly one argument"));}
                 self.delitem(args[0].clone(),args[1].clone())?;return Ok(Value::None);
@@ -4521,7 +4532,7 @@ impl Runtime {
                     }
                 };
             }
-            if ["tuple", "list", "dict", "set", "str", "int"].contains(&typ) && method == "__new__"
+            if ["tuple", "list", "dict", "set", "str", "int", "complex"].contains(&typ) && method == "__new__"
             {
                 let class = args
                     .first()
@@ -4957,6 +4968,7 @@ impl Runtime {
                     Value::Int(n) => Ok(Value::Int(n.abs().into())),
                     Value::Bool(value) => Ok(Value::Int(Int::from_i128(if value{1}else{0}).into())),
                     Value::Float(n) => Ok(Value::Float(n.abs().into())),
+                    Value::Complex(_)=>self.complex_method(v,"__abs__",Vec::new(),Vec::new()).unwrap(),
                     v => {
                         match self.special_method(v.clone(),"__abs__") {
                             Ok(fun)=>self.call(fun,Vec::new(),Vec::new(),caller),
@@ -4967,14 +4979,14 @@ impl Runtime {
                 }
             }
             "pow" => {
-                if args.len() == 3 {
-                    let a = self.as_int(&args[0])?;
-                    let b = self.as_int(&args[1])?;
-                    let m = self.as_int(&args[2])?;
-                    Ok(Value::Int(a.modpow(&b, &m).map_err(int_error)?.into()))
-                } else {
-                    self.binary("**", arg(0)?, arg(1)?)
-                }
+                let fields=codec_bind("pow",args,kwargs,&["base","exp","mod"])?;
+                let base=fields[0].clone().ok_or_else(||pyerr("TypeError","pow() missing required argument 'base'"))?;
+                let exponent=fields[1].clone().ok_or_else(||pyerr("TypeError","pow() missing required argument 'exp'"))?;
+                if let Some(modulus)=fields[2].clone().filter(|value|!matches!(value,Value::None)) {
+                    if [&base,&exponent,&modulus].iter().any(|value|matches!(self.native_payload(value).unwrap_or_else(||(*value).clone()),Value::Complex(_))){return Err(pyerr("ValueError","complex modulo"));}
+                    let a=self.as_int(&base)?;let b=self.as_int(&exponent)?;let m=self.as_int(&modulus)?;
+                    Ok(Value::Int(a.modpow(&b,&m).map_err(int_error)?.into()))
+                }else{self.binary("**",base,exponent)}
             }
             "divmod" => {
                 let a = self.binary("//", arg(0)?, arg(1)?)?;
@@ -5124,8 +5136,10 @@ impl Runtime {
                 use std::hash::{Hash, Hasher};
                 let v = arg(0)?;
                 if matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Template{..}|Object::Interpolation{..}))) {let id=self.identity_number(&v);return Ok(Value::Int(Int::from_i128(id as i128).into()));}
-                if let Value::Bool(value)=&v {return self.builtin("hash",vec![Value::Int(Int::from_i128(if *value{1}else{0}).into())],Vec::new(),None);}
-                if let Value::Float(value)=&v {if value.is_finite() && value.fract()==0.0 {return self.builtin("hash",vec![Value::Int(Int::from_f64(**value).map_err(int_error)?.into())],Vec::new(),None);}}
+                if matches!(&v,Value::Complex(_)){return self.complex_hash(&v);}
+                if let Value::Int(value)=&v{return Ok(Value::Int(Int::from_i128(numeric_int_hash(value) as i128).into()));}
+                if let Value::Bool(value)=&v{return Ok(Value::Int(Int::from_i128(if *value{1}else{0}).into()));}
+                if let Value::Float(value)=&v{let id=self.identity_number(&v);return Ok(Value::Int(Int::from_i128(numeric_float_hash(**value,id) as i128).into()));}
                 if let Value::Obj(index) = &v {
                     if matches!(self.object(*index)?,Object::Tuple(_)) {
                         let hash=self.generic_component_hash(&v)? as i64;
@@ -5244,15 +5258,12 @@ impl Runtime {
                 if flags & !(FUTURE_MASK|PYCF_MASK)!=0 {return Err(pyerr("ValueError","compile(): unrecognised flags"));}
                 if flags & PYCF_MASK!=0 {return Err(pyerr("NotImplementedError","compile() PyCF AST, incomplete input and top-level await modes are not implemented"));}
                 let dont_inherit=arguments[4].as_ref().map(|value|self.truth(value)).transpose()?.unwrap_or(false);
-                if let Some(optimize)=arguments[5].as_ref() {
-                    let optimize=self.as_int(optimize)?.to_i128().unwrap_or(-2);
-                    if !(-1..=2).contains(&optimize) {return Err(pyerr("ValueError","compile(): invalid optimize value"));}
-                    if optimize>0 {return Err(pyerr("NotImplementedError","compile() optimization levels are not implemented"));}
-                }
+                let optimize=arguments[5].as_ref().map(|value|self.as_int(value)).transpose()?.map(|value|value.to_i128().unwrap_or(-2)).unwrap_or(-1);
+                if !(-1..=2).contains(&optimize) {return Err(pyerr("ValueError","compile(): invalid optimize value"));}
                 let flags=(flags & FUTURE_MASK & !0x10) | if dont_inherit {0}else{caller.map(|frame|self.codes[frame.code].future_flags).unwrap_or(self.active_future_flags)};
                 let src=self.str_value(&source)?;let filename=self.str_value(&filename)?;let mode=self.str_value(&mode)?;
                 let offset=self.codes.len();
-                let codes=compile_dynamic(&src,&filename,&mode,offset,flags).map_err(int_error)?;
+                let codes=compile_dynamic_optimized(&src,&filename,&mode,offset,flags,optimize.max(0) as u8).map_err(int_error)?;
                 self.codes.extend(codes);
                 Ok(self.obj_value(Object::Code(offset)))
             }
@@ -5591,7 +5602,7 @@ impl Runtime {
                         }
                     }
                     let mut native_type = None;
-                    for name in ["tuple", "list", "dict", "set", "str", "int"] {
+                    for name in ["tuple", "list", "dict", "set", "str", "int", "complex"] {
                         if self.is_subclass(&fun, &Value::Builtin(name.into()))? {
                             native_type = Some(name);
                             break;
@@ -5807,6 +5818,9 @@ impl Runtime {
             if !inherited_weakref {
                 slot_names.push("__weakref__".into());
             }
+        }
+        if !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__doc__")){
+            items.push((Value::Str("__doc__".into()),Value::None));
         }
         let ns = self.alloc(Object::Dict(items));
         let out = self.obj_value(Object::Class(Class {
@@ -6050,6 +6064,8 @@ impl Runtime {
             "RecursionError" | "NotImplementedError" => "RuntimeError",
             "UnicodeEncodeError" | "UnicodeDecodeError" | "UnicodeTranslateError" => "UnicodeError",
             "UnicodeError" => "ValueError",
+            "IndentationError"=>"SyntaxError",
+            "TabError"=>"IndentationError",
             _ => "",
         }
     }
@@ -6067,6 +6083,7 @@ impl Runtime {
             Value::None => Ok("None".into()),
             Value::Bool(b) => Ok(if *b { "True" } else { "False" }.into()),
             Value::Int(n) => Ok(n.to_string()),
+            Value::Complex(number) => Ok(complex_repr(**number)),
             Value::Float(n) => {
                 if n.is_nan() {
                     return Ok("nan".into());
@@ -6225,7 +6242,7 @@ impl Runtime {
                     Object::Generator(_) => "<generator object>".into(),
                     Object::Iterator(_) => "<iterator object>".into(),
                     Object::Bound(..) => "<bound method>".into(),
-                    Object::Slice(a, b, c) => format!("slice({:?}, {:?}, {:?})", a, b, c),
+                    Object::Slice(a, b, c) => format!("slice({}, {}, {})", a.map(|value|value.to_string()).unwrap_or_else(||"None".into()), b.map(|value|value.to_string()).unwrap_or_else(||"None".into()), c.map(|value|value.to_string()).unwrap_or_else(||"None".into())),
                     Object::Partial { function, args, .. } => {
                         let mut p = vec![self.repr_inner(&function, seen)?];
                         for v in args {
@@ -6278,7 +6295,7 @@ impl Runtime {
                     "bool",
                     "int",
                     "float",
-                    "str",
+                    "complex",                    "str",
                     "bytes",
                     "bytearray",
                     "list",
@@ -6313,6 +6330,7 @@ impl Runtime {
         }
     }
     fn format_value(&mut self, v: Value, spec: &str) -> PyResult<String> {
+        if let Value::Complex(number)=&v{return self.complex_format(**number,spec);}
         if matches!(v, Value::Int(_) | Value::Bool(_)) {
             let number = self.as_int(&v)?;
             if let Some(result) = number.format_integer(spec).map_err(int_error)? {
@@ -6462,6 +6480,7 @@ impl Runtime {
             Value::Bool(_) => "bool".into(),
             Value::Int(_) => "int".into(),
             Value::Float(_) => "float".into(),
+            Value::Complex(_) => "complex".into(),
             Value::Str(_) => "str".into(),
             Value::Bytes(_) => "bytes".into(),
             Value::Builtin(n) => {
@@ -6475,7 +6494,7 @@ impl Runtime {
                     return "_PlaceholderType".into();
                 }
                 if [
-                    "int", "str", "list", "tuple", "dict", "set", "float", "bool", "type",
+                    "int", "str", "list", "tuple", "dict", "set", "float", "complex", "bool", "type",
                     "object", "bytes", "dict_keys", "dict_values", "dict_items", "mappingproxy", "GenericAlias",
                 ]
                 .contains(&n.as_str())
@@ -6602,6 +6621,7 @@ impl Runtime {
             Value::Bool(b) => *b,
             Value::Int(n) => !n.is_zero(),
             Value::Float(n) => *n != 0.0,
+            Value::Complex(n) => n.real!=0.0 || n.imag!=0.0,
             Value::Str(s) => !s.is_empty(),
             Value::Bytes(b) => !b.is_empty(),
             Value::Obj(i) => match self.object(*i)? {
@@ -6680,6 +6700,7 @@ impl Runtime {
                 return Ok(true);
             }
         }
+        if let Some(equal)=self.complex_equal(a,b){return Ok(equal);}
         match (a, b) {
             (Value::None, Value::None) => Ok(true),
             (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
@@ -6872,6 +6893,7 @@ impl Runtime {
             return Ok(Value::Bool(!self.truth(&a)?));
         }
         match &a {
+            Value::Complex(number)=>match op {"+"=>Ok(a),"-"=>Ok(Value::Complex(Complex::new(-number.real,-number.imag).into())),_=>Err(pyerr("TypeError","bad operand type for complex"))},
             Value::Int(n) => Ok(Value::Int(match op {
                 "+" => n.clone(),
                 "-" => n.neg().into(),
@@ -7054,6 +7076,7 @@ impl Runtime {
             }
             return Ok(out);
         }
+        if let Some(result)=self.complex_binary(op,&a,&b){return result;}
         let integers = matches!(a, Value::Int(_) | Value::Bool(_))
             && matches!(b, Value::Int(_) | Value::Bool(_));
         if integers {
@@ -7113,7 +7136,7 @@ impl Runtime {
                         r
                     }
                 }
-                "**" => x.powf(y),
+                "**" => {if x<0.0 && x.is_finite() && y.is_finite() && y.fract()!=0.0 {return Ok(Value::Complex(Complex::new(x,0.0).pow(Complex::new(y,0.0))?.into()));}x.powf(y)},
                 _ => return Err(pyerr("TypeError", "unsupported float operation")),
             };
             return Ok(Value::Float(z.into()));
@@ -8182,6 +8205,7 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if name=="from_number" || matches!(&v,Value::Complex(_)) || matches!(&v,Value::Builtin(class)if class=="complex"){if let Some(result)=self.complex_attr(v.clone(),name){return result;}}
         if self.is_exception_value(&v) || matches!(&v,Value::Type(_)){if let Some(result)=self.exception_group_attr(v.clone(),name){return result;}}
         if self.is_template_value(&v){if let Some(result)=self.template_attr(v.clone(),name){return result;}}
         if name=="__class__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{typing:true,..}))) {return Ok(Value::Builtin("typing._GenericAlias".into()));}
@@ -8201,7 +8225,7 @@ impl Runtime {
         if name == "__format__"
             && matches!(
                 v,
-                Value::Int(_) | Value::Bool(_) | Value::Float(_) | Value::Str(_)
+                Value::Int(_) | Value::Bool(_) | Value::Float(_) | Value::Complex(_) | Value::Str(_)
             )
         {
             return Ok(self.obj_value(Object::Bound(Value::Builtin("method:__format__".into()), v)));

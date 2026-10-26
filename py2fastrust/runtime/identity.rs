@@ -91,6 +91,7 @@ impl From<Int> for Ident<Int> {
         Self::fresh(value)
     }
 }
+impl From<Complex> for Ident<Complex>{fn from(value:Complex)->Self{Self::fresh(value)}}
 impl From<f64> for Ident<f64> {
     fn from(value: f64) -> Self {
         Self::fresh(value)
@@ -159,6 +160,7 @@ enum LiteralKey {
     Bool(bool),
     Int(String),
     Float(u64),
+    Complex(u64,u64),
     Str(String),
     Bytes(Vec<u8>),
 }
@@ -169,6 +171,7 @@ impl Const {
             Self::Bool(value) => LiteralKey::Bool(*value),
             Self::Int(value) => LiteralKey::Int(value.clone()),
             Self::Float(value) => LiteralKey::Float(value.to_bits()),
+            Self::Complex(real,imag)=>LiteralKey::Complex(real.to_bits(),imag.to_bits()),
             Self::Str(value) => LiteralKey::Str(value.clone()),
             Self::Bytes(value) => LiteralKey::Bytes(value.clone()),
         }
@@ -179,6 +182,7 @@ impl Value {
         match self {
             Self::Int(value) => Self::Int(value.inner().clone().into()),
             Self::Float(value) => Self::Float((**value).into()),
+            Self::Complex(value)=>Self::Complex((**value).into()),
             Self::Str(value) => Self::Str(value.inner().clone().into()),
             Self::Bytes(value) => Self::Bytes(value.inner().clone().into()),
             value => value.clone(),
@@ -190,6 +194,7 @@ impl Value {
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Int(a), Self::Int(b)) => a.id == b.id,
             (Self::Float(a), Self::Float(b)) => a.id == b.id,
+            (Self::Complex(a),Self::Complex(b))=>a.id==b.id,
             (Self::Str(a), Self::Str(b)) => a.id == b.id,
             (Self::Bytes(a), Self::Bytes(b)) => a.id == b.id,
             (Self::Obj(a), Self::Obj(b)) => a == b,
@@ -223,6 +228,7 @@ impl Runtime {
             Value::Bool(true) => 20,
             Value::Int(value) => value.id,
             Value::Float(value) => value.id,
+            Value::Complex(value)=>value.id,
             Value::Str(value) => value.id,
             Value::Bytes(value) => value.id,
             Value::Obj(index) => (*index as u64) << 3 | 1,

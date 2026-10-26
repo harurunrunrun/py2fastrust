@@ -197,7 +197,8 @@ impl PegLexer {
         if ch.is_ascii_digit()||(ch=='.'&&self.peek(1).is_some_and(|next|next.is_ascii_digit())){return self.number();}
         self.operator()
     }
-    fn lex(mut self, mode: &str) -> Result<Vec<PegToken>,PegLexError> {
+    fn lex(self,mode:&str)->Result<Vec<PegToken>,PegLexError>{self.lex_with_comments(mode).map(|(tokens,_)|tokens)}
+    fn lex_with_comments(mut self, mode: &str) -> Result<(Vec<PegToken>,Vec<(usize,usize)>),PegLexError> {
         if self.source.contains(&'\0'){return Err(self.error("SyntaxError","source code string cannot contain null bytes"));}
         while self.at<self.source.len() {
             if self.line_start&&self.brackets.is_empty()&&!self.indent()?{continue;}
@@ -211,7 +212,7 @@ impl PegLexer {
         }
         while self.indents.len()>1{self.indents.pop();self.emit("DEDENT",String::new(),self.line,self.column);}
         if mode=="single"&&self.tokens.last().is_some_and(|token|token.kind=="DEDENT"){self.emit("NEWLINE",String::new(),self.line,self.column);}
-        self.emit("ENDMARKER",String::new(),self.line,self.column);Ok(self.tokens)
+        self.emit("ENDMARKER",String::new(),self.line,self.column);Ok((self.tokens,self.comments))
     }
 }
 
