@@ -33,6 +33,21 @@ class _ListInfo:
 
 
 @dataclass(frozen=True)
+class _MatrixInfo:
+    length: int | None
+
+
+@dataclass(frozen=True)
+class _DequeInfo:
+    length: int | None
+
+
+@dataclass(frozen=True)
+class _DequeConstructor:
+    name: str
+
+
+@dataclass(frozen=True)
 class _DictInfo:
     length: int | None
     nonempty: bool = False
@@ -52,6 +67,10 @@ class _Binding:
     def kind(self):
         if isinstance(self.info, _ListInfo):
             return "list_int"
+        if isinstance(self.info, _MatrixInfo):
+            return "matrix_int"
+        if isinstance(self.info, _DequeInfo):
+            return "deque_int"
         if isinstance(self.info, _DictInfo):
             return "dict_int"
         if isinstance(self.info, _SetInfo):
@@ -71,6 +90,7 @@ class _Function:
     return_kind: str
     dependencies: set[str]
     required: set[str]
+    imports: set[str]
 
 
 def _string(value):
@@ -183,7 +203,7 @@ impl NativeInput {
         self.line()?.split(native_space).filter(|word| !word.is_empty())
             .map(native_parse_integer).collect()
     }
-    fn unpack_integers(&mut self, count: usize) -> Result<Vec<NativeInt>, String> {
+    fn unpack_integers_vec(&mut self, count: usize) -> Result<Vec<NativeInt>, String> {
         let mut words = self.line()?.split(native_space).filter(|word| !word.is_empty());
         let mut result = Vec::with_capacity(count);
         for index in 0..count {
@@ -191,10 +211,25 @@ impl NativeInput {
             result.push(native_parse_integer(word)?);
         }
         if let Some(word) = words.next() {
+            native_parse_integer(word)?;
+            return Err(format!("ValueError: too many values to unpack (expected {})", count));
+        }
+        Ok(result)
+    }
+    fn unpack_integers<const N: usize>(&mut self) -> Result<[NativeInt; N], String> {
+        let mut words = self.line()?.split(native_space).filter(|word| !word.is_empty());
+        // The target count is a compile-time fact. No heap allocation is
+        // needed for each edge's a,b input tuple, including error paths.
+        let mut result = [0; N];
+        for index in 0..N {
+            let word = words.next().ok_or_else(|| format!("ValueError: not enough values to unpack (expected {}, got {})", N, index))?;
+            result[index] = native_parse_integer(word)?;
+        }
+        if let Some(word) = words.next() {
             // Unpacking asks a lazy map for precisely one extra item. Later
             // invalid tokens must not replace the too-many-values error.
             native_parse_integer(word)?;
-            return Err(format!("ValueError: too many values to unpack (expected {})", count));
+            return Err(format!("ValueError: too many values to unpack (expected {})", N));
         }
         Ok(result)
     }
@@ -237,6 +272,10 @@ fn native_index(index: NativeInt, length: usize) -> Result<usize, String> {
         if magnitude <= length as u128 { return Ok(length - magnitude as usize); }
     } else if (index as u128) < length as u128 { return Ok(index as usize); }
     Err("IndexError: list index out of range".into())
+}
+#[inline]
+fn native_row(values: &[Vec<NativeInt>], index: NativeInt) -> Result<&Vec<NativeInt>, String> {
+    native_index(index, values.len()).map(|index| &values[index])
 }
 #[inline]
 fn native_get(values: &[NativeInt], index: NativeInt) -> Result<NativeInt, String> {
@@ -317,10 +356,23 @@ fn native_set_remove(values: &mut NativeSet, key: NativeInt) -> Result<(), Strin
 '''
 
 
+_DEQUE_HELPERS = r'''
+#[inline]
+fn native_deque_get(values: &std::collections::VecDeque<NativeInt>, index: NativeInt) -> Result<NativeInt, String> {
+    native_index(index, values.len()).map(|index| values[index])
+        .map_err(|_| "IndexError: deque index out of range".to_string())
+}
+#[inline]
+fn native_deque_popleft(values: &mut std::collections::VecDeque<NativeInt>) -> Result<NativeInt, String> {
+    values.pop_front().ok_or_else(|| "IndexError: pop from an empty deque".to_string())
+}
+'''
+
+
 class _Generator:
     BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "list", "map", "dict", "set"}
 
-    def __init__(self, bits, functions=None, function=None, function_input=False):
+    def __init__(self, bits, functions=None, function=None, function_input=False, constructors=None):
         self.bits = bits
         self.bindings = {}
         self.counter = 0
@@ -330,11 +382,13 @@ class _Generator:
         self.has_lists = False
         self.has_dicts = False
         self.has_sets = False
+        self.has_deques = False
         self.iterating_lists = []
         self.return_label = None
         self.functions = functions or {}
         self.function = function
         self.function_input = function_input
+        self.constructors = constructors or {}
 
     def temporary(self):
         self.counter += 1
@@ -351,7 +405,7 @@ class _Generator:
         return f"({value}_i128 as NativeInt)"
 
     def slot(self, kind):
-        if kind not in {"int", "bool", "list_int", "dict_int", "set_int"}:
+        if kind not in {"int", "bool", "list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
             raise _Unsupported
         slot = f"native_var_{len(self.bindings)}"
         self.bindings[slot] = kind
@@ -384,7 +438,7 @@ class _Generator:
 
     @staticmethod
     def truth(expression):
-        if expression.kind in {"list_int", "dict_int", "set_int"}:
+        if expression.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind not in {"int", "bool"}:
             raise _Unsupported
@@ -394,6 +448,10 @@ class _Generator:
     def binding(expression):
         if expression.kind == "list_int":
             return _ListInfo(expression.length)
+        if expression.kind == "matrix_int":
+            return _MatrixInfo(expression.length)
+        if expression.kind == "deque_int":
+            return _DequeInfo(expression.length)
         if expression.kind == "dict_int":
             return _DictInfo(expression.length, expression.nonempty)
         if expression.kind == "set_int":
@@ -473,7 +531,7 @@ class _Generator:
         if self.function is None:
             # A callee's globals are looked up at call time, including indirect
             # callees whose definitions may follow the caller definition.
-            if any(not isinstance(environment.get(name), _Function) for name in function.required):
+            if any(environment.get(name) is not self.functions.get(name, self.constructors.get(name)) for name in function.required):
                 raise _Unsupported
         else:
             self.function.dependencies.add(function.node.name)
@@ -516,6 +574,60 @@ class _Generator:
         call += f".map_err(|mut error| {{ error.frames.push(({node.lineno}, {_string(scope)})); error }})?"
         return _Expression("{ " + " ".join(lines) + f" {call} }}", function.return_kind)
 
+    def deque_constructor(self, node, environment):
+        # Bounded queues and subclass/protocol iterables require the VM. An
+        # unbounded constructor accepts the documented iterable keyword too.
+        if len(node.args) > 1 or any(isinstance(value, ast.Starred) for value in node.args):
+            raise _Unsupported
+        source = node.args[0] if node.args else None
+        seen = set()
+        for keyword in node.keywords:
+            if keyword.arg in seen:
+                raise _Unsupported
+            seen.add(keyword.arg)
+            if keyword.arg == "iterable" and source is None:
+                source = keyword.value
+            elif keyword.arg == "maxlen" and isinstance(keyword.value, ast.Constant) and keyword.value.value is None:
+                pass
+            else:
+                raise _Unsupported
+        if self.function is not None:
+            self.function.imports.add(node.func.id)
+        self.has_deques = self.has_lists = True
+        if source is None:
+            return _Expression("std::collections::VecDeque::<NativeInt>::new()", "deque_int")
+        if (isinstance(source, ast.Call) and isinstance(source.func, ast.Name)
+                and source.func.id == "range"):
+            setup, iterator, _ = self.range_iterator(source, environment)
+            return _Expression(f"{{ {setup} ({iterator}).collect::<std::collections::VecDeque<NativeInt>>() }}", "deque_int")
+        if isinstance(source, ast.Tuple):
+            source = ast.copy_location(ast.List(elts=source.elts, ctx=ast.Load()), source)
+        value = self.expression(source, environment)
+        if value.kind not in {"list_int", "deque_int"}:
+            raise _Unsupported
+        iterator = f"({value.code}).into_iter()" if value.owned else f"({value.code}).iter().copied()"
+        return _Expression(f"({iterator}).collect::<std::collections::VecDeque<NativeInt>>()", "deque_int")
+
+    def row_target(self, node, environment, assignment=False):
+        """Evaluate a direct row receiver before evaluating method arguments.
+
+        No row borrow escapes into the Python environment. Holding the checked
+        index rather than a mutable Rust borrow also preserves argument order.
+        """
+        if (not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name)
+                or node.value.id in self.iterating_lists or isinstance(node.slice, ast.Slice)):
+            raise _Unsupported
+        matrix = self.expression(node.value, environment)
+        if matrix.kind != "matrix_int":
+            raise _Unsupported
+        index = self.expression(node.slice, environment)
+        offset = self.temporary()
+        check = f"native_index({self.number(index)}, {matrix.code}.len())"
+        if assignment:
+            check += '.map_err(|_| "IndexError: list assignment index out of range".to_string())'
+        setup = f"let {offset} = {self.at(check, node)};"
+        return setup, f"{matrix.code}[{offset}]"
+
     def expression(self, node, environment):
         if isinstance(node, ast.Constant):
             if type(node.value) is bool:
@@ -534,6 +646,10 @@ class _Generator:
             info = information.info
             if isinstance(info, _ListInfo):
                 return _Expression(information.slot, "list_int", owned=False, length=info.length)
+            if isinstance(info, _MatrixInfo):
+                return _Expression(information.slot, "matrix_int", owned=False, length=info.length)
+            if isinstance(info, _DequeInfo):
+                return _Expression(information.slot, "deque_int", owned=False, length=info.length)
             if isinstance(info, _DictInfo):
                 return _Expression(information.slot, "dict_int", owned=False, length=info.length, nonempty=info.nonempty)
             if isinstance(info, _SetInfo):
@@ -541,10 +657,13 @@ class _Generator:
             return _Expression(information.slot, info)
         if isinstance(node, ast.List):
             values = [self.expression(value, environment) for value in node.elts]
-            if any(value.kind != "int" for value in values):
+            kind = "list_int"
+            if values and all(value.kind == "list_int" and value.owned for value in values):
+                kind = "matrix_int"
+            elif any(value.kind != "int" for value in values):
                 raise _Unsupported
             self.has_lists = True
-            return _Expression("vec![" + ", ".join(value.code for value in values) + "]", "list_int", length=len(values))
+            return _Expression("vec![" + ", ".join(value.code for value in values) + "]", kind, length=len(values))
         if isinstance(node, ast.Dict):
             if any(key is None for key in node.keys):
                 raise _Unsupported
@@ -577,9 +696,20 @@ class _Generator:
             if isinstance(node.slice, ast.Slice):
                 raise _Unsupported
             values = self.expression(node.value, environment)
-            if values.kind not in {"list_int", "dict_int"}:
+            if values.kind not in {"list_int", "dict_int", "matrix_int", "deque_int"}:
                 raise _Unsupported
             index = self.expression(node.slice, environment)
+            if values.kind == "matrix_int":
+                # A row borrow cannot escape or outlive its unique parent.
+                if not isinstance(node.value, ast.Name):
+                    raise _Unsupported
+                return _Expression(self.at(f"native_row(&{values.code}, {self.number(index)})", node), "list_int", owned=False)
+            if values.kind == "deque_int":
+                offset = self.temporary()
+                receiver = self.temporary() if values.owned else values.code
+                setup = f"let {receiver} = {values.code}; " if values.owned else ""
+                lookup = self.at(f"native_deque_get(&{receiver}, {offset})", node)
+                return _Expression(f"{{ {setup}let {offset} = {self.number(index)}; {lookup} }}", "int")
             if values.kind == "dict_int":
                 if index.kind != "int":
                     raise _Unsupported
@@ -608,7 +738,11 @@ class _Generator:
             inside[target] = _Binding(local, "int")
             filters = [self.expression(condition, inside) for condition in comprehension.ifs]
             element = self.expression(node.elt, inside)
-            if element.kind != "int":
+            if element.kind == "int":
+                kind, rust_type = "list_int", "NativeInt"
+            elif element.kind == "list_int" and element.owned:
+                kind, rust_type = "matrix_int", "Vec<NativeInt>"
+            else:
                 raise _Unsupported
             self.has_lists = True
             result = self.temporary()
@@ -622,8 +756,8 @@ class _Generator:
                     length = max(0, (stop - start + step - 1) // step)
                 elif step < 0:
                     length = max(0, (start - stop - step - 1) // -step)
-            code = f"{{ {setup} let mut {result}: Vec<NativeInt> = Vec::new(); for {local} in {iterator} {{ {insertion} }} {result} }}"
-            return _Expression(code, "list_int", length=length)
+            code = f"{{ {setup} let mut {result}: Vec<{rust_type}> = Vec::new(); for {local} in {iterator} {{ {insertion} }} {result} }}"
+            return _Expression(code, kind, length=length)
         if isinstance(node, ast.UnaryOp):
             value = self.expression(node.operand, environment)
             if isinstance(node.op, ast.Not):
@@ -642,7 +776,7 @@ class _Generator:
             return self.binary(node.op, left, right, node)
         if isinstance(node, ast.BoolOp):
             values = [self.expression(value, environment) for value in node.values]
-            if len({value.kind for value in values}) != 1 or values[0].kind in {"list_int", "dict_int", "set_int"}:
+            if len({value.kind for value in values}) != 1 or values[0].kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
                 raise _Unsupported
             code = values[-1].code
             for value in reversed(values[:-1]):
@@ -681,7 +815,7 @@ class _Generator:
             no = self.expression(node.orelse, environment)
             if yes.kind != no.kind:
                 raise _Unsupported
-            if yes.kind in {"list_int", "dict_int", "set_int"}:
+            if yes.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
                 raise _Unsupported
             return _Expression(f"(if {self.truth(test)} {{ {yes.code} }} else {{ {no.code} }})", yes.kind)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
@@ -716,13 +850,13 @@ class _Generator:
             if name == "len" and len(node.args) == 1:
                 view = self.dict_view(node.args[0], environment)
                 value = view[0] if view else self.expression(node.args[0], environment)
-                if value.kind not in {"list_int", "dict_int", "set_int"}:
+                if value.kind not in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
                     raise _Unsupported
                 return _Expression(f"(({value.code}).len() as NativeInt)", "int", value.length)
             if name == "sum" and len(node.args) in (1, 2):
                 view = self.dict_view(node.args[0], environment)
                 value = view[0] if view else self.expression(node.args[0], environment)
-                if value.kind not in {"list_int", "dict_int", "set_int"} or (view and view[1] == "items"):
+                if value.kind not in {"list_int", "dict_int", "set_int", "deque_int"} or (view and view[1] == "items"):
                     raise _Unsupported
                 start = self.expression(node.args[1], environment) if len(node.args) == 2 else _Expression(self.literal(0), "int", 0)
                 if start.kind != "int":
@@ -736,6 +870,11 @@ class _Generator:
                 if value.kind == "dict_int":
                     iterator = f"{values_name}.entries.iter()"
                     pattern = "&(_, value)" if view and view[1] == "values" else "&(value, _)"
+                if value.kind == "deque_int" and not value.owned:
+                    # start can pop from this same queue. Python creates the
+                    # iterator only after all arguments have been evaluated.
+                    code = f"{{ let {start_name} = {self.number(start)}; ({value.code}).iter().fold({start_name}, |acc, &value| acc.wrapping_add(value)) }}"
+                    return _Expression(code, "int")
                 code = f"{{ let {values_name} = {binding}; let {start_name} = {self.number(start)}; {iterator}.fold({start_name}, |acc, {pattern}| acc.wrapping_add(value)) }}"
                 return _Expression(code, "int")
             if name == "pow" and len(node.args) in (2, 3):
@@ -749,8 +888,21 @@ class _Generator:
                 return _Expression(f"{{ {code} ({call}).to_i128().unwrap() as NativeInt }}", "int")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             function = environment.get(node.func.id)
+            if isinstance(function, _DequeConstructor):
+                return self.deque_constructor(node, environment)
             if isinstance(function, _Function):
                 return self.user_call(node, function, environment)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.attr in {"popleft", "pop"}
+                and not node.args and not node.keywords):
+            target = node.func.value
+            values = self.expression(target, environment)
+            if values.kind != "deque_int" or target.id in self.iterating_lists:
+                raise _Unsupported
+            function = "native_deque_popleft" if node.func.attr == "popleft" else None
+            code = (f"{function}(&mut {values.code})" if function else
+                    f'{values.code}.pop_back().ok_or_else(|| "IndexError: pop from an empty deque".to_string())')
+            return _Expression(self.at(code, node), "int")
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "get" and len(node.args) == 2 and not node.keywords):
             values = self.expression(node.func.value, environment)
@@ -861,7 +1013,7 @@ class _Generator:
         result = {}
         for name, first in live[0].items():
             values = [environment.get(name) for environment in live]
-            if isinstance(first, _Function):
+            if isinstance(first, (_Function, _DequeConstructor)):
                 if all(value is first for value in values):
                     result[name] = first
                 continue
@@ -871,6 +1023,10 @@ class _Generator:
             info = infos[0]
             if isinstance(info, _ListInfo) and any(value != info for value in infos):
                 info = _ListInfo(None)
+            elif isinstance(info, _MatrixInfo) and any(value != info for value in infos):
+                info = _MatrixInfo(None)
+            elif isinstance(info, _DequeInfo) and any(value != info for value in infos):
+                info = _DequeInfo(None)
             elif isinstance(info, _DictInfo) and any(value != info for value in infos):
                 info = _DictInfo(None, all(value.nonempty for value in infos))
             elif isinstance(info, _SetInfo) and any(value != info for value in infos):
@@ -897,6 +1053,8 @@ class _Generator:
             if isinstance(binding, _Binding):
                 info = binding.info
                 widened = (_ListInfo(None) if isinstance(info, _ListInfo)
+                           else _MatrixInfo(None) if isinstance(info, _MatrixInfo)
+                           else _DequeInfo(None) if isinstance(info, _DequeInfo)
                            else _DictInfo(None) if isinstance(info, _DictInfo)
                            else _SetInfo(None) if isinstance(info, _SetInfo) else info)
                 binding = _Binding(binding.slot, widened)
@@ -972,7 +1130,8 @@ class _Generator:
         for name, binding in joined.items():
             if isinstance(binding, _Binding) and binding.slot not in entry_slots:
                 default = {"int": "0", "bool": "false", "list_int": "Vec::new()",
-                           "dict_int": "NativeDict::new()", "set_int": "NativeSet::new()"}[binding.kind]
+                           "dict_int": "NativeDict::new()", "set_int": "NativeSet::new()",
+                           "matrix_int": "Vec::new()", "deque_int": "std::collections::VecDeque::new()"}[binding.kind]
                 initializers.append(f"{binding.slot} = {default};")
         live = self.read_before_write(node.body)
         if isinstance(node, ast.While):
@@ -1004,6 +1163,16 @@ class _Generator:
         return "\n".join(initializers), body, self.after_loop(joined)
 
     def statement(self, node, environment):
+        if isinstance(node, ast.ImportFrom):
+            if self.function is not None or node.module != "collections" or node.level:
+                raise _Unsupported
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if (alias.name != "deque" or name not in self.constructors
+                        or name in self.BUILTINS | {"__name__", "__builtins__"}):
+                    raise _Unsupported
+                environment[name] = self.constructors[name]
+            return "", environment
         if isinstance(node, ast.FunctionDef):
             function = self.functions.get(node.name)
             if self.function is not None or function is None or function.node is not node:
@@ -1040,7 +1209,10 @@ class _Generator:
                 name = self.temporary()
                 if self.input_map(node.value):
                     self.needs_integer_runtime = self.has_input = True
-                    value_code = self.at(f"native_input.unpack_integers({count})", node)
+                    # Keep unusually large unpackings off the Rust stack.
+                    unpack = (f"native_input.unpack_integers::<{count}>()" if count <= 32 else
+                              f"native_input.unpack_integers_vec({count})")
+                    value_code = self.at(unpack, node)
                     lines = [f"let {name} = {value_code};"]
                 else:
                     value = self.expression(node.value, environment)
@@ -1055,6 +1227,24 @@ class _Generator:
                     lines.append(f"{self.bind(target.id, 'int', environment)} = {name}[{index}];")
                 return "\n".join(lines), environment
             value = self.expression(node.value, environment)
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Subscript):
+                target = node.targets[0]
+                if isinstance(target.value, ast.Subscript):
+                    if value.kind != "int" or isinstance(target.slice, ast.Slice):
+                        raise _Unsupported
+                    setup, row = self.row_target(target.value, environment)
+                    index = self.expression(target.slice, environment)
+                    result, offset = self.temporary(), self.temporary()
+                    setter = self.at(f"native_set(&mut {row}, {offset}, {result})", node)
+                    return f"let {result} = {value.code};\n{setup}\nlet {offset} = {self.number(index)};\n{setter};", environment
+                if isinstance(target.value, ast.Name):
+                    parent = self.expression(target.value, environment)
+                    if parent.kind == "matrix_int":
+                        if value.kind != "list_int" or not value.owned:
+                            raise _Unsupported
+                        result = self.temporary()
+                        setup, row = self.row_target(target, environment, assignment=True)
+                        return f"let {result} = {value.code};\n{setup}\n{row} = {result};", environment
             if len(node.targets) == 1 and isinstance(node.targets[0], ast.Subscript):
                 target = node.targets[0]
                 if value.kind != "int" or not isinstance(target.value, ast.Name) or target.value.id in self.iterating_lists:
@@ -1073,7 +1263,7 @@ class _Generator:
                 return f"let {result} = {value.code};\nlet {offset} = {self.number(index)};\n{setter};", environment
             if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
-            if value.kind in {"list_int", "dict_int", "set_int"} and (not value.owned or len(node.targets) != 1):
+            if value.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"} and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported
             name = self.temporary()
             lines = [f"let {name} = {value.code};"]
@@ -1082,6 +1272,17 @@ class _Generator:
             return "\n".join(lines), environment
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Subscript):
             target = node.target
+            if isinstance(target.value, ast.Subscript):
+                if isinstance(target.slice, ast.Slice):
+                    raise _Unsupported
+                setup, row = self.row_target(target.value, environment)
+                index = self.expression(target.slice, environment)
+                offset, old, result = self.temporary(), self.temporary(), self.temporary()
+                getter = self.at(f"native_get(&{row}, {offset})", target)
+                right = self.expression(node.value, environment)
+                value = self.binary(node.op, _Expression(old, "int"), right, node)
+                setter = self.at(f"native_set(&mut {row}, {offset}, {result})", node)
+                return f"{setup}\nlet {offset} = {self.number(index)};\nlet {old} = {getter};\nlet {result} = {value.code};\n{setter};", environment
             if not isinstance(target.value, ast.Name) or target.value.id in self.iterating_lists or isinstance(target.slice, ast.Slice):
                 raise _Unsupported
             values = self.expression(target.value, environment)
@@ -1104,7 +1305,7 @@ class _Generator:
             return f"let {offset} = {self.number(index)};\nlet {old} = {getter};\nlet {result} = {value.code};\n{setter};", environment
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
             left = self.expression(node.target, environment)
-            if left.kind in {"list_int", "dict_int", "set_int"}:
+            if left.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
                 raise _Unsupported
             right = self.expression(node.value, environment)
             value = self.binary(node.op, left, right, node)
@@ -1157,13 +1358,20 @@ class _Generator:
             else:
                 view = self.dict_view(node.iter, environment)
                 values = view[0] if view else self.expression(node.iter, environment)
-                if values.kind not in {"list_int", "dict_int"}:
+                if values.kind not in {"list_int", "dict_int", "deque_int"}:
                     raise _Unsupported
                 receiver = view[2] if view else node.iter
                 if isinstance(receiver, ast.Name):
                     list_name = receiver.id
                     setup = ""
                     iterable = values.code
+                    borrowed = True
+                elif (isinstance(receiver, ast.Subscript) and isinstance(receiver.value, ast.Name)
+                      and isinstance(environment.get(receiver.value.id), _Binding)
+                      and environment[receiver.value.id].kind == "matrix_int"):
+                    list_name = receiver.value.id
+                    iterable = self.temporary()
+                    setup = f"let {iterable} = {values.code};"
                     borrowed = True
                 elif values.owned:
                     iterable = self.temporary()
@@ -1222,9 +1430,51 @@ class _Generator:
             if isinstance(call, ast.Constant) and type(call.value) is str:
                 return ";", environment
             if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Subscript)):
+                # Resolve the row before its arguments, including failing
+                # index checks. Its integer elements have no alias identity.
+                setup, row = self.row_target(call.func.value, environment)
+                method = call.func.attr
+                if call.keywords:
+                    raise _Unsupported
+                if method == "append" and len(call.args) == 1:
+                    argument = self.expression(call.args[0], environment)
+                    if argument.kind != "int":
+                        raise _Unsupported
+                    item = self.temporary()
+                    return f"{setup}\nlet {item} = {argument.code};\n{row}.push({item});", environment
+                if method == "clear" and not call.args:
+                    return f"{setup}\n{row}.clear();", environment
+                raise _Unsupported
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
                     and isinstance(call.func.value, ast.Name)):
                 target = call.func.value
                 values = self.expression(target, environment)
+                if values.kind in {"matrix_int", "deque_int"}:
+                    if target.id in self.iterating_lists or call.keywords:
+                        raise _Unsupported
+                    method = call.func.attr
+                    if method == "clear" and not call.args:
+                        if values.kind == "matrix_int":
+                            self.update_info(environment, target.id, _MatrixInfo(0))
+                        return f"{values.code}.clear();", environment
+                    if method in {"append", "appendleft"} and len(call.args) == 1:
+                        argument = self.expression(call.args[0], environment)
+                        if values.kind == "matrix_int":
+                            if method != "append" or argument.kind != "list_int" or not argument.owned:
+                                raise _Unsupported
+                            self.update_info(environment, target.id, _MatrixInfo(None))
+                            action = "push"
+                        else:
+                            if argument.kind != "int":
+                                raise _Unsupported
+                            action = "push_back" if method == "append" else "push_front"
+                        item = self.temporary()
+                        return f"let {item} = {argument.code};\n{values.code}.{action}({item});", environment
+                    if values.kind == "deque_int" and method in {"popleft", "pop"} and not call.args:
+                        value = self.expression(call, environment)
+                        return f"let _ = {value.code};", environment
+                    raise _Unsupported
                 if values.kind == "set_int":
                     if call.keywords:
                         raise _Unsupported
@@ -1303,11 +1553,30 @@ class _Generator:
                     seen.add(keyword.arg)
                     if keyword.arg == "sep": separator = keyword.value.value
                     else: end = keyword.value.value
-                values = [self.expression(argument, environment) for argument in call.args]
-                if any(value.kind not in {"int", "bool"} for value in values):
+                values = [self.expression(argument.value if isinstance(argument, ast.Starred) else argument, environment)
+                          for argument in call.args]
+                starred = [isinstance(argument, ast.Starred) for argument in call.args]
+                if any(value.kind not in ({"list_int", "deque_int"} if star else {"int", "bool"})
+                       for value, star in zip(values, starred)):
                     raise _Unsupported
                 names = [self.temporary() for _ in values]
-                lines = [f"let {name} = {value.code};" for name, value in zip(names, values)]
+                lines = [f"let {name} = {('(' + value.code + ').clone()') if star and value.kind == 'deque_int' and not value.owned else ('&(' + value.code + ')') if star and not value.owned else value.code};"
+                         for name, value, star in zip(names, values, starred)]
+                if any(starred):
+                    first = self.temporary()
+                    lines.append(f"let mut {first} = true;")
+                    for name, value, star in zip(names, values, starred):
+                        item = self.temporary() if star else name
+                        if star:
+                            lines.append(f"for {item} in {name}.iter() {{")
+                        lines.append(f"if !{first} {{ native_output.push_str({_string(separator)}); }}")
+                        lines.append(f"{first} = false;")
+                        formatted = item if value.kind != "bool" else f'(if {item} {{ "True" }} else {{ "False" }})'
+                        lines.append(f'write!(&mut native_output, "{{}}", {formatted}).unwrap();')
+                        if star:
+                            lines.append("}")
+                    lines.append(f"native_output.push_str({_string(end)});")
+                    return "\n".join(lines), environment
                 for index, (name, value) in enumerate(zip(names, values)):
                     if index:
                         lines.append(f"native_output.push_str({_string(separator)});")
@@ -1316,7 +1585,7 @@ class _Generator:
                 lines.append(f"native_output.push_str({_string(end)});")
                 return "\n".join(lines), environment
             expression = self.expression(call, environment)
-            return f"let _ = {'&(' + expression.code + ')' if expression.kind in {'list_int', 'dict_int', 'set_int'} and not expression.owned else expression.code};", environment
+            return f"let _ = {'&(' + expression.code + ')' if expression.kind in {'list_int', 'dict_int', 'set_int', 'matrix_int', 'deque_int'} and not expression.owned else expression.code};", environment
         raise _Unsupported
 
 
@@ -1414,7 +1683,7 @@ def _function_plans(tree, table, bits):
         functions[node.name] = _Function(node, f"native_function_{len(functions)}", positional,
                                         {argument.arg for argument in parameters.posonlyargs},
                                         [argument.arg for argument in parameters.kwonlyargs], defaults,
-                                        local_names, "int" if value_returns else "none", set(), set())
+                                        local_names, "int" if value_returns else "none", set(), set(), set())
     if functions and any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
                          and node.id in functions.keys() | {"__builtins__", "__name__"} for node in ast.walk(tree)):
         raise _Unsupported
@@ -1435,7 +1704,7 @@ def _function_requirements(functions):
         if name in visited:
             return functions[name].required
         visiting.add(name)
-        required = {name}
+        required = {name} | functions[name].imports
         depth = 1
         for dependency in functions[name].dependencies:
             required |= visit(dependency)
@@ -1457,16 +1726,19 @@ def _function_requirements(functions):
 
 def _declarations(generator):
     types = {"int": "NativeInt", "bool": "bool", "list_int": "Vec<NativeInt>",
-             "dict_int": "NativeDict", "set_int": "NativeSet"}
+             "dict_int": "NativeDict", "set_int": "NativeSet",
+             "matrix_int": "Vec<Vec<NativeInt>>", "deque_int": "std::collections::VecDeque<NativeInt>"}
     return "\n".join(f"let mut {slot}: {types[kind]};"
                      for slot, kind in generator.bindings.items())
 
 
-def try_generate_native(source: str, filename: str, integer: str) -> str | None:
+def try_generate_native(source: str, filename: str, integer: str, *, trusted_imports=frozenset()) -> str | None:
     """Return standalone scalar/container Rust, or None when proof fails.
 
     This backend implements the wrapping fixed-width integer modes. BigInt and
     programs requiring runtime Python objects use the general backend.
+    trusted_imports must come from Compiler's actual vendored-module resolution;
+    a spelling such as "collections" in user source is insufficient evidence.
     """
     if integer not in {"i64", "i128"}:
         return None
@@ -1477,16 +1749,24 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
         if any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in _Generator.BUILTINS for node in ast.walk(tree)):
             return None
         bits = 64 if integer == "i64" else 128
+        constructors = {}
+        if "collections" in trusted_imports:
+            for statement in tree.body:
+                if isinstance(statement, ast.ImportFrom) and statement.module == "collections" and statement.level == 0:
+                    for alias in statement.names:
+                        if alias.name == "deque":
+                            name = alias.asname or alias.name
+                            constructors.setdefault(name, _DequeConstructor(name))
         statements, wrapper = _main_wrapper(tree)
         functions = {} if wrapper else _function_plans(tree, table, bits)
         function_input = bool(functions) and any(isinstance(node, ast.Name) and node.id == "input" for node in ast.walk(tree))
-        generator = _Generator(bits, functions, function_input=function_input)
+        generator = _Generator(bits, functions, function_input=function_input, constructors=constructors)
         if function_input:
             generator.has_input = generator.needs_integer_runtime = True
         function_sources = []
         for function in functions.values():
-            local = _Generator(bits, functions, function, function_input)
-            environment = {name: value for name, value in functions.items() if name not in function.local_names}
+            local = _Generator(bits, functions, function, function_input, constructors)
+            environment = {name: value for name, value in {**constructors, **functions}.items() if name not in function.local_names}
             parameters = function.positional + function.kwonly
             initializers = []
             signature = []
@@ -1504,7 +1784,7 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
             function_sources.append(f"#[inline]\nfn {function.rust_name}({', '.join(signature)}) -> Result<{return_type}, NativeError> {{\n"
                                     "use std::fmt::Write as _;\n" + _declarations(local) + "\n"
                                     + "\n".join(initializers) + "\n" + function_body + tail + "\n}")
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         _function_requirements(functions)
         if wrapper:
@@ -1535,6 +1815,8 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
         result.append(_DICT_HELPERS)
     if generator.has_sets:
         result.append(_SET_HELPERS)
+    if generator.has_deques:
+        result.append(_DEQUE_HELPERS)
     result.extend(function_sources)
     result.append("fn main() {\nuse std::fmt::Write as _;\nuse std::io::Write as _;\n"
                   "let mut native_output = String::new();\n"

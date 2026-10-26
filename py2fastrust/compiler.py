@@ -53,6 +53,8 @@ class Compiler:
         self.file_modules = {filename: "__main__"}
         self.temp_id = 0
         self.future_flags = {}
+        # Native imports require the actual resolver provenance, not a module name.
+        self.native_imports = set()
 
     def parse(self, source, filename):
         try:
@@ -203,6 +205,7 @@ class Compiler:
         path = self.find_module(name)
         if path is None and name in VENDORED_MODULES:
             path = Path(str(files("py2fastrust").joinpath("stdlib", name + ".py")))
+            self.native_imports.add(name)
         if path is None and name in BUILTIN_MODULES:
             return
         if path is None:

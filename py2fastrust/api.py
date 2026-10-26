@@ -44,9 +44,10 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
             options = replace(options, license=license_name(options.license))
         except ValueError as exc:
             return TranspileResult(None, (Diagnostic(str(exc), options.filename, code="E004"),))
-        program = Compiler(options.filename, options.module_paths, options.include_modules).compile(source)
+        compiler = Compiler(options.filename, options.module_paths, options.include_modules)
+        program = compiler.compile(source)
         if options.optimize and not options.include_modules:
-            native = try_generate_native(source, options.filename, options.integer)
+            native = try_generate_native(source, options.filename, options.integer, trusted_imports=frozenset(compiler.native_imports))
             if native is not None:
                 source_map = tuple(SourceLocation(code_id, index, code.filename, op.line, op.column)
                                    for code_id, code in enumerate(program.codes)

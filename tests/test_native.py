@@ -311,7 +311,7 @@ print(b[0],b[1],b[-1],len(b))
     def test_integer_list_alias_and_mutation_fallback(self):
         rejected = [
             "a=[1]\nb=a\nprint(b[0])", "a=b=[1]\nprint(a[0])",
-            "a=[1]\na[0]=True", "a=[True,1]", "a=[[1]]",
+            "a=[1]\na[0]=True", "a=[True,1]", "a=[[1]]*2",
             "a=[1]\na.append('mixed')", "a=[1]\nfor x in a:\n a[0]=2",
             "a=[1]\nfor x in a:\n a=[3]", "a=[1]\nfor x in a:\n a.append(x)",
             "a=[1]\nb=a if True else [2]\nprint(b[0])", "a=[1]\nb=a or [2]",
