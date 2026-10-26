@@ -1,54 +1,79 @@
 # py2fastrust
 
-Python 3.14のプログラムを、外部crate不要の単一Rustファイルへ変換します。
-型ヒントや入力コードの書き換えは不要です。
+The `pytors` command transpiles Python 3.14 programs into a single Rust source file that needs no external crates.
+Type hints and changes to the input program are not required.
 
-現在はalpha版です。対応範囲と制約は [COMPATIBILITY.md](COMPATIBILITY.md) を参照してください。
-標準ライブラリの名前ごとの実装状況は [API_SUPPORT.md](API_SUPPORT.md) に記載しています。
+This is an alpha release. See [COMPATIBILITY.md](COMPATIBILITY.md) for supported features and known limitations,
+and [API_SUPPORT.md](API_SUPPORT.md) for individual standard-library APIs.
 
-## 使い方
+## Usage
 
-変換時にはPython 3.14以降、生成コードのコンパイルにはRust 1.85以降が必要です。
-生成した実行ファイルにはPython環境も追加のソースファイルも不要です。
+Transpilation requires Python 3.14 or later. Compiling the generated code requires Rust 1.85 or later.
+The compiled executable needs neither Python nor additional source files.
 
 ```bash
 python3 -m pip install -e .
-py2fastrust examples/sum.py -o /tmp/main.rs
+pytors examples/sum.py -o /tmp/main.rs
 rustc --edition=2021 -O /tmp/main.rs -o /tmp/main
 printf '4\n1 2 3 4\n' | /tmp/main
 ```
 
-インストールせず、リポジトリのルートから実行することもできます。
+You can also run the transpiler from the repository root without installing it:
 
 ```bash
 python3 -m py2fastrust examples/sum.py -o /tmp/main.rs
 ```
 
-整数モードは生成単位全体で選びます。`eval/exec` にも同じモードが適用されます。
+The integer mode applies to the entire generated program, including `eval` and `exec`:
 
 ```bash
-py2fastrust main.py -o main.rs                 # i64（既定）
-py2fastrust main.py -o main.rs --int i128
-py2fastrust main.py -o main.rs --int bigint
+pytors main.py -o main.rs                 # i64 (default)
+pytors main.py -o main.rs --int i128
+pytors main.py -o main.rs --int bigint
 ```
 
-i64/i128は、整数リテラル・変換・整数演算の結果を符号付きの選択幅へ折り返します。
-Pythonの無制限整数と同じ結果が必要な場合は `--int bigint` を指定してください。
-BigIntも自作ランタイムを生成ファイルに含めるため、Cargoや追加crateは不要です。
-rangeの終端判定・添字・確保サイズには、折り返しとは別の検査付き処理を使います。
+In `i64` and `i128` modes, integer literals, conversions, and arithmetic results wrap to the selected signed width.
+Use `--int bigint` when you need Python's arbitrary-precision integer behavior.
+The generated file includes the BigInt runtime, so Cargo and additional crates are unnecessary.
+Range termination, indices, and allocation sizes use separate checked calculations.
 
-## モジュール
+## Options in source comments
 
-固定名のimportと、純Pythonモジュール・パッケージの同梱に対応します。
-既定の検索先は入力ファイルのディレクトリです。
+Conversion options can be recorded in the initial comment block:
+
+```python
+# pytors: --int i128 --license Unlicense
+n = int(input())
+print(n * n)
+```
+
+Source options take precedence over command-line and Python API settings.
+The parser reads blank lines and comments, including shebang and encoding comments,
+and stops at the first Python statement. Later directives have no effect.
+
+Allowed options are `--int`, `--license`, `--module-path`, `--include-module`,
+`--no-optimize`, `--optimize`, `-o`/`--output`, and `--check`.
+Input filenames, help, and version options are not accepted in directives.
+If a scalar option appears more than once, the last value wins.
+Source declarations of repeated options, such as `--module-path` and `--include-module`,
+replace the corresponding CLI or API list; repeated source declarations accumulate within that list.
+Relative paths in directives are resolved from the input file's directory.
+
+Output paths and `--check` affect the CLI only. The Python API returns a result and never writes files,
+even when those options appear in the source.
+
+## Modules
+
+Fixed-name imports and bundled pure-Python modules and packages are supported.
+The input file's directory is the default module search path.
 
 ```bash
-py2fastrust main.py --module-path ./lib -o main.rs
-py2fastrust main.py --include-module helpers -o main.rs
+pytors main.py --module-path ./lib -o main.rs
+pytors main.py --include-module helpers -o main.rs
 ```
 
-`--include-module` は、`eval/exec` 内でimportするモジュールなど、通常のソースから参照されないものを事前に含める指定です。
-生成した実行ファイルは、同梱したコードと対応済み標準モジュールを使います。
+Use `--include-module` to bundle modules that the ordinary source does not reference, such as imports inside `eval` or `exec`.
+The generated executable uses bundled code and the supported standard modules.
 
 ## Python API
 
@@ -57,7 +82,7 @@ from py2fastrust import TranspileOptions, transpile
 
 result = transpile(
     'n = int(input())\nprint(n * n)\n',
-    TranspileOptions(integer="i128", filename="solution.py"),
+    TranspileOptions(integer="i128", filename="solution.py", license="Unlicense"),
 )
 if result.success:
     print(result.rust_source)
@@ -66,47 +91,58 @@ else:
         print(diagnostic)
 ```
 
-`source_map` はコード単位・命令位置から元のファイル、行、列への対応です。
-`backend` は `native` または `vm` です。`TranspileOptions(optimize=False)` と
-CLIの `--no-optimize` で汎用ランタイムを選択できます。
-`--check` はRustファイルを書かずに変換可否を検証します。
+`source_map` maps code units and instruction positions to the original file, line, and column.
+`backend` is either `native` or `vm`. Select the general runtime with
+`TranspileOptions(optimize=False)` or the CLI's `--no-optimize` option.
+`--check` checks whether conversion succeeds without writing a Rust file.
 
-## 実行方式と速度
+## Execution and performance
 
-通常の入力には公式の `ast` と `symtable` を使い、スコープと評価順を解析します。
-型と束縛を証明できるi64/i128の整数・一次元整数配列・整数辞書・ループは、通常のRust整数と
-`Vec<T>`、`HashMap`、`HashSet`、制御構文へ変換します。`list(map(int, input().split()))`、整数のアンパック入力、
-整数リストのappend・extend・sort、整数辞書の集計と挿入順の反復にも対応します。
-整数集合は構築・追加・削除・membership・sumを扱い、反復順や共有の影響を観測するコードは汎用実行を使います。
-判定できないプログラムは、共通の動的ランタイムで実行します。
+Ordinary input is parsed with Python's official `ast` and `symtable` APIs to analyze scopes and evaluation order.
+When types and bindings can be established, `i64`/`i128` integers, one-dimensional integer arrays,
+integer dictionaries, sets, and loops become native Rust integers, `Vec<T>`, `HashMap`, `HashSet`, and control flow.
+Supported patterns include `list(map(int, input().split()))`, unpacked integer input,
+integer-list `append`, `extend`, and `sort`, dictionary aggregation, and dictionary iteration in insertion order.
+Native integer sets support construction, insertion, deletion, membership, and `sum`.
+Programs that observe set iteration order or sharing use the general runtime.
+Programs that cannot be specialized also use the shared dynamic runtime.
 
-ランタイムは共有オブジェクト、GC、関数フレーム、例外、クラス、クロージャを扱います。
-例外グループと `except*` は、部分グループの処理・再送出・未処理部分の再結合を行います。
-実行時の `eval/exec` はRust製の字句解析器と、CPython 3.14.4の公式文法から生成した
-PEG規則を使い、その構文木から同じ命令形式へ直接変換します。実行処理に未対応の構文は診断を出します。
-`__future__` の指定と動的コンパイルへの継承、Unicode識別子のNFKC正規化にも対応します。
-型パラメータ、遅延評価する型エイリアス、GenericAliasの型変数置換も、静的コードと動的コードで共用します。
-t-stringはTemplateとInterpolationへ変換し、式の値と変換・整形の指定を保持します。
-複素数のリテラル・演算・変換と、実行時の `compile(optimize=1/2)` にも対応します。
+The runtime handles shared objects, GC, function frames, exceptions, classes, and closures.
+Exception groups and `except*` support subgroup handling, reraising, and merging unhandled exceptions.
+Runtime `eval` and `exec` use a Rust tokenizer and PEG rules generated from CPython 3.14.4's official grammar,
+then lower the resulting syntax tree directly to the shared instructions.
+Syntax without runtime support produces a diagnostic.
+The runtime also supports `__future__` declarations and flag inheritance, Unicode NFKC identifiers,
+type parameters, lazy type aliases, and GenericAlias parameter substitution in both static and dynamic code.
+T-strings produce `Template` and `Interpolation` objects that retain expression values, conversions, and format specifications.
+Complex literals, arithmetic, and conversions, as well as runtime `compile(optimize=1/2)`, are supported.
+Immutable `frozenset` values support mixed operations with `set`, cached hashing, subclasses, and generic aliases.
 
-ベンチマークは正解一致を確認した後に実行時間の中央値と最大RSSを測定します。
-変換・コンパイル時間は別に記録します。
+The benchmarks check that CPython, generated Rust, and handwritten Rust produce the same results.
+They cover arithmetic, I/O, arrays, sorting, dictionaries, sets, BFS, DP, and BigInt.
+Pass `--pypy` to include PyPy in the comparison; this requires `pypy3` on PATH.
 
 ```bash
-python3 benchmarks/run.py --case arithmetic --size 1000000
-python3 benchmarks/run.py --case list --size 1000000
-python3 benchmarks/run.py --case dp --size 1000000
-python3 benchmarks/run.py --case dict --size 1000000
-python3 benchmarks/run.py --case bfs --size 2000
+python3 benchmarks/run.py --all --output /tmp/bench.json --artifacts /tmp/bench-artifacts
+python3 benchmarks/run.py --case arithmetic --case set --size 5000000 --output /tmp/selected.json
+python3 benchmarks/run.py --all --size 17 --verify-only
 ```
 
-測定対象は算術、入出力、配列、sort、辞書、BFS、DP、BigIntです。
-算術では手書きRustとも比較し、PyPyが利用可能なら同じ入力で測定します。
-動的機能を使うプログラムの速度は、ネイティブ化されるプログラムと異なります。
-汎用ランタイムのdict/setは現在、線形検索を使います。ネイティブ化できる整数辞書ではHashMapによる検索を使います。
-dequeの両端操作は償却O(1)ですが、OrderedDictの先頭移動はO(n)です。
+Each implementation repeats the same input, adjusting the repetition count to reduce the effect of process startup.
+The JSON report records median and raw execution times, peak RSS, transpilation and compilation times,
+source and executable sizes and hashes, and environment details.
+Checking the target of at most twice the runtime of handwritten Rust also requires checking startup overhead.
+If measurement limits prevent a sufficiently long run, the report records that limitation.
+Generated-source audit results are saved too, but text checks alone cannot prove the absence of unnecessary allocations
+or guarantee the performance of other programs.
 
-## 検証
+Programs using dynamic features have different performance characteristics from specialized programs.
+The general runtime currently uses linear searches for `dict` and mutable `set`.
+`frozenset` retains member hashes and uses hash buckets for membership.
+Native integer dictionaries and sets use `HashMap` and `HashSet`.
+Operations at either end of `deque` are amortized O(1); moving an `OrderedDict` entry to the front is O(n).
+
+## Validation
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -114,13 +150,45 @@ python3 tests/test_native.py --benchmark-native
 python3 tools/check_standalone.py
 ```
 
-CPython 3.14との実行差分、固定幅整数の参照モデル、BigIntの乱数演算、GC、動的コードと
-AOTコードの相互呼び出しを検証しています。CIはRust 1.85とstableを対象とします。
-`check_standalone.py` は全整数モードのデバッグ・最適化ビルドを実行し、生成物をPythonが見つからないPATHでも検証します。
-`--wheel path/to/package.whl` で配布物を検証し、`--output directory` で生成ソース・実行ファイル・測定結果を保存できます。
+Tests cover execution differences against CPython 3.14, a reference model for fixed-width integers,
+randomized BigInt arithmetic, GC, and calls between dynamic and AOT code.
+CI targets Rust 1.85 and stable.
+`check_standalone.py` builds and runs debug and optimized programs in every integer mode,
+including with a PATH that cannot find Python.
+Use `--wheel path/to/package.whl` to check a distribution and `--output directory` to save generated sources,
+executables, and measurements.
 
-## ライセンス
+## Licenses and generated headers
 
-本体と自作ランタイムはMITです。生成ファイルにも必要な表示を含みます。
-CPython由来の標準ライブラリ・数値アルゴリズムとUnicodeデータについては
-[THIRD_PARTY.md](THIRD_PARTY.md) と同梱のPSF・Unicodeライセンスを参照してください。
+The transpiler and original runtime code use the [MIT license](LICENSE).
+The license recorded for translated program logic defaults to `CC0-1.0`.
+If the original Python source specifies a license, that license takes precedence.
+The selected output license applies when the original source does not specify one.
+Use `--license` or `TranspileOptions(license=...)` to select another bundled license.
+List the available canonical identifiers with `pytors --list-licenses`:
+
+```bash
+pytors --list-licenses
+```
+
+For example:
+
+```bash
+pytors main.py -o main.rs --license CC0-1.0
+pytors main.py -o main.rs --license Unlicense
+pytors main.py -o main.rs --license MIT
+```
+
+License names are case-insensitive; `cc0` is also accepted for `CC0-1.0`.
+A source comment can override this choice, as shown above.
+This selection applies to translated program logic. Bundled runtime and third-party components
+retain their existing license notices.
+
+Each generated Rust file begins with line comments containing the selected `LICENSE`,
+the project URL, the exact statement “Transpilation does not use generative AI.”,
+the integer mode and backend, the original source's SHA-256 hash, and the full selected license text.
+The original Python input, before import expansion, follows as line comments.
+Transpilation uses the compiler and runtime described above and does not call a generative-AI service.
+
+See [THIRD_PARTY.md](THIRD_PARTY.md) and the bundled PSF and Unicode licenses for
+CPython-derived standard-library code, numerical algorithms, and Unicode data.

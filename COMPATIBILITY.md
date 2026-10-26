@@ -1,66 +1,78 @@
-# 対応範囲
+# Compatibility
 
-基準はPython 3.14です。以下は実装の対応状況です。CPythonの内部実装や全標準ライブラリの互換性を示す一覧ではありません。
+The language target is Python 3.14. The following tables describe implemented features;
+they do not imply compatibility with all CPython internals or the entire standard library.
 
-## 言語・実行時機能
+## Language and runtime features
 
-| 分類 | 対応 |
+| Category | Supported features |
 |---|---|
-| 値 | None、bool、選択幅のint、float、complex、str、bytes、list、tuple、dict、set、slice、range、動的dictビューとmappingproxy、GenericAlias、Union型、Template、Interpolation |
-| 変数 | 型変更、共有参照、多重・アンパック代入、global/nonlocal、未束縛エラー |
-| 制御 | if、while、for、break/continue、else、短絡演算、比較連鎖 |
-| 関数 | 既定値、位置専用・キーワード専用引数、可変長引数、再帰、lambda、クロージャ、型パラメータとその遅延評価する境界・既定値 |
-| コンテナ式 | 内包表記、ジェネレータ式、展開、負の添字、スライス |
-| 例外 | raise、except、except*、例外グループの分割・再結合、else、finally、assert、元のargs・cause/context・notes、例外対象変数の後始末、tracebackのソース情報 |
-| クラス | 継承、C3 MRO、descriptor、property、staticmethod/classmethod、super、メタクラス、__slots__、list/tuple/dict/set/str/int/complexの継承 |
-| 名前空間 | 任意mappingを返す__prepare__、private名、Unicode NFKC識別子、辞書の挿入順、内部一時変数の分離、free変数を含むPython 3.14関数localsのsnapshot |
-| その他 | with、ジェネレータのsend/throw/closeとyield from、f-string、t-string、match/case |
-| 動的実行 | compile/eval/exec、compileのoptimize=0/1/2、静的コードとの相互呼び出し、遅延評価するアノテーション・type文、__future__の全既知featureとフラグ継承 |
-| メモリ | オブジェクト同一性、循環参照、フレーム・一時値をルートとするmark-and-sweep GC、__del__と復活 |
+| Values | `None`, `bool`, integers in the selected mode, `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`, `slice`, `range`, live dictionary views and `mappingproxy`, GenericAlias, union types, Template, Interpolation |
+| Variables | Type changes, shared references, chained and unpacking assignments, `global`/`nonlocal`, unbound-name errors |
+| Control flow | `if`, `while`, `for`, `break`/`continue`, loop `else`, short-circuit operators, chained comparisons |
+| Functions | Defaults, positional-only and keyword-only arguments, variadic arguments, recursion, lambdas, closures, type parameters with lazy bounds and defaults |
+| Container expressions | Comprehensions, generator expressions, unpacking, negative indices, slicing |
+| Exceptions | `raise`, `except`, `except*`, exception-group splitting and merging, `else`, `finally`, `assert`, original `args`, cause/context/notes, exception-target cleanup, source information in tracebacks |
+| Classes | Inheritance, C3 MRO, descriptors, `property`, `staticmethod`/`classmethod`, `super`, metaclasses, `__slots__`, subclasses of `list`/`tuple`/`dict`/`set`/`frozenset`/`str`/`int`/`complex` |
+| Namespaces | `__prepare__` returning custom mappings, private names, Unicode NFKC identifiers, dictionary insertion order, separate internal temporaries, Python 3.14 function-local snapshots including free variables |
+| Other constructs | `with`, generator `send`/`throw`/`close` and `yield from`, f-strings, t-strings, `match`/`case` |
+| Dynamic execution | `compile`/`eval`/`exec`, `compile(optimize=0/1/2)`, calls between static and dynamic code, lazy annotations and `type` statements, all known `__future__` features and flag inheritance |
+| Memory | Object identity, cyclic references, mark-and-sweep GC rooted in frames and temporary values, `__del__` and resurrection |
 
-通常の関数再帰はヒープ上のフレームで処理します。プロトコルや組込み関数からの再入にはRust側の呼び出しが使われる経路もあります。
+Ordinary function recursion uses heap-allocated frames.
+Some calls made through protocols and built-ins still reenter the runtime through Rust calls.
 
-## 標準モジュール
+`frozenset` supports construction, hashing, iteration, membership, comparisons, read-only set methods,
+mixed operations with `set`, subclasses, and GenericAlias.
+Member hashes and the final frozenset hash are retained; operations that copy a set's contents reuse stored member hashes.
+Set iteration order is not guaranteed to match CPython's internal hash-table order.
 
-| モジュール | 対象 |
+## Standard modules
+
+| Module | Scope |
 |---|---|
-| math | Python 3.14の全公開関数とpi/e/tau/inf/nan |
-| heapq | CPythonの純Python実装。最大ヒープを含む公開API |
-| bisect | CPythonの純Python実装。key・lo/hiを含む公開API |
-| itertools | 公開API。無限イテレータ、tee、groupbyを含む遅延実行 |
-| functools | 公開API。cache/lru_cache、partial、decorator、dispatch、cached_property |
-| collections | deque、defaultdict、Counter、namedtuple、OrderedDict |
-| sys | 標準入出力、argv、exit、再帰制限設定、exception/exc_info |
-| gc | collectなど、ランタイムのGC制御 |
+| `math` | All Python 3.14 public functions and `pi`/`e`/`tau`/`inf`/`nan` |
+| `heapq` | CPython's pure-Python implementation, including the public max-heap APIs |
+| `bisect` | CPython's pure-Python implementation, including `key` and `lo`/`hi` |
+| `itertools` | Public APIs with lazy execution, including infinite iterators, `tee`, and `groupby` |
+| `functools` | Public APIs, including `cache`/`lru_cache`, `partial`, decorators, dispatch, and `cached_property` |
+| `collections` | `deque`, `defaultdict`, `Counter`, `namedtuple`, `OrderedDict` |
+| `sys` | Standard streams, `argv`, `exit`, recursion limits, `exception`/`exc_info` |
+| `gc` | Runtime GC controls, including `collect` |
 
-mathの浮動小数点特殊関数は精度テストを行いますが、OSやCPythonのlibmによる結果と常にbit単位で一致することは保証しません。
+The floating-point special functions in `math` undergo accuracy tests,
+but are not guaranteed to match the operating system's or CPython's `libm` results bit for bit.
 
-純Pythonモジュールも、そのコードが対応する構文・組込み関数・モジュールの範囲にあることが必要です。
-APIごとの名前は [API_SUPPORT.md](API_SUPPORT.md) を参照してください。
+Bundled pure-Python modules must themselves use supported syntax, built-ins, and modules.
+See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 
-## 既知の制約
+## Known limitations
 
-- async/awaitは未対応です。
-- 未対のUnicodeサロゲートなど、基本値にも未対応範囲があります。
-- bytearray、memoryview、frozenset、openによるファイル入出力は未対応です。標準ストリームのtext/binary入出力を提供します。
-- 文字コード変換はUTF-8・ASCII・Latin-1を対象とし、利用可能なerrors指定にも制約があります。str subclassのencoding付き構築は未対応です。
-- 実行時の構文検査と命令生成は公式文法から生成したPEGの構文木を使います。async構文などの実行処理、Unicodeの名前付きエスケープなどには制約が残っています。
-- annotationlibの全format、typingモジュール全体のAPIには未対応範囲があります。TypeVar・ParamSpec・TypeVarTuple、型エイリアス、GenericAliasの型変数置換とUnion型を提供します。
-- compile()のAST入出力、top-level await、incomplete input用フラグは未対応です。
-- 実行時に名前が決まるimport、外部C拡張、ネットワーク、スレッド、asyncio、CPython固有の内部APIは対象外です。
-- inspect、pickle、weakrefなど、一覧にない標準モジュールのAPIは提供していません。
-- namedtupleの呼出元moduleの推定、空の関数defaultsの表示、辞書subclassの基底descriptor操作には互換性の差が残っています。
-- 内包表記は独立したフレームで実行するため、その中から呼ぶlocals()はPython 3.14のインライン内包表記と異なる場合があります。
-- tracebackのtb_frameはソース情報を持つsnapshotです。実行中フレームの操作やCPythonのbytecode offsetは提供しません。
-- 動的な関数・クラスを含むコードのネイティブ特殊化には制約があり、汎用実行へ戻る場合があります。
+- `async`/`await` are unsupported.
+- Some basic-value behavior, including unpaired Unicode surrogates, remains unsupported.
+- `bytearray`, `memoryview`, and file I/O through `open` are unsupported. Standard streams provide text and binary I/O.
+- Encoding conversion covers UTF-8, ASCII, and Latin-1, with limitations on supported `errors` modes. Constructing a `str` subclass with an encoding is unsupported.
+- Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, and features such as Unicode named escapes remain unsupported.
+- Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.
+- AST input/output for `compile()`, top-level await, and incomplete-input flags are unsupported.
+- Imports whose names are determined at runtime, external C extensions, networking, threads, `asyncio`, and CPython-specific internal APIs are out of scope.
+- Unlisted standard-module APIs, including `inspect`, `pickle`, and `weakref`, are not provided.
+- Compatibility differences remain in `namedtuple` caller-module inference, the representation of empty function defaults, and base-descriptor operations on dictionary subclasses.
+- Expanded keyword arguments accept string subclasses by their native spelling, but do not retain the keyword key's subclass or identity in the receiving namespace.
+- Comprehensions run in separate frames, so `locals()` called within them may differ from Python 3.14's inlined comprehensions.
+- A traceback's `tb_frame` is a snapshot containing source information. It does not expose live-frame manipulation or CPython bytecode offsets.
+- Native specialization of code containing dynamic functions and classes is limited; such code may use the general runtime.
 
-構文・モジュールの未対応は変換時の診断、動的な未対応操作は元ソース位置を含む実行時例外として報告します。
+Unsupported syntax and modules produce transpilation diagnostics.
+Unsupported dynamic operations produce runtime exceptions with original source locations.
 
-## 整数モード
+## Integer modes
 
-i64/i128は各整数値・演算結果を選択幅へ正規化します。例えばi64の `2**63` は `-2**63` です。
-この範囲超過の動作は、無制限整数を使うCPythonとは異なります。
-BigIntモードでは任意精度整数として処理します。
+`i64` and `i128` normalize integer values and arithmetic results to the selected width.
+For example, `2**63` is `-2**63` in `i64` mode.
+This overflow behavior differs from CPython's arbitrary-precision integers.
+BigInt mode uses arbitrary-precision integers.
 
-負数の `//` と `%`、負指数の剰余累乗、負数のビット演算、巨大なシフト、整数とfloatの比較を個別に扱います。
-長さ・添字・確保サイズ・rangeの進行は、ユーザーの整数演算とは別に検査します。
+Negative `//` and `%`, modular powers with negative exponents, negative bitwise operations,
+large shifts, and comparisons between integers and floats have dedicated handling.
+Lengths, indices, allocation sizes, and range progression are checked separately from user integer arithmetic.

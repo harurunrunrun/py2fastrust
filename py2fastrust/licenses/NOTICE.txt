@@ -1,0 +1,155 @@
+License text catalog provenance
+===============================
+
+This directory contains selectable license texts for the user's original
+Python source. These files do not replace the separate license notices for
+pytors and its bundled runtime or other third-party material.
+
+Source texts were checked against the SPDX License List and the authoritative
+license-publisher URLs below on 2026-10-27. Apache-2.0, MPL-2.0, and the GNU
+licenses were copied from /usr/share/common-licenses, preserving their full
+terms and application appendices. GPL/LGPL publisher URLs were unavailable
+through the web reader during verification; their SPDX entries and the local
+standard texts supplied the corresponding versioned texts.
+
+In MIT, 0BSD, BSD-2-Clause, BSD-3-Clause, ISC, and Zlib, the replaceable software
+copyright-holder field identifies "the authors of the original Python source"
+instead of attributing the user's source to the license's example authors.
+WTFPL's notice credits the author of the license document and is unchanged.
+BSL-1.0 has no software copyright-holder placeholder in its standard text.
+The Apache, MPL, and GNU license-document copyrights and example application
+instructions remain unchanged.
+
+The -only and -or-later choices share the same versioned GNU license body;
+the chosen SPDX identifier in the source's licensing notice selects the
+version option. Example notices in the standard application appendices are
+part of those unmodified license documents, not extra notices for the user's
+source. Each LGPL-3.0 resource includes both the LGPL-3.0 supplement and the
+full GPL-3.0 text that it incorporates.
+
+Whitespace wrapping and software copyright-holder substitutions in the short
+license templates follow SPDX's matching guidelines:
+https://spdx.github.io/spdx-spec/v2.3/license-matching-guidelines-and-templates/
+
+File digests below are SHA-256 over the distributed UTF-8 file bytes.
+
+ID: 0BSD
+File: 0BSD.txt
+SPDX: https://spdx.org/licenses/0BSD.html
+Publisher: https://opensource.org/license/0bsd
+SHA256: 991a924c49b03d5a1c03a3e2db42d501e9584912dbb5762faf4c437a97683bd7
+
+ID: Apache-2.0
+File: Apache-2.0.txt
+SPDX: https://spdx.org/licenses/Apache-2.0.html
+Publisher: https://www.apache.org/licenses/LICENSE-2.0.txt
+SHA256: cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+
+ID: BSD-2-Clause
+File: BSD-2-Clause.txt
+SPDX: https://spdx.org/licenses/BSD-2-Clause.html
+Publisher: https://opensource.org/license/bsd-2-clause
+SHA256: ea4aa720c32170271862fe18d3a2222164f449193bb3bef8134dc69b0c9c5bd1
+
+ID: BSD-3-Clause
+File: BSD-3-Clause.txt
+SPDX: https://spdx.org/licenses/BSD-3-Clause.html
+Publisher: https://opensource.org/license/bsd-3-clause
+SHA256: 4861e4e26bdfe9d0a6f24f208f953476d5dfaa3bcacfea042906a3636c8021a9
+
+ID: BSL-1.0
+File: BSL-1.0.txt
+SPDX: https://spdx.org/licenses/BSL-1.0.html
+Publisher: https://www.boost.org/LICENSE_1_0.txt
+SHA256: c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566
+
+ID: CC0-1.0
+File: CC0-1.0.txt
+SPDX: https://spdx.org/licenses/CC0-1.0.html
+Publisher: https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt
+SHA256: a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499
+
+ID: GPL-2.0-only
+File: GPL-2.0-only.txt
+SPDX: https://spdx.org/licenses/GPL-2.0-only.html
+Publisher: https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+SHA256: edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6
+
+ID: GPL-2.0-or-later
+File: GPL-2.0-or-later.txt
+SPDX: https://spdx.org/licenses/GPL-2.0-or-later.html
+Publisher: https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+SHA256: edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6
+
+ID: GPL-3.0-only
+File: GPL-3.0-only.txt
+SPDX: https://spdx.org/licenses/GPL-3.0-only.html
+Publisher: https://www.gnu.org/licenses/gpl-3.0.txt
+SHA256: 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
+
+ID: GPL-3.0-or-later
+File: GPL-3.0-or-later.txt
+SPDX: https://spdx.org/licenses/GPL-3.0-or-later.html
+Publisher: https://www.gnu.org/licenses/gpl-3.0.txt
+SHA256: 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
+
+ID: ISC
+File: ISC.txt
+SPDX: https://spdx.org/licenses/ISC.html
+Publisher: https://www.isc.org/licenses/
+SHA256: 713b417bbfb68fb0b95b071b0ae6ee48a60d1028b96af96f88f7e4da747d77c6
+
+ID: LGPL-2.1-only
+File: LGPL-2.1-only.txt
+SPDX: https://spdx.org/licenses/LGPL-2.1-only.html
+Publisher: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+SHA256: 20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95
+
+ID: LGPL-2.1-or-later
+File: LGPL-2.1-or-later.txt
+SPDX: https://spdx.org/licenses/LGPL-2.1-or-later.html
+Publisher: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+SHA256: 20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95
+
+ID: LGPL-3.0-only
+File: LGPL-3.0-only.txt
+SPDX: https://spdx.org/licenses/LGPL-3.0-only.html
+Publisher: https://www.gnu.org/licenses/lgpl-3.0.txt + https://www.gnu.org/licenses/gpl-3.0.txt
+SHA256: dfbf76cfb9b85ae2c21c5f89d31e0f8c7831f8b55ad2c64b06550e56c2e0523f
+
+ID: LGPL-3.0-or-later
+File: LGPL-3.0-or-later.txt
+SPDX: https://spdx.org/licenses/LGPL-3.0-or-later.html
+Publisher: https://www.gnu.org/licenses/lgpl-3.0.txt + https://www.gnu.org/licenses/gpl-3.0.txt
+SHA256: dfbf76cfb9b85ae2c21c5f89d31e0f8c7831f8b55ad2c64b06550e56c2e0523f
+
+ID: MIT
+File: MIT.txt
+SPDX: https://spdx.org/licenses/MIT.html
+Publisher: https://opensource.org/license/mit
+SHA256: d021690f284fee24f1e60aa21dd80b2644bdc20552a9a239e29be75e3b4cb841
+
+ID: MPL-2.0
+File: MPL-2.0.txt
+SPDX: https://spdx.org/licenses/MPL-2.0.html
+Publisher: https://www.mozilla.org/en-US/MPL/2.0/
+SHA256: fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85
+
+ID: Unlicense
+File: Unlicense.txt
+SPDX: https://spdx.org/licenses/Unlicense.html
+Publisher: https://unlicense.org/UNLICENSE
+SHA256: b5065838cbac452dfc855ba6e6e031481ad2c68406f70d21ead9321374653e6c
+
+ID: WTFPL
+File: WTFPL.txt
+SPDX: https://spdx.org/licenses/WTFPL.html
+Publisher: https://www.wtfpl.net/txt/copying/
+SHA256: 96f17857f3eb28a7d93dad930bc099a3cb65a9a2afb37069bfd1ba5ec5964389
+
+ID: Zlib
+File: Zlib.txt
+SPDX: https://spdx.org/licenses/Zlib.html
+Publisher: https://www.zlib.net/zlib_license.html
+SHA256: e71d0f99c3900b5f54413a9e671d7cbf4506ad032b793dc43f87a76627f4485c
+

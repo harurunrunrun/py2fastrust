@@ -21,6 +21,12 @@ Type-parameter collection and substitution control flow in
 The source comments identify the upstream functions. These adaptations use the
 same retained PSF license, including its notice in generated Rust submissions.
 
+The frozenset hash mixer in `py2fastrust/runtime/frozenset.rs` is adapted from
+`_shuffle_bits` and `frozenset_hash_impl` in
+[CPython 3.14.4's Objects/setobject.c](https://github.com/python/cpython/blob/v3.14.4/Objects/setobject.c).
+It uses the same retained PSF license, whose notice is included in generated Rust
+containing this runtime code.
+
 Docstring indentation handling in `py2fastrust/compiler.py` and
 `py2fastrust/runtime/dynamic.rs` is adapted from `_PyCompile_CleanDoc` in
 [CPython 3.14.4's Python/compile.c](https://github.com/python/cpython/blob/v3.14.4/Python/compile.c).
@@ -47,3 +53,26 @@ decompositions, canonical combining classes and composition pairs, generated
 from CPython 3.14's `unicodedata` by `tools/generate_normalization.py`. These
 normalization data use the same Unicode License V3; the normalization algorithm
 implementation is original MIT-licensed code.
+
+## Generated program license texts
+
+License texts for translated program logic are bundled in
+`py2fastrust/licenses/`. Run `pytors --list-licenses` for the available canonical
+identifiers. The original three license texts have the following provenance:
+
+- `CC0-1.0.txt` is copied from Debian's `/usr/share/common-licenses/CC0-1.0`.
+  Its complete legal text has been checked against the
+  [official CC0 1.0 legal code](https://creativecommons.org/publicdomain/zero/1.0/legalcode.en).
+- `Unlicense.txt` contains the canonical text from [unlicense.org](https://unlicense.org/),
+  including its final “For more information” line.
+- `MIT.txt` uses the same permission and disclaimer as the repository's MIT license,
+  with its copyright line crediting the authors of the original Python source.
+
+Sources for additional license templates, including upstream and SPDX links,
+are recorded in `py2fastrust/licenses/NOTICE.txt` alongside the bundled catalog.
+Replaceable copyright fields credit the original Python source's authors;
+copyright notices belonging to the license text itself are retained.
+
+If the original Python source specifies a license, that license takes precedence.
+Otherwise, the selected text applies to translated program logic. Bundled runtime and
+third-party components retain their own MIT, PSF, and Unicode notices.
