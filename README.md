@@ -74,9 +74,10 @@ CLIの `--no-optimize` で汎用ランタイムを選択できます。
 ## 実行方式と速度
 
 通常の入力には公式の `ast` と `symtable` を使い、スコープと評価順を解析します。
-型と束縛を証明できるi64/i128の整数・一次元整数配列・ループは、通常のRust整数と
-`Vec<T>`、制御構文へ変換します。`list(map(int, input().split()))`、整数のアンパック入力、
-整数リストのappend・extend・sortにも対応します。判定できないプログラムは、共通の動的ランタイムで実行します。
+型と束縛を証明できるi64/i128の整数・一次元整数配列・整数辞書・ループは、通常のRust整数と
+`Vec<T>`、`HashMap`、制御構文へ変換します。`list(map(int, input().split()))`、整数のアンパック入力、
+整数リストのappend・extend・sort、整数辞書の集計と挿入順の反復にも対応します。
+判定できないプログラムは、共通の動的ランタイムで実行します。
 
 ランタイムは共有オブジェクト、GC、関数フレーム、例外、クラス、クロージャを扱います。
 実行時の `eval/exec` はRust製の字句解析器・再帰下降パーサを使い、同じ命令形式へ変換します。
@@ -88,13 +89,14 @@ CLIの `--no-optimize` で汎用ランタイムを選択できます。
 python3 benchmarks/run.py --case arithmetic --size 1000000
 python3 benchmarks/run.py --case list --size 1000000
 python3 benchmarks/run.py --case dp --size 1000000
+python3 benchmarks/run.py --case dict --size 1000000
 python3 benchmarks/run.py --case bfs --size 2000
 ```
 
 測定対象は算術、入出力、配列、sort、辞書、BFS、DP、BigIntです。
 算術では手書きRustとも比較し、PyPyが利用可能なら同じ入力で測定します。
 動的機能を使うプログラムの速度は、ネイティブ化されるプログラムと異なります。
-汎用ランタイムのdict/setは現在、線形検索を使います。辞書を多用する入力は特に改善対象です。
+汎用ランタイムのdict/setは現在、線形検索を使います。ネイティブ化できる整数辞書ではHashMapによる検索を使います。
 dequeの両端操作は償却O(1)ですが、OrderedDictの先頭移動はO(n)です。
 
 ## 検証

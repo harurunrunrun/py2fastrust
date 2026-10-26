@@ -1,5 +1,6 @@
 """Native scalar backend correctness, rejection, and optional speed checks."""
 from pathlib import Path
+import os
 import random
 import shutil
 import statistics
@@ -139,6 +140,22 @@ print()
 print(True, False, sep="", end="\\b\\f")
 '''
         self.differential(source, ("１２\r\n-３\r\n٤\n", "12\n-3\n4", " 12 \n -3 \n 4 \n", "１２\r\n-３\r٤\n"))
+
+    def test_invalid_utf8_input_preserves_prior_output(self):
+        source = 'print(9)\nn=int(input())\nprint(n)'
+        binary = self.compile(source)
+        actual = subprocess.run([str(binary)], input=b'\xff\n', capture_output=True, timeout=5)
+        # The runtime uses strict UTF-8. CPython's usual surrogateescape policy
+        # cannot be represented by Rust strings, so select its strict decoder.
+        environment = {**os.environ, 'PYTHONIOENCODING': 'utf-8:strict'}
+        expected = subprocess.run([sys.executable, '-c', source], input=b'\xff\n',
+                                  capture_output=True, env=environment, timeout=5)
+        self.assertEqual(actual.stdout, b'9\n')
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertEqual(actual.returncode, expected.returncode)
+        self.assertEqual(actual.stderr.splitlines()[-1].split(b':')[0], b'UnicodeDecodeError')
+        self.assertEqual(actual.stderr.splitlines()[-1].split(b':')[0],
+                         expected.stderr.splitlines()[-1].split(b':')[0])
 
     def test_input_map_unpack_and_typed_list(self):
         source = '''
@@ -307,6 +324,182 @@ print(b[0],b[1],b[-1],len(b))
         for source in rejected:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+
+    def test_integer_dictionary_lookup_order_and_views(self):
+        source = '''
+d={3:10,1:20,3:30,-2:5}
+print(len(d),sum(d.values()),sum(d),sum(d.keys(),7),len(d.items()),not d)
+print(d[3],d.get(8,99),3 in d,8 not in d,True in d)
+for key in d:
+    print(key,end=" ")
+    d.get(key,0)
+print()
+for value in d.values():
+    print(value,end=" ")
+print()
+for key,value in d.items():
+    print(key,value)
+for key in d.keys():
+    print(d[key],end=" ")
+print()
+d[1]+=4
+d[9]=7
+d[3]=8
+print(len(d),sum(d.values(),5))
+for key,value in d.items():
+    print(key,value)
+empty=dict()
+print(len(empty),sum(empty.values()),not empty)
+empty[2]=11
+print(empty[2],len(empty))
+'''
+        for integer in ('i64', 'i128'):
+            self.differential(source, integer=integer)
+
+    def test_dictionary_evaluation_order(self):
+        source = '''
+d={int(input()):int(input()),int(input()):int(input()),int(input()):int(input())}
+for key,value in d.items():
+    print(key,value)
+print(d.get(int(input()),int(input())))
+print(int(input()))
+d[int(input())]=int(input())
+for key,value in d.items():
+    print(key,value)
+d[int(input())]+=int(input())
+print(sum(d.values()))
+'''
+        self.differential(source, ('3\n10\n1\n20\n3\n30\n3\n99\n777\n88\n9\n9\n2\n',
+                                  '5\n2\n5\n3\n-1\n4\n2\n99\n777\n88\n9\n9\n2\n'))
+        self.differential('d={1:7}\nprint(d.get(1,int(input())))\nprint(int(input()))', ('11\n22\n',))
+        self.differential('print(int(input()) in {int(input()):int(input())})\nprint(int(input()))', ('5\n5\n9\n77\n',))
+
+    def test_dictionary_missing_key_and_eager_default_errors(self):
+        for source, data in [
+            ('print(9)\nd={}\nprint(d[4])', ''),
+            ('print(9)\nd={}\nd[4]+=1//0', ''),
+            ('print(9)\nd={}\nd[4]=1//0', ''),
+            ('print(9)\nd={}\nd[int(input())]+=int(input())', '4\n'),
+            ('print(9)\nd={4:2}\nd[int(input())]+=int(input())', '4\n'),
+            ('print(9)\nd={}\nd[1//0]=int(input())', ''),
+            ('print(9)\nd={1:7}\nprint(d.get(1,1//0))', ''),
+            ('print(9)\nd={1:7}\nprint(d.get(int(input()),int(input())))', 'invalid\n'),
+            ('print(9)\nd={1:7}\nprint(d.get(int(input()),int(input())))', '1\ninvalid\n'),
+        ]:
+            with self.subTest(source=source):
+                self.differential(source, (data,))
+
+    def test_dictionary_updates_dynamic_programming_and_wrappers(self):
+        source = '''
+def solve():
+    n=int(input())
+    counts={}
+    for i in range(n):
+        key=i%7
+        counts[key]=counts.get(key,0)+1
+    total=0
+    for key,value in counts.items():
+        total+=key*value
+    print(len(counts),sum(counts.values()),total)
+    dp={0:1,1:1}
+    for i in range(2,n+1):
+        dp[i]=(dp[i-1]+dp[i-2])%1000000007
+    print(dp[n])
+if __name__=='__main__':
+    solve()
+'''
+        self.differential(source, ('0\n','1\n','10\n','1000\n'))
+        self.assertEqual(transpile(source).backend, 'native')
+
+    def test_dictionary_binding_and_zero_iteration(self):
+        source = '''
+n=int(input())
+d={}
+key=99
+value=88
+for i in range(n):
+    d[i]=i+7
+for key,value in d.items():
+    print(key,value)
+print(key,value)
+if n:
+    other={1:2}
+else:
+    other={3:4,5:6}
+for last in other:
+    pass
+print(last)
+dynamic={int(input()):8}
+for final in dynamic:
+    pass
+print(final)
+fresh={}
+fresh[3]=8
+for defined in fresh.values():
+    pass
+print(defined)
+'''
+        self.differential(source, ('0\n11\n','1\n12\n','4\n13\n'))
+
+    def test_dictionary_fixed_width_key_collisions(self):
+        for integer,bits in [('i64',64),('i128',128)]:
+            source=f'''
+d={{0:1,{1<<bits}:2,-1:3}}
+print(len(d),sum(d.values()))
+for key,value in d.items():
+    print(key,value)
+d[{1<<bits}]+=4
+print(d[0],d[-1],len(d))
+'''
+            binary=self.compile(source,integer)
+            result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=5)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,'2 5\n0 2\n-1 3\n6 3 2\n')
+
+    def test_dictionary_ownership_view_and_mutation_fallback(self):
+        rejected = [
+            'd={1:2}\ne=d', 'd=e={}', 'd={1:2}\nd=3', 'dict=1\nd={}',
+            'd={True:2}', 'd={1:True}', 'd={}\nd[True]=3', 'd={}\nd[1]=True',
+            'd={}\nd[1]=[]', 'd={1:2}\ne={**d}', 'd={1:[2]}',
+            'd={1:2}\ne=d if True else {}', 'd={1:2}\ne=d or {}',
+            'd={1:2}\nv=d.values()', 'd={1:2}\nv=d.keys()', 'd={1:2}\nv=d.items()',
+            'd={1:2}\nv=d.values()\nprint(sum(v))', 'd={1:2}\nprint(d)',
+            'd={1:2}\nprint(d.values())', 'd={1:2}\nprint(list(d))',
+            'd={1:2}\nx=d.get(1)', 'd={1:2}\nx=d.get(1,0,2)',
+            'd={1:2}\nx=d.get(1,default=0)', 'd={1:2}\nx=d.get(1,False)',
+            'd={1:2}\nf=d.get', 'd={1:2}\nd.clear()', 'd={1:2}\nd.pop(1)',
+            'd={1:2}\nd.update({3:4})', 'd={1:2}\nd.setdefault(3,4)',
+            'd={1:2}\nfor key in d:\n d[3]=4',
+            'd={1:2}\nfor value in d.values():\n d[1]+=1',
+            'd={1:2}\nfor key,value in d.items():\n d={}',
+            'd={1:2}\nfor key in d.keys():\n for i in range(1):\n  d[1]=3',
+            'd={1:2}\nfor key in d:\n if False:\n  d[1]=3',
+            'd={1:2}\nfor item in d.items():\n print(item)',
+            'd={1:2}\nfor x,x in d.items():\n print(x)',
+            'd={1:2}\nfor d in d:\n pass', 'd={1:2}\nd|={3:4}',
+            'd={1:2}\nd[1:2]=3', 'd={1:2}\ndel d[1]',
+        ]
+        for source in rejected:
+            with self.subTest(source=source):
+                self.assertIsNone(try_generate_native(source,'fallback.py','i64'))
+
+    def test_container_cardinality_is_widened_before_loop_iterations(self):
+        source='d={1:0}\nfor i in range(2):\n for j in range(0,4,len(d)):\n  print(j)\n d[2]=0\n'
+        self.differential(source)
+        source='a=[1]\nfor i in range(2):\n for j in range(0,4,len(a)):\n  print(j)\n a.append(2)\n'
+        self.differential(source)
+        rejected = [
+            'd={}\nfor x in d:\n pass\nprint(x)',
+            'd={}\nfor i in range(int(input())):\n d[i]=1\nfor key in d:\n pass\nprint(key)',
+            'd={1:2}\nfor i in range(1):\n d={}\nfor key in d:\n pass\nprint(key)',
+            'if int(input()):\n d={}\nelse:\n d={1:2}\nfor key in d:\n pass\nprint(key)',
+            'd={5:9}\nfor i in range(2):\n for key in d:\n  pass\n print(key)\n d={}',
+            'a=[5]\nfor i in range(2):\n for value in a:\n  pass\n print(value)\n a=[]',
+            'd={1:1}\ni=0\nwhile 2**(len(d)-1):\n print(i)\n d={}\n i+=1\n if i==2:\n  break',
+        ]
+        for source in rejected:
+            with self.subTest(source=source):
+                self.assertIsNone(try_generate_native(source,'fallback.py','i64'))
 
     def test_conservative_fallback(self):
         rejected = [
@@ -478,6 +671,29 @@ fn main(){let mut t=String::new();std::io::stdin().read_to_string(&mut t).unwrap
             ratio = timings[0] / timings[1]
             print(f"native {label}: {timings[0]:.6f}s; handwritten: {timings[1]:.6f}s; ratio: {ratio:.3f}")
             self.assertLessEqual(ratio, 2.0)
+
+    @unittest.skipUnless("--benchmark-native" in sys.argv, "optional performance benchmark")
+    def test_native_dictionary_performance(self):
+        source='n=int(input())\nd={}\nfor i in range(n):\n k=i%101\n d[k]=d.get(k,0)+1\nprint(sum(d.values()))'
+        binary=self.compile(source)
+        baseline=Path(self.tmp.name)/'handwritten_dict.rs'
+        baseline.write_text('use std::{collections::HashMap,io::{self,Read}};fn main(){let mut input=String::new();io::stdin().read_to_string(&mut input).unwrap();let n:i64=input.trim().parse().unwrap();let mut d:HashMap<i64,i64>=HashMap::new();for i in 0..n{*d.entry(i%101).or_insert(0)+=1;}println!("{}",d.values().sum::<i64>());}')
+        baseline_binary=baseline.with_suffix('')
+        subprocess.run(['rustc','--edition=2021','-O',str(baseline),'-o',str(baseline_binary)],check=True,capture_output=True)
+        timings,outputs=[],[]
+        for executable in (binary,baseline_binary):
+            samples=[]
+            for trial in range(4):
+                start=time.perf_counter()
+                result=subprocess.run([str(executable)],input='10000000\n',capture_output=True,text=True,check=True)
+                outputs.append(result.stdout)
+                if trial:
+                    samples.append(time.perf_counter()-start)
+            timings.append(statistics.median(samples))
+        self.assertEqual(set(outputs),{'10000000\n'})
+        ratio=timings[0]/timings[1]
+        print(f'native dictionary: {timings[0]:.6f}s; handwritten: {timings[1]:.6f}s; ratio: {ratio:.3f}')
+        self.assertLessEqual(ratio,2.0)
 
 
 if __name__ == "__main__":
