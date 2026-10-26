@@ -16,7 +16,8 @@ import time
 import zipfile
 
 
-SOURCE = '''from __future__ import annotations
+SOURCE = '''# pytors: --license Unlicense
+from __future__ import annotations
 import gc
 import sys
 from typing import TypeVar, NoDefault
@@ -109,6 +110,18 @@ optimized = {}
 exec(compile('def function():\\n "removed"\\n assert False\\n return __debug__',
              "optimized.py", "exec", optimize=2), optimized)
 print(optimized["function"](), optimized["function"].__doc__)
+frozen = frozenset([1, 2, 2])
+print(sorted(frozen | {3}), frozen == frozenset([2, 1]),
+      hash(frozen) == hash(frozenset([2, 1])))
+class Parent:
+    def __init_subclass__(cls, *, flag, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.flag = flag
+class Expanded(*[Parent], **{"flag": 17}):
+    pass
+print(Expanded.flag)
+exec("class DynamicExpanded(*[Parent], **{'flag': 19}): pass", globals())
+print(DynamicExpanded.flag)
 print(sys.stdin.readline() == "\\n")
 sys.stdout.flush()
 sys.stdout.buffer.write(b"standalone\\n")
@@ -149,8 +162,10 @@ def check(root, wheel):
                    f"sys.path.insert(0, {str(package_root)!r})\n"
                    "from py2fastrust import TranspileOptions, transpile\n"
                    f"result = transpile({SOURCE!r}, TranspileOptions(integer={integer!r}, "
-                   "filename='standalone.py', optimize=False))\n"
+                   "filename='standalone.py', optimize=False, license='MIT'))\n"
                    "assert result.success, '\\n'.join(map(str, result.diagnostics))\n"
+                   "assert result.rust_source.startswith('// LICENSE: Unlicense\\n')\n"
+                   "assert '// import sys\\n' in result.rust_source\n"
                    f"Path({str(target)!r}).write_text(result.rust_source, encoding='utf-8')\n")
         started = time.perf_counter()
         run([sys.executable, "-I", "-c", builder], cwd=root)
