@@ -83,6 +83,7 @@ CLIの `--no-optimize` で汎用ランタイムを選択できます。
 実行時の `eval/exec` はRust製の字句解析器・構文木変換と、CPython 3.14.4の公式文法から生成した
 PEG規則を使い、同じ命令形式へ変換します。構文木から実行命令への変換には未対応構文が残っています。
 `__future__` の指定と動的コンパイルへの継承、Unicode識別子のNFKC正規化にも対応します。
+型パラメータ、遅延評価する型エイリアス、GenericAliasの型変数置換も、静的コードと動的コードで共用します。
 
 ベンチマークは正解一致を確認した後に実行時間の中央値と最大RSSを測定します。
 変換・コンパイル時間は別に記録します。
@@ -106,10 +107,13 @@ dequeの両端操作は償却O(1)ですが、OrderedDictの先頭移動はO(n)�
 ```bash
 python3 -m unittest discover -s tests -v
 python3 tests/test_native.py --benchmark-native
+python3 tools/check_standalone.py
 ```
 
 CPython 3.14との実行差分、固定幅整数の参照モデル、BigIntの乱数演算、GC、動的コードと
 AOTコードの相互呼び出しを検証しています。CIはRust 1.85とstableを対象とします。
+`check_standalone.py` は全整数モードのデバッグ・最適化ビルドを実行し、生成物をPythonが見つからないPATHでも検証します。
+`--wheel path/to/package.whl` で配布物を検証し、`--output directory` で生成ソース・実行ファイル・測定結果を保存できます。
 
 ## ライセンス
 
