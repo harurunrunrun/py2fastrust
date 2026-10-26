@@ -12,7 +12,11 @@ The high-accuracy error-function and gamma-function algorithms in
 file. The same PSF license is included in generated general-runtime Rust.
 
 The compiler uses the host Python's official `ast` and `symtable` APIs.
-The Rust runtime parser is an independent implementation.
+The Rust PEG engine and tokenizer are independent implementations. Its grammar
+tables are generated from CPython 3.14.4's unmodified `Grammar/python.gram` and
+`Grammar/Tokens`, retained in `py2fastrust/grammar/` with upstream blob identifiers
+and a PSF license notice. `tools/generate_peg.py --check` checks both the pinned
+source bytes and reproducibility of the generated Rust tables.
 
 Unicode case-fold mappings and character-property ranges in
 `py2fastrust/runtime/text.rs` are generated from CPython 3.14's Unicode 16.0

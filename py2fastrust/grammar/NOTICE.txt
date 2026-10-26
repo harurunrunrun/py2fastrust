@@ -1,0 +1,13 @@
+The files python3.14.4.gram and Tokens are copied without modifications from
+CPython v3.14.4, https://github.com/python/cpython/tree/v3.14.4/Grammar .
+
+Upstream Git blob identifiers:
+  python.gram  7b27b04bf7989ef64349e651aaccde6e114d1d0b
+  Tokens       0547e6ed08f79ae397836c1b426af7760f7199ce
+
+These files and grammar tables generated from them are distributed under the
+Python Software Foundation License Version 2 and applicable Python license
+history. The full license is included at ../stdlib/PYTHON_LICENSE.txt.
+
+The PEG execution engine and generator implementation are original py2fastrust
+code, distributed under the project's MIT license.
