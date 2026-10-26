@@ -62,6 +62,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - Comprehensions run in separate frames, so `locals()` called within them may differ from Python 3.14's inlined comprehensions.
 - A traceback's `tb_frame` is a snapshot containing source information. It does not expose live-frame manipulation or CPython bytecode offsets.
 - Native specialization of code containing dynamic functions and classes is limited; such code may use the general runtime.
+- Superseded container storage in native code can remain until the enclosing Rust scope ends. Peak memory may exceed that of the equivalent Python program.
 
 Unsupported syntax and modules produce transpilation diagnostics.
 Unsupported dynamic operations produce runtime exceptions with original source locations.

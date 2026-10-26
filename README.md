@@ -106,6 +106,8 @@ integer-list `append`, `extend`, and `sort`, dictionary aggregation, and diction
 Native integer sets support construction, insertion, deletion, membership, and `sum`.
 Programs that observe set iteration order or sharing use the general runtime.
 Programs that cannot be specialized also use the shared dynamic runtime.
+The optimizer follows proved type changes and combines compatible branch and loop states.
+Unproved combinations use the general runtime.
 Ordinary user functions with proved integer parameters and results can also become Rust functions,
 including positional and keyword arguments, constant defaults, and calls between functions.
 Recursion and functions with dynamic global or closure state use the general runtime.
