@@ -15,7 +15,7 @@ dependencies = []
 py2fastrust = "py2fastrust.cli:main"
 
 [tool.setuptools.package-data]
-py2fastrust = ["runtime/*.rs"]
+py2fastrust = ["runtime/*.rs", "runtime/NOTICE.txt"]
 
 [tool.setuptools.packages.find]
 include = ["py2fastrust*"]
