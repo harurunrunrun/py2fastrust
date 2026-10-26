@@ -510,7 +510,7 @@ print(d[0],d[-1],len(d))
             "x=1\nx=True\nprint(x)", "x=1\nx='hi'\nprint(x)",
             "print(1)\nprint=2", "int=1\nx=int(input())", "range=3\nfor i in range(3):\n pass",
             "x=eval(input())", "exec('x=1')", "import math\nprint(1)",
-            "def f():\n return 1\nprint(f())", "class A:\n pass", "x=[1,2]\nprint(x)",
+            "class A:\n pass", "x=[1,2]\nprint(x)",
             "print(1/2)", "x=int(input())\nprint(2**x)", "print(2**-1)",
             "print(input())", "print(1, flush=True)", "print(*(1,2))",
             "for i in range(3):\n pass\nelse:\n print(1)", "del x", "print(1 is 1)",
@@ -519,6 +519,7 @@ print(d[0],d[-1],len(d))
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
         self.assertIsNone(try_generate_native("print(1)", "fallback.py", "bigint"))
+        self.differential("def f():\n return 1\nprint(f())")
 
     def test_no_argument_entry_wrapper(self):
         source = '''
@@ -586,7 +587,6 @@ solve()
 
     def test_entry_wrapper_rejects_observable_or_dynamic_functions(self):
         rejected = [
-            "def solve(x=1):\n print(x)\nsolve()",
             "def solve()->None:\n print(1)\nsolve()",
             "def solve[T]():\n print(1)\nsolve()",
             "@decorator\ndef solve():\n print(1)\nsolve()",
@@ -597,7 +597,6 @@ solve()
             "def solve():\n return solve()\nsolve()",
             "def solve():\n print(solve)\nsolve()",
             "def solve():\n print(1)\nprint(solve())",
-            "def solve():\n print(1)\nsolve()\nprint(2)",
             "def solve():\n print(1)\nif __name__=='__main__':\n solve()\nelse:\n print(2)",
             "def int():\n print(int(input()))\nint()",
             "def __name__():\n print(1)\nif __name__=='__main__':\n __name__()",
@@ -605,6 +604,9 @@ solve()
         for source in rejected:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source,"fallback.py","i64"))
+        for source in ("def solve(x=1):\n print(x)\nsolve()",
+                       "def solve():\n print(1)\nsolve()\nprint(2)"):
+            self.differential(source)
 
     @unittest.skipUnless("--benchmark-native" in sys.argv, "optional performance benchmark")
     def test_native_loop_performance(self):

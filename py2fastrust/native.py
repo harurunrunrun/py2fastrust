@@ -42,6 +42,20 @@ class _SetInfo:
     length: int | None
 
 
+@dataclass
+class _Function:
+    node: ast.FunctionDef
+    rust_name: str
+    positional: list[str]
+    posonly: set[str]
+    kwonly: list[str]
+    defaults: dict[str, str]
+    local_names: set[str]
+    return_kind: str
+    dependencies: set[str]
+    required: set[str]
+
+
 def _string(value):
     out = ['"']
     for char in value:
@@ -62,9 +76,9 @@ def _string(value):
 
 _HELPERS = r'''
 #[derive(Debug)]
-struct NativeError { message: String, line: usize }
-fn native_at<T>(result: Result<T, String>, line: usize) -> Result<T, NativeError> {
-    result.map_err(|message| NativeError { message, line })
+struct NativeError { message: String, line: usize, function: &'static str, frames: Vec<(usize, &'static str)> }
+fn native_at<T>(result: Result<T, String>, line: usize, function: &'static str) -> Result<T, NativeError> {
+    result.map_err(|message| NativeError { message, line, function, frames: Vec::new() })
 }
 #[inline]
 fn native_divmod(a: NativeInt, b: NativeInt) -> Result<(NativeInt, NativeInt), String> {
@@ -289,7 +303,7 @@ fn native_set_remove(values: &mut NativeSet, key: NativeInt) -> Result<(), Strin
 class _Generator:
     BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "list", "map", "dict", "set"}
 
-    def __init__(self, bits):
+    def __init__(self, bits, functions=None, function=None, function_input=False):
         self.bits = bits
         self.bindings = {}
         self.names = {}
@@ -302,6 +316,9 @@ class _Generator:
         self.has_sets = False
         self.iterating_lists = []
         self.return_label = None
+        self.functions = functions or {}
+        self.function = function
+        self.function_input = function_input
 
     def temporary(self):
         self.counter += 1
@@ -318,7 +335,8 @@ class _Generator:
         return f"({value}_i128 as NativeInt)"
 
     def bind(self, name, kind):
-        if name in self.BUILTINS or self.bindings.get(name, kind) != kind:
+        if (kind not in {"int", "bool", "list_int", "dict_int", "set_int"}
+                or name in self.BUILTINS or self.bindings.get(name, kind) != kind):
             raise _Unsupported
         self.bindings[name] = kind
         if name not in self.names:
@@ -337,6 +355,8 @@ class _Generator:
     def truth(expression):
         if expression.kind in {"list_int", "dict_int", "set_int"}:
             return f"!({expression.code}).is_empty()"
+        if expression.kind not in {"int", "bool"}:
+            raise _Unsupported
         return expression.code if expression.kind == "bool" else f"(({expression.code}) != 0)"
 
     @staticmethod
@@ -353,9 +373,9 @@ class _Generator:
     def consume_list(expression):
         return expression.code if expression.owned else f"({expression.code}).clone()"
 
-    @staticmethod
-    def at(code, node):
-        return f"native_at({code}, {node.lineno})?"
+    def at(self, code, node):
+        scope = self.function.node.name if self.function else "<module>"
+        return f"native_at({code}, {node.lineno}, {_string(scope)})?"
 
     @staticmethod
     def input_words(node):
@@ -418,6 +438,53 @@ class _Generator:
             iterator = f"{name}.iter().copied()"
         return setup, iterator
 
+    def user_call(self, node, function, environment):
+        if self.function is None:
+            # A callee's globals are looked up at call time, including indirect
+            # callees whose definitions may follow the caller definition.
+            if any(not isinstance(environment.get(name), _Function) for name in function.required):
+                raise _Unsupported
+        else:
+            self.function.dependencies.add(function.node.name)
+        if any(isinstance(value, ast.Starred) for value in node.args):
+            raise _Unsupported
+        lines, bound = [], {}
+        if len(node.args) > len(function.positional):
+            raise _Unsupported
+        # Evaluate every explicit argument in source order before reordering
+        # into Rust's fixed signature. Defaults are proved pure constants.
+        for parameter, argument in zip(function.positional, node.args):
+            value = self.expression(argument, environment)
+            if value.kind != "int":
+                raise _Unsupported
+            name = self.temporary()
+            lines.append(f"let {name} = {value.code};")
+            bound[parameter] = name
+        for keyword in node.keywords:
+            parameter = keyword.arg
+            if (parameter is None or parameter in function.posonly or parameter in bound
+                    or parameter not in function.positional + function.kwonly):
+                raise _Unsupported
+            value = self.expression(keyword.value, environment)
+            if value.kind != "int":
+                raise _Unsupported
+            name = self.temporary()
+            lines.append(f"let {name} = {value.code};")
+            bound[parameter] = name
+        arguments = []
+        for parameter in function.positional + function.kwonly:
+            code = bound.get(parameter, function.defaults.get(parameter))
+            if code is None:
+                raise _Unsupported
+            arguments.append(code)
+        if self.function_input:
+            arguments.append("&mut native_input")
+        arguments.append("&mut native_output")
+        scope = self.function.node.name if self.function else "<module>"
+        call = f"{function.rust_name}({', '.join(arguments)})"
+        call += f".map_err(|mut error| {{ error.frames.push(({node.lineno}, {_string(scope)})); error }})?"
+        return _Expression("{ " + " ".join(lines) + f" {call} }}", function.return_kind)
+
     def expression(self, node, environment):
         if isinstance(node, ast.Constant):
             if type(node.value) is bool:
@@ -429,6 +496,8 @@ class _Generator:
             if node.id not in environment:
                 raise _Unsupported
             information = environment[node.id]
+            if isinstance(information, _Function):
+                raise _Unsupported
             if isinstance(information, _ListInfo):
                 return _Expression(self.names[node.id], "list_int", owned=False, length=information.length)
             if isinstance(information, _DictInfo):
@@ -652,6 +721,10 @@ class _Generator:
                 code = " ".join(f"let {name} = Int::from_i128(({self.number(value)}) as i128);" for name, value in zip(names, arguments))
                 call = self.at(f"{names[0]}.modpow(&{names[1]}, &{names[2]})", node)
                 return _Expression(f"{{ {code} ({call}).to_i128().unwrap() as NativeInt }}", "int")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            function = environment.get(node.func.id)
+            if isinstance(function, _Function):
+                return self.user_call(node, function, environment)
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "get" and len(node.args) == 2 and not node.keywords):
             values = self.expression(node.func.value, environment)
@@ -778,6 +851,23 @@ class _Generator:
                 for name, kind in environment.items()}
 
     def statement(self, node, environment):
+        if isinstance(node, ast.FunctionDef):
+            function = self.functions.get(node.name)
+            if self.function is not None or function is None or function.node is not node:
+                raise _Unsupported
+            environment[node.name] = function
+            return "", environment
+        if isinstance(node, ast.Return) and self.function is not None:
+            if self.function.return_kind == "none":
+                if node.value is not None and not (isinstance(node.value, ast.Constant) and node.value.value is None):
+                    raise _Unsupported
+                return "return Ok(());", None
+            if node.value is None:
+                raise _Unsupported
+            value = self.expression(node.value, environment)
+            if value.kind != "int":
+                raise _Unsupported
+            return f"return Ok({value.code});", None
         if isinstance(node, ast.Return) and self.return_label is not None:
             lines = []
             if node.value is not None and not isinstance(node.value, ast.Constant):
@@ -871,6 +961,8 @@ class _Generator:
             environment[node.target.id] = value.kind
             return f"{name} = {value.code};", environment
         if isinstance(node, ast.If):
+            if self.function is None and self.functions and _main_guard(node):
+                return self.statements(node.body, environment)
             test = self.expression(node.test, environment)
             yes, yes_environment = self.statements(node.body, environment)
             no, no_environment = self.statements(node.orelse, environment)
@@ -1070,6 +1162,20 @@ class _Generator:
         raise _Unsupported
 
 
+def _main_guard(node):
+    if not isinstance(node, ast.If) or node.orelse:
+        return False
+    guard = node.test
+    if (not isinstance(guard, ast.Compare) or len(guard.ops) != 1
+            or not isinstance(guard.ops[0], ast.Eq) or len(guard.comparators) != 1):
+        return False
+    left, right = guard.left, guard.comparators[0]
+    if isinstance(right, ast.Name) and right.id == "__name__":
+        left, right = right, left
+    return (isinstance(left, ast.Name) and left.id == "__name__"
+            and isinstance(right, ast.Constant) and right.value == "__main__")
+
+
 def _main_wrapper(tree):
     """Find an unobservable, no-argument entry function and its one call.
 
@@ -1113,6 +1219,91 @@ def _main_wrapper(tree):
     return function.body, (function.name, invocation.lineno)
 
 
+def _function_plans(tree, table, bits):
+    functions = {}
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        parameters = node.args
+        arguments = parameters.posonlyargs + parameters.args + parameters.kwonlyargs
+        if (node.name in functions or node.name in _Generator.BUILTINS | {"__builtins__", "__name__"}
+                or node.decorator_list or node.returns is not None or node.type_params
+                or parameters.vararg or parameters.kwarg
+                or any(argument.annotation is not None for argument in arguments)
+                or any(isinstance(value, (ast.Yield, ast.YieldFrom, ast.Await, ast.AsyncFor, ast.AsyncWith))
+                       for value in ast.walk(node))):
+            raise _Unsupported
+        matches = [child for child in table.get_children()
+                   if child.get_name() == node.name and child.get_lineno() == node.lineno]
+        if len(matches) != 1:
+            raise _Unsupported
+        local_names = {symbol.get_name() for symbol in matches[0].get_symbols()
+                       if symbol.is_local() or symbol.is_parameter()}
+        positional = [argument.arg for argument in parameters.posonlyargs + parameters.args]
+        defaults = {}
+        default_generator = _Generator(bits)
+        default_nodes = list(zip(positional[len(positional)-len(parameters.defaults):], parameters.defaults))
+        default_nodes += [(argument.arg, value) for argument, value in zip(parameters.kwonlyargs, parameters.kw_defaults)
+                          if value is not None]
+        for name, value in default_nodes:
+            expression = default_generator.expression(value, {})
+            if expression.kind != "int" or expression.constant is None:
+                raise _Unsupported
+            defaults[name] = default_generator.literal(expression.constant)
+        value_returns = [statement for statement in ast.walk(node) if isinstance(statement, ast.Return)
+                         and statement.value is not None
+                         and not (isinstance(statement.value, ast.Constant) and statement.value.value is None)]
+        functions[node.name] = _Function(node, f"native_function_{len(functions)}", positional,
+                                        {argument.arg for argument in parameters.posonlyargs},
+                                        [argument.arg for argument in parameters.kwonlyargs], defaults,
+                                        local_names, "int" if value_returns else "none", set(), set())
+    if functions and any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+                         and node.id in functions.keys() | {"__builtins__", "__name__"} for node in ast.walk(tree)):
+        raise _Unsupported
+    return functions
+
+
+def _function_requirements(functions):
+    """Prove an acyclic direct call graph and its late-bound global names.
+
+    Recursive programs retain the VM's recursion limit/stack behavior. Rust
+    stack overflow is not a substitute for Python's RecursionError.
+    """
+    visiting, visited, depths = set(), set(), {}
+
+    def visit(name):
+        if name in visiting:
+            raise _Unsupported
+        if name in visited:
+            return functions[name].required
+        visiting.add(name)
+        required = {name}
+        depth = 1
+        for dependency in functions[name].dependencies:
+            required |= visit(dependency)
+            depth = max(depth, depths[dependency] + 1)
+        # Even an acyclic graph can exceed Python's default recursion limit.
+        # No accepted program can change that limit; stay well below it rather
+        # than substituting Rust stack behavior near an unproved boundary.
+        if depth > 128:
+            raise _Unsupported
+        depths[name] = depth
+        functions[name].required = required
+        visiting.remove(name)
+        visited.add(name)
+        return required
+
+    for name in functions:
+        visit(name)
+
+
+def _declarations(generator):
+    types = {"int": "NativeInt", "bool": "bool", "list_int": "Vec<NativeInt>",
+             "dict_int": "NativeDict", "set_int": "NativeSet"}
+    return "\n".join(f"let mut {generator.names[name]}: {types[kind]};"
+                     for name, kind in generator.bindings.items())
+
+
 def try_generate_native(source: str, filename: str, integer: str) -> str | None:
     """Return standalone scalar/container Rust, or None when proof fails.
 
@@ -1123,12 +1314,42 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
         return None
     try:
         tree = ast.parse(source, filename=filename)
-        symtable.symtable(source, filename, "exec")
+        table = symtable.symtable(source, filename, "exec")
         # Builtins cannot be rebound even on a path that seems unreachable.
         if any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in _Generator.BUILTINS for node in ast.walk(tree)):
             return None
-        generator = _Generator(64 if integer == "i64" else 128)
+        bits = 64 if integer == "i64" else 128
         statements, wrapper = _main_wrapper(tree)
+        functions = {} if wrapper else _function_plans(tree, table, bits)
+        function_input = bool(functions) and any(isinstance(node, ast.Name) and node.id == "input" for node in ast.walk(tree))
+        generator = _Generator(bits, functions, function_input=function_input)
+        if function_input:
+            generator.has_input = generator.needs_integer_runtime = True
+        function_sources = []
+        for function in functions.values():
+            local = _Generator(bits, functions, function, function_input)
+            environment = {name: value for name, value in functions.items() if name not in function.local_names}
+            parameters = function.positional + function.kwonly
+            initializers = []
+            signature = []
+            for index, name in enumerate(parameters):
+                initializers.append(f"{local.bind(name, 'int')} = native_argument_{index};")
+                environment[name] = "int"
+                signature.append(f"native_argument_{index}: NativeInt")
+            if function_input:
+                signature.append("mut native_input: &mut NativeInput")
+            signature.append("mut native_output: &mut String")
+            function_body, remaining = local.statements(function.node.body, environment)
+            if function.return_kind == "int" and remaining is not None:
+                raise _Unsupported
+            tail = "\nOk(())" if function.return_kind == "none" and remaining is not None else ""
+            return_type = "NativeInt" if function.return_kind == "int" else "()"
+            function_sources.append(f"#[inline]\nfn {function.rust_name}({', '.join(signature)}) -> Result<{return_type}, NativeError> {{\n"
+                                    "use std::fmt::Write as _;\n" + _declarations(local) + "\n"
+                                    + "\n".join(initializers) + "\n" + function_body + tail + "\n}")
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets"):
+                setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
+        _function_requirements(functions)
         if wrapper:
             generator.return_label = "native_entrypoint"
         body, _ = generator.statements(statements, {})
@@ -1157,20 +1378,27 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
         result.append(_DICT_HELPERS)
     if generator.has_sets:
         result.append(_SET_HELPERS)
+    result.extend(function_sources)
     result.append("fn main() {\nuse std::fmt::Write as _;\nuse std::io::Write as _;\n"
                   "let mut native_output = String::new();\n"
                   "let native_result = (|| -> Result<(), NativeError> {\n")
     if generator.has_input:
         result.append("let mut native_input = NativeInput::new();\n")
-    for name, kind in generator.bindings.items():
-        rust_type = {"int": "NativeInt", "bool": "bool", "list_int": "Vec<NativeInt>", "dict_int": "NativeDict", "set_int": "NativeSet"}[kind]
-        result.append(f"let mut {generator.names[name]}: {rust_type};\n")
+    result.append(_declarations(generator))
     result.append(body + "\nOk(())\n})();\n")
     result.append("std::io::stdout().write_all(native_output.as_bytes()).unwrap();\n")
     if wrapper:
         function_name, call_line = wrapper
         result.append("if let Err(error) = native_result {\n"
                       f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {call_line}, in <module>\\n  File {{:?}}, line {{}}, in {{}}\\n{{}}", {_string(filename)}, {_string(filename)}, error.line, {_string(function_name)}, error.message);\n'
+                      "std::process::exit(1);\n}\n}\n")
+    elif functions:
+        result.append("if let Err(error) = native_result {\n"
+                      'eprintln!("Traceback (most recent call last):");\n'
+                      "for &(line, function) in error.frames.iter().rev() {\n"
+                      f'eprintln!("  File {{:?}}, line {{}}, in {{}}", {_string(filename)}, line, function);\n'
+                      "}\n"
+                      f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}", {_string(filename)}, error.line, error.function, error.message);\n'
                       "std::process::exit(1);\n}\n}\n")
     else:
         result.append("if let Err(error) = native_result {\n"
