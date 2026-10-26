@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py2fastrust"
+version = "0.1.0a1"
+description = "Compile Python programs into standalone, standard-library-only Rust"
+requires-python = ">=3.14"
+license = "MIT"
+authors = [{name = "Codex"}]
+dependencies = []
+
+[project.scripts]
+py2fastrust = "py2fastrust.cli:main"
+
+[tool.setuptools.package-data]
+py2fastrust = ["runtime/*.rs"]
+
+[tool.setuptools.packages.find]
+include = ["py2fastrust*"]
