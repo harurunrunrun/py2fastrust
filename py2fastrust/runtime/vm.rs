@@ -23,6 +23,7 @@ struct Code {
     locals: Vec<String>,
     globals: Vec<String>,
     nonlocals: Vec<String>,
+    frees: Vec<String>,
     params: Params,
     ops: Vec<Instr>,
     is_generator: bool,
@@ -172,15 +173,34 @@ enum Value {
 struct PyException {
     kind: String,
     message: String,
+    args: Vec<Value>,
+    args_tuple: Option<Value>,
+    attributes: HashMap<String, Value>,
     value: Option<Value>,
+    cause: Option<Value>,
+    context: Option<Value>,
+    suppress_context: bool,
+    skip_trace: bool,
     trace: Vec<(String, usize, String)>,
 }
 type PyResult<T> = Result<T, PyException>;
 fn pyerr(kind: &str, message: impl Into<String>) -> PyException {
+    let message = message.into();
     PyException {
         kind: kind.into(),
-        message: message.into(),
+        args: if message.is_empty() {
+            Vec::new()
+        } else {
+            vec![Value::Str(message.clone())]
+        },
+        args_tuple: None,
+        attributes: HashMap::new(),
+        message,
         value: None,
+        cause: None,
+        context: None,
+        suppress_context: false,
+        skip_trace: false,
         trace: Vec::new(),
     }
 }
@@ -214,6 +234,8 @@ struct Class {
     bases: Vec<Value>,
     attrs: usize,
     metaclass: Value,
+    dict_allowed: bool,
+    weakref_allowed: bool,
 }
 #[derive(Clone, Debug)]
 struct CacheEntry {
@@ -246,6 +268,11 @@ enum IteratorState {
 }
 #[derive(Clone, Debug)]
 enum Object {
+    Slot {
+        owner: Value,
+        name: String,
+        slot: usize,
+    },
     BuiltinInstance {
         class: Value,
         attrs: usize,
@@ -267,7 +294,7 @@ enum Object {
     Tuple(Vec<Value>),
     Dict(Vec<(Value, Value)>),
     Set(Vec<Value>),
-    Namespace(HashMap<String, Value>, Option<usize>),
+    Namespace(OrderedNamespace, Option<usize>),
     Function(Function),
     Class(Class),
     Instance {
@@ -352,9 +379,144 @@ struct Runtime {
     running_generators: Vec<usize>,
     scope_parents: HashMap<usize, usize>,
     gc_running: bool,
+    gc_enabled: bool,
     finalized: std::collections::HashSet<usize>,
+    instance_slots: HashMap<usize, HashMap<usize, Value>>,
+    next_slot: usize,
 }
 impl Runtime {
+    fn new_exception(&mut self, kind: &str, args: Vec<Value>) -> PyResult<PyException> {
+        let message = self.exception_message(kind, &args)?;
+        let mut error = pyerr(kind, message);
+        error.args = args;
+        if kind == "StopIteration" {
+            error.attributes.insert(
+                "value".into(),
+                error.args.first().cloned().unwrap_or(Value::None),
+            );
+        } else if kind == "SystemExit" {
+            let code = match error.args.as_slice() {
+                [] => Value::None,
+                [value] => value.clone(),
+                values => self.obj_value(Object::Tuple(values.to_vec())),
+            };
+            error.attributes.insert("code".into(), code);
+        }
+        Ok(error)
+    }
+    fn exception_message(&mut self, kind: &str, args: &[Value]) -> PyResult<String> {
+        if let Some(message) = codec_exception_message(kind, args) {
+            return Ok(message);
+        }
+        match args.len() {
+            0 => Ok(String::new()),
+            1 if kind == "KeyError" => self.repr(&args[0]),
+            1 => self.str_value(&args[0]),
+            _ => {
+                let tuple = self.obj_value(Object::Tuple(args.to_vec()));
+                self.repr(&tuple)
+            }
+        }
+    }
+    fn sync_exception(&mut self, error: &PyException) {
+        if let Some(Value::Obj(index)) = error.value {
+            if matches!(
+                self.heap.get(index).and_then(Option::as_ref),
+                Some(Object::Exception(_))
+            ) {
+                self.heap[index] = Some(Object::Exception(error.clone()));
+            }
+        }
+    }
+    fn exception_value(&mut self, error: &mut PyException) -> Value {
+        if let Some(value) = &error.value {
+            return value.clone();
+        }
+        let value = self.obj_value(Object::Exception(error.clone()));
+        error.value = Some(value.clone());
+        self.sync_exception(error);
+        value
+    }
+    fn exception_roots(error: &PyException, roots: &mut Vec<Value>) {
+        roots.extend(error.args.iter().cloned());
+        roots.extend(error.args_tuple.iter().cloned());
+        roots.extend(error.attributes.values().cloned());
+        roots.extend(error.value.iter().cloned());
+        roots.extend(error.cause.iter().cloned());
+        roots.extend(error.context.iter().cloned());
+    }
+    fn locals_snapshot(&mut self, frame: &Frame) -> PyResult<Value> {
+        let code = self.codes[frame.code].clone();
+        let mut names = code.params.positional;
+        names.extend(code.params.kwonly);
+        names.extend(code.params.vararg);
+        names.extend(code.params.kwarg);
+        names.extend(code.locals);
+        let mut frees = code.frees;
+        frees.sort();
+        names.extend(frees.clone());
+        let root = self.roots.len();
+        self.roots.push(Vec::new());
+        let result = (|| {
+            let mut seen = std::collections::HashSet::new();
+            let mut entries = Vec::new();
+            for name in names {
+                if name.starts_with('$') || name.starts_with('\0') || !seen.insert(name.clone()) {
+                    continue;
+                }
+                let value = if frees.contains(&name) {
+                    match self.load(frame, &name) {
+                        Ok(value) => Some(value),
+                        Err(error)
+                            if error.kind == "NameError" || error.kind == "UnboundLocalError" =>
+                        {
+                            None
+                        }
+                        Err(error) => return Err(error),
+                    }
+                } else {
+                    self.mapping_get(frame.locals, &name)?
+                };
+                if let Some(value) = value {
+                    self.roots[root].push(value.clone());
+                    entries.push((Value::Str(name), value));
+                }
+            }
+            Ok(self.obj_value(Object::Dict(entries)))
+        })();
+        self.roots.truncate(root);
+        result
+    }
+    fn system_exit_status(&mut self, error: &PyException) -> i32 {
+        let value =
+            error
+                .attributes
+                .get("code")
+                .cloned()
+                .unwrap_or_else(|| match error.args.as_slice() {
+                    [] => Value::None,
+                    [value] => value.clone(),
+                    values => self.obj_value(Object::Tuple(values.to_vec())),
+                });
+        match value {
+            Value::None => 0,
+            Value::Bool(value) => {
+                if value {
+                    1
+                } else {
+                    0
+                }
+            }
+            Value::Int(value) => value.to_i128().map(|n| n as i32).unwrap_or(-1),
+            value => {
+                let message = self
+                    .str_value(&value)
+                    .unwrap_or_else(|_| error.message.clone());
+                eprintln!("{}", message);
+                1
+            }
+        }
+    }
     fn take_keyword(kw: &mut Vec<(String, Value)>, name: &str) -> Option<Value> {
         kw.iter()
             .position(|(n, _)| n == name)
@@ -372,9 +534,171 @@ impl Runtime {
     }
     fn instance_allows_dict(&self, i: usize) -> bool {
         match self.heap.get(i).and_then(|o| o.as_ref()) {
-            Some(Object::BuiltinInstance { class, .. }) => self.builtin_instance_allows_dict(class),
+            Some(Object::Instance { class, .. } | Object::BuiltinInstance { class, .. }) => {
+                self.class_allows_dict(class)
+            }
             _ => true,
         }
+    }
+    fn class_name(&self, class: &Value) -> String {
+        match class {
+            Value::Obj(index) => match self.heap.get(*index).and_then(Option::as_ref) {
+                Some(Object::Class(class)) => class.name.clone(),
+                _ => "object".into(),
+            },
+            Value::Builtin(name) | Value::Type(name) => name.clone(),
+            _ => "object".into(),
+        }
+    }
+    fn class_allows_dict(&self, class: &Value) -> bool {
+        match class {
+            Value::Obj(index) => {
+                matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Class(class)) if class.dict_allowed)
+            }
+            Value::Builtin(name) if name == "super" => true,
+            _ => false,
+        }
+    }
+    fn class_allows_weakref(&self, class: &Value) -> bool {
+        match class {
+            Value::Obj(index) => {
+                matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Class(class)) if class.weakref_allowed)
+            }
+            Value::Builtin(name) if name == "set" => true,
+            _ => false,
+        }
+    }
+    fn slot_mangle(class: &str, name: &str) -> String {
+        let class = class.trim_start_matches('_');
+        if !class.is_empty()
+            && name.starts_with("__")
+            && !name.ends_with("__")
+            && !name.contains('.')
+        {
+            format!("_{}{}", class, name)
+        } else {
+            name.into()
+        }
+    }
+    fn solid_layout(&self, class: &Value) -> Option<Value> {
+        for base in self.class_mro(class, 0)? {
+            match &base {
+                Value::Builtin(name)
+                    if ["tuple", "list", "dict", "set", "str", "int"].contains(&name.as_str()) =>
+                {
+                    return Some(base)
+                }
+                Value::Obj(index) => {
+                    if let Some(Object::Class(class)) =
+                        self.heap.get(*index).and_then(Option::as_ref)
+                    {
+                        if let Some(Object::Dict(items)) =
+                            self.heap.get(class.attrs).and_then(Option::as_ref)
+                        {
+                            if items.iter().any(|(_, value)| matches!(value, Value::Obj(index) if matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Slot { owner, name, .. }) if Self::same_type(owner, &base) && name != "__dict__" && name != "__weakref__"))) { return Some(base); }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    fn slot_access(
+        &mut self,
+        descriptor: Value,
+        instance: Value,
+        value: Option<Value>,
+        delete: bool,
+    ) -> PyResult<Value> {
+        let (owner, name, slot) = match &descriptor {
+            Value::Obj(index) => match self.object(*index)? {
+                Object::Slot { owner, name, slot } => (owner, name, slot),
+                _ => return Err(pyerr("TypeError", "not a slot descriptor")),
+            },
+            _ => return Err(pyerr("TypeError", "not a slot descriptor")),
+        };
+        let (index, class, attrs) = match &instance {
+            Value::Obj(index) => match self.object(*index)? {
+                Object::Instance { class, attrs }
+                | Object::BuiltinInstance { class, attrs, .. } => (*index, class, attrs),
+                _ => return Err(pyerr("TypeError", "descriptor requires an instance")),
+            },
+            _ => return Err(pyerr("TypeError", "descriptor requires an instance")),
+        };
+        if !self.is_subclass(&class, &owner)? {
+            return Err(pyerr(
+                "TypeError",
+                "descriptor does not apply to this object",
+            ));
+        }
+        if name == "__dict__" {
+            if delete {
+                let replacement = self.alloc(Object::Dict(Vec::new()));
+                match self.heap[index].as_mut().unwrap() {
+                    Object::Instance { attrs, .. } | Object::BuiltinInstance { attrs, .. } => {
+                        *attrs = replacement
+                    }
+                    _ => {}
+                }
+                return Ok(Value::None);
+            }
+            if let Some(value) = value {
+                let replacement = match value {
+                    Value::Obj(index)
+                        if matches!(
+                            self.heap.get(index).and_then(Option::as_ref),
+                            Some(Object::Dict(_) | Object::Namespace(..))
+                        ) =>
+                    {
+                        index
+                    }
+                    _ => return Err(pyerr("TypeError", "__dict__ must be set to a dictionary")),
+                };
+                match self.heap[index].as_mut().unwrap() {
+                    Object::Instance { attrs, .. } | Object::BuiltinInstance { attrs, .. } => {
+                        *attrs = replacement
+                    }
+                    _ => {}
+                }
+                return Ok(Value::None);
+            }
+            return Ok(Value::Obj(attrs));
+        }
+        if name == "__weakref__" {
+            return if delete || value.is_some() {
+                Err(pyerr(
+                    "AttributeError",
+                    "attribute '__weakref__' is not writable",
+                ))
+            } else {
+                Ok(Value::None)
+            };
+        }
+        if let Some(value) = value {
+            self.instance_slots
+                .entry(index)
+                .or_default()
+                .insert(slot, value);
+            return Ok(Value::None);
+        }
+        if delete {
+            return if self
+                .instance_slots
+                .get_mut(&index)
+                .and_then(|slots| slots.remove(&slot))
+                .is_some()
+            {
+                Ok(Value::None)
+            } else {
+                Err(pyerr("AttributeError", name))
+            };
+        }
+        self.instance_slots
+            .get(&index)
+            .and_then(|slots| slots.get(&slot))
+            .cloned()
+            .ok_or_else(|| pyerr("AttributeError", name))
     }
     fn rich_comparison(&mut self, op: &str, a: &Value, b: &Value) -> PyResult<Option<Value>> {
         let (left, right) = match op {
@@ -550,6 +874,61 @@ impl Runtime {
         } else {
             -1
         };
+        if method == "readlines" {
+            let mut lines = Vec::new();
+            let mut total = 0;
+            loop {
+                let line = self.stream_call(&format!("{}:readline", target), Vec::new(), binary)?;
+                let size = match &line {
+                    Value::Str(line) => line.chars().count(),
+                    Value::Bytes(line) => line.len(),
+                    _ => 0,
+                };
+                if size == 0 {
+                    break;
+                }
+                total += size;
+                lines.push(line);
+                if count > 0 && total as i128 > count {
+                    break;
+                }
+            }
+            return Ok(self.obj_value(Object::List(lines)));
+        }
+        if !binary && ["read", "readline"].contains(&method) {
+            let mut text = String::new();
+            let mut length = 0;
+            while self.input_pos < self.input.len() && (count < 0 || length < count) {
+                let first = self.input[self.input_pos];
+                let ch = {
+                    let width = match first {
+                        0..=127 => 1,
+                        194..=223 => 2,
+                        224..=239 => 3,
+                        240..=244 => 4,
+                        _ => return Err(pyerr("UnicodeDecodeError", "input is not valid UTF-8")),
+                    };
+                    let end = self.input_pos.saturating_add(width);
+                    let bytes = self
+                        .input
+                        .get(self.input_pos..end)
+                        .ok_or_else(|| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?;
+                    let ch = std::str::from_utf8(bytes)
+                        .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?
+                        .chars()
+                        .next()
+                        .unwrap();
+                    self.input_pos = end;
+                    ch
+                };
+                text.push(ch);
+                length += 1;
+                if method == "readline" && ch == '\n' {
+                    break;
+                }
+            }
+            return Ok(Value::Str(text));
+        }
         let start = self.input_pos;
         let mut end = self.input.len();
         if method == "readline" {
@@ -631,6 +1010,13 @@ impl Runtime {
     fn code_needs_class_cell(&self, code: usize, depth: usize) -> bool {
         if depth > 100 {
             return false;
+        }
+        if self.codes[code]
+            .frees
+            .iter()
+            .any(|name| name == "__class__")
+        {
+            return true;
         }
         self.codes[code].ops.iter().any(|ins| match &ins.op {
             Op::Load(n) if n == "__class__" || n == "super" => true,
@@ -723,40 +1109,40 @@ impl Runtime {
     fn mapping_get(&mut self, i: usize, n: &str) -> PyResult<Option<Value>> {
         if matches!(
             self.heap.get(i).and_then(|o| o.as_ref()),
-            Some(Object::Instance { .. })
+            Some(Object::Namespace(..) | Object::Dict(_))
         ) {
+            Ok(self.ns_get(i, n))
+        } else {
             match self.getitem(Value::Obj(i), Value::Str(n.into())) {
                 Ok(v) => Ok(Some(v)),
                 Err(e) if e.kind == "KeyError" => Ok(None),
                 Err(e) => Err(e),
             }
-        } else {
-            Ok(self.ns_get(i, n))
         }
     }
     fn mapping_set(&mut self, i: usize, n: String, v: Value) -> PyResult<()> {
         if matches!(
             self.heap.get(i).and_then(|o| o.as_ref()),
-            Some(Object::Instance { .. })
+            Some(Object::Namespace(..) | Object::Dict(_))
         ) {
-            self.setitem(Value::Obj(i), Value::Str(n), v)
-        } else {
             self.ns_set(i, n, v);
             Ok(())
+        } else {
+            self.setitem(Value::Obj(i), Value::Str(n), v)
         }
     }
     fn mapping_del(&mut self, i: usize, n: &str) -> PyResult<bool> {
         if matches!(
             self.heap.get(i).and_then(|o| o.as_ref()),
-            Some(Object::Instance { .. })
+            Some(Object::Namespace(..) | Object::Dict(_))
         ) {
+            Ok(self.ns_del(i, n))
+        } else {
             match self.delitem(Value::Obj(i), Value::Str(n.into())) {
                 Ok(()) => Ok(true),
                 Err(e) if e.kind == "KeyError" => Ok(false),
                 Err(e) => Err(e),
             }
-        } else {
-            Ok(self.ns_del(i, n))
         }
     }
     fn new(codes: Vec<Code>, modules: Vec<(String, usize)>) -> Self {
@@ -779,10 +1165,13 @@ impl Runtime {
             running_generators: Vec::new(),
             scope_parents: HashMap::new(),
             gc_running: false,
+            gc_enabled: true,
             finalized: std::collections::HashSet::new(),
+            instance_slots: HashMap::new(),
+            next_slot: 0,
         };
-        rt.builtins = rt.alloc(Object::Namespace(HashMap::new(), None));
-        rt.globals = rt.alloc(Object::Namespace(HashMap::new(), None));
+        rt.builtins = rt.alloc(Object::Namespace(OrderedNamespace::new(), None));
+        rt.globals = rt.alloc(Object::Namespace(OrderedNamespace::new(), None));
         for name in [
             "abs",
             "all",
@@ -823,6 +1212,7 @@ impl Runtime {
             "list",
             "locals",
             "map",
+            "memoryview",
             "max",
             "min",
             "next",
@@ -876,6 +1266,10 @@ impl Runtime {
             "TypeError",
             "UnboundLocalError",
             "ValueError",
+            "UnicodeError",
+            "UnicodeEncodeError",
+            "UnicodeDecodeError",
+            "UnicodeTranslateError",
             "ZeroDivisionError",
             "GeneratorExit",
             "SystemExit",
@@ -1030,7 +1424,17 @@ impl Runtime {
                 closure = self.ns_parent(ns)
             }
         }
-        if let Some(p) = self.find_nonlocal(closure, name) {
+        let code = &self.codes[f.code];
+        let class_local = code.kind == ScopeKind::Class
+            && code.locals.iter().any(|local| local == name)
+            && !code.nonlocals.iter().any(|nonlocal| nonlocal == name);
+        let use_closure = !class_local
+            && (code.frees.iter().any(|free| free == name)
+                || code.nonlocals.iter().any(|free| free == name)
+                || name == "__class__"
+                    && code.kind != ScopeKind::Class
+                    && self.code_needs_class_cell(f.code, 0));
+        if let Some(p) = self.find_nonlocal(if use_closure { closure } else { None }, name) {
             return self.mapping_get(p, name)?.ok_or_else(|| {
                 pyerr(
                     "NameError",
@@ -1079,7 +1483,7 @@ impl Runtime {
             code: 0,
             pc: 0,
             locals: self.globals,
-            temps: self.alloc(Object::Namespace(HashMap::new(), None)),
+            temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
             globals: self.globals,
             closure: None,
             stack: Vec::new(),
@@ -1102,13 +1506,49 @@ impl Runtime {
         self.output.clear();
     }
     fn report_exception(&self, e: &PyException) {
+        self.report_exception_chain(e, &mut std::collections::HashSet::new());
+    }
+    fn report_exception_chain(&self, e: &PyException, seen: &mut std::collections::HashSet<usize>) {
+        if let Some(Value::Obj(index)) = e.value {
+            if !seen.insert(index) {
+                return;
+            }
+        }
+        let linked = if let Some(cause) = &e.cause {
+            Some((cause, true))
+        } else if !e.suppress_context {
+            e.context.as_ref().map(|context| (context, false))
+        } else {
+            None
+        };
+        if let Some((Value::Obj(index), direct)) = linked {
+            if !seen.contains(index) {
+                if let Some(Object::Exception(previous)) =
+                    self.heap.get(*index).and_then(Option::as_ref)
+                {
+                    self.report_exception_chain(previous, seen);
+                    eprintln!(
+                        "\n{}\n",
+                        if direct {
+                            "The above exception was the direct cause of the following exception:"
+                        } else {
+                            "During handling of the above exception, another exception occurred:"
+                        }
+                    );
+                }
+            }
+        }
         if !e.trace.is_empty() {
             eprintln!("Traceback (most recent call last):");
             for (file, line, name) in e.trace.iter().rev() {
                 eprintln!("  File {:?}, line {}, in {}", file, line, name);
             }
         }
-        eprintln!("{}: {}", e.kind, e.message);
+        if e.message.is_empty() {
+            eprintln!("{}", e.kind);
+        } else {
+            eprintln!("{}: {}", e.kind, e.message);
+        }
     }
     fn pop(f: &mut Frame) -> PyResult<Value> {
         f.stack
@@ -1135,7 +1575,7 @@ impl Runtime {
         out.extend(frame.stack.iter().cloned());
         out.extend(frame.resume_value.iter().cloned());
         if let Some(e) = &frame.injected_exception {
-            out.extend(e.value.iter().cloned());
+            Self::exception_roots(e, out);
         }
         out.push(Value::Obj(frame.locals));
         out.push(Value::Obj(frame.temps));
@@ -1147,9 +1587,7 @@ impl Runtime {
             match p {
                 Pending::Return(v) => out.push(v.clone()),
                 Pending::Raise(e) => {
-                    if let Some(v) = &e.value {
-                        out.push(v.clone())
-                    }
+                    Self::exception_roots(e, out);
                 }
                 _ => {}
             }
@@ -1159,9 +1597,7 @@ impl Runtime {
             .iter()
             .chain(frame.exception_stack.iter().filter_map(|e| e.as_ref()))
         {
-            if let Some(v) = &e.value {
-                out.push(v.clone())
-            }
+            Self::exception_roots(e, out);
         }
     }
     fn execute(&mut self, mut f: Frame) -> PyResult<(FrameExit, Frame)> {
@@ -1183,12 +1619,19 @@ impl Runtime {
             } else {
                 self.roots[current] = roots;
             }
-            if self.allocations > 10000 {
+            if self.gc_enabled && self.allocations > 10000 {
                 self.collect();
                 self.allocations = 0;
             }
-            let result = if let Some(e) = f.injected_exception.take() {
-                Err(e)
+            let delegated = matches!(
+                self.codes[f.code]
+                    .ops
+                    .get(f.pc)
+                    .map(|instruction| &instruction.op),
+                Some(Op::YieldFrom)
+            );
+            let result = if f.injected_exception.is_some() && !delegated {
+                Err(f.injected_exception.take().unwrap())
             } else if f.pc >= self.codes[f.code].ops.len() {
                 Ok(Some(FrameExit::Return(Value::None)))
             } else {
@@ -1221,6 +1664,34 @@ impl Runtime {
                     }
                 }
                 Err(mut e) => loop {
+                    if e.context.is_none() {
+                        if let Some(mut previous) = f.exception.clone() {
+                            let previous = self.exception_value(&mut previous);
+                            if !matches!((&e.value, &previous), (Some(Value::Obj(a)), Value::Obj(b)) if a == b)
+                            {
+                                e.context = Some(previous);
+                            }
+                        }
+                    }
+                    self.exception_value(&mut e);
+                    self.sync_exception(&e);
+                    if !e.skip_trace {
+                        let line = self.codes[f.code]
+                            .ops
+                            .get(f.pc.saturating_sub(1))
+                            .map(|instruction| instruction.line)
+                            .unwrap_or(1);
+                        let name = if self.codes[f.code].kind == ScopeKind::Module {
+                            "<module>".into()
+                        } else {
+                            self.codes[f.code].name.clone()
+                        };
+                        e.trace
+                            .push((self.codes[f.code].filename.clone(), line, name));
+                        e.attributes.remove("__traceback__");
+                    }
+                    e.skip_trace = false;
+                    self.sync_exception(&e);
                     if let Some(h) = f.handlers.pop() {
                         f.stack.truncate(h.depth);
                         Self::discard_finalizers(&mut f, h.pending_depth);
@@ -1233,16 +1704,6 @@ impl Runtime {
                         }
                         break;
                     }
-                    let line = self.codes[f.code]
-                        .ops
-                        .get(f.pc.saturating_sub(1))
-                        .map(|i| i.line)
-                        .unwrap_or(1);
-                    e.trace.push((
-                        self.codes[f.code].filename.clone(),
-                        line,
-                        self.codes[f.code].name.clone(),
-                    ));
                     if let Some(parent) = frames.pop() {
                         self.recursion -= 1;
                         f = parent;
@@ -1599,26 +2060,81 @@ impl Runtime {
                     .last()
                     .cloned()
                     .ok_or_else(|| pyerr("RuntimeError", "missing iterator"))?;
-                if let Some(v) = self.next(it)? {
-                    f.pc -= 1;
-                    return Ok(Some(FrameExit::Yield(v)));
+                let result = if let Some(mut error) = f.injected_exception.take() {
+                    if error.kind == "GeneratorExit" {
+                        match self.getattr(it.clone(), "close") {
+                            Ok(method) => {
+                                self.call(method, Vec::new(), Vec::new(), None)?;
+                            }
+                            Err(missing) if missing.kind == "AttributeError" => {}
+                            Err(error) => return Err(error),
+                        }
+                        return Err(error);
+                    }
+                    match self.getattr(it.clone(), "throw") {
+                        Ok(method) => {
+                            let exception = self.exception_value(&mut error);
+                            self.call(method, vec![exception], Vec::new(), None)
+                        }
+                        Err(missing) if missing.kind == "AttributeError" => return Err(error),
+                        Err(error) => return Err(error),
+                    }
                 } else {
-                    Self::pop(f)?;
-                    f.stack.push(Value::None)
+                    let sent = f.resume_value.take().unwrap_or(Value::None);
+                    if matches!(sent, Value::None) {
+                        self.iterator_next(it)
+                    } else {
+                        let send = self.getattr(it, "send")?;
+                        self.call(send, vec![sent], Vec::new(), None)
+                    }
+                };
+                match result {
+                    Ok(value) => {
+                        f.pc -= 1;
+                        return Ok(Some(FrameExit::Yield(value)));
+                    }
+                    Err(error) if error.kind == "StopIteration" => {
+                        Self::pop(f)?;
+                        f.stack.push(Self::stop_value(&error));
+                    }
+                    Err(error) => return Err(error),
                 }
             }
             Op::Raise(n) => {
                 if n == 0 {
-                    return Err(f
+                    let error = f
                         .exception
                         .clone()
-                        .ok_or_else(|| pyerr("RuntimeError", "No active exception to reraise"))?);
+                        .ok_or_else(|| pyerr("RuntimeError", "No active exception to reraise"))?;
+                    let mut error = if let Some(value) = error.value.clone() {
+                        self.as_exception(value)?
+                    } else {
+                        error
+                    };
+                    error.skip_trace = true;
+                    return Err(error);
                 }
-                if n == 2 {
-                    Self::pop(f)?;
-                }
+                let cause = if n == 2 { Some(Self::pop(f)?) } else { None };
                 let v = Self::pop(f)?;
-                return Err(self.as_exception(v)?);
+                let mut error = self.as_exception(v)?;
+                if let Some(mut previous) = f.exception.clone() {
+                    let previous = self.exception_value(&mut previous);
+                    if !matches!((&error.value, &previous), (Some(Value::Obj(a)), Value::Obj(b)) if a == b)
+                    {
+                        error.context = Some(previous);
+                    }
+                }
+                if let Some(cause) = cause {
+                    error.cause = if matches!(cause, Value::None) {
+                        None
+                    } else {
+                        let mut cause = self.as_exception(cause)?;
+                        Some(self.exception_value(&mut cause))
+                    };
+                    error.suppress_context = true;
+                }
+                self.sync_exception(&error);
+                return Err(error);
             }
             Op::SetupExcept(t) => f.handlers.push(Handler {
                 target: t,
@@ -1646,11 +2162,12 @@ impl Runtime {
             }
             Op::ClearException => f.exception = f.exception_stack.pop().flatten(),
             Op::LoadException => {
-                let e = f
+                let mut e = f
                     .exception
                     .clone()
                     .ok_or_else(|| pyerr("RuntimeError", "no active exception"))?;
-                let v = self.obj_value(Object::Exception(e));
+                let v = self.exception_value(&mut e);
+                f.exception = Some(e);
                 f.stack.push(v)
             }
             Op::EndFinally => {
@@ -1658,8 +2175,9 @@ impl Runtime {
                 if let Some(p) = f.pending.pop() {
                     match p {
                         Pending::Normal => {}
-                        Pending::Raise(e) => {
+                        Pending::Raise(mut e) => {
                             f.exception = f.exception_stack.pop().flatten();
+                            e.skip_trace = true;
                             return Err(e);
                         }
                         p => return Ok(self.transfer(f, p)),
@@ -1778,18 +2296,18 @@ impl Runtime {
             }
             Op::FormatValue { conversion, spec } => {
                 let specification = if spec { Some(Self::pop(f)?) } else { None };
-                let v = Self::pop(f)?;
-                let text = if conversion == 114 || conversion == 97 {
-                    self.repr(&v)?
-                } else {
-                    self.str_value(&v)?
+                let value = Self::pop(f)?;
+                let value = match conversion {
+                    114 => Value::Str(self.repr(&value)?),
+                    97 => Value::Str(text_ascii_escape(&self.repr(&value)?)),
+                    115 => Value::Str(self.str_value(&value)?),
+                    _ => value,
                 };
-                let result = if let Some(s) = specification {
-                    let s = self.str_value(&s)?;
-                    self.format_value(v, &s)?
-                } else {
-                    text
+                let specification = match specification {
+                    Some(value) => self.str_value(&value)?,
+                    None => String::new(),
                 };
+                let result = self.format_value(value, &specification)?;
                 f.stack.push(Value::Str(result))
             }
             Op::BuildString(n) => {
@@ -1838,7 +2356,7 @@ impl Runtime {
             let parent = name.rsplit_once('.').unwrap().0;
             self.import_module(parent)?;
         }
-        let attrs = self.alloc(Object::Namespace(HashMap::new(), None));
+        let attrs = self.alloc(Object::Namespace(OrderedNamespace::new(), None));
         let module = self.obj_value(Object::Module {
             name: name.into(),
             attrs,
@@ -1984,7 +2502,7 @@ impl Runtime {
                 ],
                 "collections" => &["deque", "Counter", "defaultdict", "namedtuple"],
                 "sys" => &["setrecursionlimit", "getrecursionlimit", "exit"],
-                "gc" => &["collect", "enable", "disable"],
+                "gc" => &["collect", "enable", "disable", "isenabled"],
                 "time" => &["time", "perf_counter", "monotonic"],
                 "builtins" => &[],
                 _ => &[],
@@ -2077,7 +2595,7 @@ impl Runtime {
                 code,
                 pc: 0,
                 locals: attrs,
-                temps: self.alloc(Object::Namespace(HashMap::new(), None)),
+                temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
                 globals: attrs,
                 closure: None,
                 stack: Vec::new(),
@@ -2127,21 +2645,22 @@ impl Runtime {
                     Ok(Value::None)
                 }
                 "getrecursionlimit" => Ok(Value::Int(Int::from_i128(self.recursion_limit as i128))),
-                "exit" => Err(pyerr(
-                    "SystemExit",
-                    if args.is_empty() {
-                        String::new()
-                    } else {
-                        self.str_value(&args[0])?
-                    },
-                )),
+                "exit" => {
+                    if args.len() > 1 || !kwargs.is_empty() {
+                        return Err(pyerr("TypeError", "sys.exit() takes at most 1 argument"));
+                    }
+                    Err(self.new_exception("SystemExit", args)?)
+                }
                 _ => Err(pyerr("NotImplementedError", fullname)),
             },
             "gc" => {
                 if name == "collect" {
                     let count = self.collect();
                     Ok(Value::Int(Int::from_i128(count as i128)))
+                } else if name == "isenabled" {
+                    Ok(Value::Bool(self.gc_enabled))
                 } else {
+                    self.gc_enabled = name == "enable";
                     Ok(Value::None)
                 }
             }
@@ -2511,6 +3030,9 @@ impl Runtime {
                 continue;
             }
             marked[i] = true;
+            if let Some(slots) = self.instance_slots.get(&i) {
+                pending.extend(slots.values().cloned());
+            }
             if let Some(parent) = self.scope_parents.get(&i) {
                 pending.push(Value::Obj(*parent));
             }
@@ -2519,6 +3041,7 @@ impl Runtime {
                 None => continue,
             };
             match obj {
+                Object::Slot { owner, .. } => pending.push(owner.clone()),
                 Object::List(v) | Object::Tuple(v) | Object::Set(v) => {
                     pending.extend(v.iter().cloned())
                 }
@@ -2566,9 +3089,7 @@ impl Runtime {
                 }
                 Object::Module { attrs, .. } => pending.push(Value::Obj(*attrs)),
                 Object::Exception(e) => {
-                    if let Some(v) = &e.value {
-                        pending.push(v.clone())
-                    }
+                    Self::exception_roots(e, &mut pending);
                 }
                 Object::Partial {
                     function,
@@ -2673,6 +3194,7 @@ impl Runtime {
                 self.scope_bindings.remove(&i);
                 self.scope_parents.remove(&i);
                 self.finalized.remove(&i);
+                self.instance_slots.remove(&i);
                 self.free.push(i);
                 count += 1;
             }
@@ -2691,6 +3213,26 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        if let Value::Obj(index) = &receiver {
+            if let Object::Range(start, stop, step) = self.object(*index)? {
+                if name == "__contains__" {
+                    let value = args
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| pyerr("TypeError", "missing value"))?;
+                    return Ok(Value::Bool(self.range_contains(start, stop, step, value)?));
+                }
+                if name == "__reversed__" {
+                    let (start, stop, step) = range_reversed(&start, &stop, &step);
+                    return Ok(
+                        self.obj_value(Object::Iterator(IteratorState::Range(start, stop, step)))
+                    );
+                }
+            }
+        }
+        if let Some(payload) = self.native_payload(&receiver) {
+            return self.method(name, payload, args, kwargs);
+        }
         if let Value::Obj(i) = receiver.clone() {
             if matches!(
                 self.heap.get(i).and_then(|o| o.as_ref()),
@@ -2763,12 +3305,17 @@ impl Runtime {
             return self.iter(receiver);
         }
         if name == "__next__" {
-            return self
-                .next(receiver)?
-                .ok_or_else(|| pyerr("StopIteration", ""));
+            return self.iterator_next(receiver);
         }
         if name == "__len__" {
             return self.builtin("len", vec![receiver], Vec::new(), None);
+        }
+        if name == "__format__" {
+            let spec = match args.first() {
+                Some(Value::Str(spec)) => spec,
+                _ => return Err(pyerr("TypeError", "format specifier must be a string")),
+            };
+            return Ok(Value::Str(self.format_value(receiver, spec)?));
         }
         if name == "__getitem__" {
             return self.getitem(receiver, arg(0)?);
@@ -2791,10 +3338,7 @@ impl Runtime {
             }
             match name {
                 "decode" => {
-                    return Ok(Value::Str(
-                        String::from_utf8(b.clone())
-                            .map_err(|_| pyerr("ValueError", "invalid UTF-8"))?,
-                    ))
+                    return self.codec_decode(receiver, args, kwargs);
                 }
                 "hex" => return Ok(Value::Str(b.iter().map(|x| format!("{:02x}", x)).collect())),
                 _ => {}
@@ -3104,7 +3648,7 @@ impl Runtime {
                     };
                     return Ok(self.obj_value(Object::Tuple(out)));
                 }
-                "encode" => return Ok(Value::Bytes(s.into_bytes())),
+                "encode" => return self.codec_encode(receiver, args, kwargs),
                 "format" => {
                     let mut out = String::new();
                     let mut it = s.chars().peekable();
@@ -3123,12 +3667,9 @@ impl Runtime {
                                 }
                                 field.push(c)
                             }
-                            let (mut key, spec) = field.split_once(':').unwrap_or((&field, ""));
-                            let repr = key.ends_with("!r");
-                            if repr {
-                                key = &key[..key.len() - 2]
-                            }
-                            let v = if key.is_empty() {
+                            let (key, spec) = field.split_once(':').unwrap_or((&field, ""));
+                            let (key, conversion) = key.split_once('!').unwrap_or((key, ""));
+                            let value = if key.is_empty() {
                                 let v = arg(auto)?;
                                 auto += 1;
                                 v
@@ -3137,11 +3678,16 @@ impl Runtime {
                             } else {
                                 kw(key).ok_or_else(|| pyerr("KeyError", key))?
                             };
-                            out.push_str(&if repr {
-                                self.repr(&v)?
-                            } else {
-                                self.format_value(v, spec)?
-                            })
+                            let value = match conversion {
+                                "r" => Value::Str(self.repr(&value)?),
+                                "a" => Value::Str(text_ascii_escape(&self.repr(&value)?)),
+                                "s" => Value::Str(self.str_value(&value)?),
+                                "" => value,
+                                _ => {
+                                    return Err(pyerr("ValueError", "Unknown conversion specifier"))
+                                }
+                            };
+                            out.push_str(&self.format_value(value, spec)?)
                         } else if c == '}' && it.peek() == Some(&'}') {
                             it.next();
                             out.push('}')
@@ -3303,10 +3849,11 @@ impl Runtime {
                                 self.heap[i] = Some(Object::Dict(xs));
                                 return Ok(v);
                             }
-                            return args
-                                .get(1)
-                                .cloned()
-                                .ok_or_else(|| pyerr("KeyError", "key not found"));
+                            return if let Some(default) = args.get(1) {
+                                Ok(default.clone())
+                            } else {
+                                Err(self.new_exception("KeyError", vec![k])?)
+                            };
                         }
                         "popitem" => {
                             let (k, v) = xs.pop().ok_or_else(|| {
@@ -3351,13 +3898,16 @@ impl Runtime {
                     self.heap[i] = Some(Object::Dict(xs));
                     return Ok(Value::None);
                 }
+                Object::Range(a, b, step) => {
+                    return self.range_method(a, b, step, name, args, kwargs)
+                }
                 Object::Namespace(m, parent) => {
                     let mut xs: Vec<_> = m.into_iter().map(|(k, v)| (Value::Str(k), v)).collect();
                     self.heap[i] = Some(Object::Dict(xs));
                     let result = self.method(name, receiver.clone(), args, kwargs);
                     if let Some(Some(Object::Dict(entries))) = self.heap.get(i) {
                         xs = entries.clone();
-                        let mut map = HashMap::new();
+                        let mut map = OrderedNamespace::new();
                         for (k, v) in xs {
                             if let Value::Str(k) = k {
                                 map.insert(k, v);
@@ -3442,59 +3992,104 @@ impl Runtime {
                     self.heap[i] = Some(Object::Set(xs));
                     return Ok(Value::None);
                 }
-                Object::Generator(mut frame) => match name {
-                    "send" => {
-                        let v = arg(0)?;
-                        if frame.pc == 0 && !matches!(v, Value::None) {
-                            return Err(pyerr(
-                                "TypeError",
-                                "can't send non-None value to a just-started generator",
-                            ));
-                        }
-                        frame.resume_value = Some(v);
-                        self.heap[i] = Some(Object::Generator(frame));
-                        return self
-                            .next(receiver)?
-                            .ok_or_else(|| pyerr("StopIteration", ""));
+                Object::Generator(mut frame) => {
+                    if self.running_generators.contains(&i) {
+                        return Err(pyerr("ValueError", "generator already executing"));
                     }
-                    "close" => {
-                        if frame.pc == 0 || frame.pc == usize::MAX {
-                            frame.pc = usize::MAX;
+                    if !kwargs.is_empty()
+                        || (name == "close" && !args.is_empty())
+                        || (name == "send" && args.len() != 1)
+                        || (name == "throw" && !(1..=3).contains(&args.len()))
+                    {
+                        return Err(pyerr("TypeError", "invalid generator method arguments"));
+                    }
+                    match name {
+                        "send" => {
+                            let v = arg(0)?;
+                            if frame.pc == 0 && !matches!(v, Value::None) {
+                                return Err(pyerr(
+                                    "TypeError",
+                                    "can't send non-None value to a just-started generator",
+                                ));
+                            }
+                            frame.resume_value = Some(v);
                             self.heap[i] = Some(Object::Generator(frame));
-                            return Ok(Value::None);
+                            return self.iterator_next(receiver);
                         }
-                        frame.injected_exception = Some(pyerr("GeneratorExit", ""));
-                        self.heap[i] = Some(Object::Generator(frame));
-                        return match self.next(receiver) {
-                            Ok(None) => Ok(Value::None),
-                            Ok(Some(_)) => {
-                                Err(pyerr("RuntimeError", "generator ignored GeneratorExit"))
+                        "close" => {
+                            if frame.pc == 0 || frame.pc == usize::MAX {
+                                frame.pc = usize::MAX;
+                                self.heap[i] = Some(Object::Generator(frame));
+                                return Ok(Value::None);
                             }
-                            Err(e) if e.kind == "GeneratorExit" || e.kind == "StopIteration" => {
-                                Ok(Value::None)
-                            }
-                            Err(e) => Err(e),
-                        };
-                    }
-                    "throw" => {
-                        let value = arg(0)?;
-                        let value = if matches!(value, Value::Type(_)) && args.len() > 1 {
-                            self.call(value, vec![args[1].clone()], Vec::new(), None)?
-                        } else {
-                            value
-                        };
-                        let error = self.as_exception(value)?;
-                        if frame.pc == usize::MAX {
-                            return Err(error);
+                            frame.injected_exception = Some(pyerr("GeneratorExit", ""));
+                            self.heap[i] = Some(Object::Generator(frame));
+                            return match self.next_raw(receiver.clone()) {
+                                Ok(None) => {
+                                    let error = self.iterator_stop(&receiver)?;
+                                    Ok(Self::stop_value(&error))
+                                }
+                                Ok(Some(_)) => {
+                                    Err(pyerr("RuntimeError", "generator ignored GeneratorExit"))
+                                }
+                                Err(e)
+                                    if e.kind == "GeneratorExit" || e.kind == "StopIteration" =>
+                                {
+                                    Ok(Value::None)
+                                }
+                                Err(e) => Err(e),
+                            };
                         }
-                        frame.injected_exception = Some(error);
-                        self.heap[i] = Some(Object::Generator(frame));
-                        return self
-                            .next(receiver)?
-                            .ok_or_else(|| pyerr("StopIteration", ""));
+                        "throw" => {
+                            let value = arg(0)?;
+                            let value = if matches!(value, Value::Type(_)) {
+                                let arguments = match args.get(1) {
+                                    None | Some(Value::None) => Vec::new(),
+                                    Some(Value::Obj(index))
+                                        if matches!(
+                                            self.heap.get(*index).and_then(Option::as_ref),
+                                            Some(Object::Tuple(_))
+                                        ) =>
+                                    {
+                                        self.to_vec(args[1].clone())?
+                                    }
+                                    Some(argument) => vec![argument.clone()],
+                                };
+                                self.call(value, arguments, Vec::new(), None)?
+                            } else {
+                                if args
+                                    .get(1)
+                                    .map(|value| !matches!(value, Value::None))
+                                    .unwrap_or(false)
+                                {
+                                    return Err(pyerr(
+                                        "TypeError",
+                                        "instance exception may not have a separate value",
+                                    ));
+                                }
+                                value
+                            };
+                            if let Some(traceback) = args.get(2) {
+                                if !matches!(traceback, Value::None)
+                                    && !matches!(traceback, Value::Obj(index) if matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Record { name, .. }) if name == "traceback"))
+                                {
+                                    return Err(pyerr(
+                                        "TypeError",
+                                        "throw() third argument must be a traceback object",
+                                    ));
+                                }
+                            }
+                            let error = self.as_exception(value)?;
+                            if frame.pc == usize::MAX {
+                                return Err(error);
+                            }
+                            frame.injected_exception = Some(error);
+                            self.heap[i] = Some(Object::Generator(frame));
+                            return self.iterator_next(receiver);
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }
@@ -3513,6 +4108,29 @@ impl Runtime {
         kwargs: Vec<(String, Value)>,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if let Some(action) = name.strip_prefix("slot:") {
+            let descriptor = args
+                .first()
+                .cloned()
+                .ok_or_else(|| pyerr("TypeError", "missing descriptor"))?;
+            let instance = args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| pyerr("TypeError", "missing instance"))?;
+            if action == "get" && matches!(instance, Value::None) {
+                return Ok(descriptor);
+            }
+            let value = if action == "set" {
+                Some(
+                    args.get(2)
+                        .cloned()
+                        .ok_or_else(|| pyerr("TypeError", "missing value"))?,
+                )
+            } else {
+                None
+            };
+            return self.slot_access(descriptor, instance, value, action == "delete");
+        }
         if name == "dict:fromkeys" {
             let iterable = args
                 .first()
@@ -3689,14 +4307,22 @@ impl Runtime {
                     }
                 };
             }
-            if typ == "tuple" && method == "__new__" {
+            if ["tuple", "list", "dict", "set", "str", "int"].contains(&typ) && method == "__new__"
+            {
                 let class = args
                     .first()
                     .cloned()
                     .ok_or_else(|| pyerr("TypeError", "tuple.__new__ needs class"))?;
-                return self.builtin_instance_new("tuple", class, args[1..].to_vec(), kwargs);
+                return self.builtin_instance_new(typ, class, args[1..].to_vec(), kwargs);
             }
             if method == "__init__" {
+                if ["list", "dict", "set"].contains(&typ) {
+                    let receiver = args
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| pyerr("TypeError", "missing instance"))?;
+                    return self.builtin_instance_init(typ, receiver, args[1..].to_vec(), kwargs);
+                }
                 return Ok(Value::None);
             }
             if typ == "type" {
@@ -3706,7 +4332,7 @@ impl Runtime {
                 return self.construct_class(args[0].clone(), args[1..].to_vec(), kwargs);
             }
             if typ == "object" {
-                let attrs = self.alloc(Object::Namespace(HashMap::new(), None));
+                let attrs = self.alloc(Object::Namespace(OrderedNamespace::new(), None));
                 return Ok(self.obj_value(Object::Instance {
                     class: args
                         .get(0)
@@ -3758,20 +4384,16 @@ impl Runtime {
                     let s = self.str_value(v)?;
                     self.output.push_str(&s)
                 }
-                if self.input_pos >= self.input.len() {
-                    return Err(pyerr("EOFError", "EOF when reading a line"));
+                let line = self.stream_call("stdin:readline", Vec::new(), false)?;
+                match line {
+                    Value::Str(line) if line.is_empty() => {
+                        Err(pyerr("EOFError", "EOF when reading a line"))
+                    }
+                    Value::Str(line) => {
+                        Ok(Value::Str(line.strip_suffix('\n').unwrap_or(&line).into()))
+                    }
+                    _ => unreachable!(),
                 }
-                let tail = &self.input[self.input_pos..];
-                let end = tail.iter().position(|b| *b == b'\n').unwrap_or(tail.len());
-                let stop = if end > 0 && tail[end - 1] == b'\r' {
-                    end - 1
-                } else {
-                    end
-                };
-                let text = String::from_utf8(tail[..stop].to_vec())
-                    .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?;
-                self.input_pos += (end + 1).min(tail.len());
-                Ok(Value::Str(text))
             }
             "int" => {
                 let v = args
@@ -3822,13 +4444,18 @@ impl Runtime {
             } else {
                 self.truth(&args[0])?
             })),
-            "str" => Ok(Value::Str(if args.is_empty() {
-                String::new()
-            } else {
-                self.str_value(&args[0])?
-            })),
-            "repr" | "ascii" => Ok(Value::Str(self.repr(&arg(0)?)?)),
-            "list" | "tuple" | "set" | "frozenset" => {
+            "str" => self.str_constructor(args, kwargs),
+            "repr" => Ok(Value::Str(self.repr(&arg(0)?)?)),
+            "ascii" => Ok(Value::Str(text_ascii_escape(&self.repr(&arg(0)?)?))),
+            "frozenset" => Err(pyerr(
+                "NotImplementedError",
+                "frozenset values are not implemented",
+            )),
+            "memoryview" => Err(pyerr(
+                "NotImplementedError",
+                "memoryview values are not implemented",
+            )),
+            "list" | "tuple" | "set" => {
                 let mut vs = if args.is_empty() {
                     Vec::new()
                 } else {
@@ -3845,7 +4472,7 @@ impl Runtime {
                 }
                 Ok(self.obj_value(match name {
                     "tuple" => Object::Tuple(vs),
-                    "set" | "frozenset" => Object::Set(vs),
+                    "set" => Object::Set(vs),
                     _ => Object::List(vs),
                 }))
             }
@@ -3861,40 +4488,11 @@ impl Runtime {
                 }
                 Ok(d)
             }
-            "bytes" | "bytearray" => {
-                let out = if args.is_empty() {
-                    Vec::new()
-                } else {
-                    match &args[0] {
-                        Value::Bytes(b) => b.clone(),
-                        Value::Str(s) => s.as_bytes().to_vec(),
-                        Value::Int(n) => {
-                            vec![
-                                0;
-                                n.to_usize()
-                                    .ok_or_else(|| pyerr("ValueError", "negative count"))?
-                            ]
-                        }
-                        v => {
-                            let mut xs = Vec::new();
-                            for v in self.to_vec(v.clone())? {
-                                let n = self.as_int(&v)?.to_usize().ok_or_else(|| {
-                                    pyerr("ValueError", "bytes must be in range(0, 256)")
-                                })?;
-                                if n > 255 {
-                                    return Err(pyerr(
-                                        "ValueError",
-                                        "bytes must be in range(0, 256)",
-                                    ));
-                                }
-                                xs.push(n as u8)
-                            }
-                            xs
-                        }
-                    }
-                };
-                Ok(Value::Bytes(out))
-            }
+            "bytes" => self.bytes_constructor(args, kwargs),
+            "bytearray" => Err(pyerr(
+                "NotImplementedError",
+                "bytearray values are not implemented",
+            )),
             "len" => {
                 let v = arg(0)?;
                 let fastlen = if let Value::Obj(i) = &v {
@@ -3920,26 +4518,7 @@ impl Runtime {
                         Object::List(v) | Object::Tuple(v) | Object::Set(v) => v.len(),
                         Object::Dict(v) => v.len(),
                         Object::Namespace(m, _) => m.len(),
-                        Object::Range(a, b, s) => {
-                            let d = if s.is_negative() {
-                                a.sub(&b)
-                            } else {
-                                b.sub(&a)
-                            };
-                            if d.is_negative() || d.is_zero() {
-                                0
-                            } else {
-                                let n = d
-                                    .sub(&Int::from_i128(1))
-                                    .divmod(&s.abs())
-                                    .map_err(int_error)?
-                                    .0
-                                    .add(&Int::from_i128(1));
-                                n.to_usize().ok_or_else(|| {
-                                    pyerr("OverflowError", "range length too large")
-                                })?
-                            }
-                        }
+                        Object::Range(a, b, s) => range_length(&a, &b, &s).map_err(int_error)?,
                         _ => {
                             let fun = self.special_method(v, "__len__")?;
                             return self.call(fun, Vec::new(), Vec::new(), caller);
@@ -3950,7 +4529,7 @@ impl Runtime {
                 Ok(Value::Int(Int::from_i128(n as i128)))
             }
             "range" => {
-                if args.is_empty() || args.len() > 3 {
+                if args.is_empty() || args.len() > 3 || !kwargs.is_empty() {
                     return Err(pyerr("TypeError", "range expected 1 to 3 arguments"));
                 }
                 let (start, stop) = if args.len() == 1 {
@@ -3978,15 +4557,16 @@ impl Runtime {
                     self.iter(arg(0)?)
                 }
             }
-            "next" => match self.next(arg(0)?)? {
-                Some(v) => Ok(v),
-                None => {
+            "next" => match self.iterator_next(arg(0)?) {
+                Ok(v) => Ok(v),
+                Err(error) if error.kind == "StopIteration" => {
                     if let Some(v) = args.get(1) {
                         Ok(v.clone())
                     } else {
-                        Err(pyerr("StopIteration", ""))
+                        Err(error)
                     }
                 }
+                Err(error) => Err(error),
             },
             "enumerate" => {
                 let it = self.iter(arg(0)?)?;
@@ -4077,6 +4657,13 @@ impl Runtime {
                 Ok(self.obj_value(Object::List(out)))
             }
             "reversed" => {
+                if let Value::Obj(index) = arg(0)? {
+                    if let Object::Range(start, stop, step) = self.object(index)? {
+                        let (start, stop, step) = range_reversed(&start, &stop, &step);
+                        return Ok(self
+                            .obj_value(Object::Iterator(IteratorState::Range(start, stop, step))));
+                    }
+                }
                 let mut xs = self.to_vec(arg(0)?)?;
                 xs.reverse();
                 Ok(self.obj_value(Object::Iterator(IteratorState::Values(xs, 0))))
@@ -4128,17 +4715,15 @@ impl Runtime {
                 }
             }
             "bin" | "oct" | "hex" => {
-                let n = self
-                    .as_int(&arg(0)?)?
-                    .to_i128()
-                    .ok_or_else(|| pyerr("OverflowError", "integer too large for formatting"))?;
-                let sign = if n < 0 { "-" } else { "" };
-                let mag = n.unsigned_abs();
-                Ok(Value::Str(match name {
-                    "bin" => format!("{}0b{:b}", sign, mag),
-                    "oct" => format!("{}0o{:o}", sign, mag),
-                    _ => format!("{}0x{:x}", sign, mag),
-                }))
+                let number = self.as_int(&arg(0)?)?;
+                let spec = match name {
+                    "bin" => "#b",
+                    "oct" => "#o",
+                    _ => "#x",
+                };
+                Ok(Value::Str(
+                    number.format_integer(spec).map_err(int_error)?.unwrap(),
+                ))
             }
             "chr" => {
                 let n = self
@@ -4229,7 +4814,7 @@ impl Runtime {
                 Ok(Value::Bool(self.is_subclass(&actual, &cls)?))
             }
             "object" => {
-                let attrs = self.alloc(Object::Namespace(HashMap::new(), None));
+                let attrs = self.alloc(Object::Namespace(OrderedNamespace::new(), None));
                 Ok(self.obj_value(Object::Instance {
                     class: Value::Builtin("object".into()),
                     attrs,
@@ -4254,6 +4839,11 @@ impl Runtime {
             "hash" => {
                 use std::hash::{Hash, Hasher};
                 let v = arg(0)?;
+                if let Value::Obj(index) = &v {
+                    if let Object::Range(start, stop, step) = self.object(*index)? {
+                        return self.range_hash(start, stop, step);
+                    }
+                }
                 if let Some(class) = self.object_class(&v) {
                     if let Some(method) = self.class_lookup(&class, "__hash__", 0) {
                         if matches!(method, Value::None) {
@@ -4310,13 +4900,13 @@ impl Runtime {
             )),
             "locals" | "vars" => {
                 if let Some(v) = args.first() {
-                    let entries = self.attribute_items(v)?;
-                    return Ok(self.obj_value(Object::Dict(
-                        entries
-                            .into_iter()
-                            .map(|(n, v)| (Value::Str(n), v))
-                            .collect(),
-                    )));
+                    return self.getattr(v.clone(), "__dict__").map_err(|error| {
+                        if error.kind == "AttributeError" {
+                            pyerr("TypeError", "vars() argument must have __dict__ attribute")
+                        } else {
+                            error
+                        }
+                    });
                 }
                 let f = caller.ok_or_else(|| pyerr("RuntimeError", "no active frame"))?;
                 if self.codes[f.code].kind == ScopeKind::Module
@@ -4324,14 +4914,7 @@ impl Runtime {
                 {
                     return Ok(Value::Obj(f.locals));
                 }
-                let mut entries = self.keyword_items(Value::Obj(f.locals))?;
-                entries.retain(|(n, _)| !n.starts_with('$') && !n.starts_with('\0'));
-                Ok(self.obj_value(Object::Dict(
-                    entries
-                        .into_iter()
-                        .map(|(n, v)| (Value::Str(n), v))
-                        .collect(),
-                )))
+                self.locals_snapshot(f)
             }
             "dir" => {
                 let mut names = if let Some(v) = args.first() {
@@ -4403,12 +4986,14 @@ impl Runtime {
                 } else if args.len() > 1 && !matches!(args[1], Value::None) {
                     globals
                 } else if let Some(f) = caller {
-                    if self.codes[f.code].kind == ScopeKind::Function {
-                        let m = self
-                            .keyword_items(Value::Obj(f.locals))?
-                            .into_iter()
-                            .collect();
-                        self.alloc(Object::Namespace(m, None))
+                    if matches!(
+                        self.codes[f.code].kind,
+                        ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::Annotation
+                    ) {
+                        match self.locals_snapshot(f)? {
+                            Value::Obj(index) => index,
+                            _ => unreachable!(),
+                        }
                     } else {
                         f.locals
                     }
@@ -4422,7 +5007,7 @@ impl Runtime {
                     code,
                     pc: 0,
                     locals,
-                    temps: self.alloc(Object::Namespace(HashMap::new(), None)),
+                    temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
                     globals,
                     closure: None,
                     stack: Vec::new(),
@@ -4495,7 +5080,7 @@ impl Runtime {
                 } else {
                     Value::None
                 };
-                let attrs = self.alloc(Object::Namespace(HashMap::new(), None));
+                let attrs = self.alloc(Object::Namespace(OrderedNamespace::new(), None));
                 self.ns_set(attrs, "$class".into(), class);
                 self.ns_set(attrs, "$self".into(), receiver);
                 Ok(self.obj_value(Object::Instance {
@@ -4603,16 +5188,14 @@ impl Runtime {
         let result = (|| match fun.clone() {
             Value::Builtin(name) => self.builtin(&name, args, kwargs, caller),
             Value::Type(kind) => {
-                let mut text = Vec::new();
-                for v in &args {
-                    text.push(self.str_value(v)?)
+                if !kwargs.is_empty() {
+                    return Err(pyerr(
+                        "TypeError",
+                        "exception does not take keyword arguments",
+                    ));
                 }
-                Ok(self.obj_value(Object::Exception(PyException {
-                    kind,
-                    message: text.join(", "),
-                    value: None,
-                    trace: Vec::new(),
-                })))
+                let mut error = self.new_exception(&kind, args)?;
+                Ok(self.exception_value(&mut error))
             }
             Value::Obj(i) => match self.object(i)? {
                 Object::Bound(f, receiver) => {
@@ -4672,19 +5255,21 @@ impl Runtime {
                             return self.construct_class(fun, args, kwargs);
                         }
                     }
+                    let mut native_type = None;
+                    for name in ["tuple", "list", "dict", "set", "str", "int"] {
+                        if self.is_subclass(&fun, &Value::Builtin(name.into()))? {
+                            native_type = Some(name);
+                            break;
+                        }
+                    }
                     let obj = if let Some(new) = self.class_lookup(&fun, "__new__", 0) {
                         let mut a = vec![fun.clone()];
                         a.extend(args.clone());
                         self.call(new, a, kwargs.clone(), caller)?
-                    } else if self.is_subclass(&fun, &Value::Builtin("tuple".into()))? {
-                        self.builtin_instance_new(
-                            "tuple",
-                            fun.clone(),
-                            args.clone(),
-                            kwargs.clone(),
-                        )?
+                    } else if let Some(name) = native_type {
+                        self.builtin_instance_new(name, fun.clone(), args.clone(), kwargs.clone())?
                     } else {
-                        let attrs = self.alloc(Object::Namespace(HashMap::new(), None));
+                        let attrs = self.alloc(Object::Namespace(OrderedNamespace::new(), None));
                         self.obj_value(Object::Instance {
                             class: fun.clone(),
                             attrs,
@@ -4695,6 +5280,13 @@ impl Runtime {
                         if !matches!(v, Value::None) {
                             return Err(pyerr("TypeError", "__init__() should return None"));
                         }
+                    } else if matches!(native_type, Some("list" | "dict" | "set")) {
+                        self.builtin_instance_init(
+                            native_type.unwrap(),
+                            obj.clone(),
+                            args,
+                            kwargs,
+                        )?;
                     } else if (!args.is_empty() || !kwargs.is_empty())
                         && !matches!(&obj,Value::Obj(i)if matches!(self.heap.get(*i).and_then(|o|o.as_ref()),Some(Object::BuiltinInstance{..})))
                     {
@@ -4740,6 +5332,22 @@ impl Runtime {
         if bases.is_empty() {
             bases.push(Value::Builtin("object".into()))
         }
+        let mut solid = None;
+        for base in &bases {
+            if let Some(layout) = self.solid_layout(base) {
+                if let Some(previous) = &solid {
+                    if !self.is_subclass(&layout, previous)?
+                        && !self.is_subclass(previous, &layout)?
+                    {
+                        return Err(pyerr(
+                            "TypeError",
+                            "multiple bases have instance lay-out conflict",
+                        ));
+                    }
+                }
+                solid = Some(layout);
+            }
+        }
         for i in 0..bases.len() {
             for j in 0..i {
                 if Self::same_type(&bases[i], &bases[j]) {
@@ -4778,40 +5386,136 @@ impl Runtime {
         items.retain(
             |(k, _)| !matches!(k,Value::Str(s)if s=="__classcell__"||s=="__classdictcell__"),
         );
+        let declared_slots = items.iter().find_map(|(key, value)| {
+            if matches!(key, Value::Str(key) if key == "__slots__") {
+                Some(value.clone())
+            } else {
+                None
+            }
+        });
+        let inherited_dict = bases.iter().any(|base| self.class_allows_dict(base));
+        let inherited_weakref = bases.iter().any(|base| self.class_allows_weakref(base));
+        let mut slot_names = Vec::new();
+        if let Some(slots) = declared_slots.clone() {
+            let slots = match slots {
+                Value::Str(name) => vec![Value::Str(name)],
+                value => self.to_vec(value)?,
+            };
+            let mut dictionary_slot = inherited_dict;
+            let mut weakref_slot = inherited_weakref;
+            for value in slots {
+                let slot = match value {
+                    Value::Str(name) => name,
+                    _ => return Err(pyerr("TypeError", "__slots__ items must be strings")),
+                };
+                if !text_is_identifier(&slot) {
+                    return Err(pyerr("TypeError", "__slots__ must be identifiers"));
+                }
+                let slot = Self::slot_mangle(&name, &slot);
+                if slot == "__dict__" {
+                    if dictionary_slot {
+                        return Err(pyerr(
+                            "TypeError",
+                            "__dict__ slot disallowed: we already got one",
+                        ));
+                    }
+                    dictionary_slot = true;
+                } else if slot == "__weakref__" {
+                    if weakref_slot {
+                        return Err(pyerr("TypeError", "__weakref__ slot disallowed"));
+                    }
+                    weakref_slot = true;
+                }
+                if items
+                    .iter()
+                    .any(|(key, _)| matches!(key, Value::Str(key) if key == &slot))
+                {
+                    return Err(pyerr(
+                        "ValueError",
+                        format!("'{}' in __slots__ conflicts with class variable", slot),
+                    ));
+                }
+                slot_names.push(slot);
+            }
+            if !slot_names.is_empty() {
+                for base in &bases {
+                    if self.is_subclass(base, &Value::Builtin("tuple".into()))?
+                        || self.is_subclass(base, &Value::Builtin("int".into()))?
+                    {
+                        return Err(pyerr(
+                            "TypeError",
+                            "nonempty __slots__ not supported for this subtype",
+                        ));
+                    }
+                }
+            }
+        }
+        let dict_allowed = inherited_dict
+            || declared_slots.is_none()
+            || slot_names.iter().any(|name| name == "__dict__");
+        let weakref_allowed = inherited_weakref
+            || declared_slots.is_none()
+            || slot_names.iter().any(|name| name == "__weakref__");
+        if declared_slots.is_none() {
+            if !inherited_dict {
+                slot_names.push("__dict__".into());
+            }
+            if !inherited_weakref {
+                slot_names.push("__weakref__".into());
+            }
+        }
         let ns = self.alloc(Object::Dict(items));
         let out = self.obj_value(Object::Class(Class {
             name,
             bases,
             attrs: ns,
             metaclass,
+            dict_allowed,
+            weakref_allowed,
         }));
-        for (cell, value) in [(classcell, out.clone()), (dictcell, Value::Obj(ns))] {
-            if let Some(v) = cell {
-                if let Value::Obj(i) = v {
-                    if matches!(self.object(i)?, Object::Cell(_)) {
-                        self.heap[i] = Some(Object::Cell(Some(value)));
+        let root = self.roots.len();
+        self.roots.push(vec![out.clone()]);
+        let result = (|| {
+            for name in slot_names {
+                let slot = self.next_slot;
+                self.next_slot += 1;
+                let descriptor = self.obj_value(Object::Slot {
+                    owner: out.clone(),
+                    name: name.clone(),
+                    slot,
+                });
+                self.ns_set(ns, name, descriptor);
+            }
+            for (cell, value) in [(classcell, out.clone()), (dictcell, Value::Obj(ns))] {
+                if let Some(v) = cell {
+                    if let Value::Obj(i) = v {
+                        if matches!(self.object(i)?, Object::Cell(_)) {
+                            self.heap[i] = Some(Object::Cell(Some(value)));
+                        } else {
+                            return Err(pyerr("TypeError", "__classcell__ must be a cell"));
+                        }
                     } else {
                         return Err(pyerr("TypeError", "__classcell__ must be a cell"));
                     }
-                } else {
-                    return Err(pyerr("TypeError", "__classcell__ must be a cell"));
                 }
             }
-        }
-        if self.class_mro(&out, 0).is_none() {
-            return Err(pyerr(
-                "TypeError",
-                "Cannot create a consistent method resolution order (MRO)",
-            ));
-        }
-        if let Ok(items) = self.attribute_items(&Value::Obj(ns)) {
-            for (n, v) in items {
-                if let Ok(setname) = self.getattr(v, "__set_name__") {
-                    self.call(setname, vec![out.clone(), Value::Str(n)], Vec::new(), None)?;
+            if self.class_mro(&out, 0).is_none() {
+                return Err(pyerr(
+                    "TypeError",
+                    "Cannot create a consistent method resolution order (MRO)",
+                ));
+            }
+            if let Ok(items) = self.attribute_items(&Value::Obj(ns)) {
+                for (n, v) in items {
+                    if let Ok(setname) = self.getattr(v, "__set_name__") {
+                        self.call(setname, vec![out.clone(), Value::Str(n)], Vec::new(), None)?;
+                    }
                 }
             }
-        }
-        Ok(out)
+            Ok(out)
+        })();
+        self.roots.truncate(root);
+        result
     }
     fn make_class(
         &mut self,
@@ -4861,7 +5565,7 @@ impl Runtime {
         } else {
             Some(f.locals)
         };
-        let env = self.alloc(Object::Namespace(HashMap::new(), parent));
+        let env = self.alloc(Object::Namespace(OrderedNamespace::new(), parent));
         self.scope_parents.insert(namespace, env);
         self.scope_bindings
             .insert(namespace, self.codes[code].locals.clone());
@@ -4869,7 +5573,7 @@ impl Runtime {
             code,
             pc: 0,
             locals: namespace,
-            temps: self.alloc(Object::Namespace(HashMap::new(), None)),
+            temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
             globals: f.globals,
             closure: Some(env),
             stack: Vec::new(),
@@ -4928,19 +5632,30 @@ impl Runtime {
     }
     fn as_exception(&mut self, v: Value) -> PyResult<PyException> {
         match v {
-            Value::Type(kind) => Ok(pyerr(&kind, "")),
+            Value::Type(kind) => {
+                let mut error = self.new_exception(&kind, Vec::new())?;
+                self.exception_value(&mut error);
+                Ok(error)
+            }
             Value::Obj(i) => match self.object(i)? {
-                Object::Exception(e) => Ok(e),
+                Object::Exception(mut e) => {
+                    e.value = Some(Value::Obj(i));
+                    e.message = self.exception_message(&e.kind, &e.args)?;
+                    Ok(e)
+                }
                 Object::Instance { class, .. } => {
+                    if !self.is_subclass(&class, &Value::Type("BaseException".into()))? {
+                        return Err(pyerr(
+                            "TypeError",
+                            "exceptions must derive from BaseException",
+                        ));
+                    }
                     let kind = self.typename(&Value::Obj(i));
                     let message = self.str_value(&Value::Obj(i))?;
                     let _ = class;
-                    Ok(PyException {
-                        kind,
-                        message,
-                        value: Some(Value::Obj(i)),
-                        trace: Vec::new(),
-                    })
+                    let mut error = pyerr(&kind, message);
+                    error.value = Some(Value::Obj(i));
+                    Ok(error)
                 }
                 _ => Err(pyerr(
                     "TypeError",
@@ -4965,7 +5680,9 @@ impl Runtime {
             "ModuleNotFoundError" => "ImportError",
             "UnboundLocalError" => "NameError",
             "RecursionError" | "NotImplementedError" => "RuntimeError",
-            _ => "Exception",
+            "UnicodeEncodeError" | "UnicodeDecodeError" | "UnicodeTranslateError" => "UnicodeError",
+            "UnicodeError" => "ValueError",
+            _ => "",
         }
     }
     fn exception_match(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
@@ -5038,7 +5755,7 @@ impl Runtime {
                 }
             }
             Value::Obj(i) => match self.object(*i)? {
-                Object::Exception(e) => Ok(e.message),
+                Object::Exception(e) => self.exception_message(&e.kind, &e.args),
                 Object::Instance { .. } | Object::BuiltinInstance { .. } => {
                     if let Ok(fun) = self.special_method(v.clone(), "__str__") {
                         let r = self.call(fun, Vec::new(), Vec::new(), None)?;
@@ -5046,6 +5763,18 @@ impl Runtime {
                             return Ok(s);
                         }
                         return Err(pyerr("TypeError", "__str__ returned non-string"));
+                    }
+                    if let Some(payload) = self.native_payload(v) {
+                        if let Some(class) = self.object_class(v) {
+                            if self.class_lookup(&class, "__repr__", 0).is_some() {
+                                return self.repr(v);
+                            }
+                        }
+                        if matches!(&payload, Value::Obj(index) if matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Set(_))))
+                        {
+                            return self.repr(v);
+                        }
+                        return self.str_value(&payload);
                     }
                     self.repr(v)
                 }
@@ -5096,8 +5825,7 @@ impl Runtime {
                     }
                     Object::Namespace(m, _) => {
                         let mut ss = Vec::new();
-                        let mut entries: Vec<_> = m.into_iter().collect();
-                        entries.sort_by(|a, b| a.0.cmp(&b.0));
+                        let entries: Vec<_> = m.into_iter().collect();
                         for (k, v) in entries {
                             ss.push(format!(
                                 "{}: {}",
@@ -5111,14 +5839,33 @@ impl Runtime {
                     Object::Class(c) => format!("<class '{}'>", c.name),
                     Object::Module { name, .. } => format!("<module '{}'>", name),
                     Object::Exception(e) => {
-                        format!("{}({})", e.kind, self.repr(&Value::Str(e.message))?)
+                        let mut args = Vec::new();
+                        for argument in &e.args {
+                            args.push(self.repr_inner(argument, seen)?);
+                        }
+                        format!("{}({})", e.kind, args.join(", "))
                     }
                     Object::BuiltinInstance { payload, .. } => {
                         if let Ok(fun) = self.special_method(v.clone(), "__repr__") {
                             let result = self.call(fun, Vec::new(), Vec::new(), None)?;
                             self.str_value(&result)?
                         } else {
-                            self.repr_inner(&payload, seen)?
+                            let text = self.repr_inner(&payload, seen)?;
+                            if let Value::Obj(index) = &payload {
+                                if let Some(Object::Set(values)) =
+                                    self.heap.get(*index).and_then(Option::as_ref)
+                                {
+                                    format!(
+                                        "{}({})",
+                                        self.typename(v),
+                                        if values.is_empty() { "" } else { &text }
+                                    )
+                                } else {
+                                    text
+                                }
+                            } else {
+                                text
+                            }
                         }
                     }
                     Object::Instance { .. } => {
@@ -5153,16 +5900,56 @@ impl Runtime {
                     Object::Property { .. } => "<property>".into(),
                     Object::Cell(_) => "<cell>".into(),
                     Object::Code(_) => "<code object>".into(),
-                    Object::Range(a, b, c) => format!("range({}, {}, {})", a, b, c),
+                    Object::Slot { owner, name, .. } => format!(
+                        "<member '{}' of '{}' objects>",
+                        name,
+                        self.class_name(&owner)
+                    ),
+                    Object::Range(a, b, c) => {
+                        if c == Int::exact_small(1) {
+                            format!("range({}, {})", a, b)
+                        } else {
+                            format!("range({}, {}, {})", a, b, c)
+                        }
+                    }
                 };
                 seen.pop();
                 Ok(s)
             }
             Value::Builtin(n) => {
-                if n == "Ellipsis" {
-                    Ok("Ellipsis".into())
+                if n == "Ellipsis" || n == "NotImplemented" {
+                    Ok(n.clone())
                 } else if n == "functools.Placeholder" {
                     Ok("Placeholder".into())
+                } else if [
+                    "bool",
+                    "int",
+                    "float",
+                    "str",
+                    "bytes",
+                    "bytearray",
+                    "list",
+                    "tuple",
+                    "dict",
+                    "set",
+                    "frozenset",
+                    "slice",
+                    "range",
+                    "type",
+                    "object",
+                    "property",
+                    "staticmethod",
+                    "classmethod",
+                    "enumerate",
+                    "map",
+                    "filter",
+                    "zip",
+                    "reversed",
+                    "super",
+                ]
+                .contains(&n.as_str())
+                {
+                    Ok(format!("<class '{}'>", n))
                 } else {
                     Ok(format!("<built-in function {}>", n))
                 }
@@ -5172,6 +5959,30 @@ impl Runtime {
         }
     }
     fn format_value(&mut self, v: Value, spec: &str) -> PyResult<String> {
+        if matches!(v, Value::Int(_) | Value::Bool(_)) {
+            let number = self.as_int(&v)?;
+            if let Some(result) = number.format_integer(spec).map_err(int_error)? {
+                if spec.is_empty() && matches!(v, Value::Bool(_)) {
+                    return self.str_value(&v);
+                }
+                return Ok(result);
+            }
+            let value = Value::Float(self.as_float(&v)?);
+            return self.text_format_value(value, spec).unwrap();
+        }
+        if let Some(result) = self.text_format_value(v.clone(), spec) {
+            return result;
+        }
+        if let Ok(method) = self.special_method(v.clone(), "__format__") {
+            let result = self.call(method, vec![Value::Str(spec.into())], Vec::new(), None)?;
+            return match result {
+                Value::Str(text) => Ok(text),
+                _ => Err(pyerr("TypeError", "__format__ must return a str")),
+            };
+        }
+        if let Some(payload) = self.native_payload(&v) {
+            return self.format_value(payload, spec);
+        }
         if spec.is_empty() {
             return self.str_value(&v);
         }
@@ -5345,6 +6156,9 @@ impl Runtime {
                 Some(Object::Iterator(_)) => "iterator".into(),
                 Some(Object::Slice(..)) => "slice".into(),
                 Some(Object::Cell(_)) => "cell".into(),
+                Some(Object::Range(..)) => "range".into(),
+                Some(Object::Record { name, .. }) => name.clone(),
+                Some(Object::Slot { .. }) => "member_descriptor".into(),
                 _ => "object".into(),
             },
         }
@@ -5371,6 +6185,9 @@ impl Runtime {
         }
     }
     fn as_float(&mut self, v: &Value) -> PyResult<f64> {
+        if let Some(payload) = self.native_payload(v) {
+            return self.as_float(&payload);
+        }
         let n = match v {
             Value::Float(f) => return Ok(*f),
             Value::Int(n) => n.to_f64(),
@@ -5417,6 +6234,7 @@ impl Runtime {
                 Object::List(v) | Object::Tuple(v) | Object::Set(v) => !v.is_empty(),
                 Object::Dict(v) => !v.is_empty(),
                 Object::Namespace(v, _) => !v.is_empty(),
+                Object::Range(a, b, step) => range_nonempty(&a, &b, &step),
                 Object::Instance { .. } | Object::BuiltinInstance { .. } => {
                     if let Ok(fun) = self.special_method(v.clone(), "__bool__") {
                         let r = self.call(fun, Vec::new(), Vec::new(), None)?;
@@ -5428,7 +6246,11 @@ impl Runtime {
                         let r = self.call(fun, Vec::new(), Vec::new(), None)?;
                         !self.as_int(&r)?.is_zero()
                     } else {
-                        true
+                        if let Some(payload) = self.native_payload(v) {
+                            self.truth(&payload)?
+                        } else {
+                            true
+                        }
                     }
                 }
                 _ => true,
@@ -5445,6 +6267,13 @@ impl Runtime {
         Ok(false)
     }
     fn equal_default(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
+        if let (Value::Obj(left), Value::Obj(right)) = (a, b) {
+            if let (Object::Range(a, b, s), Object::Range(c, d, t)) =
+                (self.object(*left)?, self.object(*right)?)
+            {
+                return Ok(range_equal((&a, &b, &s), (&c, &d, &t)));
+            }
+        }
         let ap = if let Value::Obj(i) = a {
             match self.heap.get(*i).and_then(|o| o.as_ref()) {
                 Some(Object::BuiltinInstance { payload, .. }) => Some(payload.clone()),
@@ -5607,6 +6436,12 @@ impl Runtime {
                 Ok(if op == "is" { eq } else { !eq })
             }
             "in" | "not in" => {
+                if let Value::Obj(index) = b {
+                    if let Object::Range(start, stop, step) = self.object(*index)? {
+                        let found = self.range_contains(start, stop, step, a.clone())?;
+                        return Ok(if op == "in" { found } else { !found });
+                    }
+                }
                 let yes = match (a, b) {
                     (Value::Str(x), Value::Str(y)) => y.contains(x),
                     _ => {
@@ -5673,8 +6508,16 @@ impl Runtime {
                     "~" => "__invert__",
                     _ => "",
                 };
-                let fun = self.special_method(a, name)?;
-                self.call(fun, Vec::new(), Vec::new(), None)
+                match self.special_method(a.clone(), name) {
+                    Ok(fun) => self.call(fun, Vec::new(), Vec::new(), None),
+                    Err(error) => {
+                        if let Some(payload) = self.native_payload(&a) {
+                            self.unary(op, payload)
+                        } else {
+                            Err(error)
+                        }
+                    }
+                }
             }
         }
     }
@@ -5710,9 +6553,25 @@ impl Runtime {
                     }
                 }
             }
+            if let Some(Value::Obj(index)) = self.native_payload(&a) {
+                if matches!(
+                    self.heap.get(index).and_then(Option::as_ref),
+                    Some(Object::List(_) | Object::Dict(_) | Object::Set(_))
+                ) {
+                    if op == "|=" && matches!(self.heap[index], Some(Object::Dict(_))) {
+                        self.method("update", Value::Obj(index), vec![b], Vec::new())?;
+                    } else {
+                        let result = self.binary(op, Value::Obj(index), b)?;
+                        if let Value::Obj(result) = result {
+                            self.heap[index] = Some(self.object(result)?);
+                        }
+                    }
+                    return Ok(a);
+                }
+            }
         }
         if let Some(payload) = self.native_payload(&b) {
-            if matches!(&a,Value::Obj(i)if matches!(self.heap.get(*i).and_then(|o|o.as_ref()),Some(Object::Tuple(_))))
+            if matches!(&a,Value::Obj(i)if matches!(self.heap.get(*i).and_then(|o|o.as_ref()),Some(Object::Tuple(_) | Object::List(_))))
                 && ["+", "+="].contains(&op)
             {
                 if let Some(class) = self.object_class(&b) {
@@ -5969,14 +6828,18 @@ impl Runtime {
                     return Ok(self.obj_value(Object::Set(out)));
                 }
                 Object::Dict(mut xs) if op == "|" => {
-                    for (k, v) in self.dict_items(b.clone())? {
-                        if let Some(p) = self.find_key(&xs, &k)? {
-                            xs[p].1 = v
-                        } else {
-                            xs.push((k, v))
+                    let payload = self.native_payload(&b).unwrap_or_else(|| b.clone());
+                    let is_dict = matches!(payload, Value::Obj(index) if matches!(self.heap.get(index).and_then(Option::as_ref), Some(Object::Dict(_) | Object::Namespace(..))));
+                    if is_dict {
+                        for (k, v) in self.dict_items(b.clone())? {
+                            if let Some(p) = self.find_key(&xs, &k)? {
+                                xs[p].1 = v
+                            } else {
+                                xs.push((k, v))
+                            }
                         }
+                        return Ok(self.obj_value(Object::Dict(xs)));
                     }
-                    return Ok(self.obj_value(Object::Dict(xs)));
                 }
                 _ => {}
             }
@@ -6099,6 +6962,11 @@ impl Runtime {
         Ok(None)
     }
     fn getitem(&mut self, obj: Value, key: Value) -> PyResult<Value> {
+        if let Value::Obj(index) = &obj {
+            if let Object::Range(start, stop, step) = self.object(*index)? {
+                return self.range_getitem(start, stop, step, key);
+            }
+        }
         if let Value::Obj(i) = &obj {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*i)? {
                 if self.class_lookup(&class, "__getitem__", 0).is_some() {
@@ -6179,15 +7047,16 @@ impl Runtime {
                     if let Some(i) = self.find_key(&items, &key)? {
                         Ok(items[i].1.clone())
                     } else {
-                        Err(pyerr("KeyError", self.repr(&key)?))
+                        Err(self.new_exception("KeyError", vec![key])?)
                     }
                 }
                 Object::Namespace(m, _) => {
-                    if let Value::Str(k) = key {
-                        m.get(&k).cloned().ok_or_else(|| pyerr("KeyError", k))
-                    } else {
-                        Err(pyerr("KeyError", "invalid key"))
+                    if let Value::Str(k) = &key {
+                        if let Some(value) = m.get(k) {
+                            return Ok(value.clone());
+                        }
                     }
+                    Err(self.new_exception("KeyError", vec![key])?)
                 }
                 Object::Instance { .. } => {
                     let fun = self.special_method(obj, "__getitem__").map_err(|e| {
@@ -6208,6 +7077,16 @@ impl Runtime {
         }
     }
     fn setitem(&mut self, obj: Value, key: Value, value: Value) -> PyResult<()> {
+        if let Value::Obj(index) = &obj {
+            if let Object::BuiltinInstance { class, payload, .. } = self.object(*index)? {
+                if let Some(method) = self.class_lookup(&class, "__setitem__", 0) {
+                    let method = self.bind_descriptor(method, Some(obj), class)?;
+                    self.call(method, vec![key, value], Vec::new(), None)?;
+                    return Ok(());
+                }
+                return self.setitem(payload, key, value);
+            }
+        }
         if let Value::Obj(i) = &obj {
             if matches!(key, Value::Int(_) | Value::Bool(_)) {
                 let len = match self.heap.get(*i).and_then(|o| o.as_ref()) {
@@ -6296,6 +7175,16 @@ impl Runtime {
         ))
     }
     fn delitem(&mut self, obj: Value, key: Value) -> PyResult<()> {
+        if let Value::Obj(index) = &obj {
+            if let Object::BuiltinInstance { class, payload, .. } = self.object(*index)? {
+                if let Some(method) = self.class_lookup(&class, "__delitem__", 0) {
+                    let method = self.bind_descriptor(method, Some(obj), class)?;
+                    self.call(method, vec![key], Vec::new(), None)?;
+                    return Ok(());
+                }
+                return self.delitem(payload, key);
+            }
+        }
         if let Value::Obj(i) = obj.clone() {
             match self.object(i)? {
                 Object::List(mut xs) => {
@@ -6413,13 +7302,24 @@ impl Runtime {
     }
     fn to_vec(&mut self, v: Value) -> PyResult<Vec<Value>> {
         let it = self.iter(v)?;
-        let mut out = Vec::new();
-        while let Some(v) = self.next(it.clone())? {
-            out.push(v)
-        }
-        Ok(out)
+        let root = self.roots.len();
+        self.roots.push(vec![it.clone()]);
+        let result = (|| {
+            let mut out = Vec::new();
+            while let Some(v) = self.next(it.clone())? {
+                self.roots[root].push(v.clone());
+                out.push(v)
+            }
+            Ok(out)
+        })();
+        self.roots.truncate(root);
+        result
     }
     fn iter(&mut self, v: Value) -> PyResult<Value> {
+        if matches!(&v, Value::Builtin(name) if name.starts_with("stream:") || name.starts_with("streambuffer:"))
+        {
+            return Ok(v);
+        }
         if let Value::Obj(i) = &v {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*i)? {
                 if self.class_lookup(&class, "__iter__", 0).is_some() {
@@ -6478,7 +7378,67 @@ impl Runtime {
         };
         Ok(self.obj_value(Object::Iterator(state)))
     }
+    fn iterator_stop(&mut self, iterator: &Value) -> PyResult<PyException> {
+        let mut value = None;
+        if let Value::Obj(index) = iterator {
+            if let Some(Object::Generator(frame)) = self.heap.get(*index).and_then(Option::as_ref) {
+                let temps = frame.temps;
+                value = self.ns_get(temps, "$generator_return");
+                self.ns_del(temps, "$generator_return");
+            }
+        }
+        let args = value
+            .filter(|value| !matches!(value, Value::None))
+            .into_iter()
+            .collect();
+        self.new_exception("StopIteration", args)
+    }
+    fn stop_value(error: &PyException) -> Value {
+        error
+            .attributes
+            .get("value")
+            .cloned()
+            .unwrap_or_else(|| error.args.first().cloned().unwrap_or(Value::None))
+    }
+    fn iterator_next(&mut self, iterator: Value) -> PyResult<Value> {
+        if let Value::Obj(index) = &iterator {
+            if matches!(
+                self.heap.get(*index).and_then(Option::as_ref),
+                Some(Object::Instance { .. })
+            ) {
+                let method = self.special_method(iterator, "__next__")?;
+                return self.call(method, Vec::new(), Vec::new(), None);
+            }
+        }
+        match self.next_raw(iterator.clone())? {
+            Some(value) => Ok(value),
+            None => Err(self.iterator_stop(&iterator)?),
+        }
+    }
     fn next(&mut self, it: Value) -> PyResult<Option<Value>> {
+        let result = self.next_raw(it.clone())?;
+        if result.is_none() {
+            self.iterator_stop(&it)?;
+        }
+        Ok(result)
+    }
+    fn next_raw(&mut self, it: Value) -> PyResult<Option<Value>> {
+        if let Value::Builtin(name) = &it {
+            if let Some((kind, target)) = name.split_once(':') {
+                if kind == "stream" || kind == "streambuffer" {
+                    let line = self.stream_call(
+                        &format!("{}:readline", target),
+                        Vec::new(),
+                        kind == "streambuffer",
+                    )?;
+                    return Ok(match &line {
+                        Value::Str(value) if value.is_empty() => None,
+                        Value::Bytes(value) if value.is_empty() => None,
+                        _ => Some(line),
+                    });
+                }
+            }
+        }
         if let Value::Obj(i) = it.clone() {
             match self.object(i)? {
                 Object::Iterator(state) => match state {
@@ -6507,16 +7467,12 @@ impl Runtime {
                         return Ok(None);
                     }
                     IteratorState::Range(cur, stop, step) => {
-                        if if step.is_negative() {
-                            cur <= stop
-                        } else {
-                            cur >= stop
-                        } {
+                        if !range_nonempty(&cur, &stop, &step) {
                             return Ok(None);
                         }
                         let value = cur.clone();
                         self.heap[i] = Some(Object::Iterator(IteratorState::Range(
-                            cur.add(&step),
+                            range_cursor_next(&cur, &stop, &step),
                             stop,
                             step,
                         )));
@@ -6623,6 +7579,16 @@ impl Runtime {
                                 self.heap.get_mut(i).and_then(|o| o.as_mut())
                             {
                                 frame.pc = usize::MAX;
+                            }
+                            if e.kind == "StopIteration" {
+                                let mut original = e;
+                                let value = self.exception_value(&mut original);
+                                let mut error =
+                                    pyerr("RuntimeError", "generator raised StopIteration");
+                                error.cause = Some(value.clone());
+                                error.context = Some(value);
+                                error.suppress_context = true;
+                                return Err(error);
                             }
                             return Err(e);
                         }
@@ -6739,6 +7705,11 @@ impl Runtime {
     ) -> PyResult<Value> {
         if let Value::Obj(i) = v.clone() {
             match self.object(i)? {
+                Object::Slot { .. } => {
+                    if let Some(instance) = instance {
+                        return self.slot_access(v, instance, None, false);
+                    }
+                }
                 Object::Static(v) => return Ok(v),
                 Object::ClassMethod(v) => return Ok(self.obj_value(Object::Bound(v, class))),
                 Object::Property { get, .. } => {
@@ -6768,6 +7739,17 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if name == "__len__" && matches!(v, Value::Str(_) | Value::Bytes(_)) {
+            return Ok(self.obj_value(Object::Bound(Value::Builtin("method:__len__".into()), v)));
+        }
+        if name == "__format__"
+            && matches!(
+                v,
+                Value::Int(_) | Value::Bool(_) | Value::Float(_) | Value::Str(_)
+            )
+        {
+            return Ok(self.obj_value(Object::Bound(Value::Builtin("method:__format__".into()), v)));
+        }
         if name == "fromkeys"
             && (matches!(&v,Value::Builtin(n)if n=="dict")
                 || matches!(&v,Value::Obj(i)if matches!(self.heap.get(*i).and_then(|o|o.as_ref()),Some(Object::Dict(_)|Object::Namespace(..)))))
@@ -6880,6 +7862,46 @@ impl Runtime {
         }
         if let Value::Obj(i) = v.clone() {
             match self.object(i)? {
+                Object::Range(start, stop, step) => match name {
+                    "start" => return Ok(Value::Int(start)),
+                    "stop" => return Ok(Value::Int(stop)),
+                    "step" => return Ok(Value::Int(step)),
+                    "count" | "index" | "__iter__" | "__len__" | "__getitem__" | "__contains__"
+                    | "__reversed__" => {
+                        return Ok(self.obj_value(Object::Bound(
+                            Value::Builtin(format!("method:{}", name)),
+                            v,
+                        )))
+                    }
+                    _ => {}
+                },
+                Object::Slot {
+                    owner,
+                    name: slot_name,
+                    ..
+                } => {
+                    if name == "__name__" {
+                        return Ok(Value::Str(slot_name));
+                    }
+                    if name == "__objclass__" {
+                        return Ok(owner);
+                    }
+                    if name == "__doc__" {
+                        return Ok(Value::None);
+                    }
+                    let action = match name {
+                        "__get__" => Some("get"),
+                        "__set__" => Some("set"),
+                        "__delete__" => Some("delete"),
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        return Ok(self.obj_value(Object::Bound(
+                            Value::Builtin(format!("slot:{}", action)),
+                            v,
+                        )));
+                    }
+                }
                 Object::Cell(value) => {
                     if name == "cell_contents" {
                         return value.ok_or_else(|| pyerr("ValueError", "Cell is empty"));
@@ -6978,6 +8000,16 @@ impl Runtime {
                             .ok_or_else(|| pyerr("TypeError", "invalid super object"))?;
                         if let Some(pos) = mro.iter().position(|v| Self::same_type(v, &c)) {
                             for base in mro.into_iter().skip(pos + 1) {
+                                if matches!(&base, Value::Builtin(_) | Value::Type(_)) {
+                                    if let Ok(value) = self.getattr_default(base, name) {
+                                        return Ok(if name == "__new__" {
+                                            value
+                                        } else {
+                                            self.obj_value(Object::Bound(value, recv))
+                                        });
+                                    }
+                                    continue;
+                                }
                                 if let Value::Obj(bi) = base {
                                     if let Object::Class(bc) = self.object(bi)? {
                                         if let Some(value) = self.ns_get(bc.attrs, name) {
@@ -6990,18 +8022,17 @@ impl Runtime {
                         return Err(pyerr("AttributeError", name));
                     }
                     if name == "__dict__" {
-                        if matches!(
-                            self.heap.get(i).and_then(|o| o.as_ref()),
-                            Some(Object::BuiltinInstance { .. })
-                        ) && !self.instance_allows_dict(i)
-                        {
+                        if !self.instance_allows_dict(i) {
                             return Err(pyerr("AttributeError", "object has no __dict__"));
                         }
                         return Ok(Value::Obj(attrs));
                     }
                     if let Some(d) = self.class_lookup(&class, name, 0) {
                         if let Value::Obj(di) = &d {
-                            if matches!(self.object(*di)?, Object::Property { .. }) {
+                            if matches!(
+                                self.object(*di)?,
+                                Object::Property { .. } | Object::Slot { .. }
+                            ) {
                                 return self.bind_descriptor(d, Some(v), class);
                             }
                             if let Object::Instance { class: dc, .. } = self.object(*di)? {
@@ -7017,9 +8048,26 @@ impl Runtime {
                     if let Some(x) = self.class_lookup(&class, name, 0) {
                         return self.bind_descriptor(x, Some(v), class);
                     }
+                    if name == "__init__" {
+                        if let Some(payload) = self.native_payload(&v) {
+                            let owner = self.typename(&payload);
+                            return Ok(self.obj_value(Object::Bound(
+                                Value::Builtin(format!("type_method:{}:__init__", owner)),
+                                v,
+                            )));
+                        }
+                    }
                     if let Object::BuiltinInstance { payload, .. } = self.object(i)? {
                         if let Ok(value) = self.getattr_default(payload, name) {
-                            return Ok(value);
+                            return Ok(match value {
+                                Value::Obj(index) => match self.object(index)? {
+                                    Object::Bound(function, _) => {
+                                        self.obj_value(Object::Bound(function, v.clone()))
+                                    }
+                                    _ => Value::Obj(index),
+                                },
+                                value => value,
+                            });
                         }
                     }
                     if let Some(x) = self.class_lookup(&class, "__getattr__", 0) {
@@ -7117,17 +8165,41 @@ impl Runtime {
                         }
                     }
                 },
-                Object::Exception(e) => {
+                Object::Exception(mut e) => {
                     if name == "args" {
-                        let xs = if e.message.is_empty() {
-                            vec![]
-                        } else {
-                            vec![Value::Str(e.message)]
-                        };
-                        return Ok(self.obj_value(Object::Tuple(xs)));
+                        if let Some(value) = e.args_tuple {
+                            return Ok(value);
+                        }
+                        let value = self.obj_value(Object::Tuple(e.args.clone()));
+                        e.args_tuple = Some(value.clone());
+                        self.heap[i] = Some(Object::Exception(e));
+                        return Ok(value);
                     }
-                    if name == "__traceback__" || name == "__cause__" || name == "__context__" {
-                        return Ok(Value::None);
+                    if let Some(value) = e.attributes.get(name) {
+                        return Ok(value.clone());
+                    }
+                    match name {
+                        "value" if e.kind == "StopIteration" => {
+                            return Ok(e.args.first().cloned().unwrap_or(Value::None))
+                        }
+                        "code" if e.kind == "SystemExit" => {
+                            return Ok(match e.args.as_slice() {
+                                [] => Value::None,
+                                [value] => value.clone(),
+                                values => self.obj_value(Object::Tuple(values.to_vec())),
+                            })
+                        }
+                        "__cause__" => return Ok(e.cause.unwrap_or(Value::None)),
+                        "__context__" => return Ok(e.context.unwrap_or(Value::None)),
+                        "__suppress_context__" => return Ok(Value::Bool(e.suppress_context)),
+                        "__traceback__" => {
+                            let traceback = self.exception_traceback(&e);
+                            e.attributes
+                                .insert("__traceback__".into(), traceback.clone());
+                            self.heap[i] = Some(Object::Exception(e));
+                            return Ok(traceback);
+                        }
+                        _ => {}
                     }
                 }
                 Object::List(_)
@@ -7238,6 +8310,7 @@ impl Runtime {
                     "isdecimal",
                     "isnumeric",
                     "isalpha",
+                    "isidentifier",
                     "isalnum",
                     "isspace",
                     "islower",
@@ -7305,6 +8378,12 @@ impl Runtime {
                 }
             }
             Value::Builtin(n) | Value::Type(n) => {
+                if (n.starts_with("stream:") || n.starts_with("streambuffer:"))
+                    && ["__iter__", "__next__"].contains(&name)
+                {
+                    return Ok(self
+                        .obj_value(Object::Bound(Value::Builtin(format!("method:{}", name)), v)));
+                }
                 if (n.starts_with("stream:") || n.starts_with("streambuffer:"))
                     && [
                         "read",
@@ -7377,6 +8456,62 @@ impl Runtime {
     fn setattr_default(&mut self, obj: Value, name: &str, value: Value) -> PyResult<()> {
         if let Value::Obj(i) = obj.clone() {
             match self.object(i)? {
+                Object::Exception(mut error) => {
+                    match name {
+                        "args" => {
+                            error.args = self.to_vec(value.clone())?;
+                            error.args_tuple = Some(match value {
+                                Value::Obj(index)
+                                    if matches!(
+                                        self.heap.get(index).and_then(Option::as_ref),
+                                        Some(Object::Tuple(_))
+                                    ) =>
+                                {
+                                    Value::Obj(index)
+                                }
+                                _ => self.obj_value(Object::Tuple(error.args.clone())),
+                            });
+                            error.message = self.exception_message(&error.kind, &error.args)?;
+                        }
+                        "__cause__" | "__context__" => {
+                            let value = if matches!(value, Value::None) {
+                                None
+                            } else {
+                                if matches!(&value, Value::Type(_) | Value::Builtin(_))
+                                    || matches!(&value, Value::Obj(index) if matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Class(_))))
+                                {
+                                    return Err(pyerr(
+                                        "TypeError",
+                                        "exception attribute must be an exception instance or None",
+                                    ));
+                                }
+                                let mut linked = self.as_exception(value)?;
+                                Some(self.exception_value(&mut linked))
+                            };
+                            if name == "__cause__" {
+                                error.cause = value;
+                                error.suppress_context = true;
+                            } else {
+                                error.context = value;
+                            }
+                        }
+                        "__suppress_context__" => {
+                            if let Value::Bool(value) = value {
+                                error.suppress_context = value;
+                            } else {
+                                return Err(pyerr(
+                                    "TypeError",
+                                    "attribute value type must be bool",
+                                ));
+                            }
+                        }
+                        _ => {
+                            error.attributes.insert(name.into(), value);
+                        }
+                    }
+                    self.heap[i] = Some(Object::Exception(error));
+                    return Ok(());
+                }
                 Object::Cached(mut cache) => {
                     let attrs = if let Some(i) = cache.attrs {
                         i
@@ -7500,11 +8635,7 @@ impl Runtime {
                     if ["func", "args", "keywords"].contains(&name) {
                         return Err(pyerr("AttributeError", "readonly attribute"));
                     }
-                    if matches!(
-                        self.heap.get(i).and_then(|o| o.as_ref()),
-                        Some(Object::BuiltinInstance { .. })
-                    ) && !self.instance_allows_dict(i)
-                    {
+                    if !self.instance_allows_dict(i) {
                         return Err(pyerr(
                             "AttributeError",
                             format!(
@@ -7540,11 +8671,7 @@ impl Runtime {
                             return Ok(());
                         }
                     }
-                    if matches!(
-                        self.heap.get(i).and_then(|o| o.as_ref()),
-                        Some(Object::BuiltinInstance { .. })
-                    ) && !self.instance_allows_dict(i)
-                    {
+                    if !self.instance_allows_dict(i) {
                         return Err(pyerr(
                             "AttributeError",
                             format!(
@@ -7599,9 +8726,27 @@ impl Runtime {
         ))
     }
     fn delattr_default(&mut self, obj: Value, name: &str) -> PyResult<()> {
+        if let Some(class) = self.object_class(&obj) {
+            if let Some(descriptor) = self.class_lookup(&class, name, 0) {
+                if let Value::Obj(index) = &descriptor {
+                    if let Object::Property { del, .. } = self.object(*index)? {
+                        let delete =
+                            del.ok_or_else(|| pyerr("AttributeError", "property has no deleter"))?;
+                        self.call(delete, vec![obj], Vec::new(), None)?;
+                        return Ok(());
+                    }
+                }
+                if let Ok(delete) = self.getattr(descriptor, "__delete__") {
+                    self.call(delete, vec![obj], Vec::new(), None)?;
+                    return Ok(());
+                }
+            }
+        }
         if let Value::Obj(i) = obj {
             let attrs = match self.object(i)? {
-                Object::Instance { attrs, .. } | Object::Module { attrs, .. } => Some(attrs),
+                Object::Instance { attrs, .. }
+                | Object::BuiltinInstance { attrs, .. }
+                | Object::Module { attrs, .. } => Some(attrs),
                 Object::Class(c) => Some(c.attrs),
                 _ => None,
             };
@@ -7636,7 +8781,7 @@ impl Runtime {
         let code_name = self.codes[function.code].name.clone();
         let code_locals = self.codes[function.code].locals.clone();
         let params = self.codes[function.code].params.clone();
-        let ns = self.alloc(Object::Namespace(HashMap::new(), function.closure));
+        let ns = self.alloc(Object::Namespace(OrderedNamespace::new(), function.closure));
         self.scope_bindings.insert(ns, code_locals);
 
         let mut kw: Vec<(String, Value)> = Vec::new();
@@ -7720,7 +8865,7 @@ impl Runtime {
             code: function.code,
             pc: 0,
             locals: ns,
-            temps: self.alloc(Object::Namespace(HashMap::new(), None)),
+            temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
             globals: function.globals,
             closure: function.closure,
             stack: Vec::new(),

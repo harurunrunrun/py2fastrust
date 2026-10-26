@@ -82,6 +82,20 @@ class TextTests(unittest.TestCase):
             except ValueError: print("absent")
         ''')
 
+    def test_identifier_start_continue_unicode_and_nfkc_closure(self):
+        characters = set("aAzZ_09日本éK℘·²½\u0301\u200c\u200d\u2118\u212e\u309b\u309c")
+        for predicate in (str.isidentifier, lambda ch: ("a"+ch).isidentifier()):
+            previous = False
+            for codepoint in range(sys.maxunicode+1):
+                current = predicate(chr(codepoint))
+                if current != previous:
+                    for neighbor in (codepoint-1,codepoint,codepoint+1):
+                        if 0<=neighbor<=sys.maxunicode and not 0xD800<=neighbor<=0xDFFF:
+                            characters.add(chr(neighbor))
+                previous = current
+        source = "value="+repr("".join(sorted(characters)))+"\n"
+        self.compare(source+"print(''.isidentifier())\nprint(''.join('1' if ch.isidentifier() else '0' for ch in value))\nprint(''.join('1' if ('a'+ch).isidentifier() else '0' for ch in value))\nfor word in ['class','_','日本語','a·b','℘x','a\\u0301','\\u0301a','abc def','a\\u200cb','']: print(word.isidentifier())\n")
+
     def test_python_whitespace_split_and_strip(self):
         whitespace = "".join(chr(codepoint) for codepoint in range(sys.maxunicode+1) if chr(codepoint).isspace())
         self.compare(f"space={whitespace!r}\n"+textwrap.dedent('''

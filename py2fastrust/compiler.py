@@ -57,10 +57,23 @@ class Compiler:
 
     def scope(self, node, table, name, kind, filename):
         symbols = table.get_symbols()
+        local_names = [s.get_name() for s in symbols if s.is_local() or s.is_parameter()]
+        if kind in {"Function", "Comprehension"}:
+            parameters = {s.get_name() for s in symbols if s.is_parameter()}
+            cells = {s.get_name() for s in symbols if s.is_comp_cell()}
+            for child in table.get_children():
+                cells.update(s.get_name() for s in child.get_symbols()
+                             if s.is_free() or s.is_free_class())
+            cells.intersection_update(local_names)
+            cells.difference_update(parameters)
+            # CPython's optimized locals expose ordinary locals first, then
+            # nonparameter cells in name order, followed by the free variables.
+            local_names = [name for name in local_names if name not in cells] + sorted(cells)
         code = Code(name, filename, kind,
-                    locals=[s.get_name() for s in symbols if s.is_local() or s.is_parameter()],
+                    locals=local_names,
                     globals=[s.get_name() for s in symbols if s.is_declared_global()],
-                    nonlocals=[s.get_name() for s in symbols if s.is_nonlocal()])
+                    nonlocals=[s.get_name() for s in symbols if s.is_nonlocal()],
+                    frees=[s.get_name() for s in symbols if s.is_free()])
         code_id = len(self.program.codes)
         self.program.codes.append(code)
         return Emitter(self, code_id, table)
@@ -105,10 +118,29 @@ class Emitter:
         self.code = compiler.program.codes[code_id]
         self.table = table
         self.used_scopes = set()
+        self.scope_owner = self
         self.loops = []
         self.enclosing = None
+        self.private_class = None
+
+    def mangle(self, name):
+        if (self.private_class and name is not None and name.startswith("__")
+                and not name.endswith("__") and "." not in name):
+            owner = self.private_class.lstrip("_")
+            if owner:
+                return "_" + owner + name
+        return name
+
+    def set_private(self, name):
+        self.private_class = name
+        # Synthetic comprehension symbol tables are produced outside the
+        # lexical class. Apply the same idempotent transformation to them.
+        for field in ("locals", "globals", "nonlocals", "frees"):
+            setattr(self.code, field, [self.mangle(item) for item in getattr(self.code, field)])
 
     def emit(self, op, *args, node=None):
+        if op in {"Load", "Store", "Delete", "GetAttr", "GetSpecialAttr", "SetAttr", "DelAttr"}:
+            args = (self.mangle(args[0]), *args[1:])
         self.code.ops.append(Instruction(op, args, getattr(node, "lineno", 1), getattr(node, "col_offset", 0) + 1))
         return len(self.code.ops) - 1
 
@@ -127,21 +159,38 @@ class Emitter:
                                          getattr(node, "col_offset", 0) + 1, "E002"))
 
     def child(self, node, name, kind="Function"):
-        candidates = [table for table in self.table.get_children()
-                      if table.get_id() not in self.used_scopes and table.get_name() == name]
+        owner = self.scope_owner
+        candidates = [table for table in owner.table.get_children()
+                      if table.get_id() not in owner.used_scopes and table.get_name() == name]
         for table in sorted(candidates, key=lambda t: t.get_lineno() != node.lineno):
-            if table.get_id() not in self.used_scopes and table.get_name() == name and table.get_lineno() == node.lineno:
-                self.used_scopes.add(table.get_id())
+            if table.get_id() not in owner.used_scopes and table.get_name() == name and table.get_lineno() == node.lineno:
+                owner.used_scopes.add(table.get_id())
                 child = self.compiler.scope(node, table, name, kind, self.code.filename)
                 child.enclosing = self
+                child.set_private(node.name if kind == "Class" else self.private_class)
+                self.inherit_child_frees(child)
                 return child
         if len(candidates) == 1:
             table = candidates[0]
-            self.used_scopes.add(table.get_id())
+            owner.used_scopes.add(table.get_id())
             child = self.compiler.scope(node, table, name, kind, self.code.filename)
             child.enclosing = self
+            child.set_private(node.name if kind == "Class" else self.private_class)
+            self.inherit_child_frees(child)
             return child
         self.fail(node, f"could not associate the official symbol table with {name}")
+
+    def inherit_child_frees(self, child):
+        # Inlined comprehensions share their lexical owner's official child
+        # scopes. Keep their transitive captures on the synthetic IR frames.
+        for name in child.code.frees:
+            scope = self
+            while scope.scope_owner is not scope:
+                if name in scope.code.locals or name in scope.code.globals:
+                    break
+                if name not in scope.code.frees:
+                    scope.code.frees.append(name)
+                scope = scope.enclosing
 
     def visit(self, node):
         method = getattr(self, f"visit_{type(node).__name__}", None)
@@ -159,7 +208,8 @@ class Emitter:
 
     def store(self, node):
         if isinstance(node, ast.Name):
-            self.code.bindings[node.id] = self.code.bindings.get(node.id, 0) + 1
+            name = self.mangle(node.id)
+            self.code.bindings[name] = self.code.bindings.get(name, 0) + 1
             self.emit("Store", node.id, node=node)
         elif isinstance(node, (ast.Tuple, ast.List)):
             stars = [i for i, elt in enumerate(node.elts) if isinstance(elt, ast.Starred)]
@@ -331,9 +381,9 @@ class Emitter:
 
     def pattern_path(self, node):
         if isinstance(node, ast.Name):
-            return [node.id]
+            return [self.mangle(node.id)]
         if isinstance(node, ast.Attribute):
-            return self.pattern_path(node.value) + [node.attr]
+            return self.pattern_path(node.value) + [self.mangle(node.attr)]
         self.fail(node, "pattern value must be a literal or dotted name")
 
     def value_pattern(self, node):
@@ -356,14 +406,14 @@ class Emitter:
             return Pattern("Sequence", ([self.pattern(p) for p in node.patterns],))
         if isinstance(node, ast.MatchMapping):
             return Pattern("Mapping", ([self.value_pattern(k) for k in node.keys],
-                                       [self.pattern(p) for p in node.patterns], node.rest))
+                                       [self.pattern(p) for p in node.patterns], self.mangle(node.rest)))
         if isinstance(node, ast.MatchClass):
             return Pattern("Class", (self.pattern_path(node.cls), [self.pattern(p) for p in node.patterns],
                                      node.kwd_attrs, [self.pattern(p) for p in node.kwd_patterns]))
         if isinstance(node, ast.MatchAs):
-            return Pattern("As", (self.pattern(node.pattern) if node.pattern is not None else None, node.name))
+            return Pattern("As", (self.pattern(node.pattern) if node.pattern is not None else None, self.mangle(node.name)))
         if isinstance(node, ast.MatchStar):
-            return Pattern("Star", (node.name,))
+            return Pattern("Star", (self.mangle(node.name),))
         if isinstance(node, ast.MatchOr):
             return Pattern("Or", ([self.pattern(p) for p in node.patterns],))
         self.fail(node, "unsupported match pattern")
@@ -529,10 +579,10 @@ class Emitter:
 
     def set_params(self, emitter, args):
         emitter.code.params = Parameters(len(args.posonlyargs),
-                                        [a.arg for a in args.posonlyargs + args.args],
-                                        [a.arg for a in args.kwonlyargs],
-                                        args.vararg.arg if args.vararg else None,
-                                        args.kwarg.arg if args.kwarg else None)
+                                        [emitter.mangle(a.arg) for a in args.posonlyargs + args.args],
+                                        [emitter.mangle(a.arg) for a in args.kwonlyargs],
+                                        emitter.mangle(args.vararg.arg) if args.vararg else None,
+                                        emitter.mangle(args.kwarg.arg) if args.kwarg else None)
 
     def make_function(self, node, name, body, decorators=()):
         for decorator in decorators:
@@ -542,7 +592,7 @@ class Emitter:
         kwdefaults = []
         for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
             if default is not None:
-                kwdefaults.append(arg.arg)
+                kwdefaults.append(self.mangle(arg.arg))
                 self.visit(default)
         emitter = self.child(node, name)
         self.set_params(emitter, node.args)
@@ -564,7 +614,7 @@ class Emitter:
         arguments += node.args.kwonlyargs
         if node.args.kwarg:
             arguments += [node.args.kwarg]
-        annotations = [(arg.arg, arg.annotation) for arg in arguments if arg.annotation is not None]
+        annotations = [(self.mangle(arg.arg), arg.annotation) for arg in arguments if arg.annotation is not None]
         if getattr(node, "returns", None) is not None:
             annotations.append(("return", node.returns))
         if not annotations:
@@ -767,7 +817,8 @@ class Emitter:
         self.emit("LoadException", node=node)
         self.emit("Call", 1, [], node=node)
         self.emit("LoadException", node=node)
-        self.emit("Const", None, node=node)
+        self.emit("LoadException", node=node)
+        self.emit("GetAttr", "__traceback__", node=node)
         self.emit("Call", 3, [], node=node)
         suppressed = self.emit("JumpTrue", 0, node=node)
         self.emit("Raise", 0, node=node)
@@ -789,6 +840,10 @@ class Emitter:
         self.emit("EndFinally", node=node)
 
     def comprehension(self, node, name, kind):
+        # First-iterator scopes belong to the enclosing lexical scope and are
+        # visited before the comprehension body by the official symbol table.
+        self.visit(node.generators[0].iter)
+        self.emit("GetIter", node=node)
         if kind == "Generator":
             emitter = self.child(node, name, "Comprehension")
         else:
@@ -803,8 +858,23 @@ class Emitter:
                          if t.get_name() == "genexpr")
             emitter = self.compiler.scope(node, table, name, "Comprehension", self.code.filename)
             emitter.enclosing = self
+            emitter.scope_owner = self.scope_owner
+            emitter.set_private(self.private_class)
             emitter.code.globals = [name for name in emitter.code.globals
                                     if name not in self.code.locals and name not in self.code.nonlocals]
+            for symbol in table.get_symbols():
+                name = emitter.mangle(symbol.get_name())
+                if symbol.is_local() or name in emitter.code.globals:
+                    continue
+                scope = self
+                while scope is not None and scope.code.kind != "Module":
+                    if name in scope.code.globals:
+                        break
+                    if scope.code.kind != "Class" and name in scope.code.locals:
+                        if name not in emitter.code.frees:
+                            emitter.code.frees.append(name)
+                        break
+                    scope = scope.enclosing
         # PEP 572 binds comprehension walrus targets in the enclosing ordinary
         # scope, including targets that have not yet received a value there.
         targets = []
@@ -819,7 +889,7 @@ class Emitter:
         owner = self
         while owner.code.kind == "Comprehension" and owner.enclosing is not None:
             owner = owner.enclosing
-        for target in targets:
+        for target in map(emitter.mangle, targets):
             global_target = owner.code.kind == "Module" or target in owner.code.globals
             destination = emitter.code.globals if global_target else emitter.code.nonlocals
             other = emitter.code.nonlocals if global_target else emitter.code.globals
@@ -879,8 +949,7 @@ class Emitter:
             emitter.emit("Return", node=node)
         emitter.finish()
         self.emit("MakeFunction", emitter.code_id, 0, [], node=node)
-        self.visit(node.generators[0].iter)
-        self.emit("GetIter", node=node)
+        self.emit("Swap", node=node)
         self.emit("Call", 1, [], node=node)
 
     def visit_ListComp(self, node):
@@ -918,14 +987,15 @@ class Emitter:
 
     def visit_Import(self, node):
         for alias in node.names:
-            self.compiler.load_module(alias.name, node, self.code.filename)
-            self.emit("Import", alias.name, ["*"] if alias.asname else [], 0, node=node)
+            module = self.mangle(alias.name)
+            self.compiler.load_module(module, node, self.code.filename)
+            self.emit("Import", module, ["*"] if alias.asname else [], 0, node=node)
             self.emit("Store", alias.asname or alias.name.split(".")[0], node=node)
 
     def visit_ImportFrom(self, node):
         if node.module == "__future__":
             self.fail(node, "__future__ imports are not implemented")
-        module = self.absolute_import(node.module or "", node.level)
+        module = self.absolute_import(self.mangle(node.module or ""), node.level)
         self.compiler.load_module(module, node, self.code.filename)
         for alias in node.names:
             if self.compiler.find_module(f"{module}.{alias.name}"):
@@ -937,6 +1007,6 @@ class Emitter:
                 self.emit("Pop", node=node)
                 return
             self.emit("Dup", node=node)
-            self.emit("ImportFrom", alias.name, node=node)
+            self.emit("ImportFrom", self.mangle(alias.name), node=node)
             self.emit("Store", alias.asname or alias.name, node=node)
         self.emit("Pop", node=node)

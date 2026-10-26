@@ -23,11 +23,15 @@ impl Runtime {
         Ok(value)
     }
     fn pattern_bind(&mut self, captures: &mut Vec<(String, Value)>, name: &str, value: Value, root: usize) -> PyResult<()> {
-        if captures.iter().any(|(bound, _)| bound == name) {
-            return Err(pyerr("SyntaxError", format!("multiple assignments to name '{name}' in pattern")));
-        }
         self.roots[root].push(value.clone());
-        captures.push((name.to_owned(), value));
+        // Source-level duplicate captures are rejected by both compilers.
+        // Distinct legal spellings can still coincide after class mangling:
+        // `case [__x, _Class__x]` assigns the second value to the shared name.
+        if let Some((_, previous)) = captures.iter_mut().find(|(bound, _)| bound == name) {
+            *previous = value;
+        } else {
+            captures.push((name.to_owned(), value));
+        }
         Ok(())
     }
     fn pattern_sequence(&mut self, subject: &Value) -> PyResult<bool> {
@@ -126,7 +130,7 @@ impl Runtime {
                 let length = self.call(Value::Builtin("len".to_owned()), vec![subject.clone()], Vec::new(), Some(frame))?;
                 if self.as_int(&length)?.to_i128().unwrap_or(i128::MAX) < keys.len() as i128 { return Ok(false); }
                 let mut matched_keys = Vec::new();
-                let missing = self.obj_value(Object::Namespace(HashMap::new(), None));
+                let missing = self.obj_value(Object::Namespace(OrderedNamespace::new(), None));
                 self.roots[root].push(missing.clone());
                 for (key, pattern) in keys.iter().zip(patterns) {
                     let key = self.pattern_key(frame, key, root)?;

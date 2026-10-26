@@ -11,10 +11,10 @@
 | 制御 | if、while、for、break/continue、else、短絡演算、比較連鎖 |
 | 関数 | 既定値、位置専用・キーワード専用引数、可変長引数、再帰、lambda、クロージャ |
 | コンテナ式 | 内包表記、ジェネレータ式、展開、負の添字、スライス |
-| 例外 | raise、except、else、finally、assert、例外対象変数の後始末 |
-| クラス | 継承、C3 MRO、descriptor、property、staticmethod/classmethod、super、メタクラス |
-| 名前空間 | 任意mappingを返す__prepare__、内部一時変数の分離、Python 3.14関数localsのsnapshot |
-| その他 | with、ジェネレータ、f-string、match/case |
+| 例外 | raise、except、else、finally、assert、元のargs・cause/context、例外対象変数の後始末、tracebackのソース情報 |
+| クラス | 継承、C3 MRO、descriptor、property、staticmethod/classmethod、super、メタクラス、__slots__、list/tuple/dict/set/str/intの継承 |
+| 名前空間 | 任意mappingを返す__prepare__、private名、辞書の挿入順、内部一時変数の分離、free変数を含むPython 3.14関数localsのsnapshot |
+| その他 | with、ジェネレータのsend/throw/closeとyield from、f-string、match/case |
 | 動的実行 | compile/eval/exec、静的コードとの相互呼び出し、遅延評価する関数アノテーション |
 | メモリ | オブジェクト同一性、循環参照、フレーム・一時値をルートとするmark-and-sweep GC、__del__と復活 |
 
@@ -41,14 +41,19 @@ APIごとの名前は [API_SUPPORT.md](API_SUPPORT.md) を参照してくださ�
 ## 既知の制約
 
 - async/await、except*、t-string、type文、型パラメータの構文は未対応です。
+- __future__ importは未対応です。
 - complex、未対のUnicodeサロゲートなど、基本値にも未対応範囲があります。
+- bytearray、memoryview、frozenset、openによるファイル入出力は未対応です。標準ストリームのtext/binary入出力を提供します。
+- 文字コード変換はUTF-8・ASCII・Latin-1を対象とし、利用可能なerrors指定にも制約があります。str subclassのencoding付き構築は未対応です。
 - 実行時パーサではUnicodeの名前付きエスケープなどに制約があります。実行時パーサは公式CPythonパーサの移植ではありません。
 - annotationlibの全format、型パラメータ、型エイリアスの評価は未対応です。
 - モジュール・クラスの変数アノテーションから__annotations__を生成する処理は未対応です。
 - 実行時に名前が決まるimport、外部C拡張、ネットワーク、スレッド、asyncio、CPython固有の内部APIは対象外です。
 - inspect、pickle、weakrefなど、一覧にない標準モジュールのAPIは提供していません。
 - namedtupleの呼出元moduleの推定、空の関数defaultsの表示、辞書subclassの基底descriptor操作には互換性の差が残っています。
-- 辞書の変更中の反復では、サイズが戻った場合にも保守的にRuntimeErrorを送出する場合があります。
+- 組込みdictのkeys/values/itemsは現在snapshotを返します。dict/setの変更中の反復や、動的viewの挙動には互換性の差があります。
+- 内包表記は独立したフレームで実行するため、その中から呼ぶlocals()はPython 3.14のインライン内包表記と異なる場合があります。
+- tracebackのtb_frameはソース情報を持つsnapshotです。実行中フレームの操作やCPythonのbytecode offsetは提供しません。
 - 動的な関数・クラスを含むコードのネイティブ特殊化には制約があり、汎用実行へ戻る場合があります。
 
 構文・モジュールの未対応は変換時の診断、動的な未対応操作は元ソース位置を含む実行時例外として報告します。

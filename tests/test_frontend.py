@@ -19,6 +19,14 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn("print", function.globals)
         self.assertIn("print", [op.args[0] for op in function.ops if op.op == "Load"])
 
+    def test_free_names_and_local_cell_order_are_explicit(self):
+        program = Compiler().compile("def outer():\n z=1\n a=2\n ordinary=3\n def inner():\n  return z+a\n return locals()\n")
+        outer = next(code for code in program.codes if code.name == "outer")
+        inner = next(code for code in program.codes if code.name == "inner")
+        self.assertEqual(outer.locals, ["ordinary", "inner", "a", "z"])
+        self.assertEqual(set(inner.frees), {"a", "z"})
+        self.assertEqual(inner.nonlocals, [])
+
     def test_comprehension_has_isolated_bindings(self):
         program = Compiler().compile("def f(n):\n return [x+n for x in range(n)]\n")
         code = next(c for c in program.codes if c.name == "listcomp")
@@ -44,6 +52,17 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(caught.exception.diagnostic.code, "E003")
         self.assertEqual(caught.exception.diagnostic.filename, "imports.py")
         self.assertEqual(caught.exception.diagnostic.line, 1)
+
+    def test_private_names_follow_class_scope_into_functions(self):
+        program = Compiler().compile("class _C:\n def __f(self, __x=1, *, __k=2):\n  self.__value=__x+__k\n  return self.__value\n")
+        body = next(code for code in program.codes if code.name == "_C")
+        function = next(code for code in program.codes if code.name == "__f")
+        self.assertIn("_C__f", body.locals)
+        self.assertEqual(function.params.positional, ["self", "_C__x"])
+        self.assertEqual(function.params.kwonly, ["_C__k"])
+        self.assertIn("_C__x", function.locals)
+        self.assertIn("_C__value", [op.args[0] for op in function.ops if op.op == "SetAttr"])
+        self.assertIn(["_C__k"], [op.args[2] for op in body.ops if op.op == "MakeFunction"])
 
 
 if __name__ == "__main__":

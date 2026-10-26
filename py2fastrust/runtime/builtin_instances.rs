@@ -1,4 +1,4 @@
-// Native immutable payload construction for Python subclasses of tuple.
+// Native payload construction for Python subclasses of supported built-in types.
 impl Runtime {
     fn builtin_instance_allows_dict(&self, class: &Value) -> bool {
         for base in self
@@ -43,53 +43,132 @@ impl Runtime {
         kwargs: Vec<(String, Value)>,
         root: usize,
     ) -> PyResult<Value> {
-        if type_name != "tuple" {
+        if !["tuple", "list", "dict", "set", "str", "int"].contains(&type_name) {
             return Err(pyerr(
                 "NotImplementedError",
                 format!("native payload for {} subclasses", type_name),
             ));
         }
-        if !self.is_subclass(&class, &Value::Builtin("tuple".into()))? {
-            return Err(pyerr("TypeError", "tuple.__new__ requires a tuple subtype"));
+        if !self.is_subclass(&class, &Value::Builtin(type_name.into()))? {
+            return Err(pyerr(
+                "TypeError",
+                format!("{}.__new__ requires a {} subtype", type_name, type_name),
+            ));
         }
-        if args.len() > 1 || !kwargs.is_empty() {
+        if type_name == "tuple" && (args.len() > 1 || !kwargs.is_empty()) {
             return Err(pyerr(
                 "TypeError",
                 "tuple.__new__ takes at most one iterable argument",
             ));
         }
-        for base in self
-            .class_mro(&class, 0)
-            .unwrap_or_else(|| vec![class.clone()])
-        {
-            if let Value::Obj(index) = base {
-                if let Some(Object::Class(definition)) =
-                    self.heap.get(index).and_then(Option::as_ref)
-                {
-                    if let Some(slots) = self.ns_get(definition.attrs, "__slots__") {
-                        let empty = match slots {
-                            Value::Obj(index) => {
-                                matches!(self.heap.get(index).and_then(Option::as_ref), Some(Object::Tuple(values) | Object::List(values)) if values.is_empty())
+        if type_name == "tuple" || type_name == "int" {
+            for base in self
+                .class_mro(&class, 0)
+                .unwrap_or_else(|| vec![class.clone()])
+            {
+                if let Value::Obj(index) = base {
+                    if let Some(Object::Class(definition)) =
+                        self.heap.get(index).and_then(Option::as_ref)
+                    {
+                        if let Some(slots) = self.ns_get(definition.attrs, "__slots__") {
+                            let empty = match slots {
+                                Value::Obj(index) => {
+                                    matches!(self.heap.get(index).and_then(Option::as_ref), Some(Object::Tuple(values) | Object::List(values)) if values.is_empty())
+                                }
+                                _ => false,
+                            };
+                            if !empty {
+                                return Err(pyerr(
+                                    "TypeError",
+                                    format!(
+                                        "nonempty __slots__ not supported for subtype of '{}'",
+                                        type_name
+                                    ),
+                                ));
                             }
-                            _ => false,
-                        };
-                        if !empty {
-                            return Err(pyerr(
-                                "TypeError",
-                                "nonempty __slots__ not supported for subtype of 'tuple'",
-                            ));
                         }
                     }
                 }
             }
-        }
-        let values = if let Some(iterable) = args.first() {
-            self.to_vec(iterable.clone())?
-        } else {
-            Vec::new()
         };
-        let payload = self.obj_value(Object::Tuple(values));
+        let payload = match type_name {
+            "list" => self.obj_value(Object::List(Vec::new())),
+            "dict" => self.obj_value(Object::Dict(Vec::new())),
+            "set" => self.obj_value(Object::Set(Vec::new())),
+            "tuple" => {
+                let values = if let Some(iterable) = args.first() {
+                    self.builtin_collect(iterable.clone(), root)?
+                } else {
+                    Vec::new()
+                };
+                self.obj_value(Object::Tuple(values))
+            }
+            "int" => {
+                if args.len() > 2 || kwargs.iter().any(|(name, _)| name != "base") {
+                    return Err(pyerr("TypeError", "invalid arguments to int.__new__"));
+                }
+                let mut converted = args;
+                if let Some((_, base)) = kwargs.first() {
+                    if converted.is_empty() || converted.len() > 1 {
+                        return Err(pyerr("TypeError", "invalid base argument to int.__new__"));
+                    }
+                    converted.push(base.clone());
+                }
+                if converted.len() == 2 {
+                    if !matches!(converted[0], Value::Str(_) | Value::Bytes(_)) {
+                        return Err(pyerr(
+                            "TypeError",
+                            "int() can't convert non-string with explicit base",
+                        ));
+                    }
+                    let base = self.as_int(&converted[1])?.to_i128().unwrap_or(-1);
+                    if base != 0 && !(2..=36).contains(&base) {
+                        return Err(pyerr(
+                            "ValueError",
+                            "int() base must be >= 2 and <= 36, or 0",
+                        ));
+                    }
+                    if let Value::Bytes(bytes) = &converted[0] {
+                        converted[0] = Value::Str(
+                            String::from_utf8(bytes.clone())
+                                .map_err(|_| pyerr("ValueError", "invalid literal for int"))?,
+                        );
+                    }
+                }
+                self.builtin("int", converted, Vec::new(), None)?
+            }
+            "str" => {
+                if args.len() > 3
+                    || kwargs
+                        .iter()
+                        .any(|(name, _)| !["object", "encoding", "errors"].contains(&name.as_str()))
+                {
+                    return Err(pyerr("TypeError", "invalid arguments to str.__new__"));
+                }
+                if args.len() > 1 || kwargs.iter().any(|(name, _)| name != "object") {
+                    return Err(pyerr(
+                        "NotImplementedError",
+                        "str subclass construction with an encoding is not implemented",
+                    ));
+                }
+                let mut converted = args;
+                if let Some((_, object)) = kwargs.first() {
+                    if !converted.is_empty() {
+                        return Err(pyerr(
+                            "TypeError",
+                            "argument for str() given by name and position",
+                        ));
+                    }
+                    converted.push(object.clone());
+                }
+                self.builtin("str", converted, Vec::new(), None)?
+            }
+            _ => unreachable!(),
+        };
         self.roots[root].push(payload.clone());
+        if Self::same_type(&class, &Value::Builtin(type_name.into())) {
+            return Ok(payload);
+        }
         let attrs = self.alloc(Object::Dict(Vec::new()));
         self.roots[root].push(Value::Obj(attrs));
         Ok(self.obj_value(Object::BuiltinInstance {
@@ -97,5 +176,123 @@ impl Runtime {
             attrs,
             payload,
         }))
+    }
+
+    fn builtin_collect(&mut self, iterable: Value, root: usize) -> PyResult<Vec<Value>> {
+        let iterator = self.iter(iterable)?;
+        self.roots[root].push(iterator.clone());
+        let mut values = Vec::new();
+        while let Some(value) = self.next(iterator.clone())? {
+            self.roots[root].push(value.clone());
+            values.push(value);
+        }
+        Ok(values)
+    }
+
+    fn builtin_instance_init(
+        &mut self,
+        type_name: &str,
+        receiver: Value,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> PyResult<Value> {
+        let root = self.roots.len();
+        let mut protected = vec![receiver.clone()];
+        protected.extend(args.iter().cloned());
+        protected.extend(kwargs.iter().map(|(_, value)| value.clone()));
+        self.roots.push(protected);
+        let result = self.builtin_instance_initialize(type_name, receiver, args, kwargs, root);
+        self.roots.truncate(root);
+        result
+    }
+
+    fn builtin_instance_initialize(
+        &mut self,
+        type_name: &str,
+        receiver: Value,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+        root: usize,
+    ) -> PyResult<Value> {
+        let payload = self.native_payload(&receiver).unwrap_or(receiver);
+        let index = match &payload {
+            Value::Obj(index) => *index,
+            _ => {
+                return Err(pyerr(
+                    "TypeError",
+                    "invalid built-in initialization receiver",
+                ))
+            }
+        };
+        let valid = match (type_name, self.object(index)?) {
+            ("list", Object::List(_)) | ("dict", Object::Dict(_)) | ("set", Object::Set(_)) => true,
+            _ => false,
+        };
+        if !valid {
+            return Err(pyerr(
+                "TypeError",
+                format!("descriptor requires a '{}' object", type_name),
+            ));
+        }
+        if args.len() > 1 || (type_name != "dict" && !kwargs.is_empty()) {
+            return Err(pyerr(
+                "TypeError",
+                format!("invalid arguments to {}.__init__", type_name),
+            ));
+        }
+        if type_name != "dict" {
+            self.heap[index] = Some(if type_name == "list" {
+                Object::List(Vec::new())
+            } else {
+                Object::Set(Vec::new())
+            });
+        }
+        if let Some(source) = args.first() {
+            if type_name == "dict" {
+                let keys = match self.getattr(source.clone(), "keys") {
+                    Ok(keys) => Some(keys),
+                    Err(error) if error.kind == "AttributeError" => None,
+                    Err(error) => return Err(error),
+                };
+                if let Some(keys) = keys {
+                    let keys = self.call(keys, Vec::new(), Vec::new(), None)?;
+                    self.roots[root].push(keys.clone());
+                    let iterator = self.iter(keys)?;
+                    self.roots[root].push(iterator.clone());
+                    while let Some(key) = self.next(iterator.clone())? {
+                        self.roots[root].push(key.clone());
+                        let value = self.getitem(source.clone(), key.clone())?;
+                        self.roots[root].push(value.clone());
+                        self.setitem(payload.clone(), key, value)?;
+                        self.roots[root].pop();
+                        self.roots[root].pop();
+                    }
+                } else {
+                    let iterator = self.iter(source.clone())?;
+                    self.roots[root].push(iterator.clone());
+                    while let Some(pair) = self.next(iterator.clone())? {
+                        self.roots[root].push(pair.clone());
+                        let pair = self.builtin_collect(pair, root)?;
+                        if pair.len() != 2 {
+                            return Err(pyerr(
+                                "ValueError",
+                                "dictionary update sequence element has length other than 2",
+                            ));
+                        }
+                        self.setitem(payload.clone(), pair[0].clone(), pair[1].clone())?;
+                    }
+                }
+            } else {
+                let iterator = self.iter(source.clone())?;
+                self.roots[root].push(iterator.clone());
+                while let Some(value) = self.next(iterator.clone())? {
+                    self.container_add(payload.clone(), value, type_name == "set")?;
+                }
+            }
+        }
+        for (key, value) in kwargs {
+            self.setitem(payload.clone(), Value::Str(key), value)?;
+        }
+        Ok(Value::None)
     }
 }

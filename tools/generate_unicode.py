@@ -48,7 +48,9 @@ def generate():
                             ("PRINTABLE", str.isprintable), ("ALPHA", str.isalpha),
                             ("ALNUM", str.isalnum), ("LOWER", str.islower),
                             ("UPPER", str.isupper),
-                            ("CASED", lambda ch: ch.islower() or ch.isupper() or ch.istitle())]:
+                            ("CASED", lambda ch: ch.islower() or ch.isupper() or ch.istitle()),
+                            ("IDENTIFIER_START", str.isidentifier),
+                            ("IDENTIFIER_CONTINUE", lambda ch: ("a" + ch).isidentifier())]:
         lines.append(f"const TEXT_{name}: &[(u32, u32)] = &[")
         for first, last in ranges(predicate):
             lines.append(f"    (0x{first:x}, 0x{last:x}),")

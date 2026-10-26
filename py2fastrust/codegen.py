@@ -117,14 +117,14 @@ def generate(program: Program, integer="i64"):
     unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
     prefix += "\n".join("// " + line for line in unicode_license.splitlines()) + "\n"
     parts = [prefix]
-    for name in ("integer.rs", "vm.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs"):
+    for name in ("integer.rs", "vm.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs"):
         parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
     parts.append("\nfn main() {\nlet codes = vec![\n")
     source_map = []
     for code_id, code in enumerate(program.codes):
         p = code.params
         parts.append(f"Code {{ name:{string(code.name)},filename:{string(code.filename)},kind:ScopeKind::{code.kind},"
-                     f"locals:{strings(code.locals)},globals:{strings(code.globals)},nonlocals:{strings(code.nonlocals)},"
+                     f"locals:{strings(code.locals)},globals:{strings(code.globals)},nonlocals:{strings(code.nonlocals)},frees:{strings(code.frees)},"
                      f"params:Params {{ posonly:{p.posonly},positional:{strings(p.positional)},kwonly:{strings(p.kwonly)},"
                      f"vararg:{optional(p.vararg)},kwarg:{optional(p.kwarg)} }},"
                      f"is_generator:{str(code.is_generator).lower()},ops:vec![\n")
@@ -135,6 +135,6 @@ def generate(program: Program, integer="i64"):
     parts.append("];\nlet modules = vec![" + ",".join(f"({string(name)},{index})" for name, index in program.modules) + "];\n")
     parts.append("let mut runtime = Runtime::new(codes, modules);\n"
                  "if let Err(error) = runtime.run() { runtime.finish(); "
-                 "if error.kind == \"SystemExit\" { std::process::exit(error.message.parse::<i32>().unwrap_or(1)); } "
+                 "if error.kind == \"SystemExit\" { let status = runtime.system_exit_status(&error); std::process::exit(status); } "
                  "runtime.report_exception(&error); std::process::exit(1); }\nruntime.finish();\n}\n")
     return "\n".join(parts), tuple(source_map)

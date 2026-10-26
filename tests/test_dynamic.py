@@ -476,5 +476,176 @@ class DynamicTests(unittest.TestCase):
         ''')
 
 
+    def test_private_names_in_nested_scopes_and_function_metadata(self):
+        self.compare('''
+            class Base:
+                def __init__(self):
+                    self.__value = 3
+                def read(self):
+                    return self.__value
+            class _Example(Base):
+                import math as __math
+                __items = [__x * 2 for __x in range(4)]
+                def __init__(self):
+                    super().__init__()
+                    self.__value = 7
+                def __f(self, __x: int=3, *, __kw: int=5, **__extra):
+                    return self.__math.isqrt(__x) + __kw + len(__extra)
+                def closure(self, __step):
+                    __value = self.__value
+                    def update():
+                        nonlocal __value
+                        __value += __step
+                        return __value
+                    return update
+                def comprehension(self):
+                    __offset = 3
+                    return [lambda: __x + __offset for __x in range(3)]
+                class __Inner:
+                    __value = 11
+                    def read(self):
+                        return self.__value
+                def inner(self):
+                    return self.__Inner().read()
+                def literal_keywords(self):
+                    try:
+                        return self.__f(__x=4)
+                    except TypeError:
+                        return "literal keyword"
+            value = _Example()
+            print(value.read(), value._Base__value, value._Example__value)
+            update = value.closure(2)
+            print(update(), update(), value.inner())
+            print(_Example._Example__items, value._Example__f(), value._Example__f(9, _Example__kw=2, extra=1))
+            print(value.literal_keywords(), [f() for f in value.comprehension()])
+            print(_Example._Example__f.__name__, _Example._Example__f.__annotations__, _Example._Example__f.__kwdefaults__)
+            print(Base.__static_attributes__, _Example.__static_attributes__)
+            class ___:
+                __value = 13
+            print(___.__value)
+        ''')
+
+    def test_free_variable_snapshots_cell_order_and_class_passthrough(self):
+        self.compare('''
+            def outer(parameter, *args, option=4, **kwargs):
+                z = 22
+                ordinary = 33
+                a = 11
+                def middle(p):
+                    nonlocal a
+                    own = 5
+                    print(list(locals()), locals()["a"], locals()["z"])
+                    def inner():
+                        return z + a + p
+                    print(list(locals()), inner())
+                    return inner
+                print(list(locals()))
+                return middle(3)
+            print(outer(1,2,option=7,extra=9)())
+            z = 900
+            def through_class():
+                z = 17
+                x = 19
+                class C:
+                    print(z)
+                    z = 200
+                    global x
+                    def values(self):
+                        return z,x,list(locals())
+                print(list(locals()))
+                return C
+            print(through_class()().values())
+            class WithClassCell:
+                def values(self):
+                    if super is None:
+                        pass
+                    return list(locals())
+                def shadowed(self,super):
+                    return super,list(locals())
+            value = WithClassCell()
+            print(value.values(),value.shadowed(4))
+            def pattern_factory():
+                class Constant:
+                    threshold = 5
+                def f(value):
+                    match value:
+                        case Constant.threshold:
+                            return list(locals())
+                return f
+            print(pattern_factory()(5))
+        ''')
+
+    def test_enclosing_global_declaration_blocks_free_capture(self):
+        self.compare('''
+            x = 700
+            def outer():
+                x = 1
+                def middle():
+                    global x
+                    def inner():
+                        print(list(locals()))
+                        return x
+                    print(list(locals()))
+                    return inner
+                print(list(locals()))
+                return middle()
+            print(outer()())
+            def closure():
+                n = 3
+                def f():
+                    return (n + i for i in range(2))
+                print(list(locals()))
+                return f
+            print(list(closure()()))
+        ''')
+
+    def test_private_pattern_aliases_global_and_exception_names(self):
+        self.compare('''
+            class Example:
+                __constant = 17
+                def f(self, value):
+                    global __global
+                    __global = 19
+                    try:
+                        raise ValueError("message")
+                    except ValueError as __error:
+                        print(str(__error))
+                    try:
+                        print(__error)
+                    except UnboundLocalError:
+                        print("deleted")
+                    match value:
+                        case {"k": [__head, *__tail], **__rest}:
+                            return __head, __tail, __rest
+                def pattern(self, value):
+                    match value:
+                        case Example.__constant:
+                            return True
+                    return False
+                def aliases(self, value):
+                    match value:
+                        case [__x,_Example__x]:
+                            return __x, _Example__x
+            value = Example()
+            print(value.f({"k": [2,3,4], "extra": 5}))
+            print(_Example__global, value.pattern(17), value.pattern(18), value.aliases([1,2]))
+            class Pattern:
+                pass
+            pattern = Pattern()
+            pattern.__field = 23
+            class Match:
+                def f(self, value):
+                    match value:
+                        case Pattern(__field=__value):
+                            return __value
+            print(Match().f(pattern))
+            for source in ["class C:\\n def f(__x,_C__x):pass", "class C:\\n def f():\\n  __x=1\\n  global _C__x", "class C:\\n def f(self,v):\\n  match v:\\n   case [__x] | [_C__x]: pass"]:
+                try:
+                    compile(source,"private.py","exec")
+                except SyntaxError:
+                    print("syntax")
+        ''')
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,7 @@ class Code:
     locals: list[str] = field(default_factory=list)
     globals: list[str] = field(default_factory=list)
     nonlocals: list[str] = field(default_factory=list)
+    frees: list[str] = field(default_factory=list)
     params: Parameters = field(default_factory=Parameters)
     ops: list[Instruction] = field(default_factory=list)
     is_generator: bool = False

@@ -107,6 +107,343 @@ impl Int {
     fn to_usize(&self) -> Option<usize> {
         self.to_i128().and_then(|n| usize::try_from(n).ok())
     }
+
+    // Power-of-two conversion visits the limbs directly, without a fixed-width
+    // intermediate or quadratic repeated division. The sign is kept separate
+    // from the magnitude so that fixed-width MIN formats correctly as well.
+    fn unsigned_radix(&self, base: u32, upper: bool) -> String {
+        if base == 10 {
+            return self.to_string().trim_start_matches('-').to_string();
+        }
+        let step = match base {
+            2 => 1,
+            8 => 3,
+            16 => 4,
+            _ => unreachable!("unsupported integer output radix"),
+        };
+        let alphabet = if upper {
+            b"0123456789ABCDEF"
+        } else {
+            b"0123456789abcdef"
+        };
+        let bits = self.bit_length();
+        if bits == 0 {
+            return "0".into();
+        }
+        let magnitude = self.magnitude();
+        let count = (bits + step - 1) / step;
+        let mut output = String::with_capacity(count);
+        for index in (0..count).rev() {
+            let bit = index * step;
+            let limb = bit / 32;
+            let mut value = magnitude[limb] as u64;
+            if limb + 1 < magnitude.len() {
+                value |= (magnitude[limb + 1] as u64) << 32;
+            }
+            let digit = (value >> (bit % 32)) & (base - 1) as u64;
+            output.push(alphabet[digit as usize] as char);
+        }
+        output
+    }
+
+    fn radix(&self, base: u32, upper: bool) -> String {
+        let digits = self.unsigned_radix(base, upper);
+        if self.is_negative() {
+            "-".to_string() + &digits
+        } else {
+            digits
+        }
+    }
+
+    fn format_digit(character: char) -> Option<usize> {
+        if character.is_ascii_digit() {
+            return Some((character as u8 - b'0') as usize);
+        }
+        // Unicode 16.0 decimal ranges, generated from CPython unicodedata.
+        const RANGES: &[(u32, u32)] = &[
+            (1632, 1641),
+            (1776, 1785),
+            (1984, 1993),
+            (2406, 2415),
+            (2534, 2543),
+            (2662, 2671),
+            (2790, 2799),
+            (2918, 2927),
+            (3046, 3055),
+            (3174, 3183),
+            (3302, 3311),
+            (3430, 3439),
+            (3558, 3567),
+            (3664, 3673),
+            (3792, 3801),
+            (3872, 3881),
+            (4160, 4169),
+            (4240, 4249),
+            (6112, 6121),
+            (6160, 6169),
+            (6470, 6479),
+            (6608, 6617),
+            (6784, 6793),
+            (6800, 6809),
+            (6992, 7001),
+            (7088, 7097),
+            (7232, 7241),
+            (7248, 7257),
+            (42528, 42537),
+            (43216, 43225),
+            (43264, 43273),
+            (43472, 43481),
+            (43504, 43513),
+            (43600, 43609),
+            (44016, 44025),
+            (65296, 65305),
+            (66720, 66729),
+            (68912, 68921),
+            (68928, 68937),
+            (69734, 69743),
+            (69872, 69881),
+            (69942, 69951),
+            (70096, 70105),
+            (70384, 70393),
+            (70736, 70745),
+            (70864, 70873),
+            (71248, 71257),
+            (71360, 71369),
+            (71376, 71395),
+            (71472, 71481),
+            (71904, 71913),
+            (72016, 72025),
+            (72688, 72697),
+            (72784, 72793),
+            (73040, 73049),
+            (73120, 73129),
+            (73552, 73561),
+            (90416, 90425),
+            (92768, 92777),
+            (92864, 92873),
+            (93008, 93017),
+            (93552, 93561),
+            (118000, 118009),
+            (120782, 120831),
+            (123200, 123209),
+            (123632, 123641),
+            (124144, 124153),
+            (124401, 124410),
+            (125264, 125273),
+            (130032, 130041),
+        ];
+        let code = character as u32;
+        let index = RANGES.partition_point(|(_, end)| *end < code);
+        RANGES
+            .get(index)
+            .filter(|(start, _)| *start <= code)
+            .map(|(start, _)| ((code - *start) % 10) as usize)
+    }
+
+    // Integer presentation types of Python's format specification language.
+    // Floating presentation types are delegated to the VM's float formatter.
+    fn format_integer(&self, spec: &str) -> Result<Option<String>, String> {
+        if spec.is_empty() {
+            return Ok(Some(self.to_string()));
+        }
+        let chars: Vec<char> = spec.chars().collect();
+        let mut index = 0;
+        let mut fill = ' ';
+        let mut align = '>';
+        let mut explicit_fill = false;
+        let mut explicit_align = false;
+        if chars.len() > 1 && "<>=^".contains(chars[1]) {
+            fill = chars[0];
+            align = chars[1];
+            explicit_fill = true;
+            explicit_align = true;
+            index = 2;
+        } else if "<>=^".contains(chars[0]) {
+            align = chars[0];
+            explicit_align = true;
+            index = 1;
+        }
+        let mut sign = None;
+        if index < chars.len() && "+- ".contains(chars[index]) {
+            sign = Some(chars[index]);
+            index += 1;
+        }
+        let zero_coercion = index < chars.len() && chars[index] == 'z';
+        if zero_coercion {
+            index += 1;
+        }
+        let alternate = index < chars.len() && chars[index] == '#';
+        if alternate {
+            index += 1;
+        }
+        if index < chars.len() && chars[index] == '0' {
+            if !explicit_fill {
+                fill = '0';
+            }
+            if !explicit_align {
+                align = '=';
+            }
+            index += 1;
+        }
+        let mut width = 0usize;
+        while index < chars.len() && Self::format_digit(chars[index]).is_some() {
+            width = width
+                .checked_mul(10)
+                .and_then(|n| n.checked_add(Self::format_digit(chars[index]).unwrap()))
+                .filter(|n| *n <= isize::MAX as usize)
+                .ok_or("ValueError: Too many decimal digits in format string")?;
+            index += 1;
+        }
+        let mut grouping = None;
+        if index < chars.len() && ",_".contains(chars[index]) {
+            grouping = Some(chars[index]);
+            index += 1;
+        }
+        let mut precision = false;
+        if index < chars.len() && chars[index] == '.' {
+            precision = true;
+            index += 1;
+            let start = index;
+            while index < chars.len() && Self::format_digit(chars[index]).is_some() {
+                index += 1;
+            }
+            if index < chars.len() && ",_".contains(chars[index]) {
+                index += 1;
+            } else if index == start {
+                return Err("ValueError: Format specifier missing precision".into());
+            }
+        }
+        let kind = if index == chars.len() {
+            'd'
+        } else if index + 1 == chars.len() {
+            chars[index]
+        } else {
+            return Err("ValueError: Invalid format specifier for object of type 'int'".into());
+        };
+        if "eEfFgG%".contains(kind) {
+            return Ok(None);
+        }
+        if !"bcdoxXn".contains(kind) {
+            return Err(format!(
+                "ValueError: Unknown format code '{}' for object of type 'int'",
+                kind
+            ));
+        }
+        if zero_coercion {
+            return Err(
+                "ValueError: Negative zero coercion (z) not allowed in integer format specifier"
+                    .into(),
+            );
+        }
+        if precision {
+            return Err("ValueError: Precision not allowed in integer format specifier".into());
+        }
+        if let Some(separator) = grouping {
+            if kind == 'n' || kind == 'c' || (separator == ',' && kind != 'd') {
+                return Err(format!(
+                    "ValueError: Cannot specify '{}' with '{}'.",
+                    separator, kind
+                ));
+            }
+        }
+        let mut prefix = String::new();
+        let mut digits = if kind == 'c' {
+            if sign.is_some() || alternate {
+                return Err("ValueError: Sign or alternate form not allowed with integer format specifier 'c'".into());
+            }
+            let value = self
+                .to_i128()
+                .and_then(|n| u32::try_from(n).ok())
+                .and_then(char::from_u32)
+                .ok_or("OverflowError: %c arg not in range(0x110000)")?;
+            value.to_string()
+        } else {
+            let base = match kind {
+                'b' => 2,
+                'o' => 8,
+                'x' | 'X' => 16,
+                _ => 10,
+            };
+            if self.is_negative() {
+                prefix.push('-');
+            } else if sign == Some('+') || sign == Some(' ') {
+                prefix.push(sign.unwrap());
+            }
+            if alternate {
+                prefix.push_str(match kind {
+                    'b' => "0b",
+                    'o' => "0o",
+                    'x' => "0x",
+                    'X' => "0X",
+                    _ => "",
+                });
+            }
+            self.unsigned_radix(base, kind == 'X')
+        };
+        let group = if kind == 'd' { 3 } else { 4 };
+        if fill == '0' && align == '=' && grouping.is_some() {
+            let target = width.saturating_sub(prefix.len());
+            let mut low = digits.len();
+            let mut high = target.max(low);
+            while low < high {
+                let middle = low + (high - low) / 2;
+                if middle.saturating_add(middle.saturating_sub(1) / group) < target {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            if low > digits.len() {
+                let mut padded = String::new();
+                padded
+                    .try_reserve(low)
+                    .map_err(|_| "MemoryError: integer format is too large")?;
+                padded.extend(std::iter::repeat_n('0', low - digits.len()));
+                padded.push_str(&digits);
+                digits = padded;
+            }
+        }
+        if let Some(separator) = grouping {
+            let mut grouped = String::new();
+            grouped
+                .try_reserve(digits.len().saturating_mul(2))
+                .map_err(|_| "MemoryError: integer format is too large")?;
+            for (index, byte) in digits.bytes().enumerate() {
+                if index > 0 && (digits.len() - index) % group == 0 {
+                    grouped.push(separator);
+                }
+                grouped.push(byte as char);
+            }
+            digits = grouped;
+        }
+        let length = prefix.chars().count() + digits.chars().count();
+        let padding = width.saturating_sub(length);
+        let capacity = prefix
+            .len()
+            .checked_add(digits.len())
+            .and_then(|n| {
+                padding
+                    .checked_mul(fill.len_utf8())
+                    .and_then(|p| n.checked_add(p))
+            })
+            .ok_or("MemoryError: integer format is too large")?;
+        let mut output = String::new();
+        output
+            .try_reserve(capacity)
+            .map_err(|_| "MemoryError: integer format is too large")?;
+        let (before, between, after) = match align {
+            '<' => (0, 0, padding),
+            '^' => (padding / 2, 0, padding - padding / 2),
+            '=' => (0, padding, 0),
+            _ => (padding, 0, 0),
+        };
+        output.extend(std::iter::repeat_n(fill, before));
+        output.push_str(&prefix);
+        output.extend(std::iter::repeat_n(fill, between));
+        output.push_str(&digits);
+        output.extend(std::iter::repeat_n(fill, after));
+        Ok(Some(output))
+    }
     fn bit_length(&self) -> usize {
         match &self.0 {
             IntRepr::Small(n) => 128 - n.unsigned_abs().leading_zeros() as usize,
