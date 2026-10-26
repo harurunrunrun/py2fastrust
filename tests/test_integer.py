@@ -22,6 +22,11 @@ fn main() {
             if op == "fromfloat" {
                 return Int::from_f64(f64::from_bits(u64::from_str_radix(f[1], 16).unwrap())).map(|x| x.to_string());
             }
+            if op == "roundfloat" {
+                let value = f64::from_bits(u64::from_str_radix(f[1], 16).unwrap());
+                return Int::round_float_decimal(value, &Int::parse(f[2], 10)?)
+                    .map(|x| format!("{:016x}", x.to_bits()));
+            }
             let a = Int::parse(f[1], 10)?;
             if op == "cmpfloat" {
                 let value = f64::from_bits(u64::from_str_radix(f[2], 16).unwrap());
@@ -51,6 +56,7 @@ fn main() {
                 "pow" => a.pow(&b)?.to_string(),
                 "modpow" => a.modpow(&b, &Int::parse(f[3], 10)?)?.to_string(),
                 "ratio" => format!("{:016x}", a.ratio(&b)?.to_bits()),
+                "round" => a.round_decimal(&b).to_string(),
                 "cmp" => (if a < b { -1 } else if a == b { 0 } else { 1 }).to_string(),
                 _ => panic!("unknown operation"),
             })
@@ -140,6 +146,41 @@ class IntegerTests(unittest.TestCase):
                 quotient, remainder = divmod(a * sa, b * sb)
                 cases.append((f"divmod\t{a * sa}\t{b * sb}", f"{quotient},{remainder}"))
         self.check_cases(0, cases)
+
+    def test_decimal_rounding_uses_exact_integer_and_binary_float_values(self):
+        rng = random.Random(673594)
+        values = [0, 1, -1, 15, 25, 35, -15, -25, -35,
+                  (1 << 63) - 1, -(1 << 63), (1 << 127) - 1,
+                  10**400 + 12345, -(10**400 + 55555)]
+        values += [rng.getrandbits(rng.randrange(1, 1800)) * rng.choice((-1, 1))
+                   for _ in range(150)]
+        floating = [0.0, -0.0, 2.675, -2.675, 1.005, 0.125, 0.375,
+                    1.2345678901234567, 1.7976931348623157e308,
+                    -1.7976931348623157e308, 5e-324, -5e-324,
+                    float("inf"), -float("inf"), float("nan")]
+        floating += [struct.unpack(">d", rng.getrandbits(64).to_bytes(8, "big"))[0]
+                     for _ in range(350)]
+        for bits in (0, 64, 128):
+            cases = []
+            for raw in values:
+                number = wrap(raw, bits)
+                for raw_digits in (-10**60, -600, -400, -100, -38, -19, -3, -2, -1,
+                                   0, 1, 10**60):
+                    digits = wrap(raw_digits, bits)
+                    # CPython materializes 10**(-ndigits), even when its
+                    # exponent is enormous. Use the mathematical zero here.
+                    expected = 0 if digits < -10000 else round(number, digits)
+                    cases.append((f"round\t{raw}\t{raw_digits}", wrap(expected, bits)))
+            for number in floating:
+                for raw_digits in (-10**60, -400, -309, -308, -25, -1, 0,
+                                   1, 2, 15, 23, 307, 323, 324, 400, 10**60):
+                    digits = wrap(raw_digits, bits)
+                    try:
+                        expected = float_bits(round(number, digits))
+                    except OverflowError:
+                        expected = "ERR:OverflowError"
+                    cases.append((f"roundfloat\t{float_bits(number)}\t{raw_digits}", expected))
+            self.check_cases(bits, cases)
 
     def test_shifts_and_powers(self):
         rng = random.Random(65535)

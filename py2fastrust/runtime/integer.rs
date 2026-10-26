@@ -1014,6 +1014,96 @@ impl Int {
         Ok(Self::parts(negative, digits))
     }
 
+    fn exact_pow10(mut exponent: usize) -> Self {
+        let mut result = Self::exact_small(1);
+        let mut base = Self::exact_small(10);
+        while exponent != 0 {
+            if exponent & 1 != 0 {
+                result = result.exact_mul(&base);
+            }
+            exponent >>= 1;
+            if exponent != 0 {
+                base = base.exact_mul(&base);
+            }
+        }
+        result
+    }
+
+    // Work on exact internal integers: normalizing an intermediate divisor
+    // would change rounding near a fixed-width integer's signed boundary.
+    fn exact_round_ratio(numerator: &Self, denominator: &Self) -> Self {
+        let (quotient, remainder) = numerator.exact_divmod(denominator).unwrap();
+        let halfway = remainder.exact_mul(&Self::exact_small(2)).cmp(denominator);
+        if halfway == std::cmp::Ordering::Greater
+            || (halfway == std::cmp::Ordering::Equal
+                && quotient.magnitude().first().is_some_and(|limb| limb & 1 != 0))
+        {
+            quotient.exact_add(&Self::exact_small(1))
+        } else {
+            quotient
+        }
+    }
+
+    fn round_decimal(&self, ndigits: &Self) -> Self {
+        if !ndigits.is_negative() || self.is_zero() {
+            return self.clone();
+        }
+        // 10^(bits/3+2) exceeds every value of this bit length. Avoid
+        // allocating a decimal power for an arbitrarily large ndigits.
+        let bound = self.bit_length() / 3 + 2;
+        let exponent = match ndigits.to_i128() {
+            Some(n) if n.unsigned_abs() <= bound as u128 => n.unsigned_abs() as usize,
+            _ => return Self::from_i128(0),
+        };
+        let scale = Self::exact_pow10(exponent);
+        Self::exact_round_ratio(self, &scale).exact_mul(&scale).normalized()
+    }
+
+    fn round_float_decimal(value: f64, ndigits: &Self) -> Result<f64, String> {
+        if !value.is_finite() || value == 0.0 {
+            return Ok(value);
+        }
+        // These bounds cover every finite binary64, including subnormals.
+        let digits = match ndigits.to_i128() {
+            Some(n) if n >= 324 => return Ok(value),
+            Some(n) if n <= -309 => return Ok(0.0f64.copysign(value)),
+            Some(n) => n as i32,
+            None if ndigits.is_negative() => return Ok(0.0f64.copysign(value)),
+            None => return Ok(value),
+        };
+        let bits = value.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as i32;
+        let fraction = bits & ((1u64 << 52) - 1);
+        let mantissa = if exponent == 0 { fraction } else { fraction | (1u64 << 52) };
+        let power = if exponent == 0 { -1074 } else { exponent - 1023 - 52 };
+        let raw = vec![mantissa as u32, (mantissa >> 32) as u32];
+        let mut numerator = Self::exact_parts(bits >> 63 != 0, if power >= 0 {
+            Self::nat_shl(&raw, power as usize)
+        } else {
+            raw
+        });
+        let mut denominator = if power < 0 {
+            Self::exact_parts(false, Self::nat_shl(&[1], (-power) as usize))
+        } else {
+            Self::exact_small(1)
+        };
+        let scale = Self::exact_pow10(digits.unsigned_abs() as usize);
+        if digits >= 0 {
+            numerator = numerator.exact_mul(&scale);
+        } else {
+            denominator = denominator.exact_mul(&scale);
+        }
+        let rounded = Self::exact_round_ratio(&numerator, &denominator);
+        if rounded.is_zero() {
+            return Ok(0.0f64.copysign(value));
+        }
+        if digits >= 0 {
+            rounded.ratio(&scale)
+        } else {
+            rounded.exact_mul(&scale).ratio(&Self::exact_small(1))
+        }
+    }
+
     fn exact_from_f64(value: f64) -> Result<Self, String> {
         if value.is_nan() {
             return Err("ValueError: cannot convert float NaN to integer".into());
