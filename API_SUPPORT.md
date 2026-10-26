@@ -144,8 +144,8 @@
 | `update_wrapper` | 実装済み |
 | `wraps` | 実装済み |
 
-functoolsのsingledispatch/singledispatchmethodはクラス登録に対応します。
-union型による登録や未対応モジュールのABC連携には制約があります。
+functoolsのsingledispatch/singledispatchmethodはクラス・union型の登録に対応します。
+未対応モジュールのABC連携には制約があります。
 mathの特殊関数はCPythonのlibmと常にbit単位で一致するとは限りません。
 
 ## collections
@@ -177,4 +177,6 @@ ChainMap、UserDict、UserList、UserStringは対象に含めていません。
 | モジュール | 対応 |
 |---|---|
 | `__future__` | 全既知feature・compiler_flag・release metadata、future文の配置検証とcompile/eval/execへの継承 |
-| `types.GenericAlias` | origin/args/parameters metadata、比較・hash・呼び出し、__class_getitem__、MRO接続。実TypeVar系の置換は未対応 |
+| `types.GenericAlias` | origin/args/parameters metadata、比較・hash・呼び出し、__class_getitem__、MRO接続、TypeVar・ParamSpec・TypeVarTupleの置換・既定値 |
+| `types.UnionType` | Python 3.14のtyping.Unionと共通の型 |
+| `typing` | TypeVar、ParamSpec、TypeVarTuple、TypeAliasType、Generic、Unpack、Union、ForwardRef、NoDefault、ParamSpecArgs/Kwargs、get_args/get_origin。モジュール全体の対応ではありません |

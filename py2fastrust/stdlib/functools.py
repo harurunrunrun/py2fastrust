@@ -1,6 +1,7 @@
 """Function tools backed by the transpiler's native callable primitives."""
 
 from _py2fastrust_functools import Placeholder, cache, lru_cache, partial, reduce
+from types import UnionType as _UnionType
 
 __all__ = [
     "update_wrapper", "wraps", "WRAPPER_ASSIGNMENTS", "WRAPPER_UPDATES",
@@ -198,6 +199,11 @@ def singledispatch(func):
     registry = {object: func}
     dispatch_cache = {}
 
+    def valid_dispatch_type(cls):
+        return (isinstance(cls, type)
+                or isinstance(cls, _UnionType)
+                and all(isinstance(member, type) for member in cls.__args__))
+
     def dispatch(cls):
         if cls in dispatch_cache:
             return dispatch_cache[cls]
@@ -224,7 +230,7 @@ def singledispatch(func):
 
     def register(cls, implementation=None):
         if implementation is None:
-            if isinstance(cls, type):
+            if valid_dispatch_type(cls):
                 def decorator(function):
                     return register(cls, function)
                 return decorator
@@ -237,11 +243,15 @@ def singledispatch(func):
                     break
             if isinstance(cls, str):
                 cls = eval(cls, implementation.__globals__)
-            if not isinstance(cls, type):
+            if not valid_dispatch_type(cls):
                 raise TypeError("Invalid first argument to register(): use an explicit class or an annotated function")
-        if not isinstance(cls, type):
+        if not valid_dispatch_type(cls):
             raise TypeError("Invalid first argument to register(): expected a class")
-        registry[cls] = implementation
+        if isinstance(cls, _UnionType):
+            for member in cls.__args__:
+                registry[member] = implementation
+        else:
+            registry[cls] = implementation
         dispatch_cache.clear()
         return implementation
 

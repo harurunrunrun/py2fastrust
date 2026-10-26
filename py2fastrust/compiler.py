@@ -13,7 +13,7 @@ from .ir import Code, Instruction, Parameters, Pattern, Program
 
 BUILTIN_MODULES = {
     "sys", "math", "heapq", "bisect", "collections", "itertools", "functools",
-    "builtins", "operator", "types", "gc", "time", "_py2fastrust_functools", "__future__",
+    "builtins", "operator", "types", "typing", "gc", "time", "_py2fastrust_functools", "__future__",
 }
 VENDORED_MODULES = {"heapq", "bisect", "collections", "functools", "__future__"}
 FUTURE_ANNOTATIONS = __future__.annotations.compiler_flag
@@ -56,6 +56,7 @@ class Compiler:
     def compile(self, source):
         tree, table = self.parse(source, self.filename)
         emitter = self.scope(tree, table, "__main__", "Module", self.filename)
+        emitter.setup_scope_annotations(tree)
         emitter.statements(tree.body)
         emitter.finish()
         # Runtime exec/compile may contain a future statement even when the
@@ -80,7 +81,7 @@ class Compiler:
     def scope(self, node, table, name, kind, filename):
         symbols = table.get_symbols()
         local_names = [s.get_name() for s in symbols if s.is_local() or s.is_parameter()]
-        if kind in {"Function", "Comprehension"}:
+        if kind in {"Function", "Comprehension", "TypeParameters"}:
             parameters = {s.get_name() for s in symbols if s.is_parameter()}
             cells = {s.get_name() for s in symbols if s.is_comp_cell()}
             for child in table.get_children():
@@ -100,6 +101,42 @@ class Compiler:
         code_id = len(self.program.codes)
         self.program.codes.append(code)
         emitter = Emitter(self, code_id, table)
+        if kind in {"Module", "Class"}:
+            class ScopeAnnotations(ast.NodeVisitor):
+                def __init__(self):
+                    self.depth = 0
+                    self.any_annotation = False
+                    self.annotations = []
+
+                def visit_FunctionDef(self, function):
+                    pass
+
+                visit_AsyncFunctionDef = visit_FunctionDef
+                visit_ClassDef = visit_FunctionDef
+                visit_Lambda = visit_FunctionDef
+
+                def visit_AnnAssign(self, annotation):
+                    self.any_annotation = True
+                    if annotation.simple and isinstance(annotation.target, ast.Name):
+                        self.annotations.append((annotation, kind == "Module" or self.depth > 0))
+
+                def generic_visit(self, node):
+                    conditional = isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While,
+                                                    ast.With, ast.AsyncWith, ast.Try, ast.TryStar, ast.Match))
+                    self.depth += conditional
+                    super().generic_visit(node)
+                    self.depth -= conditional
+            scoped = ScopeAnnotations()
+            for statement in getattr(node, "body", ()):
+                scoped.visit(statement)
+            if not code.future_flags & FUTURE_ANNOTATIONS:
+                emitter.scope_annotations = scoped.annotations
+                emitter.has_scope_annotation = scoped.any_annotation
+                index = 0
+                for annotation, conditional in scoped.annotations:
+                    if conditional:
+                        emitter.annotation_indices[id(annotation)] = index
+                        index += 1
         if code.future_flags & FUTURE_ANNOTATIONS and kind in {"Module", "Class"}:
             class Annotations(ast.NodeVisitor):
                 found = False
@@ -154,6 +191,7 @@ class Compiler:
         emitter = self.scope(tree, table, name, "Module", str(path))
         self.module_ids[name] = emitter.code_id
         self.program.modules.append((name, emitter.code_id))
+        emitter.setup_scope_annotations(tree)
         emitter.statements(tree.body)
         emitter.finish()
 
@@ -170,6 +208,9 @@ class Emitter:
         self.enclosing = None
         self.private_class = None
         self.annotation_setup_pending = False
+        self.scope_annotations = []
+        self.has_scope_annotation = False
+        self.annotation_indices = {}
 
     def mangle(self, name):
         if (self.private_class and name is not None and name.startswith("__")
@@ -215,7 +256,7 @@ class Emitter:
                 owner.used_scopes.add(table.get_id())
                 child = self.compiler.scope(node, table, name, kind, self.code.filename)
                 child.enclosing = self
-                child.set_private(node.name if kind == "Class" else self.private_class)
+                child.set_private(node.name if kind == "Class" or kind == "TypeParameters" and isinstance(node, ast.ClassDef) else self.private_class)
                 self.inherit_child_frees(child)
                 return child
         if len(candidates) == 1:
@@ -223,7 +264,7 @@ class Emitter:
             owner.used_scopes.add(table.get_id())
             child = self.compiler.scope(node, table, name, kind, self.code.filename)
             child.enclosing = self
-            child.set_private(node.name if kind == "Class" else self.private_class)
+            child.set_private(node.name if kind == "Class" or kind == "TypeParameters" and isinstance(node, ast.ClassDef) else self.private_class)
             self.inherit_child_frees(child)
             return child
         self.fail(node, f"could not associate the official symbol table with {name}")
@@ -323,6 +364,56 @@ class Emitter:
             self.emit("Load", "__annotations__", node=node)
             self.emit("Const", self.mangle(node.target.id), node=node)
             self.emit("SetItem", node=node)
+        elif id(node) in self.annotation_indices:
+            self.emit("LoadCell" if self.code.kind == "Class" else "Load", "__conditional_annotations__", node=node)
+            self.emit("Const", self.annotation_indices[id(node)], node=node)
+            self.emit("SetAdd", 1, node=node)
+            self.emit("Pop", node=node)
+
+    def setup_scope_annotations(self, node):
+        if self.code.kind == "Module":
+            self.finish_scope_annotations(node)
+            if self.has_scope_annotation:
+                self.emit("BuildSet", 0, node=node)
+                self.emit("Store", "__conditional_annotations__", node=node)
+        elif self.annotation_indices:
+            self.emit("BuildSet", 0, node=node)
+            self.emit("StoreCell", "__conditional_annotations__", node=node)
+
+    def finish_scope_annotations(self, node):
+        if not self.scope_annotations:
+            return
+        anchor = ast.Constant(value=None, lineno=self.scope_annotations[0][0].lineno, col_offset=0)
+        helper = self.child(anchor, "__annotate__", "Annotation")
+        helper.code.params = Parameters(posonly=1, positional=[".format"])
+        if self.code.kind == "Class" and self.annotation_indices and "__conditional_annotations__" not in helper.code.frees:
+            helper.code.frees.append("__conditional_annotations__")
+        helper.emit("Load", ".format", node=anchor)
+        helper.emit("Const", 2, node=anchor)
+        helper.emit("Compare", ">", node=anchor)
+        valid = helper.emit("JumpFalse", 0, node=anchor)
+        helper.emit("Load", "NotImplementedError", node=anchor)
+        helper.emit("Call", 0, [], node=anchor)
+        helper.emit("Raise", 1, node=anchor)
+        helper.patch(valid)
+        helper.emit("BuildDict", 0, node=anchor)
+        for annotation, _ in self.scope_annotations:
+            skipped = None
+            if id(annotation) in self.annotation_indices:
+                helper.emit("Const", self.annotation_indices[id(annotation)], node=annotation)
+                helper.emit("LoadCell" if self.code.kind == "Class" else "Load", "__conditional_annotations__", node=annotation)
+                helper.emit("Compare", "in", node=annotation)
+                skipped = helper.emit("JumpFalse", 0, node=annotation)
+            helper.emit("Dup", node=annotation)
+            helper.visit(annotation.annotation)
+            helper.emit("Swap", node=annotation)
+            helper.emit("Const", self.mangle(annotation.target.id), node=annotation)
+            helper.emit("SetItem", node=annotation)
+            if skipped is not None:
+                helper.patch(skipped)
+        helper.emit("Return", node=anchor)
+        self.emit("MakeFunction", helper.code_id, 0, [], node=anchor)
+        self.emit("Store", "__annotate_func__" if self.code.kind == "Class" else "__annotate__", node=anchor)
 
     def visit_NamedExpr(self, node):
         self.visit(node.value)
@@ -647,16 +738,28 @@ class Emitter:
                                         emitter.mangle(args.vararg.arg) if args.vararg else None,
                                         emitter.mangle(args.kwarg.arg) if args.kwarg else None)
 
-    def make_function(self, node, name, body, decorators=()):
+    def make_function(self, node, name, body, decorators=(), type_scope=False):
+        if getattr(node, "type_params", ()) and not type_scope:
+            return self.generic_function(node, name, body, decorators)
         for decorator in decorators:
             self.visit(decorator)
-        for default in node.args.defaults:
-            self.visit(default)
+        for index, default in enumerate(node.args.defaults):
+            if type_scope:
+                self.emit("Load", ".defaults", node=default)
+                self.emit("Const", index, node=default)
+                self.emit("GetItem", node=default)
+            else:
+                self.visit(default)
         kwdefaults = []
         for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
             if default is not None:
                 kwdefaults.append(self.mangle(arg.arg))
-                self.visit(default)
+                if type_scope:
+                    self.emit("Load", ".kwdefaults", node=default)
+                    self.emit("Const", self.mangle(arg.arg), node=default)
+                    self.emit("GetItem", node=default)
+                else:
+                    self.visit(default)
         emitter = self.child(node, name)
         self.set_params(emitter, node.args)
         if isinstance(node, ast.Lambda):
@@ -669,6 +772,102 @@ class Emitter:
         self.function_annotations(node)
         for decorator in reversed(decorators):
             self.emit("Call", 1, [], node=decorator)
+
+    def type_parameter_scope(self, node, name):
+        wrapper = self.child(node, name, "TypeParameters")
+        wrapper.code.name = f"<generic parameters of {name}>"
+        if ".type_params" not in wrapper.code.locals:
+            wrapper.code.locals.append(".type_params")
+        return wrapper
+
+    def evaluation_thunk(self, node, name, expression):
+        thunk = self.child(node, name, "Annotation")
+        thunk.code.params = Parameters(posonly=1, positional=[".format"])
+        thunk.emit("Load", ".format", node=node)
+        thunk.emit("Const", 2, node=node)
+        thunk.emit("Compare", ">", node=node)
+        valid = thunk.emit("JumpFalse", 0, node=node)
+        thunk.emit("Load", "NotImplementedError", node=node)
+        thunk.emit("Call", 0, [], node=node)
+        thunk.emit("Raise", 1, node=node)
+        thunk.patch(valid)
+        if isinstance(expression, ast.Starred):
+            thunk.visit(expression.value)
+            thunk.emit("TypeUnpack", node=expression)
+        else:
+            thunk.visit(expression)
+        thunk.emit("Return", node=node)
+        self.emit("Const", 1, node=node)
+        self.emit("MakeFunction", thunk.code_id, 1, [], node=node)
+
+    def type_parameters(self, node):
+        for parameter in node.type_params:
+            bound = getattr(parameter, "bound", None)
+            constraints = isinstance(bound, ast.Tuple)
+            for expression in (bound if not constraints else None,
+                               bound if constraints else None,
+                               parameter.default_value):
+                if expression is None:
+                    self.emit("Const", None, node=parameter)
+                else:
+                    self.evaluation_thunk(parameter, parameter.name, expression)
+            kind = {ast.TypeVar: "typevar", ast.ParamSpec: "paramspec", ast.TypeVarTuple: "typevartuple"}[type(parameter)]
+            self.emit("MakeTypeParam", parameter.name, kind, node=parameter)
+            self.emit("Store", parameter.name, node=parameter)
+        for parameter in node.type_params:
+            self.emit("Load", parameter.name, node=parameter)
+        self.emit("BuildTuple", len(node.type_params), node=node)
+        self.emit("Store", ".type_params", node=node)
+
+    def generic_function(self, node, name, body, decorators):
+        for decorator in decorators:
+            self.visit(decorator)
+        wrapper = self.type_parameter_scope(node, name)
+        parameters = []
+        if node.args.defaults:
+            parameters.append(".defaults")
+        kwdefaults = [(arg, default) for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                      if default is not None]
+        if kwdefaults:
+            parameters.append(".kwdefaults")
+        wrapper.code.params = Parameters(posonly=len(parameters), positional=parameters)
+        wrapper.type_parameters(node)
+        wrapper.make_function(node, name, body, type_scope=True)
+        wrapper.emit("Dup", node=node)
+        wrapper.emit("Load", ".type_params", node=node)
+        wrapper.emit("Swap", node=node)
+        wrapper.emit("SetAttr", "__type_params__", node=node)
+        wrapper.emit("Return", node=node)
+        self.emit("MakeFunction", wrapper.code_id, 0, [], node=node)
+        if node.args.defaults:
+            for default in node.args.defaults:
+                self.visit(default)
+            self.emit("BuildTuple", len(node.args.defaults), node=node)
+        if kwdefaults:
+            for arg, default in kwdefaults:
+                self.emit("Const", self.mangle(arg.arg), node=arg)
+                self.visit(default)
+            self.emit("BuildDict", len(kwdefaults), node=node)
+        self.emit("Call", len(parameters), [], node=node)
+        for decorator in reversed(decorators):
+            self.emit("Call", 1, [], node=decorator)
+
+    def visit_TypeAlias(self, node):
+        name = node.name.id
+        if node.type_params:
+            wrapper = self.type_parameter_scope(node, name)
+            wrapper.type_parameters(node)
+            wrapper.emit("Load", ".type_params", node=node)
+            wrapper.evaluation_thunk(node, name, node.value)
+            wrapper.emit("MakeTypeAlias", name, node=node)
+            wrapper.emit("Return", node=node)
+            self.emit("MakeFunction", wrapper.code_id, 0, [], node=node)
+            self.emit("Call", 0, [], node=node)
+        else:
+            self.emit("BuildTuple", 0, node=node)
+            self.evaluation_thunk(node, name, node.value)
+            self.emit("MakeTypeAlias", name, node=node)
+        self.emit("Store", name, node=node)
 
     def function_annotations(self, node):
         arguments = node.args.posonlyargs + node.args.args
@@ -736,11 +935,27 @@ class Emitter:
         self.emit("GetYieldFromIter", node=node)
         self.emit("YieldFrom", node=node)
 
-    def visit_ClassDef(self, node):
-        for decorator in node.decorator_list:
+    def visit_ClassDef(self, node, type_scope=False):
+        if node.type_params and not type_scope:
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            wrapper = self.type_parameter_scope(node, node.name)
+            wrapper.type_parameters(node)
+            wrapper.visit_ClassDef(node, type_scope=True)
+            wrapper.emit("Return", node=node)
+            self.emit("MakeFunction", wrapper.code_id, 0, [], node=node)
+            self.emit("Call", 0, [], node=node)
+            for decorator in reversed(node.decorator_list):
+                self.emit("Call", 1, [], node=decorator)
+            self.emit("Store", node.name, node=node)
+            return
+        for decorator in (() if type_scope else node.decorator_list):
             self.visit(decorator)
         for base in node.bases:
             self.visit(base)
+        if type_scope:
+            self.emit("Load", ".type_params", node=node)
+            self.emit("GenericBase", node=node)
         for keyword in node.keywords:
             if keyword.arg is None:
                 self.fail(node, "expanded class keywords are not implemented")
@@ -749,14 +964,19 @@ class Emitter:
         first_line = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
         emitter.emit("Const", first_line, node=node)
         emitter.emit("Store", "__firstlineno__", node=node)
+        if type_scope:
+            emitter.emit("Load", ".type_params", node=node)
+            emitter.emit("Store", "__type_params__", node=node)
         if emitter.annotation_setup_pending:
             emitter.emit("SetupAnnotations", node=node)
+        emitter.setup_scope_annotations(node)
         body = node.body
         if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
             emitter.emit("Const", body[0].value.value, node=body[0])
             emitter.emit("Store", "__doc__", node=body[0])
             body = body[1:]
         emitter.statements(body)
+        emitter.finish_scope_annotations(node)
         attributes = set()
         class StaticAttributes(ast.NodeVisitor):
             def visit_ClassDef(self, nested):
@@ -783,10 +1003,11 @@ class Emitter:
         emitter.emit("BuildTuple", len(attributes), node=node)
         emitter.emit("Store", "__static_attributes__", node=node)
         emitter.finish()
-        self.emit("MakeClass", node.name, emitter.code_id, len(node.bases), [k.arg for k in node.keywords], node=node)
-        for decorator in reversed(node.decorator_list):
+        self.emit("MakeClass", node.name, emitter.code_id, len(node.bases) + int(type_scope), [k.arg for k in node.keywords], node=node)
+        for decorator in reversed(() if type_scope else node.decorator_list):
             self.emit("Call", 1, [], node=decorator)
-        self.emit("Store", node.name, node=node)
+        if not type_scope:
+            self.emit("Store", node.name, node=node)
 
     def visit_Global(self, node):
         pass

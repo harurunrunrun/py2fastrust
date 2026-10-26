@@ -6,6 +6,7 @@ enum ScopeKind {
     Class,
     Comprehension,
     Annotation,
+    TypeParameters,
 }
 #[derive(Clone, Debug, Default)]
 struct Params {
@@ -49,6 +50,8 @@ enum Op {
     Const(Const),
     Load(String),
     Store(String),
+    StoreCell(String),
+    LoadCell(String),
     Delete(String),
     Pop,
     Dup,
@@ -83,6 +86,10 @@ enum Op {
         defaults: usize,
         kwdefaults: Vec<String>,
     },
+    MakeTypeParam { name: String, kind: String },
+    MakeTypeAlias { name: String },
+    GenericBase,
+    TypeUnpack,
     Return,
     Yield,
     Raise(usize),
@@ -271,7 +278,15 @@ enum IteratorState {
 }
 #[derive(Clone, Debug)]
 enum Object {
-    GenericAlias { origin: Value, args: Vec<Value>, args_tuple: usize, parameters: usize },
+    GenericAlias { origin: Value, args: Vec<Value>, args_tuple: usize, parameters: Option<usize>, typing: bool },
+    TypeParameter(TypeParameter),
+    TypeAlias { name: String, module: Value, params: Value, value: TypeLazy },
+    TypeUnpack(Value),
+    UnpackedAlias(Value),
+    ParamSpecMarker { parameter: Value, kind: String },
+    TypeEvaluator(Value),
+    ForwardRef { arg: String, module: Value },
+    TypeUnion { args: Vec<Value>, parameters: Option<usize> },
     DictView { owner: usize, kind: DictViewKind },
     MappingProxy { owner: usize },
     Slot {
@@ -367,6 +382,9 @@ enum FrameExit {
     Yield(Value),
 }
 struct Runtime {
+    annotation_namespaces: HashMap<usize, usize>,
+    scope_cells: HashMap<usize, HashMap<String, Value>>,
+    typing_alias_cache: Vec<TypingAliasCacheEntry>,
     assoc_layouts: HashMap<usize, AssocLayout>,
     literal_pools: HashMap<usize, HashMap<LiteralKey, Value>>,
     identity_builtins: HashMap<String, u64>,
@@ -756,6 +774,7 @@ impl Runtime {
         self.truth(&value)
     }
     fn compare_value(&mut self, op: &str, a: &Value, b: &Value) -> PyResult<Value> {
+        if op=="==" || op=="!=" {if let Some(result)=self.typing_equal(a,b) {return result.map(|equal|Value::Bool(if op=="=="{equal}else{!equal}));}}
         if let Some(result)=self.generic_compare_value(op,a,b) {return result;}
         if let Some(value) = self.rich_comparison(op, a, b)? {
             return Ok(value);
@@ -1039,6 +1058,10 @@ impl Runtime {
             _ => false,
         })
     }
+    fn code_needs_class_dict(&self,code:usize,depth:usize)->bool {
+        if depth>100{return false;}
+        self.codes[code].frees.iter().any(|name|name=="__classdict__") || self.codes[code].ops.iter().any(|instruction|matches!(&instruction.op,Op::MakeFunction{code,..} if self.code_needs_class_dict(*code,depth+1)))
+    }
     fn cache_key_check(&mut self, v: &Value) -> PyResult<()> {
         if let Value::Obj(i) = v {
             match self.object(*i)? {
@@ -1162,6 +1185,9 @@ impl Runtime {
     }
     fn new(codes: Vec<Code>, modules: Vec<(String, usize)>) -> Self {
         let mut rt = Self {
+            annotation_namespaces: HashMap::new(),
+            scope_cells: HashMap::new(),
+            typing_alias_cache: Vec::new(),
             assoc_layouts: HashMap::new(),
             literal_pools: HashMap::new(),
             identity_builtins: HashMap::new(),
@@ -1319,6 +1345,8 @@ impl Runtime {
     fn alloc(&mut self, obj: Object) -> usize {
         self.allocations += 1;
         let index=if let Some(i)=self.free.pop() {
+            self.annotation_namespaces.remove(&i);
+            self.scope_cells.remove(&i);
             self.scope_bindings.remove(&i);
             self.scope_parents.remove(&i);
             self.finalized.remove(&i);
@@ -1408,7 +1436,8 @@ impl Runtime {
         }
         let global = self.codes[f.code].globals.iter().any(|s| s == name);
         let islocal = (self.codes[f.code].kind == ScopeKind::Function
-            || self.codes[f.code].kind == ScopeKind::Comprehension)
+            || self.codes[f.code].kind == ScopeKind::Comprehension
+            || self.codes[f.code].kind == ScopeKind::TypeParameters)
             && self.codes[f.code].locals.iter().any(|s| s == name);
         if global {
             return self
@@ -1428,13 +1457,17 @@ impl Runtime {
                 ),
             ));
         }
-        let mut closure = f.closure;
-        if self.codes[f.code].kind == ScopeKind::Annotation {
-            if let Some(ns) = closure {
-                if let Some(value) = self.mapping_get(ns, name)? {
-                    return Ok(value);
+        let closure = f.closure;
+        let code = &self.codes[f.code];
+        if matches!(code.kind,ScopeKind::Annotation|ScopeKind::TypeParameters) && code.frees.iter().any(|free|free=="__classdict__") {
+            let mut namespace=closure;
+            while let Some(index)=namespace {
+                if self.scope_parents.contains_key(&index) {
+                    let namespace=self.annotation_namespaces.get(&index).copied().unwrap_or(index);
+                    if let Some(value)=self.mapping_get(namespace,name)? {return Ok(value);}
+                    break;
                 }
-                closure = self.ns_parent(ns)
+                namespace=self.ns_parent(index);
             }
         }
         let code = &self.codes[f.code];
@@ -1807,6 +1840,18 @@ impl Runtime {
                 let v = Self::pop(f)?;
                 self.store(f, n, v)?
             }
+            Op::StoreCell(name) => {
+                let value=Self::pop(f)?;
+                self.scope_cells.entry(f.locals).or_default().insert(name,value);
+            }
+            Op::LoadCell(name) => {
+                let mut namespace=Some(f.locals);let mut value=None;
+                while let Some(index)=namespace {
+                    if let Some(found)=self.scope_cells.get(&index).and_then(|cells|cells.get(&name)){value=Some(found.clone());break;}
+                    namespace=if index==f.locals{f.closure}else{self.ns_parent(index)};
+                }
+                f.stack.push(value.ok_or_else(||pyerr("NameError",format!("unbound annotation cell '{}'",name)))?);
+            }
             Op::Delete(n) => {
                 let ns = if n.starts_with('$') || n.starts_with('\0') {
                     f.temps
@@ -2028,7 +2073,7 @@ impl Runtime {
             } => {
                 let kwvals = Self::pop_many(f, kwdefaults.len())?;
                 let defs = Self::pop_many(f, defaults)?;
-                let closure = if self.codes[code].kind == ScopeKind::Annotation {
+                let closure = if matches!(self.codes[code].kind, ScopeKind::Annotation | ScopeKind::TypeParameters) {
                     Some(f.locals)
                 } else {
                     match self.codes[f.code].kind {
@@ -2067,6 +2112,37 @@ impl Runtime {
                     kwdefaults: kwdefaults.into_iter().zip(kwvals).collect(),
                 }));
                 f.stack.push(fun)
+            }
+            Op::MakeTypeParam { name, kind } => {
+                let default = Self::pop(f)?;
+                let constraints = Self::pop(f)?;
+                let bound = Self::pop(f)?;
+                let value = self.make_type_parameter(name, kind, bound, constraints, default)?;
+                f.stack.push(value);
+            }
+            Op::MakeTypeAlias { name } => {
+                let thunk = Self::pop(f)?;
+                let params = Self::pop(f)?;
+                let module = self.ns_get(f.globals, "__name__").unwrap_or(Value::None);
+                let value = self.obj_value(Object::TypeAlias {
+                    name, module, params, value: TypeLazy::lazy(thunk),
+                });
+                f.stack.push(value);
+            }
+            Op::GenericBase => {
+                let params = Self::pop(f)?;
+                let mut values=Vec::new();for parameter in self.to_vec(params)? {
+                    values.push(if self.type_parameter_kind(&parameter)==Some("typevartuple"){self.obj_value(Object::TypeUnpack(parameter))}else{parameter});
+                }
+                let params=self.obj_value(Object::Tuple(values));
+                f.stack.push(self.typing_generic_alias(Value::Builtin("typing.Generic".into()), params)?);
+            }
+            Op::TypeUnpack => {
+                let inner=Self::pop(f)?;
+                let iterator=self.iter(inner)?;
+                let unpack=self.next(iterator.clone())?.ok_or_else(||pyerr("ValueError","not enough values to unpack (expected 1, got 0)"))?;
+                if self.next(iterator)?.is_some(){return Err(pyerr("ValueError","too many values to unpack (expected 1)"));}
+                f.stack.push(unpack);
             }
             Op::Return => {
                 let v = if f.stack.is_empty() {
@@ -2500,6 +2576,7 @@ impl Runtime {
                 "_py2fastrust_functools" => &["reduce", "cache", "lru_cache", "partial"],
                 "functools" => &["reduce", "cache", "lru_cache", "partial"],
                 "types" => &["GenericAlias"],
+                "typing" => &["TypeVar", "ParamSpec", "TypeVarTuple", "TypeAliasType", "Generic", "Unpack", "Union", "ForwardRef", "ParamSpecArgs", "ParamSpecKwargs", "get_args", "get_origin"],
                 "operator" => &[
                     "add",
                     "sub",
@@ -2558,7 +2635,14 @@ impl Runtime {
                 )),
             )
         }
-        if name=="types" {self.ns_set(attrs,"GenericAlias".into(),Value::Builtin("GenericAlias".into()));}
+        if name=="types" {
+            self.ns_set(attrs,"GenericAlias".into(),Value::Builtin("GenericAlias".into()));
+            self.ns_set(attrs,"UnionType".into(),Value::Builtin("typing.Union".into()));
+        }
+        if name=="typing" {
+            for name in ["TypeVar","ParamSpec","TypeVarTuple","TypeAliasType","Generic","Unpack","Union","ForwardRef","ParamSpecArgs","ParamSpecKwargs"] {self.ns_set(attrs,name.into(),Value::Builtin(format!("typing.{}",name)));}
+            self.ns_set(attrs,"NoDefault".into(),Value::Builtin("typing.NoDefault".into()));
+        }
         if name == "_py2fastrust_functools"
             || (name == "functools" && !self.module_codes.contains_key(name))
         {
@@ -2664,6 +2748,7 @@ impl Runtime {
                 .ok_or_else(|| pyerr("TypeError", format!("{} missing argument", name)))
         };
         match module {
+            "typing" => self.typing_module_call(name,args,kwargs),
             "stream" | "streambuffer" => self.stream_call(name, args, module == "streambuffer"),
             "sys" => match name {
                 "setrecursionlimit" => {
@@ -3049,6 +3134,7 @@ impl Runtime {
         let mut marked = vec![false; self.heap.len()];
         let mut pending = vec![Value::Obj(self.builtins), Value::Obj(self.globals)];
         pending.extend(self.modules.values().cloned());
+        for entry in &self.typing_alias_cache {pending.extend([entry.owner.clone(),entry.key.clone(),entry.value.clone()]);}
         pending.extend(extra.iter().cloned());
         pending.extend(self.running_generators.iter().map(|i| Value::Obj(*i)));
         for group in &self.roots {
@@ -3066,15 +3152,31 @@ impl Runtime {
             if let Some(parent) = self.scope_parents.get(&i) {
                 pending.push(Value::Obj(*parent));
             }
+            if let Some(namespace)=self.annotation_namespaces.get(&i){pending.push(Value::Obj(*namespace));}
+            if let Some(cells)=self.scope_cells.get(&i){pending.extend(cells.values().cloned());}
             let obj = match self.heap[i].as_ref() {
                 Some(o) => o,
                 None => continue,
             };
             match obj {
-                Object::GenericAlias { origin, args, args_tuple, parameters } => {
+                Object::GenericAlias { origin, args, args_tuple, parameters, .. } => {
                     pending.push(origin.clone());pending.extend(args.iter().cloned());
-                    pending.push(Value::Obj(*args_tuple));pending.push(Value::Obj(*parameters));
+                    pending.push(Value::Obj(*args_tuple));pending.extend(parameters.iter().map(|index|Value::Obj(*index)));
                 }
+                Object::TypeParameter(parameter) => {
+                    pending.push(parameter.module.clone());pending.push(Value::Obj(parameter.attrs));
+                    for lazy in [&parameter.bound, &parameter.constraints, &parameter.default] {
+                        pending.extend(lazy.value.iter().cloned());pending.extend(lazy.thunk.iter().cloned());
+                    }
+                }
+                Object::TypeAlias { module, params, value, .. } => {
+                    pending.extend([module.clone(), params.clone()]);
+                    pending.extend(value.value.iter().cloned());pending.extend(value.thunk.iter().cloned());
+                }
+                Object::TypeUnpack(value) | Object::UnpackedAlias(value) | Object::TypeEvaluator(value) => pending.push(value.clone()),
+                Object::ParamSpecMarker { parameter, .. } => pending.push(parameter.clone()),
+                Object::ForwardRef { module, .. } => pending.push(module.clone()),
+                Object::TypeUnion { args, parameters } => {pending.extend(args.iter().cloned());pending.extend(parameters.iter().map(|index|Value::Obj(*index)));}
                 Object::DictView { owner, .. } | Object::MappingProxy { owner } => pending.push(Value::Obj(*owner)),
                 Object::Slot { owner, .. } => pending.push(owner.clone()),
                 Object::List(v) | Object::Tuple(v) | Object::Set(v) => {
@@ -3250,10 +3352,14 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        if self.is_typing_value(&receiver){if let Some(result)=self.typing_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if let Some(result)=self.dictview_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
         if let Some(result)=self.generic_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
         if name=="__class_getitem__" && (matches!(&receiver,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) || matches!(&receiver,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))) {
             if args.len()!=1 || !kwargs.is_empty() {return Err(pyerr("TypeError","__class_getitem__() takes exactly one argument"));}
+            if self.typing_class_uses_typing(&receiver) {
+                return self.typing_class_subscript(receiver,args[0].clone());
+            }
             return self.generic_alias(receiver,args[0].clone());
         }
         if let Value::Obj(index) = &receiver {
@@ -4118,6 +4224,7 @@ impl Runtime {
         kwargs: Vec<(String, Value)>,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if typing_constructor_name(name){return self.typing_constructor(name,args,kwargs,caller).unwrap();}
         if let Some(action) = name.strip_prefix("slot:") {
             let descriptor = args
                 .first()
@@ -4533,6 +4640,10 @@ impl Runtime {
                 if args.len()!=2 || !kwargs.is_empty() {return Err(pyerr("TypeError","GenericAlias expected 2 arguments"));}
                 self.generic_alias(args[0].clone(),args[1].clone())
             }
+            "NoneType" => {
+                if !args.is_empty() || !kwargs.is_empty(){return Err(pyerr("TypeError","NoneType takes no arguments"));}
+                Ok(Value::None)
+            }
             "dict_keys" | "dict_values" | "dict_items" => Err(pyerr("TypeError",format!("cannot create '{}' instances",name))),
             "mappingproxy" => {
                 if args.len()!=1 || !kwargs.is_empty() {return Err(pyerr("TypeError","mappingproxy() takes exactly one argument"));}
@@ -4925,6 +5036,7 @@ impl Runtime {
                         return Ok(Value::Int(Int::from_i128(if hash==-1{-2}else{hash as i128}).into()));
                     }
                     if matches!(self.object(*index)?,Object::GenericAlias { .. }) {return self.generic_value_hash(&v);}
+                    if self.is_typing_value(&v){if let Some(result)=self.typing_hash(&v){return result;}}
                     if let Object::DictView { kind, .. }=self.object(*index)? {
                         if kind!=DictViewKind::Values {return Err(pyerr("TypeError",format!("unhashable type: '{}'",kind.name())));}
                         return Ok(Value::Int(Int::from_i128(*index as i128).into()));
@@ -5094,7 +5206,7 @@ impl Runtime {
                 } else if let Some(f) = caller {
                     if matches!(
                         self.codes[f.code].kind,
-                        ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::Annotation
+                        ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::Annotation | ScopeKind::TypeParameters
                     ) {
                         match self.locals_snapshot(f)? {
                             Value::Obj(index) => index,
@@ -5201,6 +5313,10 @@ impl Runtime {
         }
     }
     fn is_subclass(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
+        if self.type_parameter_kind(b).is_some() || matches!(b,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::TypeAlias{..}|Object::ParamSpecMarker{..}|Object::ForwardRef{..}|Object::TypeUnpack(_)))) {
+            return Err(pyerr("TypeError","isinstance() arg 2 must be a type, a tuple of types, or a union"));
+        }
+        if let Value::Obj(index)=b {if let Object::TypeUnion{args,..}=self.object(*index)?{for value in args{if self.is_subclass(a,&value)?{return Ok(true);}}return Ok(false);}}
         if self.generic_parts(b).is_some() {return Err(pyerr("TypeError","isinstance() argument 2 cannot be a parameterized generic"));}
         if let Value::Obj(i) = b {
             if let Object::Tuple(xs) = self.object(*i)? {
@@ -5305,12 +5421,16 @@ impl Runtime {
                 Ok(self.exception_value(&mut error))
             }
             Value::Obj(i) => match self.object(i)? {
+                Object::TypeEvaluator(value) => {
+                    if args.len()>1 || kwargs.len()>1 {return Err(pyerr("TypeError","evaluator() takes at most one argument"));}
+                    let format=args.first().cloned().or_else(||kwargs.iter().find(|(name,_)|name=="format").map(|(_,value)|value.clone()));
+                    if kwargs.iter().any(|(name,_)|name!="format") || (!args.is_empty()&&!kwargs.is_empty()){return Err(pyerr("TypeError","invalid evaluator arguments"));}
+                    if let Some(format)=format {if self.as_int(&format)?.to_usize()!=Some(1){return Err(pyerr("NotImplementedError","unsupported annotation format"));}}
+                    Ok(value)
+                }
                 Object::GenericAlias { origin, .. } => {
                     let result=self.call(origin,args,kwargs,caller)?;
-                    match self.setattr(result.clone(),"__orig_class__",Value::Obj(i)) {
-                        Ok(())=>{},Err(error) if error.kind=="AttributeError" || error.kind=="TypeError"=>{},Err(error)=>return Err(error),
-                    }
-                    Ok(result)
+                    self.generic_finish_call(result,&Value::Obj(i))
                 }
                 Object::Bound(f, receiver) => {
                     let mut a = vec![receiver];
@@ -5598,6 +5718,7 @@ impl Runtime {
         let root = self.roots.len();
         self.roots.push(vec![out.clone()]);
         let result = (|| {
+            self.initialize_generic_class(&out)?;
             for name in slot_names {
                 let slot = self.next_slot;
                 self.next_slot += 1;
@@ -5647,7 +5768,10 @@ impl Runtime {
         bases: Vec<Value>,
         kw: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        let root=self.roots.len();let mut roots=bases.clone();roots.extend(kw.iter().map(|(_,value)|value.clone()));Self::frame_roots(f,&mut roots);self.roots.push(roots);
+        let result=(||{
         let original_bases=self.obj_value(Object::Tuple(bases.clone()));
+        self.roots[root].push(original_bases.clone());
         let mut resolved_bases=Vec::new();let mut bases_changed=false;
         for base in bases {
             let is_type=matches!(&base,Value::Builtin(_) | Value::Type(_)) || matches!(&base,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))));
@@ -5694,7 +5818,8 @@ impl Runtime {
                 .unwrap_or(Value::Str("__main__".into())),
         )?;
         self.mapping_set(namespace, "__qualname__".into(), Value::Str(name.clone().into()))?;
-        if bases_changed {self.mapping_set(namespace,"__orig_bases__".into(),original_bases)?;}
+        self.roots[root].push(Value::Obj(namespace));
+        self.roots[root].push(basesvalue.clone());
         let parent = if self.codes[f.code].kind == ScopeKind::Class {
             f.closure
         } else {
@@ -5736,7 +5861,7 @@ impl Runtime {
         let has_method = methods.iter().any(|i| {
             self.codes[*i].kind == ScopeKind::Function && !self.codes[*i].name.starts_with('<')
         });
-        if has_method && self.codes[code].future_flags & 0x1000000 == 0 {
+        if self.code_needs_class_dict(code,0) || (has_method && self.codes[code].future_flags & 0x1000000 == 0) {
             let cell = self.obj_value(Object::Cell(Some(Value::Obj(namespace))));
             self.mapping_set(namespace, "__classdictcell__".into(), cell)?;
         }
@@ -5748,6 +5873,7 @@ impl Runtime {
         } else {
             None
         };
+        if bases_changed {self.mapping_set(namespace,"__orig_bases__".into(),original_bases)?;}
         let cls = self.call(
             metaclass,
             vec![Value::Str(name.into()), basesvalue, Value::Obj(namespace)],
@@ -5763,7 +5889,9 @@ impl Runtime {
             }
         }
         self.ns_set(env, "__class__".into(), cls.clone());
+        if let Value::Obj(index)=&cls {if let Object::Class(class)=self.object(*index)?{self.annotation_namespaces.insert(namespace,class.attrs);}}
         Ok(cls)
+        })();self.roots.truncate(root);result
     }
     fn as_exception(&mut self, v: Value) -> PyResult<PyException> {
         match v {
@@ -5938,6 +6066,7 @@ impl Runtime {
                 }
                 seen.push(*i);
                 let s = match self.object(*i)? {
+                    Object::TypeParameter(_) | Object::TypeAlias{..} | Object::TypeUnpack(_) | Object::UnpackedAlias(_) | Object::ParamSpecMarker{..} | Object::TypeEvaluator(_) | Object::ForwardRef{..} | Object::TypeUnion{..} => self.typing_repr(v).unwrap()?,
                     Object::GenericAlias { origin, args, .. } => self.generic_repr(&origin,&args)?,
                     Object::DictView { owner, kind } => self.dictview_repr(owner,Some(kind),seen)?,
                     Object::MappingProxy { owner } => self.dictview_repr(owner,None,seen)?,
@@ -6062,6 +6191,10 @@ impl Runtime {
                 Ok(s)
             }
             Value::Builtin(n) => {
+                if n=="typing.NoDefault" {return Ok("typing.NoDefault".into());}
+                if n=="typing.Unpack" {return Ok("typing.Unpack".into());}
+                if n=="NoneType" {return Ok("<class 'NoneType'>".into());}
+                if typing_type_name(n) {return Ok(format!("<class '{}'>",n));}
                 if n=="GenericAlias" {return Ok("<class 'types.GenericAlias'>".into());}
                 if n == "Ellipsis" || n == "NotImplemented" {
                     Ok(n.clone())
@@ -6258,6 +6391,8 @@ impl Runtime {
             Value::Str(_) => "str".into(),
             Value::Bytes(_) => "bytes".into(),
             Value::Builtin(n) => {
+                if n=="typing.NoDefault" {return "NoDefaultType".into();}
+                if typing_type_name(n) || n=="NoneType" {return "type".into();}
                 if n == "Ellipsis" {
                     return "ellipsis".into();
                 }
@@ -6277,9 +6412,17 @@ impl Runtime {
             }
             Value::Type(_) => "type".into(),
             Value::Obj(i) => match self.heap.get(*i).and_then(|o| o.as_ref()) {
+                Some(Object::TypeParameter(parameter)) => match parameter.kind.as_str(){"paramspec"=>"ParamSpec","typevartuple"=>"TypeVarTuple",_=>"TypeVar"}.into(),
+                Some(Object::TypeAlias{..})=>"TypeAliasType".into(),
+                Some(Object::TypeUnpack(_))=>"_UnpackGenericAlias".into(),
+                Some(Object::UnpackedAlias(_))=>"GenericAlias".into(),
+                Some(Object::ParamSpecMarker{kind,..})=>if kind=="args"{"ParamSpecArgs"}else{"ParamSpecKwargs"}.into(),
+                Some(Object::TypeEvaluator(_))=>"constevaluator".into(),
+                Some(Object::ForwardRef{..})=>"ForwardRef".into(),
+                Some(Object::TypeUnion{..})=>"Union".into(),
                 Some(Object::List(_)) => "list".into(),
                 Some(Object::Tuple(_)) => "tuple".into(),
-                Some(Object::GenericAlias { .. }) => "GenericAlias".into(),
+                Some(Object::GenericAlias { typing, .. }) => if *typing{"_GenericAlias"}else{"GenericAlias"}.into(),
                 Some(Object::DictView { kind, .. }) => kind.name().into(),
                 Some(Object::MappingProxy { .. }) => "mappingproxy".into(),
                 Some(Object::Iterator(IteratorState::Associative(state))) => if state.is_set {"set_iterator".into()}else{format!("dict_{}{}iterator",if state.reversed {"reverse"}else{""},match state.kind{DictViewKind::Keys=>"key",DictViewKind::Values=>"value",DictViewKind::Items=>"item"})},
@@ -6419,6 +6562,7 @@ impl Runtime {
         Ok(false)
     }
     fn equal_default(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
+        if let Some(result)=self.typing_equal(a,b){return result;}
         if let Some(result)=self.view_compare("==",a,b) {return result;}
         if let Some(result)=self.generic_equal(a,b) {return result;}
         let ap=self.proxy_payload(a);let bp=self.proxy_payload(b);
@@ -6685,6 +6829,7 @@ impl Runtime {
         }
     }
     fn binary(&mut self, op: &str, a: Value, b: Value) -> PyResult<Value> {
+        if let Some(result)=self.typing_binary(op,&a,&b){return result;}
         if let Some(result)=self.view_binary(op,a.clone(),b.clone()) {return result;}
         let ap=self.proxy_payload(&a);let bp=self.proxy_payload(&b);
         if ap.is_some() || bp.is_some() {
@@ -7141,6 +7286,7 @@ impl Runtime {
         Ok(None)
     }
     fn getitem(&mut self, obj: Value, key: Value) -> PyResult<Value> {
+        if self.is_typing_value(&obj){if let Some(result)=self.typing_getitem(obj.clone(),key.clone()){return result;}}
         if self.generic_parts(&obj).is_some() {return self.generic_method(obj,"__getitem__",vec![key],Vec::new()).unwrap();}
         if matches!(&obj,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) {return self.generic_alias(obj,key);}
         if let Value::Obj(index)=&obj {
@@ -7521,6 +7667,9 @@ impl Runtime {
         result
     }
     fn iter(&mut self, v: Value) -> PyResult<Value> {
+        if self.type_parameter_kind(&v)==Some("typevartuple") || matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{..}))) {
+            let unpack=if self.type_parameter_kind(&v)==Some("typevartuple") || self.generic_is_typing_alias(&v){self.obj_value(Object::TypeUnpack(v))}else{self.unpack_alias(v)?};return Ok(self.obj_value(Object::Iterator(IteratorState::Values(vec![unpack],0))));
+        }
         if matches!(&v, Value::Builtin(name) if name.starts_with("stream:") || name.starts_with("streambuffer:"))
         {
             return Ok(v);
@@ -7946,6 +8095,11 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if name=="__class__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{typing:true,..}))) {return Ok(Value::Builtin("typing._GenericAlias".into()));}
+        if self.is_typing_value(&v){if let Some(result)=self.typing_attr(v.clone(),name){return result;}}
+        if name=="__class_getitem__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) && self.class_lookup(&v,name,0).is_none() && self.typing_class_uses_typing(&v) {
+            return Ok(self.obj_value(Object::Bound(Value::Builtin("method:__class_getitem__".into()),v)));
+        }
         if matches!(&v,Value::Builtin(value)if value=="GenericAlias") && name=="__module__" {return Ok(Value::Str("types".into()));}
         if let Some(result)=self.dictview_attr(v.clone(),name) {return result;}
         if let Some(result)=self.generic_attr(v.clone(),name) {return result;}
@@ -8196,6 +8350,14 @@ impl Runtime {
                     }
                 }
                 Object::Module { attrs, .. } => {
+                    if name=="__annotations__" {
+                        if let Some(value)=self.ns_get(attrs,name){return Ok(value);}
+                        let annotations=if let Some(annotate)=self.ns_get(attrs,"__annotate__").filter(|value|!matches!(value,Value::None)) {
+                            self.call(annotate,vec![Value::Int(Int::from_i128(1).into())],Vec::new(),None)?
+                        }else{self.obj_value(Object::Dict(Vec::new()))};
+                        if !matches!(&annotations,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Dict(_)|Object::Namespace(..)))){return Err(pyerr("TypeError","__annotate__ must return a dictionary"));}
+                        self.ns_set(attrs,name.into(),annotations.clone());return Ok(annotations);
+                    }
                     if let Some(x) = self.ns_get(attrs, name) {
                         return Ok(x);
                     }
@@ -8296,11 +8458,11 @@ impl Runtime {
                 }
                 Object::Class(c) => {
                     if name=="__annotate__" {
-                        return Ok(self.ns_get(c.attrs,name).unwrap_or(Value::None));
+                        return Ok(self.ns_get(c.attrs,"__annotate_func__").or_else(||self.ns_get(c.attrs,name)).unwrap_or(Value::None));
                     }
                     if name=="__annotations__" {
                         if let Some(annotations)=self.ns_get(c.attrs,name) {return Ok(annotations);}
-                        let annotations=if let Some(annotate)=self.ns_get(c.attrs,"__annotate__").filter(|value|!matches!(value,Value::None)) {
+                        let annotations=if let Some(annotate)=self.ns_get(c.attrs,"__annotate_func__").or_else(||self.ns_get(c.attrs,"__annotate__")).filter(|value|!matches!(value,Value::None)) {
                             self.call(annotate,vec![Value::Int(Int::from_i128(1).into())],Vec::new(),None)?
                         }else{self.obj_value(Object::Dict(Vec::new()))};
                         self.ns_set(c.attrs,name.into(),annotations.clone());return Ok(annotations);
@@ -8688,6 +8850,14 @@ impl Runtime {
         ))
     }
     fn setattr_default(&mut self, obj: Value, name: &str, value: Value) -> PyResult<()> {
+        if let Value::Obj(index)=&obj {
+            if let Object::TypeParameter(mut parameter)=self.object(*index)? {
+                let protected=["__name__","__default__"].contains(&name) || (parameter.kind!="typevartuple" && ["__bound__","__constraints__","__infer_variance__","__covariant__","__contravariant__"].contains(&name));
+                if protected{return Err(pyerr("AttributeError",format!("attribute '{}' is not writable",name)));}
+                if name=="__module__" {parameter.module=value;self.heap[*index]=Some(Object::TypeParameter(parameter));}else{self.ns_set(parameter.attrs,name.into(),value);}
+                return Ok(());
+            }
+        }
         if let Value::Obj(i) = obj.clone() {
             match self.object(i)? {
                 Object::Exception(mut error) => {
@@ -8919,6 +9089,14 @@ impl Runtime {
                     return Ok(());
                 }
                 Object::Class(mut c) => {
+                    if name=="__annotate__" {
+                        if !matches!(value,Value::None) {
+                            let callable=self.builtin("callable",vec![value.clone()],Vec::new(),None)?;
+                            if !self.truth(&callable)? {return Err(pyerr("TypeError","__annotate__ must be callable or None"));}
+                            self.ns_del(c.attrs,"__annotations__");
+                        }
+                        self.ns_set(c.attrs,"__annotate_func__".into(),value);return Ok(());
+                    }
                     if name == "__name__" {
                         if let Value::Str(text) = value {
                             c.name = text;
@@ -8934,6 +9112,11 @@ impl Runtime {
                     return Ok(());
                 }
                 Object::Module { attrs, .. } => {
+                    if name=="__annotate__" && !matches!(value,Value::None) {
+                        let callable=self.builtin("callable",vec![value.clone()],Vec::new(),None)?;
+                        if !self.truth(&callable)? {return Err(pyerr("TypeError","__annotate__ must be callable or None"));}
+                        self.ns_del(attrs,"__annotations__");
+                    }
                     if matches!(
                         self.heap.get(i).and_then(|o| o.as_ref()),
                         Some(Object::BuiltinInstance { .. })

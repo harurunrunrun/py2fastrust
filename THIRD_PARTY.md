@@ -15,6 +15,12 @@ The high-accuracy error-function and gamma-function algorithms in
 `Modules/mathmodule.c`. Source versions and attribution are recorded in that
 file. The same PSF license is included in generated general-runtime Rust.
 
+Type-parameter collection and substitution control flow in
+`py2fastrust/runtime/generic_alias.rs` is adapted from CPython 3.14's
+`Objects/genericaliasobject.c`, `Objects/typevarobject.c`, and `Lib/typing.py`.
+The source comments identify the upstream functions. These adaptations use the
+same retained PSF license, including its notice in generated Rust submissions.
+
 The compiler uses the host Python's official `ast` and `symtable` APIs.
 The Rust PEG engine and tokenizer are independent implementations. Its grammar
 tables are generated from CPython 3.14.4's unmodified `Grammar/python.gram` and

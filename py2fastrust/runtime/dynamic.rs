@@ -177,9 +177,14 @@ struct DGenerator { target: DExpr, iter: DExpr, filters: Vec<DExpr> }
 #[derive(Clone, Debug, Default)]
 struct DParams { params: Params, defaults: Vec<DExpr>, kwdefaults: Vec<(String, DExpr)>, annotations: Vec<(String,DExpr)> }
 #[derive(Clone, Debug)]
+struct DTypeParam { name:String, kind:String, bound:Option<DExpr>, constraints:Option<DExpr>, default:Option<DExpr> }
+#[derive(Clone, Debug)]
 struct DStmt { kind: DStmtKind, line: usize, column: usize }
 #[derive(Clone, Debug)]
 enum DStmtKind {
+    Generic(Vec<DTypeParam>,Box<DStmtKind>), TypeAlias(String,Vec<DTypeParam>,DExpr),
+    // Compiler-only nodes keep generated lexical bindings out of user scopes.
+    TypeParameter(DTypeParam), TypeDefinition(Box<DStmtKind>),
     Expr(DExpr), Assign(Vec<DExpr>, DExpr), AnnAssign(DExpr, DExpr, Option<DExpr>, bool), AugAssign(DExpr, String, DExpr), Delete(Vec<DExpr>),
     If(DExpr, Vec<DStmt>, Vec<DStmt>), While(DExpr, Vec<DStmt>, Vec<DStmt>), For(DExpr, DExpr, Vec<DStmt>, Vec<DStmt>),
     Function(String, DParams, Vec<DStmt>, Vec<DExpr>), Class(String, Vec<DExpr>, Vec<(String, DExpr)>, Vec<DStmt>, Vec<DExpr>),
@@ -271,11 +276,13 @@ impl DParser {
             let body = self.suite()?; let tail = if self.eat("else") { self.suite()? } else { Vec::new() };
             DStmtKind::For(target, iter, body, tail)
         } else if self.eat("def") {
-            let name = self.name()?; self.expect("(")?; let mut params = self.parameters(")")?; self.expect(")")?;
+            let name = self.name()?; let type_params=self.type_parameters()?;
+            self.expect("(")?; let mut params = self.parameters(")")?; self.expect(")")?;
             if self.eat("->") { params.annotations.push(("return".to_owned(),self.expression()?)); }
-            DStmtKind::Function(name, params, self.suite()?, decorators.clone())
+            let definition=DStmtKind::Function(name, params, self.suite()?, decorators.clone());
+            if type_params.is_empty(){definition}else{DStmtKind::Generic(type_params,Box::new(definition))}
         } else if self.eat("class") {
-            let name = self.name()?; let mut bases = Vec::new(); let mut keywords = Vec::new();
+            let name = self.name()?; let type_params=self.type_parameters()?; let mut bases = Vec::new(); let mut keywords = Vec::new();
             if self.eat("(") {
                 while !self.is(")") {
                     if matches!(self.token().kind, DTokenKind::Name(_)) && self.next_is("=") { let key = self.name()?; self.expect("=")?; keywords.push((key, self.expression()?)); }
@@ -284,7 +291,8 @@ impl DParser {
                 }
                 self.expect(")")?;
             }
-            DStmtKind::Class(name, bases, keywords, self.suite()?, decorators.clone())
+            let definition=DStmtKind::Class(name, bases, keywords, self.suite()?, decorators.clone());
+            if type_params.is_empty(){definition}else{DStmtKind::Generic(type_params,Box::new(definition))}
         } else if self.eat("try") {
             let body = self.suite()?; let mut handlers = Vec::new();
             while self.eat("except") {
@@ -312,7 +320,7 @@ impl DParser {
             if self.is("async") { return Err(self.error("async statements are not supported by dynamic compilation")); }
             return self.simple_line();
         };
-        if !decorators.is_empty() && !matches!(kind, DStmtKind::Function(..) | DStmtKind::Class(..)) { return Err(self.error("decorator must precede a function or class")); }
+        if !decorators.is_empty() && !matches!(kind, DStmtKind::Function(..) | DStmtKind::Class(..) | DStmtKind::Generic(..)) { return Err(self.error("decorator must precede a function or class")); }
         Ok(vec![DStmt { kind, line: token.line, column: token.column }])
     }
     fn if_tail(&mut self) -> Result<Vec<DStmt>, String> {
@@ -333,7 +341,10 @@ impl DParser {
     }
     fn simple_statement(&mut self) -> Result<DStmt, String> {
         let token = self.token().clone();
-        let kind = if self.eat("pass") { DStmtKind::Pass }
+        let kind = if self.is("type") && self.tokens.get(self.at+1).is_some_and(|token|matches!(&token.kind,DTokenKind::Name(name)if !d_reserved(name))) {
+            self.at+=1; let name=self.name()?;let params=self.type_parameters()?;self.expect("=")?;
+            DStmtKind::TypeAlias(name,params,self.expression()?)
+        } else if self.eat("pass") { DStmtKind::Pass }
         else if self.eat("break") { DStmtKind::Break }
         else if self.eat("continue") { DStmtKind::Continue }
         else if self.eat("return") { DStmtKind::Return(if self.end_simple() { None } else { Some(self.expression_list()?) }) }
@@ -585,6 +596,35 @@ impl DParser {
         }
         Ok(generators)
     }
+    fn type_parameters(&mut self)->Result<Vec<DTypeParam>,String> {
+        if !self.eat("["){return Ok(Vec::new());}
+        if self.is("]"){return Err(self.error("type parameter list cannot be empty"));}
+        let mut parameters:Vec<DTypeParam>=Vec::new();let mut saw_default=false;
+        loop {
+            let kind=if self.eat("**"){"paramspec"}else if self.eat("*"){"typevartuple"}else{"typevar"};
+            let name=self.name()?;
+            if parameters.iter().any(|parameter|parameter.name==name){return Err(self.error(&format!("duplicate type parameter '{name}'")));}
+            let mut bound=None;let mut constraints=None;
+            if self.eat(":"){
+                if kind!="typevar"{return Err(self.error(if kind=="paramspec"{"cannot use bound with ParamSpec"}else{"cannot use bound with TypeVarTuple"}));}
+                let value=self.expression()?;
+                if matches!(value.kind,DExprKind::Tuple(_)){constraints=Some(value);}else{bound=Some(value);}
+            }
+            let default=if self.eat("="){
+                saw_default=true;
+                if kind=="typevartuple" && self.eat("*") {
+                    let token=self.tokens[self.at-1].clone();let value=self.expression()?;
+                    Some(self.expr_at(DExprKind::Star(Box::new(value)),&token))
+                }else{Some(self.expression()?)}
+            }else{
+                if saw_default{return Err(self.error(&format!("non-default type parameter '{name}' follows default type parameter")));}
+                None
+            };
+            parameters.push(DTypeParam{name,kind:kind.to_owned(),bound,constraints,default});
+            if !self.eat(",") || self.is("]"){break;}
+        }
+        self.expect("]")?;Ok(parameters)
+    }
     fn parameters(&mut self, closing: &str) -> Result<DParams,String> {
         let mut params = DParams::default(); let mut keyword_only = false; let mut seen_default = false; let mut seen_slash = false;
         while !self.is(closing) {
@@ -788,6 +828,7 @@ fn d_static_target(target: &DExpr, names: &mut Vec<String>) {
 fn d_static_attributes(body: &[DStmt], in_function: bool, names: &mut Vec<String>) {
     for stmt in body {
         match &stmt.kind {
+            DStmtKind::Generic(_,definition)=>d_static_attributes(&[DStmt{kind:(**definition).clone(),line:stmt.line,column:stmt.column}],in_function,names),
             DStmtKind::Function(_,_,body,_) => d_static_attributes(body,true,names),
             DStmtKind::Class(..) => (),
             DStmtKind::Assign(targets,value) if in_function && !matches!(&value.kind,DExprKind::Name(name) if name == "$unbound_annotation") => for target in targets { d_static_target(target,names); },
@@ -814,6 +855,7 @@ fn d_validate_futures(body: &[DStmt], filename: &str, top_level: bool) -> Result
         }
         if !(top_level && index == 0 && d_docstring(stmt).is_some()) { allowed = false; }
         match &stmt.kind {
+            DStmtKind::Generic(_,definition)=>d_validate_futures(&[DStmt{kind:(**definition).clone(),line:stmt.line,column:stmt.column}],filename,false)?,
             DStmtKind::Function(_,_,body,_) | DStmtKind::Class(_,_,_,body,_) => d_validate_futures(body,filename,false)?,
             DStmtKind::If(_,body,tail) | DStmtKind::While(_,body,tail) | DStmtKind::For(_,_,body,tail) => { d_validate_futures(body,filename,false)?; d_validate_futures(tail,filename,false)?; },
             DStmtKind::Try(body,handlers,tail,finally) => { d_validate_futures(body,filename,false)?; for (_,_,body) in handlers { d_validate_futures(body,filename,false)?; } d_validate_futures(tail,filename,false)?; d_validate_futures(finally,filename,false)?; },
@@ -1119,6 +1161,25 @@ impl DSymbols {
     fn block(&mut self, body: &[DStmt]) { for stmt in body { self.stmt(stmt); } }
     fn stmt(&mut self, stmt: &DStmt) {
         match &stmt.kind {
+            DStmtKind::TypeAlias(name,_,_)=>d_push_name(&mut self.locals,&d_mangle(&self.private,name)),
+            DStmtKind::TypeParameter(parameter)=>d_push_name(&mut self.locals,&d_mangle(&self.private,&parameter.name)),
+            DStmtKind::Generic(_,definition)=>{
+                match &**definition {
+                    DStmtKind::Function(name,params,_,decorators)=>{
+                        d_push_name(&mut self.locals,&d_mangle(&self.private,name));
+                        for value in decorators.iter().chain(&params.defaults).chain(params.kwdefaults.iter().map(|(_,value)|value)){self.expr(value);}
+                    },
+                    DStmtKind::Class(name,_,_,_,decorators)=>{
+                        d_push_name(&mut self.locals,&d_mangle(&self.private,name));for value in decorators{self.expr(value);}
+                    },
+                    _=>{},
+                }
+            },
+            DStmtKind::TypeDefinition(definition)=>match &**definition {
+                DStmtKind::Function(_,params,_,_)=>{for value in params.defaults.iter().chain(params.kwdefaults.iter().map(|(_,value)|value)){self.expr(value);}},
+                DStmtKind::Class(_,bases,keywords,_,_)=>{for value in bases.iter().chain(keywords.iter().map(|(_,value)|value)){self.expr(value);}},
+                _=>{},
+            },
             DStmtKind::Assign(targets,value) => { self.expr(value); for target in targets { self.target(target); } },
             DStmtKind::AnnAssign(target,_,value,_) => {
                 if let Some(value) = value { self.expr(value); }
@@ -1185,7 +1246,31 @@ fn d_scope_binds(scopes: &[(ScopeKind,Vec<String>,Vec<String>)], name: &str) -> 
     }
     false
 }
-struct DCompiler { codes: Vec<Code>, filename: String, offset: usize, temporary: usize, interactive: bool, future_flags: u32 }
+fn d_annotation_class_scope(scopes:&[(ScopeKind,Vec<String>,Vec<String>)])->bool {
+    for (kind,_,_) in scopes.iter().rev(){match kind{ScopeKind::Class=>return true,ScopeKind::Annotation|ScopeKind::TypeParameters=>{},_=>return false}}
+    false
+}
+#[derive(Clone)]
+struct DAnnotation {name:String,value:DExpr,index:Option<usize>,line:usize,column:usize}
+fn d_collect_annotations(body:&[DStmt],conditional:bool,records:&mut Vec<DAnnotation>,next:&mut usize){
+    for statement in body {match &statement.kind {
+        DStmtKind::AnnAssign(DExpr{kind:DExprKind::Name(name),..},value,_,true)=>{
+            let index=if conditional{let index=*next;*next+=1;Some(index)}else{None};
+            records.push(DAnnotation{name:name.clone(),value:value.clone(),index,line:statement.line,column:statement.column});
+        },
+        DStmtKind::If(_,body,tail)|DStmtKind::While(_,body,tail)|DStmtKind::For(_,_,body,tail)=>{
+            d_collect_annotations(body,true,records,next);d_collect_annotations(tail,true,records,next);
+        },
+        DStmtKind::With(_,body)=>d_collect_annotations(body,true,records,next),
+        DStmtKind::Try(body,handlers,tail,finally)=>{
+            d_collect_annotations(body,true,records,next);for (_,_,body) in handlers{d_collect_annotations(body,true,records,next);}
+            d_collect_annotations(tail,true,records,next);d_collect_annotations(finally,true,records,next);
+        },
+        DStmtKind::Match(_,cases)=>for (_,_,body) in cases{d_collect_annotations(body,true,records,next);},
+        _=>{},
+    }}
+}
+struct DCompiler { codes: Vec<Code>, filename: String, offset: usize, temporary: usize, interactive: bool, future_flags: u32, scope_annotations:HashMap<usize,Vec<DAnnotation>>, stringized_annotation:bool }
 impl DCompiler {
     fn error(&self, line: usize, message: &str) -> String { format!("SyntaxError: {message} ({}:{line})",self.filename) }
     fn temporary(&mut self, ctx: &DCtx) -> String {
@@ -1225,7 +1310,7 @@ impl DCompiler {
         }
     }
     fn order_cell_locals(&mut self, index: usize) {
-        if !matches!(self.codes[index].kind,ScopeKind::Function | ScopeKind::Comprehension) { return; }
+        if !matches!(self.codes[index].kind,ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::TypeParameters) { return; }
         let parameters=&self.codes[index].params;
         let parameters:Vec<String>=parameters.positional.iter().chain(parameters.kwonly.iter()).chain(parameters.vararg.iter()).chain(parameters.kwarg.iter()).cloned().collect();
         let mut cells=Vec::new();
@@ -1248,6 +1333,8 @@ impl DCompiler {
     fn code(&mut self, name: &str, kind: ScopeKind, params: &DParams, body: &[DStmt], enclosing: &DCtx, definition_line: usize) -> Result<usize,String> {
         let private=if kind == ScopeKind::Class { Some(name.to_owned()) } else { enclosing.private.clone() };
         let mut symbols = DSymbols { private:private.clone(),..DSymbols::default() }; symbols.block(body);
+        let generic_class=kind==ScopeKind::Class && self.codes[enclosing.index].kind==ScopeKind::TypeParameters;
+        if generic_class {d_push_name(&mut symbols.locals,"__type_params__");d_push_name(&mut symbols.uses,".type_params");}
         if let Some(error) = symbols.error { return Err(error); }
         if kind == ScopeKind::Function {
             for name in &symbols.annotated {
@@ -1266,11 +1353,20 @@ impl DCompiler {
         }
         for name in &symbols.nonlocals {
             if symbols.globals.contains(name) { return Err(self.error(1,"name is both global and nonlocal")); }
+            for (scope,locals,globals) in enclosing.scopes.iter().rev() {
+                if *scope==ScopeKind::Class {continue;}
+                if *scope==ScopeKind::Module || globals.contains(name) {break;}
+                if locals.contains(name) {
+                    if *scope==ScopeKind::TypeParameters{return Err(self.error(definition_line,&format!("nonlocal binding not allowed for type parameter '{name}'")));}
+                    break;
+                }
+            }
             let found = d_scope_binds(&enclosing.scopes,name);
             if !found { return Err(self.error(1,&format!("no binding for nonlocal '{name}' found"))); }
         }
         symbols.locals.retain(|name| !symbols.globals.contains(name) && !symbols.nonlocals.contains(name));
         let mut frees=symbols.nonlocals.clone();
+        if matches!(kind,ScopeKind::Annotation|ScopeKind::TypeParameters) && !(kind==ScopeKind::Annotation && self.stringized_annotation) && d_annotation_class_scope(&enclosing.scopes){d_push_name(&mut frees,"__classdict__");}
         for name in &symbols.uses {
             if !symbols.locals.contains(name) && !symbols.globals.contains(name) && d_scope_binds(&enclosing.scopes,name) { d_push_name(&mut frees,name); }
         }
@@ -1286,13 +1382,21 @@ impl DCompiler {
         let mut body_start = 0;
         if is_class {
             self.emit(&ctx,Op::Const(Const::Int(definition_line.to_string())),definition_line,0); self.emit(&ctx,Op::Store("__firstlineno__".to_owned()),definition_line,0);
+            if generic_class {self.emit(&ctx,Op::Load(".type_params".to_owned()),definition_line,0);self.emit(&ctx,Op::Store("__type_params__".to_owned()),definition_line,0);}
             if self.future_flags & D_FUTURE_ANNOTATIONS != 0 && d_has_annotations(body) { self.emit(&ctx,Op::SetupAnnotations,definition_line,0); }
+            else if self.future_flags & D_FUTURE_ANNOTATIONS == 0 {self.prepare_scope_annotations(&mut ctx,body,definition_line,0)?;}
             if let Some(first) = body.first() {
                 if let Some(doc) = d_docstring(first) { self.emit(&ctx,Op::Const(Const::Str(doc.clone())),first.line,first.column); self.emit(&ctx,Op::Store("__doc__".to_owned()),first.line,first.column); body_start = 1; }
             }
         }
         self.block(&mut ctx,&body[body_start..])?;
         if is_class {
+            if self.future_flags & D_FUTURE_ANNOTATIONS == 0 {
+                if let Some(records)=self.scope_annotations.get(&ctx.index).cloned(){if !records.is_empty(){
+                    self.scope_annotation_helper(&mut ctx,&records,definition_line,0)?;
+                    self.emit(&ctx,Op::Store("__annotate_func__".to_owned()),definition_line,0);
+                }}
+            }
             let mut attributes = Vec::new(); d_static_attributes(body,false,&mut attributes); attributes.sort();
             for name in &attributes { self.emit(&ctx,Op::Const(Const::Str(name.clone())),definition_line,0); }
             self.emit(&ctx,Op::BuildTuple(attributes.len()),definition_line,0); self.emit(&ctx,Op::Store("__static_attributes__".to_owned()),definition_line,0);
@@ -1306,6 +1410,47 @@ impl DCompiler {
     fn stmt(&mut self, ctx: &mut DCtx, stmt: &DStmt) -> Result<(),String> {
         let line = stmt.line; let col = stmt.column;
         match &stmt.kind {
+            DStmtKind::Generic(parameters,definition)=>self.generic_definition(ctx,parameters,definition,line,col)?,
+            DStmtKind::TypeAlias(name,parameters,value)=>{
+                if parameters.is_empty(){
+                    self.emit(ctx,Op::BuildTuple(0),line,col);self.lazy_expression(ctx,name,value,line,col)?;
+                    self.emit(ctx,Op::MakeTypeAlias{name:name.clone()},line,col);self.emit(ctx,Op::Store(name.clone()),line,col);
+                }else{self.generic_definition(ctx,parameters,&DStmtKind::TypeAlias(name.clone(),Vec::new(),value.clone()),line,col)?;}
+            },
+            DStmtKind::TypeParameter(parameter)=>{
+                for (field,value) in [("__bound__",&parameter.bound),("__constraints__",&parameter.constraints),("__default__",&parameter.default)] {
+                    if let Some(value)=value{self.lazy_expression(ctx,field,value,line,col)?;}else{self.emit(ctx,Op::Const(Const::None),line,col);}
+                }
+                self.emit(ctx,Op::MakeTypeParam{name:parameter.name.clone(),kind:parameter.kind.clone()},line,col);
+                self.emit(ctx,Op::Store(parameter.name.clone()),line,col);
+            },
+            DStmtKind::TypeDefinition(definition)=>{
+                match &**definition {
+                    DStmtKind::Function(name,params,body,_)=>{
+                        for value in params.defaults.iter().chain(params.kwdefaults.iter().map(|(_,value)|value)){self.expr(ctx,value)?;}
+                        let code=self.code(name,ScopeKind::Function,params,body,ctx,line)?;
+                        self.emit(ctx,Op::MakeFunction{code:self.offset+code,defaults:params.defaults.len(),kwdefaults:params.kwdefaults.iter().map(|(name,_)|name.clone()).collect()},line,col);
+                        self.annotations(ctx,params,line,col)?;
+                        self.emit(ctx,Op::Dup,line,col);self.emit(ctx,Op::Load(".type_params".to_owned()),line,col);self.emit(ctx,Op::Swap,line,col);self.emit(ctx,Op::SetAttr("__type_params__".to_owned()),line,col);
+                    },
+                    DStmtKind::Class(name,bases,keywords,body,_)=>{
+                        for base in bases.iter().chain(keywords.iter().map(|(_,value)|value)) {
+                            if let Some(message)=d_annotation_violation(base){return Err(self.error(line,message));}
+                        }
+                        for base in bases{self.expr(ctx,base)?;}
+                        self.emit(ctx,Op::Load(".type_params".to_owned()),line,col);self.emit(ctx,Op::GenericBase,line,col);
+                        for (_,value) in keywords{self.expr(ctx,value)?;}
+                        let code=self.code(name,ScopeKind::Class,&DParams::default(),body,ctx,line)?;
+                        self.emit(ctx,Op::MakeClass{name:name.clone(),code:self.offset+code,bases:bases.len()+1,keywords:keywords.iter().map(|(name,_)|name.clone()).collect()},line,col);
+                    },
+                    DStmtKind::TypeAlias(name,_,value)=>{
+                        self.emit(ctx,Op::Load(".type_params".to_owned()),line,col);self.lazy_expression(ctx,name,value,line,col)?;
+                        self.emit(ctx,Op::MakeTypeAlias{name:name.clone()},line,col);
+                    },
+                    _=>return Err(self.error(line,"invalid generic declaration")),
+                }
+                self.emit(ctx,Op::Return,line,col);
+            },
             DStmtKind::Pass | DStmtKind::Global(_) | DStmtKind::Nonlocal(_) => { self.emit(ctx,Op::Nop,line,col); }
             DStmtKind::Expr(value) => { self.expr(ctx,value)?; self.emit(ctx,if self.interactive && ctx.index == 0 { Op::PrintExpr } else { Op::Pop },line,col); }
             DStmtKind::Assign(targets,value) => {
@@ -1321,6 +1466,13 @@ impl DCompiler {
                     DExprKind::Subscript(value,index)=>{self.expr(ctx,value)?;self.emit(ctx,Op::Pop,line,col);self.expr(ctx,index)?;self.emit(ctx,Op::Pop,line,col);},
                     _=>(),
                 } }
+                if self.future_flags & D_FUTURE_ANNOTATIONS == 0 && *simple {
+                    let index=self.scope_annotations.get(&ctx.index).and_then(|records|records.iter().find(|record|record.line==line&&record.column==col)).and_then(|record|record.index);
+                    if let Some(index)=index{
+                        let load=if self.codes[ctx.index].kind==ScopeKind::Class{Op::LoadCell("__conditional_annotations__".to_owned())}else{Op::Load("__conditional_annotations__".to_owned())};
+                        self.emit(ctx,load,line,col);self.emit(ctx,Op::Const(Const::Int(index.to_string())),line,col);self.emit(ctx,Op::SetAdd(1),line,col);self.emit(ctx,Op::Pop,line,col);
+                    }
+                }
                 if self.future_flags & D_FUTURE_ANNOTATIONS != 0 && matches!(self.codes[ctx.index].kind,ScopeKind::Module | ScopeKind::Class) && *simple {
                     if let DExprKind::Name(name) = &target.kind {
                         self.emit(ctx,Op::Const(Const::Str(d_annotation_string(annotation))),line,col);
@@ -1386,7 +1538,7 @@ impl DCompiler {
                 for _ in decorators { self.emit(ctx,Op::Call { pos:1,keywords:Vec::new() },line,col); } self.emit(ctx,Op::Store(name.clone()),line,col);
             }
             DStmtKind::Return(value) => {
-                if !matches!(self.codes[ctx.index].kind,ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::Annotation) { return Err(self.error(line,"return outside function")); }
+                if !matches!(self.codes[ctx.index].kind,ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::Annotation | ScopeKind::TypeParameters) { return Err(self.error(line,"return outside function")); }
                 if let Some(value) = value { self.expr(ctx,value)?; } else { self.emit(ctx,Op::Const(Const::None),line,col); } self.emit(ctx,Op::Return,line,col);
             }
             DStmtKind::Raise(value,cause) => {
@@ -1443,6 +1595,101 @@ impl DCompiler {
         if let Some(setup) = final_setup { self.emit(ctx,Op::PopHandler,line,col); let start = self.here(ctx); self.patch(ctx,setup,start); self.block(ctx,finally)?; self.emit(ctx,Op::EndFinally,line,col); }
         Ok(())
     }
+    fn prepare_scope_annotations(&mut self,ctx:&mut DCtx,body:&[DStmt],line:usize,column:usize)->Result<(),String>{
+        let module=self.codes[ctx.index].kind==ScopeKind::Module;
+        let mut records=Vec::new();let mut next=0;d_collect_annotations(body,module,&mut records,&mut next);
+        for record in &records {if let Some(message)=d_annotation_violation(&record.value){return Err(self.error(record.line,message));}}
+        self.scope_annotations.insert(ctx.index,records.clone());
+        if module && !records.is_empty(){
+            self.scope_annotation_helper(ctx,&records,line,column)?;self.emit(ctx,Op::Store("__annotate__".to_owned()),line,column);
+        }
+        if module && d_has_annotations(body) || !module && next>0 {
+            self.emit(ctx,Op::BuildSet(0),line,column);
+            self.emit(ctx,if module{Op::Store("__conditional_annotations__".to_owned())}else{Op::StoreCell("__conditional_annotations__".to_owned())},line,column);
+        }
+        Ok(())
+    }
+    fn scope_annotation_helper(&mut self,ctx:&mut DCtx,records:&[DAnnotation],line:usize,column:usize)->Result<(),String>{
+        let make=|kind|DExpr{kind,line,column};
+        let condition=make(DExprKind::Compare(Box::new(make(DExprKind::Name(".format".to_owned()))),vec![(">".to_owned(),make(DExprKind::Constant(Const::Int("2".to_owned()))))]));
+        let error=make(DExprKind::Call(Box::new(make(DExprKind::Name("NotImplementedError".to_owned()))),Vec::new(),Vec::new()));
+        let check=DStmt{kind:DStmtKind::If(condition,vec![DStmt{kind:DStmtKind::Raise(Some(error),None),line,column}],Vec::new()),line,column};
+        let result_name="$annotations".to_owned();
+        let mut statements=vec![check,DStmt{kind:DStmtKind::Assign(vec![make(DExprKind::Name(result_name.clone()))],make(DExprKind::Dict(Vec::new()))),line,column}];
+        for record in records{
+            let target=make(DExprKind::Subscript(Box::new(make(DExprKind::Name(result_name.clone()))),Box::new(make(DExprKind::Constant(Const::Str(d_mangle(&ctx.private,&record.name)))))));
+            let assigned=DStmt{kind:DStmtKind::Assign(vec![target],record.value.clone()),line:record.line,column:record.column};
+            if let Some(index)=record.index{
+                let condition=make(DExprKind::Compare(Box::new(make(DExprKind::Constant(Const::Int(index.to_string())))),vec![("in".to_owned(),make(DExprKind::Name("__conditional_annotations__".to_owned())))]));
+                statements.push(DStmt{kind:DStmtKind::If(condition,vec![assigned],Vec::new()),line:record.line,column:record.column});
+            }else{statements.push(assigned);}
+        }
+        statements.push(DStmt{kind:DStmtKind::Return(Some(make(DExprKind::Name(result_name)))),line,column});
+        let mut params=DParams::default();params.params.posonly=1;params.params.positional.push(".format".to_owned());
+        let code=self.code("__annotate__",ScopeKind::Annotation,&params,&statements,ctx,line)?;
+        if self.codes[ctx.index].kind==ScopeKind::Class && records.iter().any(|record|record.index.is_some()){
+            for instruction in &mut self.codes[code].ops{if matches!(&instruction.op,Op::Load(name)if name=="__conditional_annotations__"){instruction.op=Op::LoadCell("__conditional_annotations__".to_owned());}}
+            d_push_name(&mut self.codes[code].frees,"__conditional_annotations__");
+        }
+        self.emit(ctx,Op::MakeFunction{code:self.offset+code,defaults:0,kwdefaults:Vec::new()},line,column);Ok(())
+    }
+    fn lazy_expression(&mut self,ctx:&mut DCtx,name:&str,value:&DExpr,line:usize,column:usize)->Result<(),String> {
+        if let Some(message)=d_annotation_violation(value){return Err(self.error(line,message));}
+        let make=|kind|DExpr{kind,line,column};
+        let condition=make(DExprKind::Compare(Box::new(make(DExprKind::Name(".format".to_owned()))),vec![(">".to_owned(),make(DExprKind::Constant(Const::Int("2".to_owned()))))]));
+        let error=make(DExprKind::Call(Box::new(make(DExprKind::Name("NotImplementedError".to_owned()))),Vec::new(),Vec::new()));
+        let check=DStmt{kind:DStmtKind::If(condition,vec![DStmt{kind:DStmtKind::Raise(Some(error),None),line,column}],Vec::new()),line,column};
+        let returned_value=if let DExprKind::Star(inner)=&value.kind{(**inner).clone()}else{value.clone()};
+        let returned=DStmt{kind:DStmtKind::Return(Some(returned_value)),line,column};
+        let mut parameters=DParams::default();parameters.params.posonly=1;parameters.params.positional.push(".format".to_owned());
+        let code=self.code(name,ScopeKind::Annotation,&parameters,&[check,returned],ctx,line)?;
+        // A leading star in a variadic default means unpack exactly one item.
+        if matches!(value.kind,DExprKind::Star(_)) {
+            let code_ref=&mut self.codes[code];
+            let position=code_ref.ops.iter().position(|instruction|matches!(instruction.op,Op::Return)).unwrap();
+            code_ref.ops.insert(position,Instr{op:Op::TypeUnpack,line,column});
+        }
+        self.emit(ctx,Op::Const(Const::Int("1".to_owned())),line,column);
+        self.emit(ctx,Op::MakeFunction{code:self.offset+code,defaults:1,kwdefaults:Vec::new()},line,column);Ok(())
+    }
+    fn generic_definition(&mut self,ctx:&mut DCtx,parameters:&[DTypeParam],definition:&DStmtKind,line:usize,column:usize)->Result<(),String> {
+        let make=|kind|DExpr{kind,line,column};
+        let (name,decorators)=match definition{
+            DStmtKind::Function(name,_,_,decorators)|DStmtKind::Class(name,_,_,_,decorators)=>(name.clone(),decorators.clone()),
+            DStmtKind::TypeAlias(name,_,_)=>(name.clone(),Vec::new()),
+            _=>return Err(self.error(line,"invalid generic declaration")),
+        };
+        let private=if matches!(definition,DStmtKind::Class(..)){Some(name.clone())}else{ctx.private.clone()};
+        let mut parameter_names=Vec::new();
+        for parameter in parameters {
+            let name=d_mangle(&private,&parameter.name);
+            if parameter_names.contains(&name){return Err(self.error(line,&format!("duplicate type parameter '{name}'")));}
+            parameter_names.push(name);
+        }
+        for decorator in &decorators{self.expr(ctx,decorator)?;}
+        let mut wrapper_params=DParams::default();let mut arguments=Vec::new();let mut inner=definition.clone();
+        if let DStmtKind::Function(_,params,_,decorators)=&mut inner {
+            decorators.clear();
+            for default in &mut params.defaults {
+                let parameter=format!(".default{}",arguments.len());arguments.push(default.clone());*default=make(DExprKind::Name(parameter.clone()));wrapper_params.params.positional.push(parameter);
+            }
+            for (_,default) in &mut params.kwdefaults {
+                let parameter=format!(".default{}",arguments.len());arguments.push(default.clone());*default=make(DExprKind::Name(parameter.clone()));wrapper_params.params.positional.push(parameter);
+            }
+        }
+        if let DStmtKind::Class(_,_,_,_,decorators)=&mut inner{decorators.clear();}
+        let mut body=parameters.iter().cloned().map(|parameter|DStmt{kind:DStmtKind::TypeParameter(parameter),line,column}).collect::<Vec<_>>();
+        let tuple=make(DExprKind::Tuple(parameters.iter().map(|parameter|make(DExprKind::Name(parameter.name.clone()))).collect()));
+        body.push(DStmt{kind:DStmtKind::Assign(vec![make(DExprKind::Name(".type_params".to_owned()))],tuple),line,column});
+        body.push(DStmt{kind:DStmtKind::TypeDefinition(Box::new(inner)),line,column});
+        let enclosing=DCtx{index:ctx.index,loops:Vec::new(),scopes:ctx.scopes.clone(),private};
+        let code=self.code(&format!("<generic parameters of {name}>"),ScopeKind::TypeParameters,&wrapper_params,&body,&enclosing,line)?;
+        self.emit(ctx,Op::MakeFunction{code:self.offset+code,defaults:0,kwdefaults:Vec::new()},line,column);
+        for argument in &arguments{self.expr(ctx,argument)?;}
+        self.emit(ctx,Op::Call{pos:arguments.len(),keywords:Vec::new()},line,column);
+        for _ in &decorators{self.emit(ctx,Op::Call{pos:1,keywords:Vec::new()},line,column);}
+        self.emit(ctx,Op::Store(name),line,column);Ok(())
+    }
     fn annotations(&mut self, ctx: &mut DCtx, params: &DParams, line: usize, column: usize) -> Result<(),String> {
         if params.annotations.is_empty() { return Ok(()); }
         let make = |kind| DExpr { kind,line,column };
@@ -1458,7 +1705,13 @@ impl DCompiler {
         let annotations=make(DExprKind::Dict(items));
         let returned=DStmt { kind:DStmtKind::Return(Some(annotations)),line,column };
         let mut parameters=DParams::default();parameters.params.posonly=1;parameters.params.positional.push(".format".to_owned());
-        let code=self.code("__annotate__",ScopeKind::Annotation,&parameters,&[check,returned],ctx,line)?;
+        // Future function annotations contain strings and never read the class
+        // namespace. Lazy alias/bound/default thunks still evaluate expressions.
+        let previous=self.stringized_annotation;
+        self.stringized_annotation=self.future_flags & D_FUTURE_ANNOTATIONS != 0;
+        let compiled=self.code("__annotate__",ScopeKind::Annotation,&parameters,&[check,returned],ctx,line);
+        self.stringized_annotation=previous;
+        let code=compiled?;
         self.emit(ctx,Op::Dup,line,column); self.emit(ctx,Op::MakeFunction { code:self.offset+code,defaults:0,kwdefaults:Vec::new() },line,column);self.emit(ctx,Op::Swap,line,column);self.emit(ctx,Op::SetAttr("__annotate__".to_owned()),line,column);
         Ok(())
     }
@@ -1663,7 +1916,7 @@ fn compile_dynamic(source: &str, filename: &str, mode: &str, code_offset: usize,
     if let Some(error) = symbols.error { return Err(error); }
     if !symbols.nonlocals.is_empty() { return Err(format!("SyntaxError: nonlocal declaration not allowed at module level ({filename}:1)")); }
     let code = Code { name:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags };
-    let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single",future_flags };
+    let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single",future_flags,scope_annotations:HashMap::new(),stringized_annotation:false };
     let mut ctx = DCtx { index:0,loops:Vec::new(),scopes:vec![(ScopeKind::Module,symbols.locals,symbols.globals)],private:None };
     if mode == "eval" {
         if let DStmtKind::Expr(value) = &body[0].kind { compiler.expr(&mut ctx,value)?; }
@@ -1673,6 +1926,7 @@ fn compile_dynamic(source: &str, filename: &str, mode: &str, code_offset: usize,
             compiler.emit(&ctx,Op::Store("__conditional_annotations__".to_owned()),1,0);
             compiler.emit(&ctx,Op::SetupAnnotations,1,0);
         }
+        if future_flags & D_FUTURE_ANNOTATIONS == 0 {compiler.prepare_scope_annotations(&mut ctx,&body,1,0)?;}
         compiler.block(&mut ctx,&body)?;
         compiler.emit(&ctx,Op::Const(Const::None),body.last().map(|x|x.line).unwrap_or(1),0);
     }

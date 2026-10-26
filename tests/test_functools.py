@@ -16,6 +16,30 @@ WRAPPER = "import sys\nimport functools\nexec(sys.stdin.read())\n"
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
 class FunctoolsTests(unittest.TestCase):
+    def test_union_dispatch_registration_explicit_and_annotated(self):
+        self.compare('''
+            from types import UnionType
+            from typing import Union
+            print(UnionType is Union)
+            @functools.singledispatch
+            def show(value): return "object"
+            @show.register(int | str)
+            def integer_or_text(value): return "first"
+            print(show(1), show("x"), show(1.5))
+            @show.register
+            def floating_or_bytes(value: float | bytes): return "second"
+            print(show(1.5), show(b"x"), show([]))
+            print(show.registry[int] is integer_or_text,
+                  show.registry[str] is integer_or_text,
+                  show.registry[float] is floating_or_bytes)
+            for invalid in [int | list[int], int | Union[int, list[str]]]:
+                try:
+                    show.register(invalid, lambda value: "invalid")
+                except TypeError as error:
+                    print(type(error).__name__)
+            print(show(1), show("x"))
+        ''')
+
     @classmethod
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory(prefix="py2fastrust-functools-")
