@@ -296,6 +296,7 @@ enum IteratorState {
 }
 #[derive(Clone, Debug)]
 enum Object {
+    FrozenSet {items:Vec<Value>,hashes:Vec<i64>,hash:Option<i64>,buckets:HashMap<i64,Vec<usize>>},
     ExceptStarState(Box<ExceptStarState>),
     Template { strings: usize, interpolations: usize },
     Interpolation { value: Value, expression: Value, conversion: Value, format_spec: Value },
@@ -410,6 +411,8 @@ struct Runtime {
     typing_alias_cache: Vec<TypingAliasCacheEntry>,
     template_metadata: HashMap<String, Value>,
     assoc_layouts: HashMap<usize, AssocLayout>,
+    set_member_hashes: HashMap<usize,HashMap<u64,i64>>,
+    frozen_reprs:std::collections::HashSet<usize>,
     literal_pools: HashMap<usize, HashMap<LiteralKey, Value>>,
     identity_builtins: HashMap<String, u64>,
     identity_types: HashMap<String, u64>,
@@ -643,7 +646,7 @@ impl Runtime {
         for base in self.class_mro(class, 0)? {
             match &base {
                 Value::Builtin(name)
-                    if ["tuple", "list", "dict", "set", "str", "int", "complex"].contains(&name.as_str()) =>
+                    if ["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&name.as_str()) =>
                 {
                     return Some(base)
                 }
@@ -839,6 +842,7 @@ impl Runtime {
                 return self.bind_descriptor(method, Some(v), class);
             }
             if let Some(payload) = self.native_payload(&v) {
+                if ["__repr__","__str__"].contains(&name) && self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen) {if let Some(result)=self.frozen_attr(v.clone(),name){return result;}}
                 let payload = if matches!(name, "__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") {
                     payload.fresh_primitive()
                 } else { payload };
@@ -1228,6 +1232,8 @@ impl Runtime {
             typing_alias_cache: Vec::new(),
             template_metadata: HashMap::new(),
             assoc_layouts: HashMap::new(),
+            set_member_hashes: HashMap::new(),
+            frozen_reprs:std::collections::HashSet::new(),
             literal_pools: HashMap::new(),
             identity_builtins: HashMap::new(),
             identity_types: HashMap::new(),
@@ -1391,6 +1397,8 @@ impl Runtime {
     fn alloc(&mut self, obj: Object) -> usize {
         self.allocations += 1;
         let index=if let Some(i)=self.free.pop() {
+            self.assoc_layouts.remove(&i);
+            self.set_member_hashes.remove(&i);
             self.annotation_namespaces.remove(&i);
             self.scope_cells.remove(&i);
             self.scope_bindings.remove(&i);
@@ -2000,15 +2008,7 @@ impl Runtime {
                 let values = Self::pop_many(f, n)?;
                 let obj = match op {
                     Op::BuildTuple(_) => Object::Tuple(values),
-                    Op::BuildSet(_) => {
-                        let mut unique = Vec::new();
-                        for v in values {
-                            if !self.contains_vec(&unique, &v)? {
-                                unique.push(v)
-                            }
-                        }
-                        Object::Set(unique)
-                    }
+                    Op::BuildSet(_)=>{let values=self.obj_value(Object::List(values));let result=self.set_constructor_value(vec![values],Vec::new())?;f.stack.push(result);return Ok(None);}
                     _ => Object::List(values),
                 };
                 let v = self.obj_value(obj);
@@ -3286,7 +3286,7 @@ impl Runtime {
                 Object::TypeUnion { args, parameters } => {pending.extend(args.iter().cloned());pending.extend(parameters.iter().map(|index|Value::Obj(*index)));}
                 Object::DictView { owner, .. } | Object::MappingProxy { owner } => pending.push(Value::Obj(*owner)),
                 Object::Slot { owner, .. } => pending.push(owner.clone()),
-                Object::List(v) | Object::Tuple(v) | Object::Set(v) => {
+                Object::List(v) | Object::Tuple(v) | Object::Set(v) | Object::FrozenSet{items:v,..} => {
                     pending.extend(v.iter().cloned())
                 }
                 Object::Dict(v) => {
@@ -3373,7 +3373,7 @@ impl Runtime {
                 Object::Generator(f) => Self::frame_roots(f, &mut pending),
                 Object::Iterator(it) => match it {
                     IteratorState::Template(owner,_) => pending.push(Value::Obj(*owner)),
-                    IteratorState::Associative(state) => {if let Some(owner)=state.owner {pending.push(Value::Obj(owner));}},
+                    IteratorState::Associative(state) => {if let Some(owner)=state.owner {pending.push(Value::Obj(owner));}if let Some(keeper)=&state.keeper{pending.push(keeper.clone());}},
                     IteratorState::Tools(state) => pending.extend(state.roots()),
                     IteratorState::Values(v, _) => pending.extend(v.iter().cloned()),
                     IteratorState::List(i, _) => pending.push(Value::Obj(*i)),
@@ -3443,6 +3443,7 @@ impl Runtime {
                 self.finalized.remove(&i);
                 self.instance_slots.remove(&i);
                 self.assoc_layouts.remove(&i);
+                self.set_member_hashes.remove(&i);
                 self.free.push(i);
                 count += 1;
             }
@@ -3461,6 +3462,7 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        if self.frozen_owner(&receiver).is_some(){if let Some(result)=self.frozen_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if matches!(&receiver,Value::Complex(_)){return self.complex_method(receiver,name,args,kwargs).unwrap();}
         if self.is_exception_value(&receiver){if let Some(result)=self.exception_group_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if self.is_template_value(&receiver){if let Some(result)=self.template_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
@@ -4149,12 +4151,7 @@ impl Runtime {
                         return self.live_set_update(i,name,args,kwargs);
                     }
                     match name {
-                        "add" => {
-                            let v = arg(0)?;
-                            if !self.contains_vec(&xs, &v)? {
-                                xs.push(v)
-                            }
-                        }
+                        "add"=>{if args.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","set.add() takes one argument"));}self.set_insert_value(i,arg(0)?,None)?;return Ok(Value::None);}
                         "update" => {
                             for a in args {
                                 for v in self.to_vec(a)? {
@@ -4164,22 +4161,9 @@ impl Runtime {
                                 }
                             }
                         }
-                        "remove" | "discard" => {
-                            let v = arg(0)?;
-                            let mut at = None;
-                            for (j, x) in xs.iter().enumerate() {
-                                if self.identical_or_equal(x, &v)? {
-                                    at = Some(j);
-                                    break;
-                                }
-                            }
-                            if let Some(p) = at {
-                                xs.remove(p);
-                            } else if name == "remove" {
-                                return Err(pyerr("KeyError", "value not found"));
-                            }
-                        }
+                        "remove"|"discard"=>{if args.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","set deletion takes one argument"));}return self.set_discard_value(i,arg(0)?,name=="remove");}
                         "pop" => {
+                            if !args.is_empty()||!kwargs.is_empty(){return Err(pyerr("TypeError","set.pop() takes no arguments"));}
                             let v = xs
                                 .pop()
                                 .ok_or_else(|| pyerr("KeyError", "pop from empty set"))?;
@@ -4187,7 +4171,7 @@ impl Runtime {
                             self.assoc_removed(i,&v);
                             return Ok(v);
                         }
-                        "clear" => {xs.clear();self.assoc_cleared(i);},
+                        "clear" => {if !args.is_empty()||!kwargs.is_empty(){return Err(pyerr("TypeError","set.clear() takes no arguments"));}xs.clear();self.assoc_cleared(i);},
                         "copy" => return Ok(self.obj_value(Object::Set(xs))),
                         "union" | "intersection" | "difference" | "symmetric_difference" => {
                             return self.binary(
@@ -4393,7 +4377,7 @@ impl Runtime {
             let mut args = args;
             if let Some(Value::Obj(i)) = args.first() {
                 if let Object::BuiltinInstance { payload, .. } = self.object(*i)? {
-                    if self.typename(&payload) == owner {
+                    if self.typename(&payload) == owner && owner!="frozenset" {
                         args[0] = if matches!(method, "__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") {
                             payload.fresh_primitive()
                         } else { payload }
@@ -4403,6 +4387,8 @@ impl Runtime {
             if args.is_empty() {
                 return Err(pyerr("TypeError", "unbound descriptor needs an instance"));
             }
+            if owner=="set" && !self.frozen_owner(&args[0]).is_some_and(|(_,frozen)|!frozen){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'set' object",method)));}
+            if owner=="frozenset" && !self.frozen_owner(&args[0]).is_some_and(|(_,frozen)|frozen){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'frozenset' object",method)));}
             if owner=="complex" && !matches!(&args[0],Value::Complex(_)){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'complex' object",method)));}
             if method == "__delitem__" {
                 if args.len()!=2 || !kwargs.is_empty(){return Err(pyerr("TypeError","__delitem__() takes exactly one argument"));}
@@ -4552,7 +4538,7 @@ impl Runtime {
                     }
                 };
             }
-            if ["tuple", "list", "dict", "set", "str", "int", "complex"].contains(&typ) && method == "__new__"
+            if ["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&typ) && method == "__new__"
             {
                 let class = args
                     .first()
@@ -4723,15 +4709,13 @@ impl Runtime {
             "str" => self.str_constructor(args, kwargs),
             "repr" => Ok(Value::Str(self.repr(&arg(0)?)?.into())),
             "ascii" => Ok(Value::Str(text_ascii_escape(&self.repr(&arg(0)?)?).into())),
-            "frozenset" => Err(pyerr(
-                "NotImplementedError",
-                "frozenset values are not implemented",
-            )),
+            "frozenset" => self.frozen_constructor(args,kwargs),
+            "set" => self.set_constructor_value(args,kwargs),
             "memoryview" => Err(pyerr(
                 "NotImplementedError",
                 "memoryview values are not implemented",
             )),
-            "list" | "tuple" | "set" => {
+            "list" | "tuple" => {
                 if args.len() > 1 || !kwargs.is_empty() {
                     return Err(pyerr("TypeError", format!("{}() takes at most one argument", name)));
                 }
@@ -4800,7 +4784,7 @@ impl Runtime {
                 if let Value::Obj(index)=&v {if let Object::DictView { owner, .. } | Object::MappingProxy { owner }=self.object(*index)? {return Ok(Value::Int(Int::from_i128(self.assoc_size(owner) as i128).into()));}}
                 let fastlen = if let Value::Obj(i) = &v {
                     match self.heap.get(*i).and_then(|o| o.as_ref()) {
-                        Some(Object::List(xs) | Object::Tuple(xs) | Object::Set(xs)) => {
+                        Some(Object::List(xs) | Object::Tuple(xs) | Object::Set(xs) | Object::FrozenSet{items:xs,..}) => {
                             Some(xs.len())
                         }
                         Some(Object::Dict(xs)) => Some(xs.len()),
@@ -4818,7 +4802,7 @@ impl Runtime {
                     Value::Str(s) => s.chars().count(),
                     Value::Bytes(b) => b.len(),
                     Value::Obj(i) => match self.object(*i)? {
-                        Object::List(v) | Object::Tuple(v) | Object::Set(v) => v.len(),
+                        Object::List(v) | Object::Tuple(v) | Object::Set(v) | Object::FrozenSet{items:v,..} => v.len(),
                         Object::Dict(v) => v.len(),
                         Object::Namespace(m, _) => m.len(),
                         Object::Range(a, b, s) => range_length(&a, &b, &s).map_err(int_error)?,
@@ -4976,7 +4960,7 @@ impl Runtime {
                         Object::Dict(_) | Object::Namespace(..)=>return self.assoc_iterator(index,DictViewKind::Keys,true),
                         Object::DictView { owner, kind }=>return self.assoc_iterator(owner,kind,true),
                         Object::MappingProxy { owner }=>return self.assoc_iterator(owner,DictViewKind::Keys,true),
-                        Object::Set(_)=>return Err(pyerr("TypeError","'set' object is not reversible")),
+                        Object::Set(_) | Object::FrozenSet{..}=>return Err(pyerr("TypeError","set objects are not reversible")),
                         _=>{},
                     }
                     if let Object::Range(start, stop, step) = self.object(index)? {
@@ -5167,6 +5151,7 @@ impl Runtime {
                 use std::hash::{Hash, Hasher};
                 let v = arg(0)?;
                 if matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Template{..}|Object::Interpolation{..}))) {let id=self.identity_number(&v);return Ok(Value::Int(Int::from_i128(id as i128).into()));}
+                if matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::FrozenSet{..}))){return self.frozen_hash(&v);}
                 if matches!(&v,Value::Complex(_)){return self.complex_hash(&v);}
                 if let Value::Int(value)=&v{return Ok(Value::Int(Int::from_i128(numeric_int_hash(value) as i128).into()));}
                 if let Value::Bool(value)=&v{return Ok(Value::Int(Int::from_i128(if *value{1}else{0}).into()));}
@@ -5197,13 +5182,12 @@ impl Runtime {
                         }
                         let method = self.obj_value(Object::Bound(method, v.clone()));
                         let result = self.call(method, Vec::new(), Vec::new(), None)?;
-                        if !matches!(result, Value::Int(_) | Value::Bool(_)) {
-                            return Err(pyerr(
-                                "TypeError",
-                                "__hash__ method should return an integer",
-                            ));
-                        }
-                        return Ok(Value::Int(self.as_int(&result)?.into()));
+                        let number=match result {
+                            Value::Int(number)=>number.into_inner(),Value::Bool(value)=>Int::from_i128(if value{1}else{0}),
+                            value=>match self.native_payload(&value){Some(Value::Int(number))=>number.into_inner(),_=>return Err(pyerr("TypeError","__hash__ method should return an integer"))},
+                        };
+                        let hash=number.to_i128().filter(|value|*value>=i64::MIN as i128&&*value<=i64::MAX as i128).map(|value|value as i64).unwrap_or_else(||numeric_int_hash(&number));
+                        return Ok(Value::Int(Int::from_i128(if hash == -1{-2}else{hash as i128}).into()));
                     }
                 }
                 if let Some(payload) = self.native_payload(&v) {
@@ -5633,7 +5617,7 @@ impl Runtime {
                         }
                     }
                     let mut native_type = None;
-                    for name in ["tuple", "list", "dict", "set", "str", "int", "complex"] {
+                    for name in ["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"] {
                         if self.is_subclass(&fun, &Value::Builtin(name.into()))? {
                             native_type = Some(name);
                             break;
@@ -6149,7 +6133,7 @@ impl Runtime {
                                 return self.repr(v);
                             }
                         }
-                        if matches!(&payload, Value::Obj(index) if matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Set(_))))
+                        if matches!(&payload, Value::Obj(index) if matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Set(_) | Object::FrozenSet{..})))
                         {
                             return self.repr(v);
                         }
@@ -6187,6 +6171,7 @@ impl Runtime {
                     Object::GenericAlias { origin, args, .. } => self.generic_repr(&origin,&args)?,
                     Object::DictView { owner, kind } => self.dictview_repr(owner,Some(kind),seen)?,
                     Object::MappingProxy { owner } => self.dictview_repr(owner,None,seen)?,
+                    Object::FrozenSet{..}=>self.frozen_repr(v,seen)?,
                     Object::List(xs) | Object::Tuple(xs) | Object::Set(xs) => {
                         let mut ss = Vec::new();
                         for x in &xs {
@@ -6240,6 +6225,7 @@ impl Runtime {
                         }
                     }
                     Object::BuiltinInstance { payload, .. } => {
+                        if self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen) && self.object_class(v).and_then(|class|self.class_lookup(&class,"__repr__",0)).is_none(){self.frozen_repr(v,seen)?}else{
                         if let Ok(fun) = self.special_method(v.clone(), "__repr__") {
                             let result = self.call(fun, Vec::new(), Vec::new(), None)?;
                             self.str_value(&result)?
@@ -6260,6 +6246,7 @@ impl Runtime {
                             } else {
                                 text
                             }
+                        }
                         }
                     }
                     Object::Instance { .. } => {
@@ -6556,6 +6543,7 @@ impl Runtime {
                 Some(Object::Iterator(IteratorState::Associative(state))) => if state.is_set {"set_iterator".into()}else{format!("dict_{}{}iterator",if state.reversed {"reverse"}else{""},match state.kind{DictViewKind::Keys=>"key",DictViewKind::Values=>"value",DictViewKind::Items=>"item"})},
                 Some(Object::Dict(_)) | Some(Object::Namespace(..)) => "dict".into(),
                 Some(Object::Set(_)) => "set".into(),
+                Some(Object::FrozenSet{..})=>"frozenset".into(),
                 Some(Object::Function(_)) => "function".into(),
                 Some(Object::Class(_)) => "type".into(),
                 Some(Object::Instance {
@@ -6640,7 +6628,7 @@ impl Runtime {
         }
         if let Value::Obj(i) = v {
             match self.heap.get(*i).and_then(|o| o.as_ref()) {
-                Some(Object::List(xs) | Object::Tuple(xs) | Object::Set(xs)) => {
+                Some(Object::List(xs) | Object::Tuple(xs) | Object::Set(xs) | Object::FrozenSet{items:xs,..}) => {
                     return Ok(!xs.is_empty())
                 }
                 Some(Object::DictView { owner, .. } | Object::MappingProxy { owner }) => return Ok(self.assoc_size(*owner)!=0),
@@ -6658,7 +6646,7 @@ impl Runtime {
             Value::Str(s) => !s.is_empty(),
             Value::Bytes(b) => !b.is_empty(),
             Value::Obj(i) => match self.object(*i)? {
-                Object::List(v) | Object::Tuple(v) | Object::Set(v) => !v.is_empty(),
+                Object::List(v) | Object::Tuple(v) | Object::Set(v) | Object::FrozenSet{items:v,..} => !v.is_empty(),
                 Object::Dict(v) => !v.is_empty(),
                 Object::Namespace(v, _) => !v.is_empty(),
                 Object::Range(a, b, step) => range_nonempty(&a, &b, &step),
@@ -6697,6 +6685,7 @@ impl Runtime {
         if let Some(result)=self.typing_equal(a,b){return result;}
         if let Some(result)=self.view_compare("==",a,b) {return result;}
         if let Some(result)=self.generic_equal(a,b) {return result;}
+        if let Some(result)=self.frozen_compare("==",a,b){return result;}
         let ap=self.proxy_payload(a);let bp=self.proxy_payload(b);
         if ap.is_some() || bp.is_some() {return self.equal_default(ap.as_ref().unwrap_or(a),bp.as_ref().unwrap_or(b));}
         if let (Value::Obj(left),Value::Obj(right))=(a,b) {
@@ -6845,6 +6834,7 @@ impl Runtime {
     }
     fn compare_default(&mut self, op: &str, a: &Value, b: &Value) -> PyResult<bool> {
         if let Some(result)=self.view_compare(op,a,b) {return result;}
+        if let Some(result)=self.frozen_compare(op,a,b){return result;}
         let ap=self.proxy_payload(a);let bp=self.proxy_payload(b);
         if ["==","!=","<","<=",">",">="].contains(&op) && (ap.is_some() || bp.is_some()) {return self.compare_default(op,ap.as_ref().unwrap_or(a),bp.as_ref().unwrap_or(b));}
         if ["<", "<=", ">", ">="].contains(&op) {
@@ -6977,7 +6967,7 @@ impl Runtime {
             }
             if ["|=","&=","-=","^="].contains(&op) && matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Set(_))) {
                 let result=self.binary(&op[..op.len()-1],a.clone(),b)?;
-                if let Value::Obj(result)=result {self.heap[*index]=Some(self.object(result)?);self.assoc_sync(*index)?;}
+                if let Value::Obj(result)=result {self.heap[*index]=Some(self.object(result)?);self.frozen_transfer_hashes(result,*index);self.assoc_sync(*index)?;}
                 return Ok(a);
             }
         }
@@ -7110,6 +7100,7 @@ impl Runtime {
             return Ok(out);
         }
         if let Some(result)=self.complex_binary(op,&a,&b){return result;}
+        if let Some(result)=self.frozen_binary(op,&a,&b){return result;}
         let integers = matches!(a, Value::Int(_) | Value::Bool(_))
             && matches!(b, Value::Int(_) | Value::Bool(_));
         if integers {
@@ -7245,7 +7236,7 @@ impl Runtime {
                         }));
                     }
                 }
-                Object::Set(xs) => {
+                Object::Set(xs) if self.frozen_owner(&b).is_some() => {
                     let ys = self.to_vec(b.clone())?;
                     let mut out = Vec::new();
                     match op {
@@ -7726,13 +7717,7 @@ impl Runtime {
                     self.heap[i] = Some(Object::List(xs));
                     return Ok(());
                 }
-                Object::Set(mut xs) => {
-                    let new=!self.contains_vec(&xs,&v)?;
-                    if new {xs.push(v.clone());}
-                    self.heap[i] = Some(Object::Set(xs));
-                    if new {self.assoc_inserted(i,v);}
-                    return Ok(());
-                }
+                Object::Set(_)=>{self.set_insert_value(i,v,None)?;return Ok(());}
                 _ => {}
             }
         }
@@ -7823,6 +7808,7 @@ impl Runtime {
                     let fun = self.special_method(v, "__iter__")?;
                     return self.call(fun, Vec::new(), Vec::new(), None);
                 }
+                if self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen){return self.frozen_iterator(v);}
                 return self.iter(payload);
             }
         }
@@ -7851,7 +7837,7 @@ impl Runtime {
                 Object::List(_) => IteratorState::List(i, 0),
                 Object::Range(a, b, c) => IteratorState::Range(a.into_inner(), b.into_inner(), c.into_inner()),
                 Object::Tuple(v) => IteratorState::Values(v, 0),
-                Object::Dict(_) | Object::Namespace(..) | Object::Set(_) => return self.assoc_iterator(i,DictViewKind::Keys,false),
+                Object::Dict(_) | Object::Namespace(..) | Object::Set(_) | Object::FrozenSet{..} => return self.assoc_iterator(i,DictViewKind::Keys,false),
                 Object::DictView { owner, kind } => return self.assoc_iterator(owner,kind,false),
                 Object::MappingProxy { owner } => return self.assoc_iterator(owner,DictViewKind::Keys,false),
                 Object::Iterator(_) | Object::Generator(_) => return Ok(v),
@@ -8251,6 +8237,7 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::FrozenSet{..}))) || matches!(&v,Value::Builtin(class)if class=="frozenset"){if let Some(result)=self.frozen_attr(v.clone(),name){return result;}}
         if name=="from_number" || matches!(&v,Value::Complex(_)) || matches!(&v,Value::Builtin(class)if class=="complex"){if let Some(result)=self.complex_attr(v.clone(),name){return result;}}
         if self.is_exception_value(&v) || matches!(&v,Value::Type(_)){if let Some(result)=self.exception_group_attr(v.clone(),name){return result;}}
         if self.is_template_value(&v){if let Some(result)=self.template_attr(v.clone(),name){return result;}}

@@ -17,6 +17,7 @@ struct AssocLayout {
 #[derive(Clone, Debug)]
 struct AssocIterator {
     owner: Option<usize>,
+    keeper:Option<Value>,
     kind: DictViewKind,
     is_set: bool,
     reversed: bool,
@@ -71,7 +72,7 @@ impl Runtime {
         match self.heap.get(owner).and_then(Option::as_ref) {
             Some(Object::Dict(entries)) => Ok(entries.clone()),
             Some(Object::Namespace(mapping, _)) => Ok(mapping.ident_items()),
-            Some(Object::Set(values)) => Ok(values
+            Some(Object::Set(values) | Object::FrozenSet{items:values,..}) => Ok(values
                 .iter()
                 .cloned()
                 .map(|value| (value, Value::None))
@@ -83,7 +84,7 @@ impl Runtime {
         match self.heap.get(owner).and_then(Option::as_ref) {
             Some(Object::Dict(entries)) => entries.len(),
             Some(Object::Namespace(mapping, _)) => mapping.len(),
-            Some(Object::Set(values)) => values.len(),
+            Some(Object::Set(values) | Object::FrozenSet{items:values,..}) => values.len(),
             _ => 0,
         }
     }
@@ -93,7 +94,7 @@ impl Runtime {
                 (entries.iter().map(|(key, _)| key.clone()).collect(), false)
             }
             Some(Object::Namespace(mapping, _)) => (mapping.ident_keys(), false),
-            Some(Object::Set(values)) => (values.clone(), true),
+            Some(Object::Set(values) | Object::FrozenSet{items:values,..}) => (values.clone(), true),
             _ => {
                 self.assoc_layouts.remove(&owner);
                 return;
@@ -134,6 +135,7 @@ impl Runtime {
     }
     fn assoc_removed(&mut self, owner: usize, key: &Value) {
         let identity = self.identity_number(key);
+        if let Some(hashes)=self.set_member_hashes.get_mut(&owner){hashes.remove(&identity);}
         if let Some(layout) = self.assoc_layouts.get_mut(&owner) {
             if let Some(position) = layout.slots.iter().position(|slot| {
                 slot.as_ref()
@@ -148,6 +150,7 @@ impl Runtime {
         }
     }
     fn assoc_cleared(&mut self, owner: usize) {
+        self.set_member_hashes.remove(&owner);
         let is_set = self
             .assoc_layouts
             .get(&owner)
@@ -196,11 +199,12 @@ impl Runtime {
         kind: DictViewKind,
         reversed: bool,
     ) -> PyResult<Value> {
-        self.assoc_sync(owner)?;
+        if !matches!(self.heap.get(owner).and_then(Option::as_ref),Some(Object::FrozenSet{..})){self.assoc_sync(owner)?;}
         let layout = &self.assoc_layouts[&owner];
         let expected_size = self.assoc_size(owner);
         let state = AssocIterator {
             owner: Some(owner),
+            keeper:None,
             kind,
             is_set: layout.is_set,
             reversed,
@@ -230,7 +234,7 @@ impl Runtime {
                 },
             ));
         }
-        self.assoc_sync(owner)?;
+        if !matches!(self.heap.get(owner).and_then(Option::as_ref),Some(Object::FrozenSet{..})){self.assoc_sync(owner)?;}
         let slots = &self.assoc_layouts[&owner].slots;
         let mut key = None;
         while state.position >= 0 && (state.position as usize) < slots.len() {
@@ -243,10 +247,12 @@ impl Runtime {
         }
         let Some(key) = key else {
             state.owner = None;
+            state.keeper = None;
             return Ok(None);
         };
         if !state.is_set && !state.reversed && state.remaining == 0 {
             state.owner = None;
+            state.keeper = None;
             return Err(pyerr(
                 "RuntimeError",
                 "dictionary keys changed during iteration",
@@ -346,8 +352,8 @@ impl Runtime {
         self.view_kind(value)
             .map(|(_, kind)| kind != DictViewKind::Values)
             .unwrap_or(false)
-            || matches!(value,Value::Obj(index) if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Set(_))))
-            || matches!(self.native_payload(value),Some(Value::Obj(index)) if matches!(self.heap.get(index).and_then(Option::as_ref),Some(Object::Set(_))))
+            || matches!(value,Value::Obj(index) if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Set(_) | Object::FrozenSet{..})))
+            || matches!(self.native_payload(value),Some(Value::Obj(index)) if matches!(self.heap.get(index).and_then(Option::as_ref),Some(Object::Set(_) | Object::FrozenSet{..})))
     }
     fn view_compare(&mut self, op: &str, a: &Value, b: &Value) -> Option<PyResult<bool>> {
         if self.view_kind(a).is_none() && self.view_kind(b).is_none() {
@@ -439,15 +445,16 @@ impl Runtime {
                 let right = runtime.to_vec(b)?;
                 runtime.roots[root].extend(right.iter().cloned());
                 let mut result = Vec::new();
+                let mut hashes=HashMap::new();
                 if op == "-" || (op == "^" && !item_xor) {
                     for value in &left {
-                        runtime.builtin("hash", vec![value.clone()], Vec::new(), None)?;
+                        let hash=runtime.frozen_member_hash(value)?;let identity=runtime.identity_number(value);hashes.insert(identity,hash);
                     }
                 }
                 for value in &left {
                     let found = runtime.contains_vec(&right, value)?;
                     if op == "|" || (op == "&" && found) || ((op == "-" || op == "^") && !found) {
-                        runtime.builtin("hash", vec![value.clone()], Vec::new(), None)?;
+                        let hash=runtime.frozen_member_hash(value)?;let identity=runtime.identity_number(value);hashes.insert(identity,hash);
                         if !runtime.contains_vec(&result, value)? {
                             result.push(value.clone());
                         }
@@ -456,14 +463,15 @@ impl Runtime {
                 if op == "|" || op == "^" {
                     for value in right {
                         if op == "|" || !runtime.contains_vec(&left, &value)? {
-                            runtime.builtin("hash", vec![value.clone()], Vec::new(), None)?;
+                            let hash=runtime.frozen_member_hash(&value)?;let identity=runtime.identity_number(&value);hashes.insert(identity,hash);
                             if !runtime.contains_vec(&result, &value)? {
                                 result.push(value);
                             }
                         }
                     }
                 }
-                Ok(runtime.obj_value(Object::Set(result)))
+                let entries=result.into_iter().map(|value|{let hash=hashes[&runtime.identity_number(&value)];(value,hash)}).collect();
+                Ok(runtime.frozen_make(entries,false))
             }),
         )
     }
@@ -769,10 +777,8 @@ impl Runtime {
         self.view_rooted(vec![Value::Obj(owner)], |runtime, root| {
             runtime.roots[root].extend(args.iter().cloned());
             if name == "intersection_update" || name == "symmetric_difference_update" {
-                let mut result = runtime.obj_value(match runtime.object(owner)? {
-                    Object::Set(values) => Object::Set(values),
-                    _ => return Err(pyerr("TypeError", "expected set")),
-                });
+                let entries=runtime.frozen_entries(&Value::Obj(owner))?;
+                let mut result=runtime.frozen_make(entries,false);
                 runtime.roots[root].push(result.clone());
                 for source in args {
                     let unique = runtime.builtin("set", vec![source], Vec::new(), None)?;
@@ -790,6 +796,7 @@ impl Runtime {
                 }
                 if let Value::Obj(result) = result {
                     runtime.heap[owner] = Some(runtime.object(result)?);
+                    runtime.frozen_transfer_hashes(result,owner);
                     runtime.assoc_sync(owner)?;
                 }
                 return Ok(Value::None);
@@ -800,10 +807,14 @@ impl Runtime {
                     runtime.assoc_cleared(owner);
                     continue;
                 }
+                if runtime.frozen_owner(&source).is_some(){
+                    let entries=runtime.frozen_entries(&source)?;runtime.roots[root].extend(entries.iter().map(|(item,_)|item.clone()));
+                    for (value,hash) in entries {if name=="update"{runtime.set_insert_value(owner,value,Some(hash))?;}else{runtime.set_discard_hashed(owner,value,false,Some(hash))?;}}
+                    continue;
+                }
                 let iterator = runtime.iter(source)?;
                 runtime.roots[root].push(iterator.clone());
                 while let Some(value) = runtime.next(iterator.clone())? {
-                    runtime.builtin("hash", vec![value.clone()], Vec::new(), None)?;
                     if name == "update" {
                         runtime.container_add(Value::Obj(owner), value, true)?;
                     } else {

@@ -43,7 +43,7 @@ impl Runtime {
         kwargs: Vec<(String, Value)>,
         root: usize,
     ) -> PyResult<Value> {
-        if !["tuple", "list", "dict", "set", "str", "int", "complex"].contains(&type_name) {
+        if !["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&type_name) {
             return Err(pyerr(
                 "NotImplementedError",
                 format!("native payload for {} subclasses", type_name),
@@ -92,6 +92,7 @@ impl Runtime {
             }
         };
         let payload = match type_name {
+            "frozenset"=>{if Self::same_type(&class,&Value::Builtin("frozenset".into())){self.frozen_constructor(args,kwargs)?}else{if args.len()>1||(!kwargs.is_empty()&&self.class_lookup(&class,"__init__",0).is_none()){return Err(pyerr("TypeError","frozenset expected one positional argument"));}let entries=if let Some(source)=args.first(){self.frozen_collect(source.clone())?}else{Vec::new()};self.frozen_make(entries,true)}},
             "complex"=>self.complex_constructor(args,kwargs)?,
             "list" => self.obj_value(Object::List(Vec::new())),
             "dict" => self.obj_value(Object::Dict(Vec::new())),
@@ -254,6 +255,7 @@ impl Runtime {
             } else {
                 Object::Set(Vec::new())
             });
+            if type_name=="set"{self.assoc_cleared(index);}
         }
         if let Some(source) = args.first() {
             if type_name == "dict" {
@@ -290,11 +292,13 @@ impl Runtime {
                         self.setitem(payload.clone(), pair[0].clone(), pair[1].clone())?;
                     }
                 }
+            } else if type_name=="set"{
+                self.live_set_update(index,"update",vec![source.clone()],Vec::new())?;
             } else {
                 let iterator = self.iter(source.clone())?;
                 self.roots[root].push(iterator.clone());
                 while let Some(value) = self.next(iterator.clone())? {
-                    self.container_add(payload.clone(), value, type_name == "set")?;
+                    self.container_add(payload.clone(), value, false)?;
                 }
             }
         }
