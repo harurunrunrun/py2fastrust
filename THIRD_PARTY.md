@@ -25,3 +25,9 @@ the [Unicode License V3](https://www.unicode.org/license.txt), retained in
 `py2fastrust/stdlib/UNICODE_LICENSE.txt` and in generated Rust that includes
 these tables. The integer parser's Unicode decimal-digit ranges use the same
 Unicode data.
+
+`py2fastrust/runtime/normalization_tables.rs` contains Unicode 16.0 NFKD
+decompositions, canonical combining classes and composition pairs, generated
+from CPython 3.14's `unicodedata` by `tools/generate_normalization.py`. These
+normalization data use the same Unicode License V3; the normalization algorithm
+implementation is original MIT-licensed code.
