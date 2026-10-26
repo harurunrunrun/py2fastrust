@@ -37,6 +37,11 @@ class _DictInfo:
     nonempty: bool = False
 
 
+@dataclass(frozen=True)
+class _SetInfo:
+    length: int | None
+
+
 def _string(value):
     out = ['"']
     for char in value:
@@ -271,8 +276,18 @@ impl NativeDict {
 '''
 
 
+_SET_HELPERS = r'''
+// Only exact integer keys and unobservable iteration order reach this type.
+type NativeSet = std::collections::HashSet<NativeInt>;
+#[inline]
+fn native_set_remove(values: &mut NativeSet, key: NativeInt) -> Result<(), String> {
+    if values.remove(&key) { Ok(()) } else { Err(format!("KeyError: {}", key)) }
+}
+'''
+
+
 class _Generator:
-    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "list", "map", "dict"}
+    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "list", "map", "dict", "set"}
 
     def __init__(self, bits):
         self.bits = bits
@@ -284,6 +299,7 @@ class _Generator:
         self.has_input = False
         self.has_lists = False
         self.has_dicts = False
+        self.has_sets = False
         self.iterating_lists = []
         self.return_label = None
 
@@ -319,7 +335,7 @@ class _Generator:
 
     @staticmethod
     def truth(expression):
-        if expression.kind in {"list_int", "dict_int"}:
+        if expression.kind in {"list_int", "dict_int", "set_int"}:
             return f"!({expression.code}).is_empty()"
         return expression.code if expression.kind == "bool" else f"(({expression.code}) != 0)"
 
@@ -329,6 +345,8 @@ class _Generator:
             return _ListInfo(expression.length)
         if expression.kind == "dict_int":
             return _DictInfo(expression.length, expression.nonempty)
+        if expression.kind == "set_int":
+            return _SetInfo(expression.length)
         return expression.kind
 
     @staticmethod
@@ -369,6 +387,37 @@ class _Generator:
             raise _Unsupported
         return value, node.func.attr, node.func.value
 
+    def set_iterable(self, node, environment):
+        """Return a proved exact-int iterator for a fresh set or update.
+
+        General set iteration remains unsupported: these consumers cannot
+        observe order, invoke user code, or mutate their input during iteration.
+        """
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "range"):
+            setup, iterator, _ = self.range_iterator(node, environment)
+            return setup, iterator
+        if isinstance(node, (ast.List, ast.Tuple)):
+            values = [self.expression(value, environment) for value in node.elts]
+            if any(value.kind != "int" for value in values):
+                raise _Unsupported
+            name = self.temporary()
+            # The ephemeral sequence never escapes. A stack array preserves
+            # argument evaluation before mutation without allocating a Vec.
+            setup = f"let {name}: [NativeInt; {len(values)}] = [" + ", ".join(value.code for value in values) + "];"
+            return setup, f"{name}.into_iter()"
+        value = self.expression(node, environment)
+        if value.kind not in {"list_int", "set_int", "dict_int"}:
+            raise _Unsupported
+        name = self.temporary()
+        binding = value.code if value.owned else f"&({value.code})"
+        setup = f"let {name} = {binding};"
+        if value.kind == "dict_int":
+            iterator = f"{name}.entries.iter().map(|&(key, _)| key)"
+        else:
+            iterator = f"{name}.iter().copied()"
+        return setup, iterator
+
     def expression(self, node, environment):
         if isinstance(node, ast.Constant):
             if type(node.value) is bool:
@@ -384,6 +433,8 @@ class _Generator:
                 return _Expression(self.names[node.id], "list_int", owned=False, length=information.length)
             if isinstance(information, _DictInfo):
                 return _Expression(self.names[node.id], "dict_int", owned=False, length=information.length, nonempty=information.nonempty)
+            if isinstance(information, _SetInfo):
+                return _Expression(self.names[node.id], "set_int", owned=False, length=information.length)
             return _Expression(self.names[node.id], information)
         if isinstance(node, ast.List):
             values = [self.expression(value, environment) for value in node.elts]
@@ -407,6 +458,18 @@ class _Generator:
                           f"{result}.set({key_name}, {value_name});"]
             length = len({key.constant for key, _ in pairs}) if all(key.constant is not None for key, _ in pairs) else None
             return _Expression("{ " + " ".join(lines) + f" {result} }}", "dict_int", length=length, nonempty=bool(pairs))
+        if isinstance(node, ast.Set):
+            values = [self.expression(value, environment) for value in node.elts]
+            if any(value.kind != "int" for value in values):
+                raise _Unsupported
+            self.has_sets = True
+            result = self.temporary()
+            lines = [f"let mut {result} = NativeSet::new();"]
+            for value in values:
+                item = self.temporary()
+                lines += [f"let {item} = {value.code};", f"{result}.insert({item});"]
+            length = len({value.constant for value in values}) if all(value.constant is not None for value in values) else None
+            return _Expression("{ " + " ".join(lines) + f" {result} }}", "set_int", length=length)
         if isinstance(node, ast.Subscript):
             if isinstance(node.slice, ast.Slice):
                 raise _Unsupported
@@ -484,7 +547,7 @@ class _Generator:
             return self.binary(node.op, left, right, node)
         if isinstance(node, ast.BoolOp):
             values = [self.expression(value, environment) for value in node.values]
-            if len({value.kind for value in values}) != 1 or values[0].kind in {"list_int", "dict_int"}:
+            if len({value.kind for value in values}) != 1 or values[0].kind in {"list_int", "dict_int", "set_int"}:
                 raise _Unsupported
             code = values[-1].code
             for value in reversed(values[:-1]):
@@ -496,11 +559,14 @@ class _Generator:
         if isinstance(node, ast.Compare):
             values = [self.expression(value, environment) for value in [node.left, *node.comparators]]
             if len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn)):
-                if values[1].kind != "dict_int":
+                if values[1].kind not in {"dict_int", "set_int"}:
+                    raise _Unsupported
+                if values[1].kind == "set_int" and values[0].kind != "int":
                     raise _Unsupported
                 key, dictionary = self.temporary(), self.temporary()
                 binding = values[1].code if values[1].owned else f"&({values[1].code})"
-                check = f"{dictionary}.contains({key})"
+                argument = f"&{key}" if values[1].kind == "set_int" else key
+                check = f"{dictionary}.contains({argument})"
                 if isinstance(node.ops[0], ast.NotIn):
                     check = f"!{check}"
                 return _Expression(f"{{ let {key} = {self.number(values[0])}; let {dictionary} = {binding}; {check} }}", "bool")
@@ -520,11 +586,17 @@ class _Generator:
             no = self.expression(node.orelse, environment)
             if yes.kind != no.kind:
                 raise _Unsupported
-            if yes.kind in {"list_int", "dict_int"}:
+            if yes.kind in {"list_int", "dict_int", "set_int"}:
                 raise _Unsupported
             return _Expression(f"(if {self.truth(test)} {{ {yes.code} }} else {{ {no.code} }})", yes.kind)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
+            if name == "set" and len(node.args) <= 1:
+                self.has_sets = True
+                if not node.args:
+                    return _Expression("NativeSet::new()", "set_int", length=0)
+                setup, iterator = self.set_iterable(node.args[0], environment)
+                return _Expression(f"{{ {setup} ({iterator}).collect::<NativeSet>() }}", "set_int")
             if name == "dict" and not node.args:
                 self.has_dicts = True
                 return _Expression("NativeDict::new()", "dict_int", length=0)
@@ -549,13 +621,13 @@ class _Generator:
             if name == "len" and len(node.args) == 1:
                 view = self.dict_view(node.args[0], environment)
                 value = view[0] if view else self.expression(node.args[0], environment)
-                if value.kind not in {"list_int", "dict_int"}:
+                if value.kind not in {"list_int", "dict_int", "set_int"}:
                     raise _Unsupported
                 return _Expression(f"(({value.code}).len() as NativeInt)", "int", value.length)
             if name == "sum" and len(node.args) in (1, 2):
                 view = self.dict_view(node.args[0], environment)
                 value = view[0] if view else self.expression(node.args[0], environment)
-                if value.kind not in {"list_int", "dict_int"} or (view and view[1] == "items"):
+                if value.kind not in {"list_int", "dict_int", "set_int"} or (view and view[1] == "items"):
                     raise _Unsupported
                 start = self.expression(node.args[1], environment) if len(node.args) == 2 else _Expression(self.literal(0), "int", 0)
                 if start.kind != "int":
@@ -690,6 +762,8 @@ class _Generator:
                 result[name] = kind if kind == other else _ListInfo(None)
             elif isinstance(kind, _DictInfo) and isinstance(other, _DictInfo):
                 result[name] = kind if kind == other else _DictInfo(None, kind.nonempty and other.nonempty)
+            elif isinstance(kind, _SetInfo) and isinstance(other, _SetInfo):
+                result[name] = kind if kind == other else _SetInfo(None)
             elif other == kind:
                 result[name] = kind
         return result
@@ -699,7 +773,8 @@ class _Generator:
         # A body can resize or replace a list on any normal/break/continue
         # path. Its pre-loop cardinality is no longer a valid proof.
         return {name: _ListInfo(None) if isinstance(kind, _ListInfo)
-                else _DictInfo(None) if isinstance(kind, _DictInfo) else kind
+                else _DictInfo(None) if isinstance(kind, _DictInfo)
+                else _SetInfo(None) if isinstance(kind, _SetInfo) else kind
                 for name, kind in environment.items()}
 
     def statement(self, node, environment):
@@ -756,7 +831,7 @@ class _Generator:
                 return f"let {result} = {value.code};\nlet {offset} = {self.number(index)};\n{setter};", environment
             if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
-            if value.kind in {"list_int", "dict_int"} and (not value.owned or len(node.targets) != 1):
+            if value.kind in {"list_int", "dict_int", "set_int"} and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported
             name = self.temporary()
             lines = [f"let {name} = {value.code};"]
@@ -788,7 +863,7 @@ class _Generator:
             return f"let {offset} = {self.number(index)};\nlet {old} = {getter};\nlet {result} = {value.code};\n{setter};", environment
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
             left = self.expression(node.target, environment)
-            if left.kind in {"list_int", "dict_int"}:
+            if left.kind in {"list_int", "dict_int", "set_int"}:
                 raise _Unsupported
             right = self.expression(node.value, environment)
             value = self.binary(node.op, left, right, node)
@@ -900,6 +975,36 @@ class _Generator:
                     and isinstance(call.func.value, ast.Name)):
                 target = call.func.value
                 values = self.expression(target, environment)
+                if values.kind == "set_int":
+                    if call.keywords:
+                        raise _Unsupported
+                    method = call.func.attr
+                    if method == "clear" and not call.args:
+                        environment[target.id] = _SetInfo(0)
+                        return f"{values.code}.clear();", environment
+                    if method in {"add", "discard", "remove"} and len(call.args) == 1:
+                        argument = self.expression(call.args[0], environment)
+                        if argument.kind != "int":
+                            raise _Unsupported
+                        item = self.temporary()
+                        if method == "add":
+                            action = f"{values.code}.insert({item})"
+                        elif method == "discard":
+                            action = f"{values.code}.remove(&{item})"
+                        else:
+                            action = self.at(f"native_set_remove(&mut {values.code}, {item})", node)
+                        environment[target.id] = _SetInfo(None)
+                        return f"let {item} = {argument.code};\n{action};", environment
+                    if method == "update" and len(call.args) <= 1:
+                        if not call.args:
+                            return ";", environment
+                        if isinstance(call.args[0], ast.Name) and call.args[0].id == target.id:
+                            return ";", environment
+                        setup, iterator = self.set_iterable(call.args[0], environment)
+                        item = self.temporary()
+                        environment[target.id] = _SetInfo(None)
+                        return f"{{ {setup} for {item} in {iterator} {{ {values.code}.insert({item}); }} }}", environment
+                    raise _Unsupported
                 if values.kind == "dict_int":
                     expression = self.expression(call, environment)
                     return f"let _ = {expression.code};", environment
@@ -961,7 +1066,7 @@ class _Generator:
                 lines.append(f"native_output.push_str({_string(end)});")
                 return "\n".join(lines), environment
             expression = self.expression(call, environment)
-            return f"let _ = {'&(' + expression.code + ')' if expression.kind in {'list_int', 'dict_int'} and not expression.owned else expression.code};", environment
+            return f"let _ = {'&(' + expression.code + ')' if expression.kind in {'list_int', 'dict_int', 'set_int'} and not expression.owned else expression.code};", environment
         raise _Unsupported
 
 
@@ -1050,13 +1155,15 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
         result.append(_LIST_HELPERS)
     if generator.has_dicts:
         result.append(_DICT_HELPERS)
+    if generator.has_sets:
+        result.append(_SET_HELPERS)
     result.append("fn main() {\nuse std::fmt::Write as _;\nuse std::io::Write as _;\n"
                   "let mut native_output = String::new();\n"
                   "let native_result = (|| -> Result<(), NativeError> {\n")
     if generator.has_input:
         result.append("let mut native_input = NativeInput::new();\n")
     for name, kind in generator.bindings.items():
-        rust_type = {"int": "NativeInt", "bool": "bool", "list_int": "Vec<NativeInt>", "dict_int": "NativeDict"}[kind]
+        rust_type = {"int": "NativeInt", "bool": "bool", "list_int": "Vec<NativeInt>", "dict_int": "NativeDict", "set_int": "NativeSet"}[kind]
         result.append(f"let mut {generator.names[name]}: {rust_type};\n")
     result.append(body + "\nOk(())\n})();\n")
     result.append("std::io::stdout().write_all(native_output.as_bytes()).unwrap();\n")
