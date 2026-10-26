@@ -85,7 +85,7 @@ class MathTests(unittest.TestCase):
         commands, expected = [], []
         for name, args, kwargs in cases:
             command = '{ let args=vec![' + ",".join(map(rust_value, args)) + ']; let kwargs=vec!['
-            command += ",".join(f'("{key}".to_string(),{rust_value(value)})' for key, value in kwargs.items())
+            command += ",".join(f'(rt.static_keyword("{key}".to_string()),{rust_value(value)})' for key, value in kwargs.items())
             command += f']; match rt.math_call("{name}",args,kwargs) {{ Ok(v)=>println!("{{}}",math_test_render(&rt,&v)), Err(e)=>println!("ERR:{{}}",e.kind) }} }}'
             commands.append(command)
             try:
