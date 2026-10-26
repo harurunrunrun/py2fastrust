@@ -9,6 +9,17 @@ from py2fastrust import TranspileOptions, transpile
 
 
 class APITests(unittest.TestCase):
+    def test_backend_selection_and_source_map(self):
+        source = "s=0\nfor i in range(10):\n s += i\nprint(s)\n"
+        result = transpile(source)
+        self.assertTrue(result.success)
+        self.assertEqual(result.backend, "native")
+        self.assertTrue(result.source_map)
+        self.assertNotIn("enum Value", result.rust_source)
+        result = transpile(source, TranspileOptions(optimize=False))
+        self.assertEqual(result.backend, "vm")
+        self.assertIn("enum Value", result.rust_source)
+
     def test_bad_integer_option_and_syntax_diagnostics(self):
         result = transpile("x=1", TranspileOptions(integer="i32", filename="bad.py"))
         self.assertFalse(result.success)

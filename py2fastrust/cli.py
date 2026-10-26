@@ -17,13 +17,14 @@ def main(argv=None):
     parser.add_argument("--module-path", type=Path, action="append", default=[])
     parser.add_argument("--include-module", action="append", default=[])
     parser.add_argument("--check", action="store_true", help="validate without writing Rust")
+    parser.add_argument("--no-optimize", action="store_true", help="use the general runtime for differential debugging")
     parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args(argv)
     try:
         with tokenize.open(args.source) as stream:
             source = stream.read()
         options = TranspileOptions(args.integer, str(args.source), tuple(args.module_path) or (args.source.resolve().parent,),
-                                   tuple(args.include_module))
+                                   tuple(args.include_module), not args.no_optimize)
         result = transpile(source, options)
         if not result.success:
             for diagnostic in result.diagnostics:
