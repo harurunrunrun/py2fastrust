@@ -244,7 +244,7 @@ impl Runtime {
         step: Int,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if !kwargs.is_empty() || args.len() != 1 {
             return Err(pyerr(

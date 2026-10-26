@@ -65,6 +65,59 @@ class ExecutionTests(unittest.TestCase):
             print(eval(compile('x+2','code.py','eval'),globals=g))
         ''')
 
+    def test_keyword_subclass_validation_preserves_comparison_effects(self):
+        self.compare('''
+            events=[]
+            class Key(str):
+                def __new__(cls,text,equal):
+                    value=super().__new__(cls,text)
+                    value.equal=equal
+                    return value
+                def __eq__(self,other):
+                    events.append(other)
+                    return self.equal
+                __hash__=str.__hash__
+            for operation in ['eval','exec','compile']:
+                for equal in [False,True]:
+                    for spelling in [('mode' if operation=='compile' else 'globals'),'unknown']:
+                        events.clear()
+                        key=Key(spelling,equal)
+                        try:
+                            if operation=='compile':value=eval(compile('1','x',**{key:'eval'}))
+                            elif operation=='eval':value=eval('1',**{key:{}})
+                            else:value=exec('pass',**{key:{}})
+                            print(operation,spelling,equal,value,events)
+                        except TypeError as error:print(operation,spelling,equal,type(error).__name__,events)
+            for equal in [False,True]:
+                events.clear()
+                try:compile('1','x','eval',**{Key('unknown',equal):0})
+                except TypeError as error:print('complete',equal,type(error).__name__,events)
+        ''')
+
+    def test_keyword_validation_error_order_and_callback_exceptions(self):
+        self.compare('''
+            events=[]
+            class Key(str):
+                def __eq__(self,other):
+                    events.append(other)
+                    raise RuntimeError('keyword comparison')
+                __hash__=str.__hash__
+            def report(action):
+                events.clear()
+                try:print(action())
+                except Exception as error:print(type(error).__name__,events)
+            report(lambda:eval('1',**{Key('globals'):{}}))
+            report(lambda:eval('1',**{Key('unknown'):1}))
+            report(lambda:exec('pass',**{Key('unknown'):1}))
+            report(lambda:compile('1','x','eval',**{Key('unknown'):1}))
+            report(lambda:eval('1',**{Key('unknown'):1,'globals':{},'locals':{}}))
+            report(lambda:exec('pass',None,**{Key('unknown'):1,'globals':{}}))
+            report(lambda:compile('1',**{Key('unknown'):1,'source':'2'}))
+            report(lambda:compile('1','x','eval',**{Key('unknown'):1,'source':'2'}))
+            report(lambda:exec('pass',**{Key('unknown'):1,'a':1,'b':1,'c':1}))
+            report(lambda:compile('1','x','eval',**{Key('unknown'):1,'a':1,'b':1,'c':1,'d':1}))
+        ''')
+
     def test_argument_errors_and_no_source_string_coercion(self):
         self.compare('''
             class Source:

@@ -250,6 +250,11 @@ impl Runtime {
         }
     }
     fn code_constant(&mut self, code: usize, constant: Const) -> PyResult<Value> {
+        if let Const::Str(text)=&constant {
+            // CPython interns ASCII identifier-shaped string constants as well
+            // as keyword identifiers. Runtime-created mapping keys are separate.
+            if text.bytes().all(|byte|byte.is_ascii_alphanumeric()||byte==b'_'){return Ok(Value::Str(self.intern_keyword(text)));}
+        }
         let key = constant.literal_key();
         if let Some(value) = self
             .literal_pools

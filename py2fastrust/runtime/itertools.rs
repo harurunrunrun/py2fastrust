@@ -53,7 +53,7 @@ impl ToolsState {
 
 impl Runtime {
     fn tools_iterator(&mut self, state: ToolsState) -> Value { self.obj_value(Object::Iterator(IteratorState::Tools(Box::new(state)))) }
-    fn tools_arguments(&self, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>, names: &[&str], max_positional: usize, positional_only: usize, required: usize) -> PyResult<Vec<Option<Value>>> {
+    fn tools_arguments(&self, name: &str, args: Vec<Value>, kwargs: KeywordArgs, names: &[&str], max_positional: usize, positional_only: usize, required: usize) -> PyResult<Vec<Option<Value>>> {
         if args.len() > max_positional { return Err(pyerr("TypeError",format!("{name}() received too many positional arguments"))); }
         let mut bound = vec![None; names.len()]; for (index,value) in args.into_iter().enumerate() { bound[index] = Some(value); }
         for (key,value) in kwargs {
@@ -78,11 +78,11 @@ impl Runtime {
         while let Some(value) = self.next(iter.clone())? { pool.push(self.tools_keep(root,value)); }
         Ok(pool)
     }
-    fn itertools_call(&mut self, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
-        let root = self.roots.len(); let mut roots = args.clone(); roots.extend(kwargs.iter().map(|(_,value)|value.clone())); self.roots.push(roots);
+    fn itertools_call(&mut self, name: &str, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {
+        let root = self.roots.len(); let mut roots = args.clone(); roots.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()])); self.roots.push(roots);
         let result = self.itertools_construct(name,args,kwargs,root); self.roots.truncate(root); result
     }
-    fn itertools_construct(&mut self, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>, root: usize) -> PyResult<Value> {
+    fn itertools_construct(&mut self, name: &str, args: Vec<Value>, kwargs: KeywordArgs, root: usize) -> PyResult<Value> {
         let zero = || Value::Int(Int::from_i128(0).into()); let one = || Value::Int(Int::from_i128(1).into());
         let state = match name {
             "accumulate" => {

@@ -133,6 +133,11 @@ impl Runtime {
         layout.slots.push(Some(key));
         layout.usable = layout.usable.saturating_sub(1);
     }
+    fn assoc_dictionary_removed(&mut self,owner:usize,index:usize){
+        if let Some(layout)=self.assoc_layouts.get_mut(&owner){
+            if let Some(position)=layout.slots.iter().enumerate().filter(|(_,slot)|slot.is_some()).nth(index).map(|(position,_)|position){layout.slots[position]=None;}
+        }
+    }
     fn assoc_removed(&mut self, owner: usize, key: &Value) {
         let identity = self.identity_number(key);
         if let Some(hashes)=self.set_member_hashes.get_mut(&owner){hashes.remove(&identity);}
@@ -151,6 +156,7 @@ impl Runtime {
     }
     fn assoc_cleared(&mut self, owner: usize) {
         self.set_member_hashes.remove(&owner);
+        self.dictionary_hashes.remove(&owner);
         let is_set = self
             .assoc_layouts
             .get(&owner)
@@ -236,12 +242,12 @@ impl Runtime {
         }
         if !matches!(self.heap.get(owner).and_then(Option::as_ref),Some(Object::FrozenSet{..})){self.assoc_sync(owner)?;}
         let slots = &self.assoc_layouts[&owner].slots;
-        let mut key = None;
+        let mut key = None;let mut entry_index=0;
         while state.position >= 0 && (state.position as usize) < slots.len() {
             let position = state.position as usize;
             state.position += if state.reversed { -1 } else { 1 };
             if let Some(value) = &slots[position] {
-                key = Some(value.clone());
+                key = Some(value.clone());entry_index=slots[..position].iter().filter(|slot|slot.is_some()).count();
                 break;
             }
         }
@@ -264,8 +270,7 @@ impl Runtime {
         }
         let value = self
             .assoc_entries(owner)?
-            .into_iter()
-            .find(|(candidate, _)| candidate.same_identity(&key))
+            .into_iter().nth(entry_index)
             .map(|(_, value)| value)
             .ok_or_else(|| pyerr("RuntimeError", "dictionary keys changed during iteration"))?;
         Ok(Some(if state.kind == DictViewKind::Values {
@@ -323,16 +328,17 @@ impl Runtime {
         } else {
             (candidate, None)
         };
-        self.builtin("hash", vec![key.clone()], Vec::new(), None)?;
+        let hash=self.frozen_member_hash(&key)?;
         let entries = self.assoc_entries(owner)?;
         self.roots[root].extend(
             entries
                 .iter()
                 .flat_map(|(key, value)| [key.clone(), value.clone()]),
         );
-        if let Some(position) = self.find_key(&entries, &key)? {
+        if let Some(position) = self.dictionary_find_known(owner,&entries,&key,hash)? {
             if let Some(wanted) = wanted {
-                return self.identical_or_equal(&entries[position].1, &wanted);
+                let current=self.assoc_entries(owner)?;
+                return self.identical_or_equal(&current[position].1, &wanted);
             }
             return Ok(true);
         }
@@ -555,7 +561,7 @@ impl Runtime {
         value: Value,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> Option<PyResult<Value>> {
         let Value::Obj(index) = &value else {
             return None;
@@ -769,7 +775,7 @@ impl Runtime {
         owner: usize,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if !kwargs.is_empty() || (name == "symmetric_difference_update" && args.len() != 1) {
             return Err(pyerr("TypeError", "invalid set update arguments"));
@@ -830,7 +836,7 @@ impl Runtime {
     fn assoc_length_hint(
         &mut self,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if !(1..=2).contains(&args.len()) || !kwargs.is_empty() {
             return Err(pyerr(
@@ -906,11 +912,13 @@ impl Runtime {
                         .chain(&b)
                         .flat_map(|(key, value)| [key.clone(), value.clone()]),
                 );
-                for (key, value) in a {
-                    let Some(position) = runtime.find_key(&b, &key)? else {
+                for(index,(key,value))in a.into_iter().enumerate(){
+                    let hash=runtime.dictionary_entry_hash(left,index,&key)?;
+                    let Some(position)=runtime.dictionary_find_known(right,&b,&key,hash)? else {
                         return Ok(false);
                     };
-                    if !runtime.identical_or_equal(&value, &b[position].1)? {
+                    let current=runtime.assoc_entries(right)?;
+                    if !runtime.identical_or_equal(&value, &current[position].1)? {
                         return Ok(false);
                     }
                 }

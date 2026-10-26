@@ -509,11 +509,11 @@ impl Runtime {
         &mut self,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         let root = self.roots.len();
         let mut values = args.clone();
-        values.extend(kwargs.iter().map(|(_, value)| value.clone()));
+        values.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         self.roots.push(values);
         let result = self.math_dispatch(name, args, kwargs, root);
         self.roots.truncate(root);
@@ -523,7 +523,7 @@ impl Runtime {
         &mut self,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
         root: usize,
     ) -> PyResult<Value> {
         let base = self.roots[root].len();

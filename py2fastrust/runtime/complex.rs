@@ -404,7 +404,7 @@ impl Runtime {
     fn complex_constructor(
         &mut self,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         let positional = args.len();
         let string_form = positional == 1 && kwargs.is_empty();
@@ -445,7 +445,7 @@ impl Runtime {
     fn complex_from_number(
         &mut self,
         mut args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if args.len() != 2 || !kwargs.is_empty() {
             return Err(pyerr(
@@ -724,7 +724,7 @@ impl Runtime {
         value: Value,
         name: &str,
         mut args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> Option<PyResult<Value>> {
         let Value::Complex(number) = &value else {
             return None;

@@ -1,49 +1,162 @@
 // compile/eval/exec argument validation. Source syntax uses the shared PEG.
-fn execution_parameters(
-    name: &str,
-    args: &[Value],
-    kwargs: &[(String, Value)],
-) -> PyResult<[Value; 4]> {
-    if args.is_empty() {
-        return Err(pyerr(
-            "TypeError",
-            format!("{name}() takes at least 1 positional argument (0 given)"),
-        ));
-    }
-    if args.len() > 3 {
-        return Err(pyerr(
-            "TypeError",
-            format!("{name}() takes at most 3 arguments ({} given)", args.len()),
-        ));
-    }
-    let mut result = [args[0].clone(), Value::None, Value::None, Value::None];
-    let mut seen = [true, false, false, false];
-    for (index, value) in args.iter().enumerate().skip(1) {
-        result[index] = value.clone();
-        seen[index] = true;
-    }
-    for (key, value) in kwargs {
-        let index = match key.as_str() {
-            "globals" => 1,
-            "locals" => 2,
-            "closure" if name == "exec" => 3,
-            _ => {
+impl Runtime {
+    fn execution_unknown_keyword(
+        &mut self,
+        name: &str,
+        keyword: &KeywordName,
+        parameters: &[&str],
+    ) -> PyResult<()> {
+        // Recognized names are matched by native spelling before this check.
+        // An unknown string subclass still participates in Python's validation
+        // comparisons, including its exceptions and observable side effects.
+        for parameter in parameters {
+            if self.equal(&keyword.original, &Value::Str((*parameter).into()))? {
                 return Err(pyerr(
                     "TypeError",
-                    format!("{name}() got an unexpected keyword argument '{key}'"),
-                ))
+                    format!("invalid keyword argument for {name}()"),
+                ));
             }
-        };
-        if seen[index] {
+        }
+        Err(pyerr(
+            "TypeError",
+            format!("{name}() got an unexpected keyword argument '{keyword}'"),
+        ))
+    }
+    fn execution_parameters(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        kwargs: &KeywordArgs,
+    ) -> PyResult<[Value; 4]> {
+        if args.is_empty() {
             return Err(pyerr(
                 "TypeError",
-                format!("{name}() got multiple values for argument '{key}'"),
+                format!("{name}() takes at least 1 positional argument (0 given)"),
             ));
         }
-        seen[index] = true;
-        result[index] = value.clone();
+        let maximum = if name == "exec" { 4 } else { 3 };
+        if args.len() + kwargs.len() > maximum {
+            return Err(pyerr(
+                "TypeError",
+                format!(
+                    "{name}() takes at most {maximum} arguments ({} given)",
+                    args.len() + kwargs.len()
+                ),
+            ));
+        }
+        if args.len() > 3 {
+            return Err(pyerr(
+                "TypeError",
+                format!(
+                    "{name}() takes at most 3 positional arguments ({} given)",
+                    args.len()
+                ),
+            ));
+        }
+        let parameters: &[&str] = if name == "exec" {
+            &["globals", "locals", "closure"]
+        } else {
+            &["globals", "locals"]
+        };
+        let mut result = [args[0].clone(), Value::None, Value::None, Value::None];
+        let mut seen = [true, false, false, false];
+        for (index, value) in args.iter().enumerate().skip(1) {
+            result[index] = value.clone();
+            seen[index] = true;
+        }
+        for parameter in parameters {
+            let index = parameters
+                .iter()
+                .position(|name| name == parameter)
+                .unwrap()
+                + 1;
+            for (key, value) in kwargs.iter().filter(|(key, _)| key.as_str() == *parameter) {
+                if seen[index] {
+                    return Err(pyerr(
+                        "TypeError",
+                        format!("{name}() got multiple values for argument '{key}'"),
+                    ));
+                }
+                seen[index] = true;
+                result[index] = value.clone();
+            }
+        }
+        for (key, _) in kwargs {
+            if !parameters.contains(&key.as_str()) {
+                self.execution_unknown_keyword(name, key, parameters)?;
+            }
+        }
+        Ok(result)
     }
-    Ok(result)
+    fn execution_compile_parameters(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: KeywordArgs,
+    ) -> PyResult<[Option<Value>; 7]> {
+        const PARAMETERS: [&str; 7] = [
+            "source",
+            "filename",
+            "mode",
+            "flags",
+            "dont_inherit",
+            "optimize",
+            "_feature_version",
+        ];
+        if args.len() + kwargs.len() > PARAMETERS.len() {
+            return Err(pyerr(
+                "TypeError",
+                format!(
+                    "compile() takes at most 7 arguments ({} given)",
+                    args.len() + kwargs.len()
+                ),
+            ));
+        }
+        let mut result: [Option<Value>; 7] = std::array::from_fn(|_| None);
+        let mut duplicates = [false; 7];
+        for (index, value) in args.into_iter().enumerate() {
+            result[index] = Some(value);
+        }
+        for (key, value) in &kwargs {
+            if let Some(index) = PARAMETERS.iter().position(|name| *name == key.as_str()) {
+                if result[index].is_some() {
+                    duplicates[index] = true;
+                } else {
+                    result[index] = Some(value.clone());
+                }
+            }
+        }
+        // Missing required parameters precede duplicate and unknown-key checks.
+        for index in 0..3 {
+            if result[index].is_none() {
+                return Err(pyerr(
+                    "TypeError",
+                    format!(
+                        "compile() missing required argument '{}' (pos {})",
+                        PARAMETERS[index],
+                        index + 1
+                    ),
+                ));
+            }
+        }
+        for index in 0..7 {
+            if duplicates[index] {
+                return Err(pyerr(
+                    "TypeError",
+                    format!(
+                        "argument for compile() given by name ('{}') and position ({})",
+                        PARAMETERS[index],
+                        index + 1
+                    ),
+                ));
+            }
+        }
+        for (key, _) in &kwargs {
+            if !PARAMETERS.contains(&key.as_str()) {
+                self.execution_unknown_keyword("compile", key, &PARAMETERS)?;
+            }
+        }
+        Ok(result)
+    }
 }
 
 fn execution_cookie(line: &[u8]) -> Option<String> {

@@ -768,16 +768,26 @@ class Emitter:
         if not (len(node.args) == 1 and isinstance(node.args[0], ast.Starred)):
             self.emit("BuildTupleUnpack", len(node.args), node=node)
         if node.keywords:
-            self.emit("BuildDict", 0, node=node)
-            for keyword in node.keywords:
-                if keyword.arg is not None:
-                    self.emit("Const", keyword.arg, node=node)
-                    self.visit(keyword.value)
-                    self.emit("BuildDict", 1, node=node)
-                else:
-                    self.visit(keyword.value)
-                self.emit("Binary", "kwargs_merge", node=node)
+            self.expanded_keywords(node.keywords, node)
         self.emit("CallEx", bool(node.keywords), node=node)
+
+    def expanded_keywords(self, keywords, anchor):
+        self.emit("BuildDict", 0, node=anchor)
+        index = 0
+        while index < len(keywords):
+            keyword = keywords[index]
+            if keyword.arg is None:
+                self.visit(keyword.value)
+                index += 1
+            else:
+                start = index
+                while index < len(keywords) and keywords[index].arg is not None:
+                    item = keywords[index]
+                    self.emit("Keyword", item.arg, node=item.value)
+                    self.visit(item.value)
+                    index += 1
+                self.emit("BuildDict", index - start, node=keyword.value)
+            self.emit("Binary", "kwargs_merge", node=keyword.value)
 
     def set_params(self, emitter, args):
         emitter.code.params = Parameters(len(args.posonlyargs),
@@ -1016,15 +1026,10 @@ class Emitter:
                 self.emit("BuildTuple", 1, node=node)
         if expanded:
             self.emit("BuildTupleUnpack", len(node.bases) + int(type_scope), node=node)
-            self.emit("BuildDict", 0, node=node)
-        for keyword in node.keywords:
-            if expanded and keyword.arg is not None:
-                self.emit("Const", keyword.arg, node=keyword.value)
-            self.visit(keyword.value)
-            if expanded:
-                if keyword.arg is not None:
-                    self.emit("BuildDict", 1, node=keyword.value)
-                self.emit("Binary", "kwargs_merge", node=keyword.value)
+            self.expanded_keywords(node.keywords, node)
+        else:
+            for keyword in node.keywords:
+                self.visit(keyword.value)
         emitter = self.child(node, node.name, "Class")
         first_line = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
         emitter.emit("Const", first_line, node=node)

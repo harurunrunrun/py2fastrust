@@ -86,3 +86,11 @@ copyright notices belonging to the license text itself are retained.
 If the original Python source specifies a license, that license takes precedence.
 Otherwise, the selected text applies to translated program logic. Bundled runtime and
 third-party components retain their own MIT, PSF, and Unicode notices.
+
+Dictionary entry-hash preservation and copy/merge paths in
+`py2fastrust/runtime/keywords.rs` follow `dict_dict_merge` and `copy_lock_held`
+from [CPython 3.14.4's Objects/dictobject.c](https://github.com/python/cpython/blob/v3.14.4/Objects/dictobject.c).
+The implementation retains the distinct clone conditions and known-hash paths
+so keyword-key comparison and hashing effects are preserved. These adaptations
+use the PSF license retained in `py2fastrust/stdlib/PYTHON_LICENSE.txt`; generated
+general-runtime Rust includes that full license with the runtime notice.

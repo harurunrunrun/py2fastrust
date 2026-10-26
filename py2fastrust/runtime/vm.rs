@@ -50,6 +50,7 @@ enum Const {
 #[derive(Clone, Debug)]
 enum Op {
     Const(Const),
+    Keyword(String),
     Load(String),
     Store(String),
     StoreCell(String),
@@ -277,12 +278,28 @@ struct Class {
 }
 #[derive(Clone, Debug)]
 struct CacheEntry {
+    hashes: Vec<i64>,
     args: Vec<Value>,
-    kwargs: Vec<(String, Value)>,
+    kwargs: KeywordArgs,
     value: Value,
 }
 #[derive(Clone, Debug)]
+struct CacheReturn {
+    owner: Value,
+    entry: CacheEntry,
+}
+enum CachedLookup {
+    Hit(Value),
+    Miss { function: Value, entry: CacheEntry },
+}
+enum PreparedCall {
+    Fallback,
+    Value(Value),
+    Frame(Frame),
+}
+#[derive(Clone, Debug)]
 struct CachedFunction {
+    revision: u64,
     attrs: Option<usize>,
     function: Value,
     entries: Vec<CacheEntry>,
@@ -409,6 +426,7 @@ struct Frame {
     inherited_exception: Option<PyException>,
     except_star: Vec<Value>,
     next_call: Option<Box<Frame>>,
+    cache_returns: Vec<CacheReturn>,
     resume_value: Option<Value>,
     injected_exception: Option<PyException>,
     finally_regions: Vec<(usize, usize, bool)>,
@@ -424,8 +442,10 @@ struct Runtime {
     typing_alias_cache: Vec<TypingAliasCacheEntry>,
     template_metadata: HashMap<String, Value>,
     assoc_layouts: HashMap<usize, AssocLayout>,
+    dictionary_hashes: HashMap<usize,Vec<Option<i64>>>,
     set_member_hashes: HashMap<usize,HashMap<u64,i64>>,
     frozen_reprs:std::collections::HashSet<usize>,
+    keyword_intern_pool: HashMap<String,Ident<String>>,
     literal_pools: HashMap<usize, HashMap<LiteralKey, Value>>,
     identity_builtins: HashMap<String, u64>,
     identity_types: HashMap<String, u64>,
@@ -591,7 +611,7 @@ impl Runtime {
             }
         }
     }
-    fn take_keyword(kw: &mut Vec<(String, Value)>, name: &str) -> Option<Value> {
+    fn take_keyword(kw: &mut KeywordArgs, name: &str) -> Option<Value> {
         kw.iter()
             .position(|(n, _)| n == name)
             .map(|i| kw.remove(i).1)
@@ -1136,68 +1156,115 @@ impl Runtime {
         }
         Ok(())
     }
-    fn cached_call(
-        &mut self,
-        i: usize,
-        mut cache: CachedFunction,
-        args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
-        caller: Option<&Frame>,
-    ) -> PyResult<Value> {
-        for v in args.iter().chain(kwargs.iter().map(|(_, v)| v)) {
-            self.cache_key_check(v)?
+    fn cached_entry_roots(entry:&CacheEntry,out:&mut Vec<Value>){
+        out.extend(entry.args.iter().cloned());
+        out.extend(entry.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
+        out.push(entry.value.clone());
+    }
+    fn cached_entry_equal(&mut self,cache:&CachedFunction,a:&CacheEntry,b:&CacheEntry)->PyResult<bool>{
+        let mut roots=Vec::new();Self::cached_entry_roots(a,&mut roots);Self::cached_entry_roots(b,&mut roots);
+        self.view_rooted(roots,|runtime,_|runtime.cached_entry_equal_inner(cache,a,b))
+    }
+    fn cached_entry_equal_inner(&mut self, cache: &CachedFunction, a: &CacheEntry, b: &CacheEntry) -> PyResult<bool> {
+        if a.args.len()!=b.args.len() || a.kwargs.len()!=b.kwargs.len() || a.hashes!=b.hashes {return Ok(false);}
+        for (a,b) in a.args.iter().zip(&b.args) {
+            if (cache.typed && self.typename(a)!=self.typename(b)) || !self.identical_or_equal(a,b)? {return Ok(false);}
         }
-        for (j, e) in cache.entries.iter().enumerate() {
-            if e.args.len() != args.len() || e.kwargs.len() != kwargs.len() {
-                continue;
-            }
-            let mut same = true;
-            for (a, b) in e.args.iter().zip(&args) {
-                if (cache.typed && self.typename(a) != self.typename(b)) || !self.identical_or_equal(a, b)? {
-                    same = false;
-                    break;
-                }
-            }
-            if same {
-                for ((an, a), (bn, b)) in e.kwargs.iter().zip(&kwargs) {
-                    if an != bn
-                        || (cache.typed && self.typename(a) != self.typename(b))
-                        || !self.identical_or_equal(a, b)?
-                    {
-                        same = false;
-                        break;
+        for ((an,a),(bn,b)) in a.kwargs.iter().zip(&b.kwargs) {
+            if !self.identical_or_equal(&an.original,&bn.original)? || (cache.typed && self.typename(a)!=self.typename(b)) || !self.identical_or_equal(a,b)? {return Ok(false);}
+        }
+        Ok(true)
+    }
+    fn cached_revision(&self,i:usize)->Option<u64> {
+        match self.heap.get(i).and_then(Option::as_ref) {Some(Object::Cached(cache))=>Some(cache.revision),_=>None}
+    }
+    fn cached_lookup(&mut self, i: usize, mut cache: CachedFunction, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<CachedLookup> {
+        let mut hashes=Vec::new();
+        if cache.maxsize!=Some(0){
+            for value in &args{hashes.push(self.frozen_member_hash(value)?);}
+            for(name,value)in &kwargs{hashes.push(self.frozen_member_hash(&name.original)?);hashes.push(self.frozen_member_hash(value)?);}
+        }
+        // Hash callbacks can clear or re-enter this wrapper. Read its current
+        // state after the one-time key construction instead of reviving a copy.
+        let mut cache=match self.object(i)?{Object::Cached(cache)=>cache,_=>unreachable!()};
+        let entry=CacheEntry{args,kwargs,hashes,value:Value::None};
+        'retry: loop {
+            if cache.maxsize!=Some(0) {
+                for j in 0..cache.entries.len() {
+                    let equal=self.cached_entry_equal(&cache,&cache.entries[j],&entry)?;
+                    if self.cached_revision(i)!=Some(cache.revision) {
+                        cache=match self.object(i)? {Object::Cached(cache)=>cache,_=>unreachable!()};
+                        continue 'retry;
+                    }
+                    if equal {
+                        let mut current=match self.object(i)? {Object::Cached(cache)=>cache,_=>unreachable!()};
+                        let found=current.entries.remove(j);
+                        let value=found.value.clone();
+                        current.entries.push(found);
+                        current.hits+=1;
+                        current.revision=current.revision.wrapping_add(1);
+                        self.heap[i]=Some(Object::Cached(current));
+                        return Ok(CachedLookup::Hit(value));
                     }
                 }
             }
-            if same {
-                let entry = cache.entries.remove(j);
-                let result = entry.value.clone();
-                cache.entries.push(entry);
-                cache.hits += 1;
-                self.heap[i] = Some(Object::Cached(cache));
-                return Ok(result);
-            }
+            let mut current=match self.object(i)? {Object::Cached(cache)=>cache,_=>unreachable!()};
+            current.misses+=1;
+            let function=current.function.clone();
+            self.heap[i]=Some(Object::Cached(current));
+            return Ok(CachedLookup::Miss{function,entry});
         }
-        cache.misses += 1;
-        let fun = cache.function.clone();
-        self.heap[i] = Some(Object::Cached(cache));
-        let value = self.call(fun, args.clone(), kwargs.clone(), caller)?;
-        if let Object::Cached(mut cache) = self.object(i)? {
-            if cache.maxsize != Some(0) {
-                cache.entries.push(CacheEntry {
-                    args,
-                    kwargs,
-                    value: value.clone(),
-                });
-                if let Some(max) = cache.maxsize {
-                    if cache.entries.len() > max {
-                        cache.entries.remove(0);
+    }
+    fn cached_finish(&mut self,i:usize,entry:CacheEntry,value:Value)->PyResult<Value>{
+        let mut roots=vec![Value::Obj(i),value.clone()];Self::cached_entry_roots(&entry,&mut roots);
+        self.view_rooted(roots,|runtime,_|runtime.cached_finish_inner(i,entry,value))
+    }
+    fn cached_finish_inner(&mut self, i: usize, mut entry: CacheEntry, value: Value) -> PyResult<Value> {
+        // Re-read the wrapper after the body: cache_clear() and recursive calls
+        // may have replaced its entries and reset its statistics. Equality can
+        // itself re-enter Python, so restart if the entries change during it.
+        entry.value=value.clone();
+        'retry: loop {
+            let cache=match self.object(i)? {Object::Cached(cache)=>cache,_=>return Ok(value)};
+            if cache.maxsize==Some(0) {return Ok(value);}
+            let mut existing=None;
+            for j in 0..cache.entries.len() {
+                let equal=self.cached_entry_equal(&cache,&cache.entries[j],&entry)?;
+                if self.cached_revision(i)!=Some(cache.revision) {continue 'retry;}
+                if equal {existing=Some(j);break;}
+            }
+            if existing.is_none(){
+                if let Some(max)=cache.maxsize{
+                    // Bounded wrappers first check for reentrant insertion,
+                    // then insert a new link. Dictionary insertion compares
+                    // colliding keys again after an optional oldest eviction.
+                    let start=usize::from(cache.entries.len()>=max);
+                    for stored in cache.entries.iter().skip(start){
+                        self.cached_entry_equal(&cache,stored,&entry)?;
+                        if self.cached_revision(i)!=Some(cache.revision){continue 'retry;}
                     }
                 }
-                self.heap[i] = Some(Object::Cached(cache));
+            }
+            let mut current=match self.object(i)? {Object::Cached(cache)=>cache,_=>return Ok(value)};
+            if let Some(j)=existing {
+                if current.maxsize.is_none() {current.entries[j].value=value.clone();}
+            } else {
+                current.entries.push(entry);
+                if let Some(max)=current.maxsize {if current.entries.len()>max {current.entries.remove(0);}}
+            }
+            current.revision=current.revision.wrapping_add(1);
+            self.heap[i]=Some(Object::Cached(current));
+            return Ok(value);
+        }
+    }
+    fn cached_call(&mut self, i:usize, cache:CachedFunction,args:Vec<Value>,kwargs:KeywordArgs,caller:Option<&Frame>) -> PyResult<Value> {
+        match self.cached_lookup(i,cache,args,kwargs)? {
+            CachedLookup::Hit(value)=>Ok(value),
+            CachedLookup::Miss{function,entry}=>{
+                let value=self.call(function,entry.args.clone(),entry.kwargs.clone(),caller)?;
+                self.cached_finish(i,entry,value)
             }
         }
-        Ok(value)
     }
     fn mapping_get(&mut self, i: usize, n: &str) -> PyResult<Option<Value>> {
         if let Some(Object::ExecutionLocals(value))=self.heap.get(i).and_then(Option::as_ref){return self.getitem(value.clone(),Value::Str(n.into())).map(Some);}
@@ -1248,8 +1315,10 @@ impl Runtime {
             typing_alias_cache: Vec::new(),
             template_metadata: HashMap::new(),
             assoc_layouts: HashMap::new(),
+            dictionary_hashes: HashMap::new(),
             set_member_hashes: HashMap::new(),
             frozen_reprs:std::collections::HashSet::new(),
+            keyword_intern_pool: HashMap::new(),
             literal_pools: HashMap::new(),
             identity_builtins: HashMap::new(),
             identity_types: HashMap::new(),
@@ -1415,6 +1484,7 @@ impl Runtime {
         let index=if let Some(i)=self.free.pop() {
             self.assoc_layouts.remove(&i);
             self.set_member_hashes.remove(&i);
+            self.dictionary_hashes.remove(&i);
             self.annotation_namespaces.remove(&i);
             self.scope_cells.remove(&i);
             self.scope_bindings.remove(&i);
@@ -1466,19 +1536,23 @@ impl Runtime {
         }
         if let Some(key)=inserted {self.assoc_inserted(i,key);}
     }
-    fn ns_del(&mut self,i:usize,name:&str)->bool {
+    fn ns_del(&mut self,i:usize,name:&str)->bool{
         if let Some(Object::BuiltinInstance{payload:Value::Obj(index),..})=self.heap.get(i).and_then(Option::as_ref){let index=*index;return self.ns_del(index,name);}
-        let mut removed=None;
-        match self.heap.get_mut(i).and_then(Option::as_mut) {
-            Some(Object::Namespace(m,_))=>{
-                if m.contains_key(name) {removed=m.ident_items().into_iter().find(|(key,_)|matches!(key,Value::Str(key)if key==name)).map(|(key,_)|key);m.remove(name);}
+        let mut removed=None;let mut removed_position=None;
+        match self.heap.get_mut(i).and_then(Option::as_mut){
+            Some(Object::Namespace(mapping,_))=>{
+                if let Some(position)=mapping.order.iter().position(|key|key==name){
+                    removed=mapping.ident_items().get(position).map(|(key,_)|key.clone());removed_position=Some(position);mapping.remove(name);
+                }
             },
-            Some(Object::Dict(m))=>{
-                if let Some(position)=m.iter().position(|(key,_)|matches!(key,Value::Str(key)if key==name)) {removed=Some(m.remove(position).0);}
-            },
-            _=>{},
+            Some(Object::Dict(items))=>{
+                if let Some(position)=items.iter().position(|(key,_)|matches!(key,Value::Str(key)if key==name)){
+                    removed=Some(items.remove(position).0);removed_position=Some(position);
+                }
+            },_=>{},
         }
-        if let Some(key)=removed {self.assoc_removed(i,&key);true}else{false}
+        if let Some(position)=removed_position{self.dictionary_remove_entry_hash(i,position);}
+        if removed.is_some(){if let Some(position)=removed_position{self.assoc_dictionary_removed(i,position);}true}else{false}
     }
     fn ns_parent(&self, i: usize) -> Option<usize> {
         match self.heap.get(i).and_then(|o| o.as_ref()) {
@@ -1613,6 +1687,7 @@ impl Runtime {
                 inherited_exception: None,
                 except_star: Vec::new(),
             next_call: None,
+            cache_returns: Vec::new(),
             resume_value: None,
             injected_exception: None,
             finally_regions: Vec::new(),
@@ -1698,6 +1773,11 @@ impl Runtime {
     }
     fn frame_roots(frame: &Frame, out: &mut Vec<Value>) {
         out.extend(frame.stack.iter().cloned());
+        for pending in &frame.cache_returns {
+            out.push(pending.owner.clone());
+            out.extend(pending.entry.args.iter().cloned());
+            out.extend(pending.entry.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
+        }
         out.extend(frame.resume_value.iter().cloned());
         if let Some(e) = &frame.injected_exception {
             Self::exception_roots(e, out);
@@ -1770,6 +1850,20 @@ impl Runtime {
                 let ins = self.codes[f.code].ops[f.pc].clone();
                 f.pc += 1;
                 self.step(&mut f, ins.op)
+            };
+            let result=match result {
+                Ok(Some(FrameExit::Return(mut value)))=>{
+                    let mut failure=None;
+                    for pending in std::mem::take(&mut f.cache_returns) {
+                        let owner=match pending.owner {Value::Obj(owner)=>owner,_=>unreachable!()};
+                        match self.cached_finish(owner,pending.entry,value.clone()) {
+                            Ok(result)=>value=result,
+                            Err(mut error)=>{error.skip_trace=true;failure=Some(error);break;}
+                        }
+                    }
+                    match failure {Some(error)=>Err(error),None=>Ok(Some(FrameExit::Return(value)))}
+                }
+                other=>other,
             };
             match result {
                 Ok(Some(FrameExit::Return(v))) => {
@@ -1916,6 +2010,7 @@ impl Runtime {
                     self.ns_set(self.builtins, "_".into(), v)
                 }
             }
+            Op::Keyword(name)=>{let key=self.intern_keyword(&name);f.stack.push(Value::Str(key));}
             Op::Const(c) => {
                 let v = self.code_constant(f.code,c)?;
                 f.stack.push(v)
@@ -2035,10 +2130,11 @@ impl Runtime {
             }
             Op::BuildDict(n) => {
                 let v = Self::pop_many(f, n * 2)?;
-                let d = self.obj_value(Object::Dict(Vec::new()));
-                for p in v.chunks(2) {
-                    self.setitem(d.clone(), p[0].clone(), p[1].clone())?
-                }
+                let d=self.view_rooted(v.clone(),|runtime,root|{
+                    let d=runtime.obj_value(Object::Dict(Vec::new()));runtime.roots[root].push(d.clone());
+                    for p in v.chunks(2){runtime.setitem(d.clone(),p[0].clone(),p[1].clone())?;}
+                    Ok(d)
+                })?;
                 f.stack.push(d)
             }
             Op::BuildSlice(n) => {
@@ -2119,18 +2215,15 @@ impl Runtime {
             Op::Call { pos, keywords } => {
                 let vals = Self::pop_many(f, pos + keywords.len())?;
                 let callable = Self::pop(f)?;
-                let kwargs: Vec<_> = keywords
-                    .into_iter()
-                    .zip(vals[pos..].iter().cloned())
+                let kwargs: KeywordArgs = keywords
+                    .into_iter().map(|name|self.static_keyword(name))
+                    .collect::<Vec<_>>().into_iter().zip(vals[pos..].iter().cloned())
                     .collect();
                 let args = vals[..pos].to_vec();
-                if let Some(child) =
-                    self.prepare_direct_call(callable.clone(), args.clone(), kwargs.clone())?
-                {
-                    f.next_call = Some(Box::new(child));
-                } else {
-                    let v = self.call(callable, args, kwargs, Some(f))?;
-                    f.stack.push(v)
+                match self.prepare_direct_call(callable.clone(),args.clone(),kwargs.clone())? {
+                    PreparedCall::Frame(child)=>f.next_call=Some(Box::new(child)),
+                    PreparedCall::Value(value)=>f.stack.push(value),
+                    PreparedCall::Fallback=>{let value=self.call(callable,args,kwargs,Some(f))?;f.stack.push(value);}
                 }
             }
             Op::CallEx { kwargs } => {
@@ -2140,17 +2233,18 @@ impl Runtime {
                 } else {
                     Vec::new()
                 };
-                let arg = Self::pop(f)?;
-                let args = self.to_vec(arg)?;
-                let fun = Self::pop(f)?;
-                if let Some(child) =
-                    self.prepare_direct_call(fun.clone(), args.clone(), kw.clone())?
-                {
-                    f.next_call = Some(Box::new(child));
-                } else {
-                    let v = self.call(fun, args, kw, Some(f))?;
-                    f.stack.push(v)
-                }
+                let arg=Self::pop(f)?;let fun=Self::pop(f)?;
+                let mut roots=vec![arg.clone(),fun.clone()];
+                roots.extend(kw.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
+                self.view_rooted(roots,|runtime,_|{
+                    let args=runtime.to_vec(arg)?;
+                    match runtime.prepare_direct_call(fun.clone(),args.clone(),kw.clone())?{
+                        PreparedCall::Frame(child)=>f.next_call=Some(Box::new(child)),
+                        PreparedCall::Value(value)=>f.stack.push(value),
+                        PreparedCall::Fallback=>{let value=runtime.call(fun,args,kw,Some(f))?;f.stack.push(value);}
+                    }
+                    Ok(())
+                })?;
             }
             Op::MakeFunction {
                 code,
@@ -2395,7 +2489,7 @@ impl Runtime {
             } => {
                 let kv = Self::pop_many(f, keywords.len())?;
                 let bases = Self::pop_many(f, bases)?;
-                let kw: Vec<_> = keywords.into_iter().zip(kv).collect();
+                let mut kw=Vec::new();for(name,value)in keywords.into_iter().zip(kv){kw.push((self.static_keyword(name),value));}
                 let cls = self.make_class(f, name, code, bases, kw)?;
                 f.stack.push(cls)
             }
@@ -2800,7 +2894,7 @@ impl Runtime {
         if name == "builtins" {
             let entries = self.keyword_items(Value::Obj(self.builtins))?;
             for (n, v) in entries {
-                self.ns_set(attrs, n, v)
+                self.ns_set(attrs, n.spelling, v)
             }
         }
         if name == "sys" && !self.module_codes.contains_key(name) {
@@ -2853,6 +2947,7 @@ impl Runtime {
                 inherited_exception: None,
                 except_star: Vec::new(),
                 next_call: None,
+            cache_returns: Vec::new(),
                 resume_value: None,
                 injected_exception: None,
                 finally_regions: Vec::new(),
@@ -2873,7 +2968,7 @@ impl Runtime {
         &mut self,
         fullname: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         let parts: Vec<_> = fullname.splitn(3, ':').collect();
         let module = parts.get(1).copied().unwrap_or("");
@@ -3080,17 +3175,8 @@ impl Runtime {
                                     }
                                 }
                                 stored.extend(incoming);
-                                let mut merged = self.keyword_items(Value::Obj(keywords))?;
-                                for (n, v) in kw {
-                                    if let Some((_, old)) =
-                                        merged.iter_mut().find(|(key, _)| key == &n)
-                                    {
-                                        *old = v
-                                    } else {
-                                        merged.push((n, v))
-                                    }
-                                }
-                                kw = merged;
+                                let previous=self.keyword_items(Value::Obj(keywords))?;
+                                kw=self.keyword_merge(previous,kw)?;
                                 function = base;
                             }
                         }
@@ -3099,9 +3185,8 @@ impl Runtime {
                     {
                         return Err(pyerr("TypeError", "trailing Placeholders are not allowed"));
                     }
-                    let keywords = self.alloc(Object::Dict(
-                        kw.into_iter().map(|(k, v)| (Value::Str(k.into()), v)).collect(),
-                    ));
+                    let keyword_dictionary=self.dictionary_from_keywords(kw)?;
+                    let Value::Obj(keywords)=keyword_dictionary else{unreachable!()};
                     let attrs = self.alloc(Object::Dict(Vec::new()));
                     let args_tuple = self.alloc(Object::Tuple(stored.clone()));
                     Ok(self.obj_value(Object::Partial {
@@ -3159,6 +3244,7 @@ impl Runtime {
                     result
                 }
                 "cache" => Ok(self.obj_value(Object::Cached(CachedFunction {
+                    revision: 0,
                     attrs: None,
                     function: arg(0)?,
                     entries: Vec::new(),
@@ -3178,6 +3264,7 @@ impl Runtime {
                         && matches!(args[0],Value::Obj(i)if matches!(self.heap.get(i).and_then(|o|o.as_ref()),Some(Object::Function(_))))
                     {
                         return Ok(self.obj_value(Object::Cached(CachedFunction {
+                    revision: 0,
                             attrs: None,
                             function: args[0].clone(),
                             entries: Vec::new(),
@@ -3212,6 +3299,7 @@ impl Runtime {
                     };
                     let typed = self.truth(&captures[1])?;
                     Ok(self.obj_value(Object::Cached(CachedFunction {
+                    revision: 0,
                         attrs: None,
                         function: arg(1)?,
                         entries: Vec::new(),
@@ -3396,7 +3484,7 @@ impl Runtime {
                     pending.push(c.function.clone());
                     for e in &c.entries {
                         pending.extend(e.args.iter().cloned());
-                        pending.extend(e.kwargs.iter().map(|(_, v)| v.clone()));
+                        pending.extend(e.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
                         pending.push(e.value.clone())
                     }
                 }
@@ -3486,6 +3574,7 @@ impl Runtime {
                 self.instance_slots.remove(&i);
                 self.assoc_layouts.remove(&i);
                 self.set_member_hashes.remove(&i);
+            self.dictionary_hashes.remove(&i);
                 self.free.push(i);
                 count += 1;
             }
@@ -3502,7 +3591,7 @@ impl Runtime {
         name: &str,
         receiver: Value,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if self.frozen_owner(&receiver).is_some(){if let Some(result)=self.frozen_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if matches!(&receiver,Value::Complex(_)){return self.complex_method(receiver,name,args,kwargs).unwrap();}
@@ -3536,6 +3625,7 @@ impl Runtime {
             }
         }
         if let Some(payload) = self.native_payload(&receiver) {
+            if name=="copy" && matches!(&payload,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Dict(_)))) {return self.dictionary_copy(receiver);}
             if matches!(name,"__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") && matches!(payload,Value::Int(_)) {
                 return self.method(name,payload.fresh_primitive(),args,kwargs);
             }
@@ -3653,6 +3743,7 @@ impl Runtime {
             }
         }
         if let Value::Str(s) = receiver.clone() {
+            if let Some(result)=self.keyword_str_protocol(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}
             let s=s.into_inner();
             if let Some(result) = self.text_method(s.to_string(), name, args.clone(), kwargs.clone()) {
                 return result;
@@ -4133,38 +4224,41 @@ impl Runtime {
                     match name {
                         "get" => {
                             let key=arg(0)?;
-                            return Ok(match self.find_key(&xs,&key)?{
-                                Some(index)=>xs[index].1.clone(),
+                            return Ok(match self.dictionary_find(i,&xs,&key)?{
+                                Some(index)=>{let Object::Dict(current)=self.object(i)? else{unreachable!()};current[index].1.clone()},
                                 None=>args.get(1).cloned().unwrap_or(Value::None),
                             });
                         },
                         "pop"=>{
                             let key=arg(0)?;
-                            if let Some(position)=self.find_key(&xs,&key)? {
-                                let (key,value)=xs.remove(position);
-                                self.heap[i]=Some(Object::Dict(xs));self.assoc_removed(i,&key);return Ok(value);
+                            if let Some(position)=self.dictionary_find(i,&xs,&key)? {
+                                let Object::Dict(mut xs)=self.object(i)? else{unreachable!()};
+                                let (key,value)=xs.remove(position);self.dictionary_remove_entry_hash(i,position);
+                                self.heap[i]=Some(Object::Dict(xs));self.assoc_dictionary_removed(i,position);return Ok(value);
                             }
                             return if let Some(default)=args.get(1){Ok(default.clone())}else{Err(self.new_exception("KeyError",vec![key])?)};
                         },
                         "popitem"=>{
-                            let (key,value)=xs.pop().ok_or_else(||pyerr("KeyError","popitem(): dictionary is empty"))?;
-                            self.heap[i]=Some(Object::Dict(xs));self.assoc_removed(i,&key);
+                            let (key,value)=xs.pop().ok_or_else(||pyerr("KeyError","popitem(): dictionary is empty"))?;self.dictionary_remove_entry_hash(i,xs.len());
+                            let position=xs.len();self.heap[i]=Some(Object::Dict(xs));self.assoc_dictionary_removed(i,position);
+                            if let Some(layout)=self.assoc_layouts.get_mut(&i){while layout.slots.last().is_some_and(Option::is_none){layout.slots.pop();}}
                             return Ok(self.obj_value(Object::Tuple(vec![key,value])));
                         },
                         "setdefault"=>{
                             let key=arg(0)?;
-                            if let Some(position)=self.find_key(&xs,&key)? {return Ok(xs[position].1.clone());}
+                            let hash=self.frozen_member_hash(&key)?;
+                            if let Some(position)=self.dictionary_find_known(i,&xs,&key,hash)? {let Object::Dict(current)=self.object(i)? else{unreachable!()};return Ok(current[position].1.clone());}
                             let value=args.get(1).cloned().unwrap_or(Value::None);
-                            xs.push((key.clone(),value.clone()));self.heap[i]=Some(Object::Dict(xs));self.assoc_inserted(i,key);return Ok(value);
+                            self.dictionary_set_known(i,key,value.clone(),hash)?;return Ok(value);
                         },
                         "update"=>{
                             if args.len()>1 {return Err(pyerr("TypeError","update expected at most 1 argument"));}
-                            if let Some(source)=args.first(){for (key,value) in self.dict_items(source.clone())? {self.setitem(receiver.clone(),key,value)?;}}
-                            for (key,value) in kwargs {self.setitem(receiver.clone(),Value::Str(key.into()),value)?;}
+                            if let Some(source)=args.first(){self.dictionary_update_value(i,source.clone())?;}
+                            for(key,value)in kwargs{let hash=if let Some(hash)=key.hash{hash}else{self.frozen_member_hash(&key.original)?};self.dictionary_set_known(i,key.original,value,hash)?;}
                             return Ok(Value::None);
                         },
                         "clear"=>{xs.clear();self.assoc_cleared(i);},
-                        "copy"=>return Ok(self.obj_value(Object::Dict(xs))),
+                        "copy"=>return self.dictionary_copy(receiver),
                         _=>return Err(pyerr("AttributeError",name)),
                     }
                     self.heap[i]=Some(Object::Dict(xs));return Ok(Value::None);
@@ -4363,7 +4457,7 @@ impl Runtime {
         &mut self,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
         if name=="complex:from_number"{return self.complex_from_number(args,kwargs);}
@@ -4420,7 +4514,7 @@ impl Runtime {
             if let Some(Value::Obj(i)) = args.first() {
                 if let Object::BuiltinInstance { payload, .. } = self.object(*i)? {
                     if self.typename(&payload) == owner && owner!="frozenset" {
-                        args[0] = if matches!(method, "__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") {
+                        args[0] = if matches!(method, "__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") || (owner=="str"&&method=="__str__") {
                             payload.fresh_primitive()
                         } else { payload }
                     }
@@ -4429,6 +4523,7 @@ impl Runtime {
             if args.is_empty() {
                 return Err(pyerr("TypeError", "unbound descriptor needs an instance"));
             }
+            if owner=="str" && !matches!(&args[0],Value::Str(_)){return Err(pyerr("TypeError",format!("descriptor '{method}' requires a 'str' object")));}
             if owner=="set" && !self.frozen_owner(&args[0]).is_some_and(|(_,frozen)|!frozen){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'set' object",method)));}
             if owner=="frozenset" && !self.frozen_owner(&args[0]).is_some_and(|(_,frozen)|frozen){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'frozenset' object",method)));}
             if owner=="complex" && !matches!(&args[0],Value::Complex(_)){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'complex' object",method)));}
@@ -4500,6 +4595,7 @@ impl Runtime {
                     ],
                 })),
                 "cache_clear" => {
+                    cache.revision=cache.revision.wrapping_add(1);
                     cache.entries.clear();
                     cache.hits = 0;
                     cache.misses = 0;
@@ -4809,14 +4905,10 @@ impl Runtime {
                 Err(pyerr("TypeError","mappingproxy() argument must be a mapping"))
             }
             "dict" => {
-                let d = self.obj_value(Object::Dict(Vec::new()));
-                if let Some(v) = args.first() {
-                    for (k, v) in self.dict_items(v.clone())? {
-                        self.setitem(d.clone(), k, v)?
-                    }
-                }
+                let d=self.obj_value(Object::Dict(Vec::new()));
+                if let (Value::Obj(owner),Some(source))=(&d,args.first()){self.dictionary_update_value(*owner,source.clone())?;}
                 for (k, v) in kwargs {
-                    self.setitem(d.clone(), Value::Str(k.into()), v)?
+                    self.setitem(d.clone(), k.original, v)?
                 }
                 Ok(d)
             }
@@ -5252,7 +5344,7 @@ impl Runtime {
                                 format!("unhashable type: '{}'", self.typename(&v)),
                             ));
                         }
-                        Some(Object::Instance { .. }) => {
+                        Some(Object::Instance{..}|Object::Class(_)|Object::Function(_)|Object::Cached(_)|Object::Partial{..}|Object::Module{..}|Object::Generator(_)|Object::Iterator(_))=>{
                             return Ok(Value::Int(Int::from_i128(i as i128).into()))
                         }
                         _ => {}
@@ -5298,7 +5390,7 @@ impl Runtime {
                 } else if let Some(f) = caller {
                     self.keyword_items(Value::Obj(f.locals))?
                         .into_iter()
-                        .map(|(n, _)| n)
+                        .map(|(n, _)| n.spelling)
                         .filter(|n| !n.starts_with('$') && !n.starts_with('\0'))
                         .collect()
                 } else {
@@ -5309,7 +5401,7 @@ impl Runtime {
             }
             "compile" => {
                 if args.len()>6 {return Err(pyerr("TypeError",format!("compile() takes at most 6 positional arguments ({} given)",args.len())));}
-                let mut arguments=codec_bind("compile",args,kwargs,&["source","filename","mode","flags","dont_inherit","optimize","_feature_version"])?;
+                let mut arguments=self.execution_compile_parameters(args,kwargs)?;
                 let source=arguments[0].take().ok_or_else(||pyerr("TypeError","compile() missing source"))?;
                 let filename=arguments[1].take().ok_or_else(||pyerr("TypeError","compile() missing filename"))?;
                 let mode=arguments[2].take().ok_or_else(||pyerr("TypeError","compile() missing mode"))?;
@@ -5334,7 +5426,7 @@ impl Runtime {
                 Ok(self.obj_value(Object::Code(offset)))
             }
             "eval" | "exec" => {
-                let parameters=execution_parameters(name,&args,&kwargs)?;
+                let parameters=self.execution_parameters(name,&args,&kwargs)?;
                 let args=parameters[..3].to_vec();
                 let source=args[0].clone();
                 let globals=self.execution_globals(&args[1],caller,name)?;
@@ -5395,6 +5487,7 @@ impl Runtime {
                 inherited_exception: None,
                 except_star: Vec::new(),
                     next_call: None,
+            cache_returns: Vec::new(),
                     resume_value: None,
                     injected_exception: None,
                     finally_regions: Vec::new(),
@@ -5562,13 +5655,13 @@ impl Runtime {
         &mut self,
         fun: Value,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
         let root = self.roots.len();
         let mut rv = args.clone();
         rv.push(fun.clone());
-        rv.extend(kwargs.iter().map(|(_, v)| v.clone()));
+        rv.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         self.roots.push(rv);
         let result = (|| match fun.clone() {
             Value::Builtin(name) => self.builtin(&name, args, kwargs, caller),
@@ -5615,14 +5708,8 @@ impl Runtime {
                         }
                     }
                     stored.extend(incoming);
-                    let mut kw = self.keyword_items(Value::Obj(keywords))?;
-                    for (n, v) in kwargs {
-                        if let Some((_, old)) = kw.iter_mut().find(|(k, _)| k == &n) {
-                            *old = v
-                        } else {
-                            kw.push((n, v))
-                        }
-                    }
+                    let previous=self.keyword_items(Value::Obj(keywords))?;
+                    let kw=self.keyword_merge(previous,kwargs)?;
                     self.call(function, stored, kw, caller)
                 }
                 Object::Cached(cache) => self.cached_call(i, cache, args, kwargs, caller),
@@ -5720,7 +5807,7 @@ impl Runtime {
         &mut self,
         metaclass: Value,
         args: Vec<Value>,
-        kw: Vec<(String, Value)>,
+        kw: KeywordArgs,
     ) -> PyResult<Value> {
         if args.len() < 3 {
             return Err(pyerr("TypeError", "type() takes 1 or 3 arguments"));
@@ -5943,47 +6030,47 @@ impl Runtime {
         self.roots.truncate(root);
         result
     }
-    fn merge_keyword_arguments(&mut self,left:Value,right:Value)->PyResult<Value>{
-        let root=self.roots.len();
-        self.roots.push(vec![left.clone(),right.clone()]);
-        let result=(||{
-            let items=self.dict_items(left)?;
-            let out=self.obj_value(Object::Dict(items));
-            self.roots[root].push(out.clone());
-            let payload=if let Some(payload)=self.native_payload(&right){
-                if self.object_class(&right).and_then(|class|self.class_lookup(&class,"__iter__",0)).is_none(){payload}else{right.clone()}
+    fn merge_keyword_arguments(&mut self,left:Value,right:Value)->PyResult<Value>{self.merge_mapping_arguments(left,right,true)}
+    fn merge_mapping_arguments(&mut self,left:Value,right:Value,reject_duplicates:bool)->PyResult<Value>{
+        self.view_rooted(vec![left.clone(),right.clone()],|runtime,root|{
+            let out=left;runtime.roots[root].push(out.clone());
+            let Value::Obj(owner)=out else{unreachable!()};
+            let payload=if let Some(payload)=runtime.native_payload(&right){
+                if runtime.object_class(&right).and_then(|class|runtime.class_lookup(&class,"__iter__",0)).is_none(){payload}else{right.clone()}
             }else{right.clone()};
             let direct=if let Value::Obj(index)=payload{
-                match self.object(index)?{Object::Dict(items)=>Some(items),Object::Namespace(items,_)=>Some(items.ident_items()),_=>None}
+                match runtime.object(index)?{Object::Dict(items)=>Some((index,items)),Object::Namespace(items,_)=>Some((index,items.ident_items())),_=>None}
             }else{None};
-            if let Some(items)=direct{
-                for(key,value)in items{
-                    let keys=self.dict_items(out.clone())?;
-                    if self.find_key(&keys,&key)?.is_some(){return Err(pyerr("TypeError","multiple values for keyword argument"));}
-                    self.setitem(out.clone(),key,value)?;
+            if let Some((source,items))=direct{
+                if runtime.assoc_size(owner)==0 && runtime.dictionary_can_clone(source,false){runtime.dictionary_clone_into(owner,source)?;return Ok(Value::Obj(owner));}
+                let check_duplicates=reject_duplicates&&runtime.assoc_size(owner)!=0;
+                for(index,(key,value))in items.into_iter().enumerate(){
+                    let hash=runtime.dictionary_entry_hash(source,index,&key)?;
+                    if check_duplicates{
+                        if runtime.dictionary_find_known(owner,&[],&key,hash)?.is_some(){return Err(pyerr("TypeError","multiple values for keyword argument"));}
+                    }
+                    runtime.dictionary_set_known(owner,key,value,hash)?;
                 }
             }else{
-                let keys=match self.getattr(right.clone(),"keys"){
+                let keys=match runtime.getattr(right.clone(),"keys"){
                     Ok(keys)=>keys,
-                    Err(error) if self.exception_has_native_class(&error,"AttributeError")=>return Err(pyerr("TypeError",format!("argument after ** must be a mapping, not {}",self.typename(&right)))),
+                    Err(error) if runtime.exception_has_native_class(&error,"AttributeError")=>return Err(pyerr("TypeError",format!("argument after ** must be a mapping, not {}",runtime.typename(&right)))),
                     Err(error)=>return Err(error),
                 };
-                let keys=self.call(keys,Vec::new(),Vec::new(),None)?;
-                self.roots[root].push(keys.clone());
-                let keys=self.to_vec(keys)?;
-                self.roots[root].extend(keys.iter().cloned());
+                let keys=runtime.call(keys,Vec::new(),Vec::new(),None)?;
+                runtime.roots[root].push(keys.clone());
+                let keys=runtime.to_vec(keys)?;runtime.roots[root].extend(keys.iter().cloned());
                 for key in keys{
-                    self.builtin("hash",vec![key.clone()],Vec::new(),None)?;
-                    let previous=self.dict_items(out.clone())?;
-                    if self.find_key(&previous,&key)?.is_some(){return Err(pyerr("TypeError","multiple values for keyword argument"));}
-                    let value=self.getitem(right.clone(),key.clone())?;
-                    self.setitem(out.clone(),key,value)?;
+                    let hash=if reject_duplicates{Some(runtime.frozen_member_hash(&key)?)}else{None};
+                    let previous=runtime.dict_items(Value::Obj(owner))?;
+                    if let Some(hash)=hash{if runtime.dictionary_find_known(owner,&previous,&key,hash)?.is_some(){return Err(pyerr("TypeError","multiple values for keyword argument"));}}
+                    let value=runtime.getitem(right.clone(),key.clone())?;runtime.roots[root].push(value.clone());
+                    let hash=runtime.frozen_member_hash(&key)?;
+                    runtime.dictionary_set_known(owner,key,value,hash)?;
                 }
             }
-            Ok(out)
-        })();
-        self.roots.truncate(root);
-        result
+            Ok(Value::Obj(owner))
+        })
     }
     fn make_class(
         &mut self,
@@ -5991,9 +6078,9 @@ impl Runtime {
         name: String,
         code: usize,
         bases: Vec<Value>,
-        kw: Vec<(String, Value)>,
+        mut kw: KeywordArgs,
     ) -> PyResult<Value> {
-        let root=self.roots.len();let mut roots=bases.clone();roots.extend(kw.iter().map(|(_,value)|value.clone()));Self::frame_roots(f,&mut roots);self.roots.push(roots);
+        let root=self.roots.len();let mut roots=bases.clone();roots.extend(kw.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));Self::frame_roots(f,&mut roots);self.roots.push(roots);
         let result=(||{
         let original_bases=self.obj_value(Object::Tuple(bases.clone()));
         self.roots[root].push(original_bases.clone());
@@ -6012,11 +6099,13 @@ impl Runtime {
             return Err(pyerr("TypeError","__mro_entries__ must return a tuple"));
         }
         let bases=resolved_bases;
-        let mut metaclass = kw
-            .iter()
-            .find(|(k, _)| k == "metaclass")
-            .map(|(_, v)| v.clone())
-            .unwrap_or(Value::Builtin("type".into()));
+        let lookup=Value::Str("metaclass".into());let lookup_hash=self.frozen_member_hash(&lookup)?;
+        let mut meta_index=None;
+        for(index,(key,_))in kw.iter().enumerate(){
+            let hash=if let Some(hash)=key.hash{hash}else{self.frozen_member_hash(&key.original)?};
+            if hash==lookup_hash&&self.identical_or_equal(&key.original,&lookup)?{meta_index=Some(index);break;}
+        }
+        let mut metaclass=meta_index.map(|index|kw.remove(index).1).unwrap_or(Value::Builtin("type".into()));
         let metaclass_is_type=matches!(&metaclass,Value::Type(_))||matches!(&metaclass,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))||matches!(&metaclass,Value::Builtin(name)if ["type","object","int","bool","float","str","bytes","list","tuple","dict","set","complex"].contains(&name.as_str()));
         if metaclass_is_type{
             for base in &bases{
@@ -6026,7 +6115,7 @@ impl Runtime {
                 return Err(pyerr("TypeError","metaclass conflict: the metaclass of a derived class must be a subclass of the metaclasses of all its bases"));
             }
         }
-        let keywords: Vec<_> = kw.into_iter().filter(|(k, _)| k != "metaclass").collect();
+        let keywords=kw;
         let basesvalue = self.obj_value(Object::Tuple(bases.clone()));
         self.roots[root].push(basesvalue.clone());
         let prepare=match self.getattr(metaclass.clone(), "__prepare__"){
@@ -6080,6 +6169,7 @@ impl Runtime {
                 inherited_exception: None,
                 except_star: Vec::new(),
             next_call: None,
+            cache_returns: Vec::new(),
             resume_value: None,
             injected_exception: None,
             finally_regions: Vec::new(),
@@ -7202,19 +7292,7 @@ impl Runtime {
             }
         }
         if op == "kwargs_merge" {return self.merge_keyword_arguments(a,b);}
-        if op == "dict_merge" {
-            let out = self.obj_value(Object::Dict(Vec::new()));
-            for (k, v) in self.dict_items(a)? {
-                self.setitem(out.clone(), k, v)?
-            }
-            for (k, v) in self.dict_items(b)? {
-                if op == "kwargs_merge" && self.getitem(out.clone(), k.clone()).is_ok() {
-                    return Err(pyerr("TypeError", "multiple values for keyword argument"));
-                }
-                self.setitem(out.clone(), k, v)?
-            }
-            return Ok(out);
-        }
+        if op=="dict_merge"{let copy=self.dictionary_copy(a)?;return self.merge_mapping_arguments(copy,b,false);}
         if let Some(result)=self.complex_binary(op,&a,&b){return result;}
         if let Some(result)=self.frozen_binary(op,&a,&b){return result;}
         let integers = matches!(a, Value::Int(_) | Value::Bool(_))
@@ -7394,19 +7472,9 @@ impl Runtime {
                     }
                     return Ok(self.obj_value(Object::Set(out)));
                 }
-                Object::Dict(mut xs) if op == "|" => {
-                    let payload = self.native_payload(&b).unwrap_or_else(|| b.clone());
-                    let is_dict = matches!(payload, Value::Obj(index) if matches!(self.heap.get(index).and_then(Option::as_ref), Some(Object::Dict(_) | Object::Namespace(..))));
-                    if is_dict {
-                        for (k, v) in self.dict_items(b.clone())? {
-                            if let Some(p) = self.find_key(&xs, &k)? {
-                                xs[p].1 = v
-                            } else {
-                                xs.push((k, v))
-                            }
-                        }
-                        return Ok(self.obj_value(Object::Dict(xs)));
-                    }
+                Object::Dict(_) if op=="|"=>{
+                    let payload=self.native_payload(&b).unwrap_or_else(||b.clone());
+                    if matches!(payload,Value::Obj(index)if matches!(self.heap.get(index).and_then(Option::as_ref),Some(Object::Dict(_)|Object::Namespace(..)))){let copy=self.dictionary_copy(a)?;return self.merge_mapping_arguments(copy,b,false);}
                 }
                 _ => {}
             }
@@ -7529,6 +7597,9 @@ impl Runtime {
         Ok(None)
     }
     fn getitem(&mut self, obj: Value, key: Value) -> PyResult<Value> {
+        self.view_rooted(vec![obj.clone(),key.clone()],|runtime,_|runtime.getitem_inner(obj,key))
+    }
+    fn getitem_inner(&mut self, obj: Value, key: Value) -> PyResult<Value> {
         if matches!(&obj,Value::Builtin(name)if template_type_name(name)){return self.generic_alias(obj,key);}
         if self.is_typing_value(&obj){if let Some(result)=self.typing_getitem(obj.clone(),key.clone()){return result;}}
         if self.generic_parts(&obj).is_some() {return self.generic_method(obj,"__getitem__",vec![key],Vec::new()).unwrap();}
@@ -7627,8 +7698,8 @@ impl Runtime {
                     }
                 }
                 Object::Dict(items) => {
-                    if let Some(i) = self.find_key(&items, &key)? {
-                        Ok(items[i].1.clone())
+                    if let Some(position) = self.dictionary_find(i,&items, &key)? {
+                        let Object::Dict(current)=self.object(i)? else{unreachable!()};Ok(current[position].1.clone())
                     } else {
                         Err(self.new_exception("KeyError", vec![key])?)
                     }
@@ -7660,6 +7731,9 @@ impl Runtime {
         }
     }
     fn setitem(&mut self, obj: Value, key: Value, value: Value) -> PyResult<()> {
+        self.view_rooted(vec![obj.clone(),key.clone(),value.clone()],|runtime,_|runtime.setitem_inner(obj,key,value))
+    }
+    fn setitem_inner(&mut self, obj: Value, key: Value, value: Value) -> PyResult<()> {
         if let Value::Obj(index) = &obj {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*index)? {
                 if let Some(method) = self.class_lookup(&class, "__setitem__", 0) {
@@ -7719,19 +7793,9 @@ impl Runtime {
                     self.heap[i] = Some(Object::List(xs));
                     return Ok(());
                 }
-                Object::Dict(mut items) => {
-                    if matches!(key,Value::Obj(j) if matches!(self.heap.get(j).and_then(|o|o.as_ref()),Some(Object::List(_)|Object::Dict(_)|Object::Set(_))))
-                    {
-                        return Err(pyerr("TypeError", "unhashable type"));
-                    }
-                    let new=if let Some(j) = self.find_key(&items, &key)? {
-                        items[j].1 = value;false
-                    } else {
-                        items.push((key.clone(), value));true
-                    };
-                    self.heap[i] = Some(Object::Dict(items));
-                    if new {self.assoc_inserted(i,key);}
-                    return Ok(());
+                Object::Dict(_) => {
+                    let hash=self.frozen_member_hash(&key)?;
+                    return self.dictionary_set_known(i,key,value,hash);
                 }
                 Object::Namespace(_, _) => {
                     if let Value::Str(s) = key {
@@ -7763,6 +7827,9 @@ impl Runtime {
         ))
     }
     fn delitem(&mut self, obj: Value, key: Value) -> PyResult<()> {
+        self.view_rooted(vec![obj.clone(),key.clone()],|runtime,_|runtime.delitem_inner(obj,key))
+    }
+    fn delitem_inner(&mut self, obj: Value, key: Value) -> PyResult<()> {
         if let Value::Obj(index) = &obj {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*index)? {
                 if let Some(method) = self.class_lookup(&class, "__delitem__", 0) {
@@ -7794,11 +7861,12 @@ impl Runtime {
                 }
                 Object::Dict(mut items) => {
                     let j = self
-                        .find_key(&items, &key)?
+                        .dictionary_find(i,&items, &key)?
                         .ok_or_else(|| pyerr("KeyError", "key not found"))?;
-                    let key=items.remove(j).0;
+                    let Object::Dict(mut items)=self.object(i)? else{unreachable!()};
+                    let key=items.remove(j).0;self.dictionary_remove_entry_hash(i,j);
                     self.heap[i] = Some(Object::Dict(items));
-                    self.assoc_removed(i,&key);
+                    self.assoc_dictionary_removed(i,j);
                     return Ok(());
                 }
                 Object::Namespace(_, _) => {
@@ -7861,38 +7929,38 @@ impl Runtime {
             Err(error) if self.exception_has_native_class(&error,"AttributeError")=>None,
             Err(error)=>return Err(error),
         };
-        if let Some(keys) = keys {
-            let keys = self.call(keys, Vec::new(), Vec::new(), None)?;
-            let mut out = Vec::new();
-            for k in self.to_vec(keys)? {
-                let value = self.getitem(v.clone(), k.clone())?;
-                out.push((k, value));
-            }
-            return Ok(out);
+        if let Some(keys)=keys{
+            return self.view_rooted(vec![v.clone(),keys.clone()],|runtime,root|{
+                let keys=runtime.call(keys,Vec::new(),Vec::new(),None)?;runtime.roots[root].push(keys.clone());
+                let keys=runtime.to_vec(keys)?;runtime.roots[root].extend(keys.iter().cloned());let mut out=Vec::new();
+                for key in keys{let value=runtime.getitem(v.clone(),key.clone())?;runtime.roots[root].push(value.clone());out.push((key,value));}
+                Ok(out)
+            });
         }
-        let mut out = Vec::new();
-        for p in self.to_vec(v)? {
-            let pair = self.to_vec(p)?;
-            if pair.len() != 2 {
-                return Err(pyerr(
-                    "ValueError",
-                    "dictionary update sequence element has length other than 2",
-                ));
+        self.view_rooted(vec![v.clone()],|runtime,root|{
+            let pairs=runtime.to_vec(v)?;runtime.roots[root].extend(pairs.iter().cloned());let mut out=Vec::new();
+            for pair in pairs{
+                let pair=runtime.to_vec(pair)?;
+                if pair.len()!=2{return Err(pyerr("ValueError","dictionary update sequence element has length other than 2"));}
+                runtime.roots[root].extend(pair.iter().cloned());out.push((pair[0].clone(),pair[1].clone()));
             }
-            out.push((pair[0].clone(), pair[1].clone()))
-        }
-        Ok(out)
+            Ok(out)
+        })
     }
-    fn keyword_items(&mut self, v: Value) -> PyResult<Vec<(String, Value)>> {
-        let mut out = Vec::new();
-        for (k, v) in self.dict_items(v)? {
-            if let Value::Str(k) = self.native_payload(&k).unwrap_or(k) {
-                out.push((k.into_inner(), v))
-            } else {
-                return Err(pyerr("TypeError", "keywords must be strings"));
+    fn keyword_items(&mut self, source: Value) -> PyResult<KeywordArgs> {
+        self.view_rooted(vec![source.clone()],|runtime,root|{
+            let owner=runtime.dictionary_owner(&source);
+            let entries=runtime.dict_items(source)?;
+            runtime.roots[root].extend(entries.iter().flat_map(|(key,value)|[key.clone(),value.clone()]));
+            let mut out=Vec::new();
+            for(index,(key,value))in entries.into_iter().enumerate(){
+                if let Value::Str(text)=runtime.native_payload(&key).unwrap_or_else(||key.clone()){
+                    let hash=if let Some(owner)=owner{Some(runtime.dictionary_entry_hash(owner,index,&key)?)}else{None};
+                    out.push((KeywordName{spelling:text.into_inner(),original:key,hash},value));
+                }else{return Err(pyerr("TypeError","keywords must be strings"));}
             }
-        }
-        Ok(out)
+            Ok(out)
+        })
     }
     fn to_vec(&mut self, v: Value) -> PyResult<Vec<Value>> {
         let it = self.iter(v)?;
@@ -8317,6 +8385,10 @@ impl Runtime {
         instance: Option<Value>,
         class: Value,
     ) -> PyResult<Value> {
+        if matches!(&v,Value::Builtin(name)if name.starts_with("unbound:str:")){
+            if let Some(instance)=instance{return Ok(self.obj_value(Object::Bound(v,instance)));}
+            return Ok(v);
+        }
         if let Value::Obj(i) = v.clone() {
             match self.object(i)? {
                 Object::Slot { .. } => {
@@ -8331,7 +8403,7 @@ impl Runtime {
                         return self.call(get, vec![o], Vec::new(), None);
                     }
                 }
-                Object::Function(_) => {
+                Object::Function(_) | Object::Cached(_) => {
                     if let Some(o) = instance {
                         return Ok(self.obj_value(Object::Bound(v, o)));
                     }
@@ -8391,6 +8463,7 @@ impl Runtime {
                     self.heap.get(*i).and_then(|o| o.as_ref()),
                     Some(
                         Object::Function(_)
+                            | Object::Cached(_)
                             | Object::Static(_)
                             | Object::ClassMethod(_)
                             | Object::Property { .. }
@@ -8549,7 +8622,9 @@ impl Runtime {
                     if name == "__func__" {
                         return Ok(function);
                     }
-                    if name == "__name__" || name == "__qualname__" {
+                    if name == "__name__" || name == "__qualname__"
+                        || matches!(&function,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Cached(_))))
+                    {
                         return self.getattr(function, name);
                     }
                 }
@@ -9079,6 +9154,7 @@ impl Runtime {
                 {
                     return Ok(Value::Builtin(format!("type_method:object:{}", name)));
                 }
+                if n=="str" && ["__hash__","__eq__","__ne__","__str__","__repr__"].contains(&name){return Ok(Value::Builtin(format!("unbound:str:{name}")));}
                 if ["int", "str", "bytes", "list", "tuple", "dict", "set"].contains(&n.as_str())
                     && [
                         "__getitem__",
@@ -9274,7 +9350,7 @@ impl Runtime {
                             fun.kwdefaults = if matches!(value, Value::None) {
                                 HashMap::new()
                             } else {
-                                self.keyword_items(value)?.into_iter().collect()
+                                self.keyword_items(value)?.into_iter().map(|(name,value)|(name.spelling,value)).collect()
                             }
                         }
                         "__code__" => {
@@ -9472,7 +9548,7 @@ impl Runtime {
                 Object::Class(c) => c.attrs,
                 _ => *i,
             };
-            return self.keyword_items(Value::Obj(a));
+            return Ok(self.keyword_items(Value::Obj(a))?.into_iter().map(|(name,value)|(name.spelling,value)).collect());
         }
         Err(pyerr("TypeError", "object has no attribute dictionary"))
     }
@@ -9483,131 +9559,115 @@ impl Runtime {
         &mut self,
         function: &Function,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Frame> {
-        let code_name = self.codes[function.code].name.clone();
-        let code_locals = self.codes[function.code].locals.clone();
-        let params = self.codes[function.code].params.clone();
-        let ns = self.alloc(Object::Namespace(OrderedNamespace::new(), function.closure));
-        self.scope_bindings.insert(ns, code_locals);
-
-        let mut kw: Vec<(String, Value)> = Vec::new();
-        for (mut k, v) in kwargs {
-            if self.codes[function.code].kind==ScopeKind::Annotation && k=="format" && params.positional.iter().any(|parameter|parameter==".format") {k=".format".into();}
-            if kw.iter().any(|(n, _)| n == &k) {
-                return Err(pyerr(
-                    "TypeError",
-                    format!("multiple values for argument '{}'", k),
-                ));
+        let mut roots=args.clone();
+        roots.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
+        roots.extend(function.defaults.iter().cloned());
+        roots.extend(function.kwdefaults.values().cloned());
+        roots.extend([Value::Obj(function.globals),Value::Obj(function.attrs)]);
+        roots.extend(function.closure.map(Value::Obj));
+        self.view_rooted(roots,|runtime,root|{
+            let code=&runtime.codes[function.code];
+            let code_name=code.name.clone();let code_locals=code.locals.clone();let params=code.params.clone();
+            let ns=runtime.alloc(Object::Namespace(OrderedNamespace::new(),function.closure));
+            runtime.roots[root].push(Value::Obj(ns));
+            runtime.scope_bindings.insert(ns,code_locals);
+            let count=params.positional.len();
+            for(name,value)in params.positional.iter().zip(&args){runtime.ns_set(ns,name.clone(),value.clone());}
+            if let Some(name)=&params.vararg{
+                let rest=runtime.obj_value(Object::Tuple(args[args.len().min(count)..].to_vec()));
+                runtime.ns_set(ns,name.clone(),rest);
             }
-            kw.push((k, v));
-        }
-        if args.len() > params.positional.len() && params.vararg.is_none() {
-            return Err(pyerr(
-                "TypeError",
-                format!(
-                    "{}() takes {} positional arguments but {} were given",
-                    code_name,
-                    params.positional.len(),
-                    args.len()
-                ),
-            ));
-        }
-        for (j, n) in params.positional.iter().enumerate() {
-            let v = if j < args.len() {
-                if kw.iter().any(|(key, _)| key == n) && j >= params.posonly {
-                    return Err(pyerr(
-                        "TypeError",
-                        format!("multiple values for argument '{}'", n),
-                    ));
+            let rest=if let Some(name)=&params.kwarg{
+                let value=runtime.obj_value(Object::Dict(Vec::new()));runtime.ns_set(ns,name.clone(),value.clone());Some(value)
+            }else{None};
+            for(name,value)in kwargs{
+                let mut matched=None;
+                // CPython checks keywords in call order, comparing the actual
+                // string subclass against each non-positional-only parameter.
+                for parameter in params.positional.iter().skip(params.posonly).chain(&params.kwonly){
+                    if runtime.keyword_matches(&name,parameter)? {matched=Some(parameter.clone());break;}
                 }
-                Some(args[j].clone())
-            } else if j >= params.posonly {
-                Self::take_keyword(&mut kw, n)
-            } else {
-                None
-            };
-            let v = if let Some(v) = v {
-                v
-            } else if j + function.defaults.len() >= params.positional.len() {
-                function.defaults[j + function.defaults.len() - params.positional.len()].clone()
-            } else {
-                return Err(pyerr(
-                    "TypeError",
-                    format!(
-                        "{}() missing required positional argument: '{}'",
-                        code_name, n
-                    ),
-                ));
-            };
-            self.ns_set(ns, n.clone(), v)
-        }
-        if let Some(n) = &params.vararg {
-            let rest = args[args.len().min(params.positional.len())..].to_vec();
-            let v = self.obj_value(Object::Tuple(rest));
-            self.ns_set(ns, n.clone(), v)
-        }
-        for n in &params.kwonly {
-            let v = Self::take_keyword(&mut kw, n)
-                .or_else(|| function.kwdefaults.get(n).cloned())
-                .ok_or_else(|| {
-                    pyerr(
-                        "TypeError",
-                        format!("missing keyword-only argument: '{}'", n),
-                    )
-                })?;
-            self.ns_set(ns, n.clone(), v)
-        }
-        if let Some(n) = &params.kwarg {
-            let v = self.obj_value(Object::Dict(
-                kw.into_iter().map(|(k, v)| (Value::Str(k.into()), v)).collect(),
-            ));
-            self.ns_set(ns, n.clone(), v)
-        } else if let Some(n) = kw.first().map(|(n, _)| n) {
-            return Err(pyerr(
-                "TypeError",
-                format!("{}() got an unexpected keyword argument '{}'", code_name, n),
-            ));
-        }
-        let frame = Frame {
-            code: function.code,
-            pc: 0,
-            locals: ns,
-            temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
-            globals: function.globals,
-            closure: function.closure,
-            stack: Vec::new(),
-            handlers: Vec::new(),
-            pending: Vec::new(),
-            exception: None,
-            exception_stack: Vec::new(),
-                inherited_exception: None,
-                except_star: Vec::new(),
-            next_call: None,
-            resume_value: None,
-            injected_exception: None,
-            finally_regions: Vec::new(),
-        };
-        Ok(frame)
+                if let Some(parameter)=matched{
+                    if runtime.ns_get(ns,&parameter).is_some(){return Err(pyerr("TypeError",format!("{}() got multiple values for argument '{}'",code_name,parameter)));}
+                    runtime.ns_set(ns,parameter,value);
+                }else if let Some(rest)=&rest{
+                    runtime.setitem(rest.clone(),name.original,value)?;
+                }else{
+                    let mut positional_only=Vec::new();
+                    for parameter in params.positional.iter().take(params.posonly){if runtime.keyword_matches(&name,parameter)?{positional_only.push(parameter.clone());}}
+                    if !positional_only.is_empty(){return Err(pyerr("TypeError",format!("{}() got some positional-only arguments passed as keyword arguments: '{}'",code_name,positional_only.join(", "))));}
+                    return Err(pyerr("TypeError",format!("{}() got an unexpected keyword argument '{}'",code_name,name)));
+                }
+            }
+            if args.len()>count&&params.vararg.is_none(){return Err(pyerr("TypeError",format!("{}() takes {} positional arguments but {} were given",code_name,count,args.len())));}
+            for(index,name)in params.positional.iter().enumerate(){
+                if runtime.ns_get(ns,name).is_some(){continue;}
+                if index+function.defaults.len()>=count{runtime.ns_set(ns,name.clone(),function.defaults[index+function.defaults.len()-count].clone());}
+                else{return Err(pyerr("TypeError",format!("{}() missing required positional argument: '{}'",code_name,name)));}
+            }
+            for name in &params.kwonly{
+                if runtime.ns_get(ns,name).is_some(){continue;}
+                let value=function.kwdefaults.get(name).cloned().ok_or_else(||pyerr("TypeError",format!("missing keyword-only argument: '{}'",name)))?;
+                runtime.ns_set(ns,name.clone(),value);
+            }
+            Ok(Frame{
+                code:function.code,pc:0,locals:ns,
+                temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
+                globals:function.globals,closure:function.closure,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
+                exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),next_call:None,cache_returns:Vec::new(),
+                resume_value:None,injected_exception:None,finally_regions:Vec::new(),
+            })
+        })
     }
-    fn prepare_direct_call(
-        &mut self,
-        fun: Value,
-        mut args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
-    ) -> PyResult<Option<Frame>> {
-        if let Value::Obj(i) = fun {
-            match self.object(i)? {
-                Object::Function(function) if !self.codes[function.code].is_generator => {
-                    return Ok(Some(self.bind_function(&function, args, kwargs)?))
-                }
-                Object::Bound(inner, receiver) => {
-                    args.insert(0, receiver);
-                    return self.prepare_direct_call(inner, args, kwargs);
-                }
-                _ => {}
+    fn direct_call_candidate(&self, mut fun:Value) -> bool {
+        // Only unwrap shapes with no user callbacks. Unknown callables retain
+        // their ordinary call path, without an extra cache lookup or miss.
+        for _ in 0..1000 {
+            let object=match fun {Value::Obj(i)=>self.heap.get(i).and_then(Option::as_ref),_=>None};
+            match object {
+                Some(Object::Function(function))=>return !self.codes[function.code].is_generator,
+                Some(Object::Bound(inner,_))=>fun=inner.clone(),
+                Some(Object::Cached(cache))=>fun=cache.function.clone(),
+                _=>return false,
             }
         }
-        Ok(None)
+        false
+    }
+    fn prepare_direct_call(&mut self,fun:Value,args:Vec<Value>,kwargs:KeywordArgs) -> PyResult<PreparedCall> {
+        if !self.direct_call_candidate(fun.clone()) {return Ok(PreparedCall::Fallback);}
+        let root=self.roots.len();
+        let mut values=args.clone();values.push(fun.clone());values.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
+        self.roots.push(values);
+        let result=self.prepare_direct_call_inner(fun,args,kwargs);
+        self.roots.truncate(root);
+        result
+    }
+    fn prepare_direct_call_inner(&mut self,fun:Value,mut args:Vec<Value>,kwargs:KeywordArgs) -> PyResult<PreparedCall> {
+        let i=match fun {Value::Obj(i)=>i,_=>return Ok(PreparedCall::Fallback)};
+        match self.object(i)? {
+            Object::Function(function)=>{
+                if self.recursion>=self.recursion_limit {return Err(pyerr("RecursionError","maximum recursion depth exceeded"));}
+                Ok(PreparedCall::Frame(self.bind_function(&function,args,kwargs)?))
+            }
+            Object::Bound(inner,receiver)=>{args.insert(0,receiver);self.prepare_direct_call_inner(inner,args,kwargs)}
+            Object::Cached(cache)=>match self.cached_lookup(i,cache,args,kwargs)? {
+                CachedLookup::Hit(value)=>Ok(PreparedCall::Value(value)),
+                CachedLookup::Miss{function,entry}=>{
+                    let root=self.roots.len();
+                    let mut values=entry.args.clone();values.push(Value::Obj(i));values.extend(entry.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
+                    self.roots.push(values);
+                    let prepared=self.prepare_direct_call_inner(function,entry.args.clone(),entry.kwargs.clone());
+                    self.roots.truncate(root);
+                    match prepared? {
+                        PreparedCall::Frame(mut frame)=>{frame.cache_returns.push(CacheReturn{owner:Value::Obj(i),entry});Ok(PreparedCall::Frame(frame))}
+                        PreparedCall::Value(value)=>Ok(PreparedCall::Value(self.cached_finish(i,entry,value)?)),
+                        PreparedCall::Fallback=>unreachable!("candidate changed without a callback"),
+                    }
+                }
+            },
+            _=>Ok(PreparedCall::Fallback),
+        }
     }
 }

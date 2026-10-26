@@ -195,7 +195,7 @@ impl Runtime {
     fn frozen_constructor(
         &mut self,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if args.len() > 1 || !kwargs.is_empty() {
             return Err(pyerr(
@@ -219,7 +219,7 @@ impl Runtime {
     fn set_constructor_value(
         &mut self,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if args.len() > 1 || !kwargs.is_empty() {
             return Err(pyerr(
@@ -505,7 +505,7 @@ impl Runtime {
         receiver: Value,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> Option<PyResult<Value>> {
         let (owner, frozen) = self.frozen_owner(&receiver)?;
         if ![

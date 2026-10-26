@@ -23,12 +23,12 @@ impl Runtime {
         type_name: &str,
         class: Value,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         let root = self.roots.len();
         let mut protected = vec![class.clone()];
         protected.extend(args.iter().cloned());
-        protected.extend(kwargs.iter().map(|(_, value)| value.clone()));
+        protected.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         self.roots.push(protected);
         let result = self.builtin_instance_construct(type_name, class, args, kwargs, root);
         self.roots.truncate(root);
@@ -40,7 +40,7 @@ impl Runtime {
         type_name: &str,
         class: Value,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
         root: usize,
     ) -> PyResult<Value> {
         if !["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&type_name) {
@@ -203,12 +203,12 @@ impl Runtime {
         type_name: &str,
         receiver: Value,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         let root = self.roots.len();
         let mut protected = vec![receiver.clone()];
         protected.extend(args.iter().cloned());
-        protected.extend(kwargs.iter().map(|(_, value)| value.clone()));
+        protected.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         self.roots.push(protected);
         let result = self.builtin_instance_initialize(type_name, receiver, args, kwargs, root);
         self.roots.truncate(root);
@@ -220,7 +220,7 @@ impl Runtime {
         type_name: &str,
         receiver: Value,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
         root: usize,
     ) -> PyResult<Value> {
         let payload = self.native_payload(&receiver).unwrap_or(receiver);
@@ -259,39 +259,7 @@ impl Runtime {
         }
         if let Some(source) = args.first() {
             if type_name == "dict" {
-                let keys = match self.getattr(source.clone(), "keys") {
-                    Ok(keys) => Some(keys),
-                    Err(error) if self.exception_has_native_class(&error,"AttributeError") => None,
-                    Err(error) => return Err(error),
-                };
-                if let Some(keys) = keys {
-                    let keys = self.call(keys, Vec::new(), Vec::new(), None)?;
-                    self.roots[root].push(keys.clone());
-                    let iterator = self.iter(keys)?;
-                    self.roots[root].push(iterator.clone());
-                    while let Some(key) = self.next(iterator.clone())? {
-                        self.roots[root].push(key.clone());
-                        let value = self.getitem(source.clone(), key.clone())?;
-                        self.roots[root].push(value.clone());
-                        self.setitem(payload.clone(), key, value)?;
-                        self.roots[root].pop();
-                        self.roots[root].pop();
-                    }
-                } else {
-                    let iterator = self.iter(source.clone())?;
-                    self.roots[root].push(iterator.clone());
-                    while let Some(pair) = self.next(iterator.clone())? {
-                        self.roots[root].push(pair.clone());
-                        let pair = self.builtin_collect(pair, root)?;
-                        if pair.len() != 2 {
-                            return Err(pyerr(
-                                "ValueError",
-                                "dictionary update sequence element has length other than 2",
-                            ));
-                        }
-                        self.setitem(payload.clone(), pair[0].clone(), pair[1].clone())?;
-                    }
-                }
+                self.dictionary_update_value(index,source.clone())?;
             } else if type_name=="set"{
                 self.live_set_update(index,"update",vec![source.clone()],Vec::new())?;
             } else {
@@ -303,7 +271,8 @@ impl Runtime {
             }
         }
         for (key, value) in kwargs {
-            self.setitem(payload.clone(), Value::Str(key.into()), value)?;
+            let hash=if let Some(hash)=key.hash{hash}else{self.frozen_member_hash(&key.original)?};
+            self.dictionary_set_known(index,key.original,value,hash)?;
         }
         Ok(Value::None)
     }

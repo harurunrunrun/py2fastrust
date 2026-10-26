@@ -232,7 +232,7 @@ impl Runtime {
         &mut self,
         mut class: Value,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if args.len() != 2 {
             return Err(pyerr(
@@ -340,7 +340,7 @@ impl Runtime {
         &mut self,
         class: Value,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
         let object = if let Some(new) = self.class_lookup(&class, "__new__", 0) {
@@ -396,7 +396,7 @@ impl Runtime {
         &mut self,
         name: &str,
         mut args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
         let (owner, method) = name.split_once(':').unwrap_or((name, ""));
@@ -559,7 +559,7 @@ impl Runtime {
         value: Value,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> Option<PyResult<Value>> {
         let mut error = self.exception_data(&value)?;
         if !["derive", "split", "subgroup", "add_note", "with_traceback"].contains(&name) {

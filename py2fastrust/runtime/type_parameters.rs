@@ -668,7 +668,7 @@ impl Runtime {
         value: Value,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> Option<PyResult<Value>> {
         let kind = self.type_parameter_kind(&value).map(str::to_string);
         let special = kind.is_some()
@@ -827,7 +827,7 @@ impl Runtime {
         &mut self,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if args.len() != 1 || !kwargs.is_empty() {
             return Err(pyerr("TypeError", format!("{}() takes one argument", name)));
@@ -1058,7 +1058,7 @@ impl Runtime {
         &mut self,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> Option<PyResult<Value>> {
         if !matches!(

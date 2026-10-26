@@ -18,3 +18,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Dictionary copy and merge paths in keywords.rs adapt dict_dict_merge and
+copy_lock_held from CPython 3.14.4, Objects/dictobject.c:
+https://github.com/python/cpython/blob/v3.14.4/Objects/dictobject.c
+These portions retain the Python Software Foundation license in
+py2fastrust/stdlib/PYTHON_LICENSE.txt. Generated general-runtime Rust also
+contains that complete license.

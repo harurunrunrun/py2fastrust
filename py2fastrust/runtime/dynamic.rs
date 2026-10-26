@@ -1124,6 +1124,23 @@ impl DCompiler {
         self.emit(ctx,Op::Load(exit_tmp),line,col); for _ in 0..3 { self.emit(ctx,Op::Const(Const::None),line,col); }
         self.emit(ctx,Op::Call { pos:3,keywords:Vec::new() },line,col); self.emit(ctx,Op::Pop,line,col); self.patch(ctx,skip,self.here(ctx)); self.emit(ctx,Op::EndFinally,line,col); Ok(())
     }
+    fn keyword_arguments(&mut self,ctx:&mut DCtx,keywords:&[(Option<String>,DExpr)],line:usize,col:usize)->Result<(),String>{
+        self.emit(ctx,Op::BuildDict(0),line,col);let mut index=0;
+        while index<keywords.len(){
+            let (_,value)=&keywords[index];
+            if keywords[index].0.is_none(){self.expr(ctx,value)?;index+=1;}
+            else{
+                let start=index;
+                while index<keywords.len(){
+                    let(Some(name),value)=&keywords[index]else{break;};
+                    self.emit(ctx,Op::Keyword(name.clone()),value.line,value.column);self.expr(ctx,value)?;index+=1;
+                }
+                self.emit(ctx,Op::BuildDict(index-start),value.line,value.column);
+            }
+            self.emit(ctx,Op::Binary("kwargs_merge".to_owned()),value.line,value.column);
+        }
+        Ok(())
+    }
     fn class_arguments(&mut self,ctx:&mut DCtx,bases:&[DExpr],keywords:&[(Option<String>,DExpr)],generic:bool,line:usize,col:usize)->Result<bool,String>{
         let expanded=bases.iter().any(|base|matches!(base.kind,DExprKind::Star(_)))||keywords.iter().any(|(name,_)|name.is_none());
         for base in bases{
@@ -1139,16 +1156,8 @@ impl DCompiler {
         }
         if expanded{
             self.emit(ctx,Op::BuildTupleUnpack(bases.len()+usize::from(generic)),line,col);
-            self.emit(ctx,Op::BuildDict(0),line,col);
-        }
-        for(name,value)in keywords{
-            if expanded{if let Some(name)=name{self.emit(ctx,Op::Const(Const::Str(name.clone())),value.line,value.column);}}
-            self.expr(ctx,value)?;
-            if expanded{
-                if name.is_some(){self.emit(ctx,Op::BuildDict(1),value.line,value.column);}
-                self.emit(ctx,Op::Binary("kwargs_merge".to_owned()),value.line,value.column);
-            }
-        }
+            self.keyword_arguments(ctx,keywords,line,col)?;
+        }else{for(_,value)in keywords{self.expr(ctx,value)?;}}
         Ok(expanded)
     }
     fn store(&mut self, ctx: &mut DCtx, target: &DExpr) -> Result<(),String> {
@@ -1240,7 +1249,7 @@ impl DCompiler {
                     let sole_star = args.len() == 1 && matches!(args[0].kind,DExprKind::Star(_));
                     for arg in args { if let DExprKind::Star(value) = &arg.kind { self.expr(ctx,value)?; if !sole_star { self.emit(ctx,Op::BuildListUnpack(1),line,col); } } else { self.expr(ctx,arg)?; self.emit(ctx,Op::BuildTuple(1),line,col); } }
                     if !sole_star { self.emit(ctx,Op::BuildTupleUnpack(args.len()),line,col); }
-                    if !keywords.is_empty() { self.emit(ctx,Op::BuildDict(0),line,col); for (name,value) in keywords { if let Some(name) = name { self.emit(ctx,Op::Const(Const::Str(name.clone())),line,col); self.expr(ctx,value)?; self.emit(ctx,Op::BuildDict(1),line,col); } else { self.expr(ctx,value)?; } self.emit(ctx,Op::Binary("kwargs_merge".to_owned()),line,col); } }
+                    if !keywords.is_empty() {self.keyword_arguments(ctx,keywords,line,col)?;}
                     self.emit(ctx,Op::CallEx { kwargs:!keywords.is_empty() },line,col);
                 }
             }

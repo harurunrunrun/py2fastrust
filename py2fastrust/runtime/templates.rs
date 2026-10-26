@@ -92,7 +92,7 @@ impl Runtime {
         &mut self,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> Option<PyResult<Value>> {
         if !template_type_name(name) {
             return None;
@@ -288,7 +288,7 @@ impl Runtime {
         value: Value,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> Option<PyResult<Value>> {
         if matches!(&value,Value::Builtin(class)if template_type_name(class))
             && name == "__class_getitem__"
@@ -454,7 +454,7 @@ impl Runtime {
     fn template_convert(
         &mut self,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> PyResult<Value> {
         if kwargs.iter().any(|(name, _)| name == "obj") {
             return Err(pyerr(

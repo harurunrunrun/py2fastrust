@@ -20,7 +20,7 @@ impl TextCodec {
     }
     fn name(self) -> &'static str { match self { Self::Utf8 => "utf-8", Self::Ascii => "ascii", Self::Latin1 => "latin-1" } }
 }
-fn codec_bind(name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>, names: &[&str]) -> PyResult<Vec<Option<Value>>> {
+fn codec_bind(name: &str, args: Vec<Value>, kwargs: KeywordArgs, names: &[&str]) -> PyResult<Vec<Option<Value>>> {
     if args.len() > names.len() { return Err(pyerr("TypeError",format!("{name}() takes at most {} arguments",names.len()))); }
     let mut values = vec![None;names.len()];
     for (index,value) in args.into_iter().enumerate() { values[index] = Some(value); }
@@ -73,7 +73,7 @@ fn codec_error(codec: TextCodec, object: Value, start: usize, end: usize, reason
 }
 
 impl Runtime {
-    fn bytes_constructor(&mut self, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
+    fn bytes_constructor(&mut self, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {
         let mut values=codec_bind("bytes",args,kwargs,&["source","encoding","errors"])?;
         let encoding=codec_argument(self,values[1].as_ref(),"utf-8","encoding")?;
         let errors=codec_argument(self,values[2].as_ref(),"strict","errors")?;
@@ -124,7 +124,7 @@ impl Runtime {
             Ok(Value::Bytes(Vec::new().into()))
         }
     }
-    fn str_constructor(&mut self, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
+    fn str_constructor(&mut self, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {
         let mut values=codec_bind("str",args,kwargs,&["object","encoding","errors"])?;
         let encoding=codec_argument(self,values[1].as_ref(),"utf-8","encoding")?;
         let errors=codec_argument(self,values[2].as_ref(),"strict","errors")?;
@@ -145,7 +145,7 @@ impl Runtime {
         }
         Ok(Value::Str(self.str_value(&source)?.into()))
     }
-    fn codec_encode(&mut self, source: Value, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
+    fn codec_encode(&mut self, source: Value, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {
         let values=codec_bind("encode",args,kwargs,&["encoding","errors"])?;
         let encoding=codec_argument(self,values[0].as_ref(),"utf-8","encoding")?;
         let errors=codec_argument(self,values[1].as_ref(),"strict","errors")?;
@@ -169,7 +169,7 @@ impl Runtime {
         }
         Ok(Value::Bytes(output.into()))
     }
-    fn codec_decode(&mut self, source: Value, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
+    fn codec_decode(&mut self, source: Value, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {
         let values=codec_bind("decode",args,kwargs,&["encoding","errors"])?;
         let encoding=codec_argument(self,values[0].as_ref(),"utf-8","encoding")?;
         let errors=codec_argument(self,values[1].as_ref(),"strict","errors")?;

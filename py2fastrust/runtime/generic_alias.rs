@@ -760,7 +760,7 @@ impl Runtime {
         value: Value,
         name: &str,
         args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
+        kwargs: KeywordArgs,
     ) -> Option<PyResult<Value>> {
         let (origin, parameters, _, _) = self.generic_parts(&value)?;
         if ![

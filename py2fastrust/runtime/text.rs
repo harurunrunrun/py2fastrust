@@ -7434,7 +7434,7 @@ fn text_split_whitespace<T: Copy>(source: &[T], limit: Option<usize>, reverse: b
 }
 
 impl Runtime {
-    fn text_arity(&self, name: &str, args: &[Value], kwargs: &[(String,Value)], minimum: usize, maximum: usize) -> PyResult<()> {
+    fn text_arity(&self, name: &str, args: &[Value], kwargs: &[(KeywordName, Value)], minimum: usize, maximum: usize) -> PyResult<()> {
         if !kwargs.is_empty(){return Err(pyerr("TypeError",format!("{name}() takes no keyword arguments")));}
         if args.len()<minimum||args.len()>maximum{return Err(pyerr("TypeError",format!("invalid number of arguments for {name}()")));}Ok(())
     }
@@ -7449,17 +7449,17 @@ impl Runtime {
     fn text_maxsplit(&mut self, value: Option<&Value>) -> PyResult<Option<usize>> {
         if let Some(value)=value { let value=self.as_int(value)?.to_i128().ok_or_else(||pyerr("OverflowError","Python int too large to convert to C ssize_t"))?;if value<isize::MIN as i128||value>isize::MAX as i128{return Err(pyerr("OverflowError","Python int too large to convert to C ssize_t"));}Ok(if value<0{None}else{Some(value as usize)}) }else{Ok(None)}
     }
-    fn text_split_args(&self, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<(Option<Value>,Option<Value>)> {
+    fn text_split_args(&self, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<(Option<Value>,Option<Value>)> {
         if args.len()>2{return Err(pyerr("TypeError","split() takes at most 2 arguments"));}
         let mut separator=args.first().cloned();let mut maximum=args.get(1).cloned();
         for (name,value) in kwargs{match name.as_str(){"sep"=>{if separator.is_some(){return Err(pyerr("TypeError","argument for split() given by name and position"));}separator=Some(value);},"maxsplit"=>{if maximum.is_some(){return Err(pyerr("TypeError","argument for split() given by name and position"));}maximum=Some(value);},_=>return Err(pyerr("TypeError",format!("'{name}' is an invalid keyword argument for split()")))}}
         Ok((separator,maximum))
     }
-    fn text_method(&mut self, source: String, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> Option<PyResult<Value>> {
+    fn text_method(&mut self, source: String, name: &str, args: Vec<Value>, kwargs: KeywordArgs) -> Option<PyResult<Value>> {
         if !["casefold","isdigit","isdecimal","isnumeric","isspace","isalpha","isalnum","islower","isupper","isidentifier","startswith","endswith","find","rfind","index","rindex","count","split","rsplit","strip","lstrip","rstrip","replace"].contains(&name){return None}
         Some(self.text_method_inner(source,name,args,kwargs))
     }
-    fn text_method_inner(&mut self, source: String, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
+    fn text_method_inner(&mut self, source: String, name: &str, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {
         if name=="isidentifier" { self.text_arity(name,&args,&kwargs,0,0)?; return Ok(Value::Bool(text_is_identifier(&source))); }
         if name=="replace" {
             if args.len()<2||args.len()>3{return Err(pyerr("TypeError","replace() requires old, new and an optional count"));}
@@ -7511,11 +7511,11 @@ impl Runtime {
     fn bytes_needle(&mut self, value: &Value, integer: bool) -> PyResult<Vec<u8>> {
         match value { Value::Bytes(value)=>Ok(value.to_vec()),Value::Int(_) | Value::Bool(_) if integer=>{let value=self.as_int(value)?.to_i128().ok_or_else(||pyerr("ValueError","byte must be in range(0, 256)"))?;if !(0..256).contains(&value){return Err(pyerr("ValueError","byte must be in range(0, 256)"));}Ok(vec![value as u8])},_=>Err(pyerr("TypeError","a bytes-like object is required")) }
     }
-    fn bytes_method(&mut self, source: Vec<u8>, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> Option<PyResult<Value>> {
+    fn bytes_method(&mut self, source: Vec<u8>, name: &str, args: Vec<Value>, kwargs: KeywordArgs) -> Option<PyResult<Value>> {
         if !["split","rsplit","strip","lstrip","rstrip","join","replace","startswith","endswith","find","rfind","index","rindex","count"].contains(&name){return None}
         Some(self.bytes_method_inner(source,name,args,kwargs))
     }
-    fn bytes_method_inner(&mut self, source: Vec<u8>, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
+    fn bytes_method_inner(&mut self, source: Vec<u8>, name: &str, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {
         if name=="split"||name=="rsplit" {
             let (separator,maximum)=self.text_split_args(args,kwargs)?;let maximum=self.text_maxsplit(maximum.as_ref())?;let separator=match separator{None|Some(Value::None)=>None,Some(value)=>{let value=self.bytes_needle(&value,false)?;if value.is_empty(){return Err(pyerr("ValueError","empty separator"));}Some(value)}};
             let parts=if let Some(separator)=separator{text_split_separator(&source,&separator,maximum,name=="rsplit")}else{text_split_whitespace(&source,maximum,name=="rsplit",bytes_space)};return Ok(self.obj_value(Object::List(parts.into_iter().map(|value| Value::Bytes(value.into())).collect())));

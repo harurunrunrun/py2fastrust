@@ -132,7 +132,7 @@ def generate(program: Program, integer="i64"):
     unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
     prefix += "\n".join("// " + line for line in unicode_license.splitlines()) + "\n"
     parts = [prefix]
-    for name in ("integer.rs", "complex.rs", "frozenset.rs", "vm.rs", "identity.rs", "dynamic.rs", "cst_lower.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "execution.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "unicode_names.rs", "unicode_names_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
+    for name in ("integer.rs", "complex.rs", "frozenset.rs", "vm.rs", "identity.rs", "keywords.rs", "dynamic.rs", "cst_lower.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "execution.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "unicode_names.rs", "unicode_names_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
         parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
     parts.append("\nfn main() {\nlet codes = vec![\n")
     source_map = []
