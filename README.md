@@ -99,12 +99,15 @@ else:
 ## Execution and performance
 
 Ordinary input is parsed with Python's official `ast` and `symtable` APIs to analyze scopes and evaluation order.
-When types and bindings can be established, `i64`/`i128` integers, one-dimensional integer arrays,
-integer dictionaries, sets, and loops become native Rust integers, `Vec<T>`, `HashMap`, `HashSet`, and control flow.
+When types and bindings can be established, `i64`/`i128` integers, integer arrays and independent rows,
+integer dictionaries, sets, deques, and loops become native Rust integers, `Vec<T>`, `HashMap`, `HashSet`, `VecDeque`, and control flow.
 Supported patterns include `list(map(int, input().split()))`, unpacked integer input,
 integer-list `append`, `extend`, and `sort`, dictionary aggregation, and dictionary iteration in insertion order.
 Native integer sets support construction, insertion, deletion, membership, and `sum`.
 Programs that observe set iteration order or sharing use the general runtime.
+Owned adjacency lists and unbounded integer deques support native BFS loops.
+Deque specialization uses the compiler's resolved bundled `collections` module; a user module of the same name is respected.
+Shared rows, container aliases, and mutation during active iteration use the general runtime.
 Programs that cannot be specialized also use the shared dynamic runtime.
 The optimizer follows proved type changes and combines compatible branch and loop states.
 Unproved combinations use the general runtime.
@@ -113,6 +116,8 @@ including positional and keyword arguments, constant defaults, and calls between
 Recursion and functions with dynamic global or closure state use the general runtime.
 
 The runtime handles shared objects, GC, function frames, exceptions, classes, and closures.
+Calls retain original expanded keyword key objects and their stored hashes across functions, partials, caches, and metaclasses.
+Ordinary cached-function recursion uses explicit execution frames, including cache misses and exceptional returns.
 Exception groups and `except*` support subgroup handling, reraising, and merging unhandled exceptions.
 Runtime `eval` and `exec` use a Rust tokenizer and PEG rules generated from CPython 3.14.4's official grammar,
 then lower the resulting syntax tree directly to the shared instructions.
@@ -121,6 +126,8 @@ The runtime also supports `__future__` declarations and flag inheritance, Unicod
 type parameters, lazy type aliases, and GenericAlias parameter substitution in both static and dynamic code.
 T-strings produce `Template` and `Interpolation` objects that retain expression values, conversions, and format specifications.
 Complex literals, arithmetic, and conversions, as well as runtime `compile(optimize=1/2)`, are supported.
+Dynamic execution accepts keyword `globals`/`locals` and preserves dictionary subclass identity.
+`compile()` supports path-like filenames and source encoding declarations in bytes.
 Unicode 16.0 character names and aliases in `\N{name}` escapes work in dynamically compiled strings,
 f-strings, and t-strings.
 Immutable `frozenset` values support mixed operations with `set`, cached hashing, subclasses, and generic aliases.

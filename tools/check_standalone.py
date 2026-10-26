@@ -5,6 +5,7 @@ generated executables run with PATH pointing to a nonexistent directory.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -127,6 +128,51 @@ sys.stdout.flush()
 sys.stdout.buffer.write(b"standalone\\n")
 sys.stdout.flush()
 '''
+SOURCE += r'''
+from functools import cache
+
+@cache
+def cached_count(n):
+    if not n:
+        return 0
+    return cached_count(n - 1) + 1
+
+sys.setrecursionlimit(4000)
+print(cached_count(1500), cached_count.cache_info().currsize)
+
+class Key(str):
+    pass
+key = Key("value")
+def receive(**kwargs):
+    return next(iter(kwargs))
+def named_a():
+    return receive(value=1)
+def named_b():
+    return receive(value=2)
+print(receive(**{key: 1}) is key, named_a() is named_b())
+exec("def dynamic_named(): return receive(value=3)", globals())
+print(named_a() is dynamic_named())
+gc.collect()
+print(receive(**{key: 4}) is key)
+
+class NativeList(list):
+    pass
+owned = NativeList([{"retained": 31}])
+gc.collect()
+print(owned[0]["retained"])
+
+print(eval(r"'\N{LATIN SMALL LETTER A}\N{NUL}\N{HANGUL SYLLABLE GAG}'") == "a\0\uac01")
+exec(r"named_template = t'\N{EM DASH}{5}'", space)
+print(space["named_template"].strings, space["named_template"].values)
+print(eval(b"# coding: latin-1\n'caf\xe9'"))
+print(eval("left + right", globals={"left": 7}, locals={"right": 8}))
+
+class Filename:
+    def __fspath__(self):
+        return b"standalone_dynamic.py"
+exec(compile("path_result = 29", Filename(), "exec"), space)
+print(space["path_result"])
+'''
 STDIN = "4\n1 2 3 4\n\n"
 
 
@@ -165,6 +211,7 @@ def check(root, wheel):
                    "filename='standalone.py', optimize=False, license='MIT'))\n"
                    "assert result.success, '\\n'.join(map(str, result.diagnostics))\n"
                    "assert result.rust_source.startswith('// LICENSE: Unlicense\\n')\n"
+                   "assert 'If the original Python source specifies a license, that license takes precedence.' in result.rust_source\n"
                    "assert '// import sys\\n' in result.rust_source\n"
                    f"Path({str(target)!r}).write_text(result.rust_source, encoding='utf-8')\n")
         started = time.perf_counter()
@@ -189,9 +236,14 @@ def check(root, wheel):
                             "conversion_seconds": conversion_seconds,
                             "compilation_seconds": compilation_seconds,
                             "source_bytes": target.stat().st_size,
-                            "executable_bytes": executable.stat().st_size})
+                            "executable_bytes": executable.stat().st_size,
+                            "source_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                            "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                            "stdout_sha256": hashlib.sha256(actual).hexdigest()})
             print(f"{integer}/{build}: PASS", flush=True)
     report = {"wheel": str(wheel) if wheel else None,
+              "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else None,
+              "python_source_sha256": hashlib.sha256(SOURCE.encode()).hexdigest(),
               "rustc": run([rustc, "--version"], cwd=root, text=True).stdout.strip(),
               "checks": results}
     (root / "report.json").write_text(json.dumps(report, indent=2) + "\n")

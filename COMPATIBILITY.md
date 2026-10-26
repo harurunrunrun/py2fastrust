@@ -19,7 +19,7 @@ they do not imply compatibility with all CPython internals or the entire standar
 | Dynamic execution | `compile`/`eval`/`exec`, `compile(optimize=0/1/2)`, calls between static and dynamic code, lazy annotations and `type` statements, all known `__future__` features and flag inheritance |
 | Memory | Object identity, cyclic references, mark-and-sweep GC rooted in frames and temporary values, `__del__` and resurrection |
 
-Ordinary function recursion uses heap-allocated frames.
+Ordinary function recursion, including calls through `cache` and `lru_cache`, uses heap-allocated frames.
 Some calls made through protocols and built-ins still reenter the runtime through Rust calls.
 
 `frozenset` supports construction, hashing, iteration, membership, comparisons, read-only set methods,
@@ -60,10 +60,11 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, remains unsupported.
 - Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.
 - AST input/output for `compile()`, top-level await, and incomplete-input flags are unsupported.
+- Executing existing code objects with explicit closure cells is unsupported. Closures created by ordinary and dynamically compiled source are supported.
+- Module namespace dictionaries still have limitations for non-string keys and string-subclass key protocols during global name resolution.
 - Imports whose names are determined at runtime, external C extensions, networking, threads, `asyncio`, and CPython-specific internal APIs are out of scope.
 - Unlisted standard-module APIs, including `inspect`, `pickle`, and `weakref`, are not provided.
 - Compatibility differences remain in `namedtuple` caller-module inference, the representation of empty function defaults, and base-descriptor operations on dictionary subclasses.
-- Expanded keyword arguments accept string subclasses by their native spelling, but do not retain the keyword key's subclass or identity in the receiving namespace.
 - Comprehensions run in separate frames, so `locals()` called within them may differ from Python 3.14's inlined comprehensions.
 - A traceback's `tb_frame` is a snapshot containing source information. It does not expose live-frame manipulation or CPython bytecode offsets.
 - Native specialization of code containing dynamic functions and classes is limited; such code may use the general runtime.
