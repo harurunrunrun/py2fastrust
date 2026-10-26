@@ -366,6 +366,7 @@ enum Object {
     Exception(PyException),
     Slice(Option<Int>, Option<Int>, Option<Int>),
     Cell(Option<Value>),
+    ExecutionLocals(Value),
     Code(usize),
     Range(Ident<Int>, Ident<Int>, Ident<Int>),
     Static(Value),
@@ -1199,6 +1200,7 @@ impl Runtime {
         Ok(value)
     }
     fn mapping_get(&mut self, i: usize, n: &str) -> PyResult<Option<Value>> {
+        if let Some(Object::ExecutionLocals(value))=self.heap.get(i).and_then(Option::as_ref){return self.getitem(value.clone(),Value::Str(n.into())).map(Some);}
         if matches!(
             self.heap.get(i).and_then(|o| o.as_ref()),
             Some(Object::Namespace(..) | Object::Dict(_))
@@ -1213,6 +1215,7 @@ impl Runtime {
         }
     }
     fn mapping_set(&mut self, i: usize, n: String, v: Value) -> PyResult<()> {
+        if let Some(Object::ExecutionLocals(value))=self.heap.get(i).and_then(Option::as_ref){return self.setitem(value.clone(),Value::Str(n.into()),v);}
         if matches!(
             self.heap.get(i).and_then(|o| o.as_ref()),
             Some(Object::Namespace(..) | Object::Dict(_))
@@ -1224,6 +1227,7 @@ impl Runtime {
         }
     }
     fn mapping_del(&mut self, i: usize, n: &str) -> PyResult<bool> {
+        if let Some(Object::ExecutionLocals(value))=self.heap.get(i).and_then(Option::as_ref){return self.delitem(value.clone(),Value::Str(n.into())).map(|()|true);}
         if matches!(
             self.heap.get(i).and_then(|o| o.as_ref()),
             Some(Object::Namespace(..) | Object::Dict(_))
@@ -1435,6 +1439,7 @@ impl Runtime {
     }
     fn ns_get(&self, i: usize, name: &str) -> Option<Value> {
         match self.heap.get(i).and_then(|o| o.as_ref()) {
+            Some(Object::BuiltinInstance {payload:Value::Obj(index),..})=>self.ns_get(*index,name),
             Some(Object::Namespace(m, _)) => m.get(name).cloned(),
             Some(Object::Dict(m)) => m.iter().find_map(|(k, v)| match k {
                 Value::Str(s) if s == name => Some(v.clone()),
@@ -1444,6 +1449,7 @@ impl Runtime {
         }
     }
     fn ns_set(&mut self, i: usize, name: String, v: Value) {
+        if let Some(Object::BuiltinInstance{payload:Value::Obj(index),..})=self.heap.get(i).and_then(Option::as_ref){let index=*index;self.ns_set(index,name,v);return;}
         let mut inserted=None;
         if let Some(Some(o))=self.heap.get_mut(i) {
             match o {
@@ -1461,6 +1467,7 @@ impl Runtime {
         if let Some(key)=inserted {self.assoc_inserted(i,key);}
     }
     fn ns_del(&mut self,i:usize,name:&str)->bool {
+        if let Some(Object::BuiltinInstance{payload:Value::Obj(index),..})=self.heap.get(i).and_then(Option::as_ref){let index=*index;return self.ns_del(index,name);}
         let mut removed=None;
         match self.heap.get_mut(i).and_then(Option::as_mut) {
             Some(Object::Namespace(m,_))=>{
@@ -1944,7 +1951,7 @@ impl Runtime {
                 } else {
                     f.locals
                 };
-                let deleted=self.mapping_del(ns,&n);
+                let deleted=if self.codes[f.code].globals.contains(&n){Ok(self.ns_del(ns,&n))}else{self.mapping_del(ns,&n)};
                 let deleted=if self.codes[f.code].kind==ScopeKind::Class{deleted.unwrap_or(false)}else{deleted?};
                 if !deleted {
                     return Err(pyerr("NameError", format!("name '{}' is not defined", n)));
@@ -3397,6 +3404,7 @@ impl Runtime {
                     pending.extend(fields.iter().map(|(_, v)| v.clone()))
                 }
                 Object::ExceptStarState(state) => state.roots(&mut pending),
+                Object::ExecutionLocals(value)=>pending.push(value.clone()),
                 Object::Cell(v) => pending.extend(v.iter().cloned()),
                 Object::Static(v) | Object::ClassMethod(v) => pending.push(v.clone()),
                 Object::Property { get, set, del } => {
@@ -5277,7 +5285,7 @@ impl Runtime {
                 if self.codes[f.code].kind == ScopeKind::Module
                     || self.codes[f.code].kind == ScopeKind::Class
                 {
-                    return Ok(Value::Obj(f.locals));
+                    return Ok(self.execution_locals_value(f.locals));
                 }
                 self.locals_snapshot(f)
             }
@@ -5300,39 +5308,61 @@ impl Runtime {
                 Ok(self.obj_value(Object::List(names.into_iter().map(|value| Value::Str(value.into())).collect())))
             }
             "compile" => {
+                if args.len()>6 {return Err(pyerr("TypeError",format!("compile() takes at most 6 positional arguments ({} given)",args.len())));}
                 let mut arguments=codec_bind("compile",args,kwargs,&["source","filename","mode","flags","dont_inherit","optimize","_feature_version"])?;
                 let source=arguments[0].take().ok_or_else(||pyerr("TypeError","compile() missing source"))?;
                 let filename=arguments[1].take().ok_or_else(||pyerr("TypeError","compile() missing filename"))?;
                 let mode=arguments[2].take().ok_or_else(||pyerr("TypeError","compile() missing mode"))?;
-                let flags=arguments[3].as_ref().map(|value|self.as_int(value)).transpose()?.unwrap_or_else(||Int::from_i128(0));
-                let flags=flags.to_i128().filter(|flags|*flags>=i32::MIN as i128 && *flags<=i32::MAX as i128).ok_or_else(||pyerr("OverflowError","Python int too large to convert to C int"))? as i32 as u32;
+                // Argument conversions run in signature order, before semantic checks.
+                let filename=self.execution_filename(filename)?;
+                let mode=self.execution_mode(mode)?;
+                let flags=arguments[3].as_ref().map(|value|self.execution_c_int(value)).transpose()?.unwrap_or(0) as u32;
+                let dont_inherit=arguments[4].as_ref().map(|value|self.truth(value)).transpose()?.unwrap_or(false);
+                let optimize=arguments[5].as_ref().map(|value|self.execution_c_int(value)).transpose()?.unwrap_or(-1);
+                if let Some(feature_version)=&arguments[6] {self.execution_c_int(feature_version)?;}
                 const FUTURE_MASK:u32=0x1fe0010;
                 const PYCF_MASK:u32=0xf600;
                 if flags & !(FUTURE_MASK|PYCF_MASK)!=0 {return Err(pyerr("ValueError","compile(): unrecognised flags"));}
                 if flags & PYCF_MASK!=0 {return Err(pyerr("NotImplementedError","compile() PyCF AST, incomplete input and top-level await modes are not implemented"));}
-                let dont_inherit=arguments[4].as_ref().map(|value|self.truth(value)).transpose()?.unwrap_or(false);
-                let optimize=arguments[5].as_ref().map(|value|self.as_int(value)).transpose()?.map(|value|value.to_i128().unwrap_or(-2)).unwrap_or(-1);
                 if !(-1..=2).contains(&optimize) {return Err(pyerr("ValueError","compile(): invalid optimize value"));}
+                if !matches!(mode.as_str(),"exec"|"eval"|"single") {return Err(pyerr("ValueError","compile() mode must be 'exec', 'eval' or 'single'"));}
                 let flags=(flags & FUTURE_MASK & !0x10) | if dont_inherit {0}else{caller.map(|frame|self.codes[frame.code].future_flags).unwrap_or(self.active_future_flags)};
-                let src=self.str_value(&source)?;let filename=self.str_value(&filename)?;let mode=self.str_value(&mode)?;
+                let src=self.execution_text(source,"compile")?;
                 let offset=self.codes.len();
                 let codes=compile_dynamic_optimized(&src,&filename,&mode,offset,flags,optimize.max(0) as u8).map_err(int_error)?;
                 self.codes.extend(codes);
                 Ok(self.obj_value(Object::Code(offset)))
             }
             "eval" | "exec" => {
-                let source = arg(0)?;
-                let code = if let Value::Obj(i) = source.clone() {
-                    if let Object::Code(c) = self.object(i)? {
-                        c
-                    } else {
-                        return Err(pyerr(
-                            "TypeError",
-                            "eval/exec source must be a string or code object",
-                        ));
+                let parameters=execution_parameters(name,&args,&kwargs)?;
+                let args=parameters[..3].to_vec();
+                let source=args[0].clone();
+                let globals=self.execution_globals(&args[1],caller,name)?;
+                let locals=if !matches!(args[2],Value::None){self.execution_locals(args[2].clone())?}
+                else if !matches!(args[1],Value::None){globals}
+                else if let Some(frame)=caller{
+                    if matches!(self.codes[frame.code].kind,ScopeKind::Function|ScopeKind::Comprehension|ScopeKind::Annotation|ScopeKind::TypeParameters){match self.locals_snapshot(frame)?{Value::Obj(index)=>index,_=>unreachable!()}}
+                    else{frame.locals}
+                }else{globals};
+                if self.ns_get(globals,"__builtins__").is_none(){self.ns_set(globals,"__builtins__".into(),Value::Obj(self.builtins));}
+                if !matches!(parameters[3],Value::None){
+                    return Err(pyerr("TypeError",if matches!(&source,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Code(_)))){"cannot use a closure with this code object"}else{"closure can only be used when source is a code object"}));
+                }
+                let precompiled=match &source{Value::Obj(index)=>match self.heap.get(*index).and_then(Option::as_ref){Some(Object::Code(code))=>Some(*code),_=>None},_=>None};
+                if let Some(code)=precompiled {
+                    if !self.codes[code].frees.is_empty() {
+                        return Err(pyerr("TypeError",if name=="eval" {"code object passed to eval() may not contain free variables".to_owned()} else {format!("code object requires a closure of exactly length {}",self.codes[code].frees.len())}));
                     }
+                    if self.codes[code].kind==ScopeKind::Function {
+                        let frame=self.execution_function_frame(code,globals)?;
+                        let value=if self.codes[code].is_generator {self.obj_value(Object::Generator(Box::new(frame)))}
+                        else {match self.execute(frame)?.0 {FrameExit::Return(value)|FrameExit::Yield(value)=>value}};
+                        return Ok(if name=="exec" {Value::None}else{value});
+                    }
+                }
+                let code = if let Some(code)=precompiled { code
                 } else {
-                    let src = self.str_value(&source)?;
+                    let src = self.execution_text(source.clone(),name)?;
                     let src = if name == "eval" {
                         src.trim_matches([' ', '\t']).to_string()
                     } else {
@@ -5350,37 +5380,6 @@ impl Runtime {
                     self.codes.extend(codes);
                     offset
                 };
-                let globals = if let Some(Value::Obj(i)) =
-                    args.get(1).filter(|v| !matches!(v, Value::None))
-                {
-                    *i
-                } else {
-                    caller.map(|f| f.globals).unwrap_or(self.globals)
-                };
-                let locals = if let Some(Value::Obj(i)) =
-                    args.get(2).filter(|v| !matches!(v, Value::None))
-                {
-                    *i
-                } else if args.len() > 1 && !matches!(args[1], Value::None) {
-                    globals
-                } else if let Some(f) = caller {
-                    if matches!(
-                        self.codes[f.code].kind,
-                        ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::Annotation | ScopeKind::TypeParameters
-                    ) {
-                        match self.locals_snapshot(f)? {
-                            Value::Obj(index) => index,
-                            _ => unreachable!(),
-                        }
-                    } else {
-                        f.locals
-                    }
-                } else {
-                    globals
-                };
-                if self.ns_get(globals, "__builtins__").is_none() {
-                    self.ns_set(globals, "__builtins__".into(), Value::Obj(self.builtins))
-                }
                 let frame = Frame {
                     code,
                     pc: 0,
@@ -6391,6 +6390,7 @@ impl Runtime {
                     Object::ClassMethod(_) => "<classmethod>".into(),
                     Object::Property { .. } => "<property>".into(),
                     Object::ExceptStarState(_) => "<except* state>".into(),
+                    Object::ExecutionLocals(value)=>self.repr_inner(&value,seen)?,
                     Object::Cell(_) => "<cell>".into(),
                     Object::Code(_) => "<code object>".into(),
                     Object::Slot { owner, name, .. } => format!(
@@ -6680,6 +6680,7 @@ impl Runtime {
                 Some(Object::Iterator(_)) => "iterator".into(),
                 Some(Object::Slice(..)) => "slice".into(),
                 Some(Object::ExceptStarState(_)) => "except* state".into(),
+                Some(Object::ExecutionLocals(value))=>self.typename(value),
                 Some(Object::Cell(_)) => "cell".into(),
                 Some(Object::Range(..)) => "range".into(),
                 Some(Object::Record { name, .. }) => name.clone(),
