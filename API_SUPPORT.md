@@ -179,4 +179,5 @@ ChainMap、UserDict、UserList、UserStringは対象に含めていません。
 | `__future__` | 全既知feature・compiler_flag・release metadata、future文の配置検証とcompile/eval/execへの継承 |
 | `types.GenericAlias` | origin/args/parameters metadata、比較・hash・呼び出し、__class_getitem__、MRO接続、TypeVar・ParamSpec・TypeVarTupleの置換・既定値 |
 | `types.UnionType` | Python 3.14のtyping.Unionと共通の型 |
+| `string.templatelib` | Template、Interpolation、convert。t-stringの値・式文字列・conversion・format_specを保持し、整形は利用側で行います |
 | `typing` | TypeVar、ParamSpec、TypeVarTuple、TypeAliasType、Generic、Unpack、Union、ForwardRef、NoDefault、ParamSpecArgs/Kwargs、get_args/get_origin。モジュール全体の対応ではありません |

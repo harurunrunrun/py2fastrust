@@ -6,7 +6,7 @@
 
 | 分類 | 対応 |
 |---|---|
-| 値 | None、bool、選択幅のint、float、str、bytes、list、tuple、dict、set、slice、range、動的dictビューとmappingproxy、GenericAlias、Union型 |
+| 値 | None、bool、選択幅のint、float、str、bytes、list、tuple、dict、set、slice、range、動的dictビューとmappingproxy、GenericAlias、Union型、Template、Interpolation |
 | 変数 | 型変更、共有参照、多重・アンパック代入、global/nonlocal、未束縛エラー |
 | 制御 | if、while、for、break/continue、else、短絡演算、比較連鎖 |
 | 関数 | 既定値、位置専用・キーワード専用引数、可変長引数、再帰、lambda、クロージャ、型パラメータとその遅延評価する境界・既定値 |
@@ -14,7 +14,7 @@
 | 例外 | raise、except、else、finally、assert、元のargs・cause/context、例外対象変数の後始末、tracebackのソース情報 |
 | クラス | 継承、C3 MRO、descriptor、property、staticmethod/classmethod、super、メタクラス、__slots__、list/tuple/dict/set/str/intの継承 |
 | 名前空間 | 任意mappingを返す__prepare__、private名、Unicode NFKC識別子、辞書の挿入順、内部一時変数の分離、free変数を含むPython 3.14関数localsのsnapshot |
-| その他 | with、ジェネレータのsend/throw/closeとyield from、f-string、match/case |
+| その他 | with、ジェネレータのsend/throw/closeとyield from、f-string、t-string、match/case |
 | 動的実行 | compile/eval/exec、静的コードとの相互呼び出し、遅延評価するアノテーション・type文、__future__の全既知featureとフラグ継承 |
 | メモリ | オブジェクト同一性、循環参照、フレーム・一時値をルートとするmark-and-sweep GC、__del__と復活 |
 
@@ -40,7 +40,7 @@ APIごとの名前は [API_SUPPORT.md](API_SUPPORT.md) を参照してくださ�
 
 ## 既知の制約
 
-- async/await、except*、t-stringは未対応です。
+- async/await、except*は未対応です。
 - complex、未対のUnicodeサロゲートなど、基本値にも未対応範囲があります。
 - bytearray、memoryview、frozenset、openによるファイル入出力は未対応です。標準ストリームのtext/binary入出力を提供します。
 - 文字コード変換はUTF-8・ASCII・Latin-1を対象とし、利用可能なerrors指定にも制約があります。str subclassのencoding付き構築は未対応です。

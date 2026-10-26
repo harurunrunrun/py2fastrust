@@ -138,6 +138,8 @@ enum Op {
         kwargs: bool,
     },
     GetYieldFromIter,
+    MakeInterpolation { expression: Option<String>, conversion: i32, spec: bool },
+    BuildTemplate(usize),
 }
 
 use std::collections::HashMap;
@@ -264,6 +266,7 @@ struct CachedFunction {
 }
 #[derive(Clone, Debug)]
 enum IteratorState {
+    Template(usize, usize),
     Associative(AssocIterator),
     Tools(Box<ToolsState>),
     Values(Vec<Value>, usize),
@@ -278,6 +281,8 @@ enum IteratorState {
 }
 #[derive(Clone, Debug)]
 enum Object {
+    Template { strings: usize, interpolations: usize },
+    Interpolation { value: Value, expression: Value, conversion: Value, format_spec: Value },
     GenericAlias { origin: Value, args: Vec<Value>, args_tuple: usize, parameters: Option<usize>, typing: bool },
     TypeParameter(TypeParameter),
     TypeAlias { name: String, module: Value, params: Value, value: TypeLazy },
@@ -385,6 +390,7 @@ struct Runtime {
     annotation_namespaces: HashMap<usize, usize>,
     scope_cells: HashMap<usize, HashMap<String, Value>>,
     typing_alias_cache: Vec<TypingAliasCacheEntry>,
+    template_metadata: HashMap<String, Value>,
     assoc_layouts: HashMap<usize, AssocLayout>,
     literal_pools: HashMap<usize, HashMap<LiteralKey, Value>>,
     identity_builtins: HashMap<String, u64>,
@@ -1188,6 +1194,7 @@ impl Runtime {
             annotation_namespaces: HashMap::new(),
             scope_cells: HashMap::new(),
             typing_alias_cache: Vec::new(),
+            template_metadata: HashMap::new(),
             assoc_layouts: HashMap::new(),
             literal_pools: HashMap::new(),
             identity_builtins: HashMap::new(),
@@ -2392,7 +2399,10 @@ impl Runtime {
                         }
                     }
                 } else {
-                    let v = self.getattr(m, &n)?;
+                    let v=match self.getattr(m.clone(), &n) {
+                        Err(error) if error.kind=="AttributeError" && n=="templatelib" && matches!(&m,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Module{name,..})if name=="string"))=>self.import_module("string.templatelib")?,
+                        result=>result?,
+                    };
                     f.stack.push(v)
                 }
             }
@@ -2419,6 +2429,18 @@ impl Runtime {
                     s.push_str(&self.str_value(&v)?)
                 }
                 f.stack.push(Value::Str(s.into()))
+            }
+            Op::MakeInterpolation { expression, conversion, spec } => {
+                let format_spec=if spec {Self::pop(f)?}else{self.code_constant(f.code,Const::Str(String::new()))?};
+                let value=Self::pop(f)?;
+                let expression=match expression {Some(text)=>self.code_constant(f.code,Const::Str(text))?,None=>Value::None};
+                let conversion=match conversion {97|114|115=>self.code_constant(f.code,Const::Str(char::from_u32(conversion as u32).unwrap().to_string()))?,_=>Value::None};
+                let value=self.make_interpolation(value,expression,conversion,format_spec);
+                f.stack.push(value);
+            }
+            Op::BuildTemplate(count) => {
+                let parts=Self::pop_many(f,count)?;
+                let value=self.template_build(parts)?;f.stack.push(value);
             }
         }
         Ok(None)
@@ -2576,6 +2598,8 @@ impl Runtime {
                 "_py2fastrust_functools" => &["reduce", "cache", "lru_cache", "partial"],
                 "functools" => &["reduce", "cache", "lru_cache", "partial"],
                 "types" => &["GenericAlias"],
+                "string" => &[],
+                "string.templatelib" => &["Template","Interpolation","convert"],
                 "typing" => &["TypeVar", "ParamSpec", "TypeVarTuple", "TypeAliasType", "Generic", "Unpack", "Union", "ForwardRef", "ParamSpecArgs", "ParamSpecKwargs", "get_args", "get_origin"],
                 "operator" => &[
                     "add",
@@ -2613,7 +2637,7 @@ impl Runtime {
                 _ => &[],
             }
         };
-        if functions.is_empty() && name != "builtins" && !self.module_codes.contains_key(name) {
+        if functions.is_empty() && name != "builtins" && name != "string" && !self.module_codes.contains_key(name) {
             return Err(pyerr(
                 "ModuleNotFoundError",
                 format!("No module named '{}'", name),
@@ -2634,6 +2658,9 @@ impl Runtime {
                     fun
                 )),
             )
+        }
+        if name=="string.templatelib" {
+            for kind in ["Template","Interpolation"] {self.ns_set(attrs,kind.into(),Value::Builtin(format!("string.templatelib.{}",kind)));}
         }
         if name=="types" {
             self.ns_set(attrs,"GenericAlias".into(),Value::Builtin("GenericAlias".into()));
@@ -3134,6 +3161,7 @@ impl Runtime {
         let mut marked = vec![false; self.heap.len()];
         let mut pending = vec![Value::Obj(self.builtins), Value::Obj(self.globals)];
         pending.extend(self.modules.values().cloned());
+        pending.extend(self.template_metadata.values().cloned());
         for entry in &self.typing_alias_cache {pending.extend([entry.owner.clone(),entry.key.clone(),entry.value.clone()]);}
         pending.extend(extra.iter().cloned());
         pending.extend(self.running_generators.iter().map(|i| Value::Obj(*i)));
@@ -3159,6 +3187,8 @@ impl Runtime {
                 None => continue,
             };
             match obj {
+                Object::Template { strings, interpolations } => pending.extend([Value::Obj(*strings),Value::Obj(*interpolations)]),
+                Object::Interpolation { value, expression, conversion, format_spec } => pending.extend([value.clone(),expression.clone(),conversion.clone(),format_spec.clone()]),
                 Object::GenericAlias { origin, args, args_tuple, parameters, .. } => {
                     pending.push(origin.clone());pending.extend(args.iter().cloned());
                     pending.push(Value::Obj(*args_tuple));pending.extend(parameters.iter().map(|index|Value::Obj(*index)));
@@ -3264,6 +3294,7 @@ impl Runtime {
                 }
                 Object::Generator(f) => Self::frame_roots(f, &mut pending),
                 Object::Iterator(it) => match it {
+                    IteratorState::Template(owner,_) => pending.push(Value::Obj(*owner)),
                     IteratorState::Associative(state) => {if let Some(owner)=state.owner {pending.push(Value::Obj(owner));}},
                     IteratorState::Tools(state) => pending.extend(state.roots()),
                     IteratorState::Values(v, _) => pending.extend(v.iter().cloned()),
@@ -3352,6 +3383,7 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        if self.is_template_value(&receiver){if let Some(result)=self.template_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if self.is_typing_value(&receiver){if let Some(result)=self.typing_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if let Some(result)=self.dictview_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
         if let Some(result)=self.generic_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
@@ -4224,6 +4256,8 @@ impl Runtime {
         kwargs: Vec<(String, Value)>,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if template_type_name(name){return self.template_constructor(name,args,kwargs).unwrap();}
+        if name=="module:string.templatelib:convert" {return self.template_convert(args,kwargs);}
         if typing_constructor_name(name){return self.typing_constructor(name,args,kwargs,caller).unwrap();}
         if let Some(action) = name.strip_prefix("slot:") {
             let descriptor = args
@@ -5028,6 +5062,7 @@ impl Runtime {
             "hash" => {
                 use std::hash::{Hash, Hasher};
                 let v = arg(0)?;
+                if matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Template{..}|Object::Interpolation{..}))) {let id=self.identity_number(&v);return Ok(Value::Int(Int::from_i128(id as i128).into()));}
                 if let Value::Bool(value)=&v {return self.builtin("hash",vec![Value::Int(Int::from_i128(if *value{1}else{0}).into())],Vec::new(),None);}
                 if let Value::Float(value)=&v {if value.is_finite() && value.fract()==0.0 {return self.builtin("hash",vec![Value::Int(Int::from_f64(**value).map_err(int_error)?.into())],Vec::new(),None);}}
                 if let Value::Obj(index) = &v {
@@ -5566,6 +5601,7 @@ impl Runtime {
             _ => return Err(pyerr("TypeError", "type() argument 1 must be str")),
         };
         let mut bases = self.to_vec(args[1].clone())?;
+        for base in &bases {if matches!(base,Value::Builtin(name)if template_type_name(name)){return Err(pyerr("TypeError",format!("type '{}' is not an acceptable base type",self.class_name(base))));}}
         if bases.is_empty() {
             bases.push(Value::Builtin("object".into()))
         }
@@ -6051,6 +6087,7 @@ impl Runtime {
         self.repr_inner(v, &mut Vec::new())
     }
     fn repr_inner(&mut self, v: &Value, seen: &mut Vec<usize>) -> PyResult<String> {
+        if let Some(result)=self.template_repr(v,seen){return result;}
         match v {
             Value::Str(s) => Ok(text_repr_str(s)),
             Value::Bytes(xs) => Ok(text_repr_bytes(xs)),
@@ -6066,6 +6103,7 @@ impl Runtime {
                 }
                 seen.push(*i);
                 let s = match self.object(*i)? {
+                    Object::Template{..}|Object::Interpolation{..}=>unreachable!(),
                     Object::TypeParameter(_) | Object::TypeAlias{..} | Object::TypeUnpack(_) | Object::UnpackedAlias(_) | Object::ParamSpecMarker{..} | Object::TypeEvaluator(_) | Object::ForwardRef{..} | Object::TypeUnion{..} => self.typing_repr(v).unwrap()?,
                     Object::GenericAlias { origin, args, .. } => self.generic_repr(&origin,&args)?,
                     Object::DictView { owner, kind } => self.dictview_repr(owner,Some(kind),seen)?,
@@ -6191,6 +6229,7 @@ impl Runtime {
                 Ok(s)
             }
             Value::Builtin(n) => {
+                if template_type_name(n){return Ok(format!("<class '{}'>",n));}
                 if n=="typing.NoDefault" {return Ok("typing.NoDefault".into());}
                 if n=="typing.Unpack" {return Ok("typing.Unpack".into());}
                 if n=="NoneType" {return Ok("<class 'NoneType'>".into());}
@@ -6391,6 +6430,7 @@ impl Runtime {
             Value::Str(_) => "str".into(),
             Value::Bytes(_) => "bytes".into(),
             Value::Builtin(n) => {
+                if template_type_name(n){return "type".into();}
                 if n=="typing.NoDefault" {return "NoDefaultType".into();}
                 if typing_type_name(n) || n=="NoneType" {return "type".into();}
                 if n == "Ellipsis" {
@@ -6412,6 +6452,9 @@ impl Runtime {
             }
             Value::Type(_) => "type".into(),
             Value::Obj(i) => match self.heap.get(*i).and_then(|o| o.as_ref()) {
+                Some(Object::Template{..})=>"string.templatelib.Template".into(),
+                Some(Object::Interpolation{..})=>"string.templatelib.Interpolation".into(),
+                Some(Object::Iterator(IteratorState::Template(..)))=>"TemplateIter".into(),
                 Some(Object::TypeParameter(parameter)) => match parameter.kind.as_str(){"paramspec"=>"ParamSpec","typevartuple"=>"TypeVarTuple",_=>"TypeVar"}.into(),
                 Some(Object::TypeAlias{..})=>"TypeAliasType".into(),
                 Some(Object::TypeUnpack(_))=>"_UnpackGenericAlias".into(),
@@ -6829,6 +6872,7 @@ impl Runtime {
         }
     }
     fn binary(&mut self, op: &str, a: Value, b: Value) -> PyResult<Value> {
+        if (op=="+" || op=="+=") && (self.is_template_value(&a) || self.is_template_value(&b)) {if let Some(result)=self.template_concat(a.clone(),b.clone()){return result;}}
         if let Some(result)=self.typing_binary(op,&a,&b){return result;}
         if let Some(result)=self.view_binary(op,a.clone(),b.clone()) {return result;}
         let ap=self.proxy_payload(&a);let bp=self.proxy_payload(&b);
@@ -7286,6 +7330,7 @@ impl Runtime {
         Ok(None)
     }
     fn getitem(&mut self, obj: Value, key: Value) -> PyResult<Value> {
+        if matches!(&obj,Value::Builtin(name)if template_type_name(name)){return self.generic_alias(obj,key);}
         if self.is_typing_value(&obj){if let Some(result)=self.typing_getitem(obj.clone(),key.clone()){return result;}}
         if self.generic_parts(&obj).is_some() {return self.generic_method(obj,"__getitem__",vec![key],Vec::new()).unwrap();}
         if matches!(&obj,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) {return self.generic_alias(obj,key);}
@@ -7667,6 +7712,7 @@ impl Runtime {
         result
     }
     fn iter(&mut self, v: Value) -> PyResult<Value> {
+        if let Value::Obj(index)=&v {if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Template{..})){return Ok(self.obj_value(Object::Iterator(IteratorState::Template(*index,0))));}}
         if self.type_parameter_kind(&v)==Some("typevartuple") || matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{..}))) {
             let unpack=if self.type_parameter_kind(&v)==Some("typevartuple") || self.generic_is_typing_alias(&v){self.obj_value(Object::TypeUnpack(v))}else{self.unpack_alias(v)?};return Ok(self.obj_value(Object::Iterator(IteratorState::Values(vec![unpack],0))));
         }
@@ -7793,6 +7839,10 @@ impl Runtime {
         if let Value::Obj(i) = it.clone() {
             match self.object(i)? {
                 Object::Iterator(state) => match state {
+                    IteratorState::Template(owner,mut position) => {
+                        let result=self.template_next(owner,&mut position);
+                        self.heap[i]=Some(Object::Iterator(IteratorState::Template(owner,position)));return result;
+                    }
                     IteratorState::Associative(mut state) => {
                         let result=self.assoc_next(&mut state);
                         self.heap[i]=Some(Object::Iterator(IteratorState::Associative(state)));
@@ -8095,6 +8145,7 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if self.is_template_value(&v){if let Some(result)=self.template_attr(v.clone(),name){return result;}}
         if name=="__class__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{typing:true,..}))) {return Ok(Value::Builtin("typing._GenericAlias".into()));}
         if self.is_typing_value(&v){if let Some(result)=self.typing_attr(v.clone(),name){return result;}}
         if name=="__class_getitem__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) && self.class_lookup(&v,name,0).is_none() && self.typing_class_uses_typing(&v) {

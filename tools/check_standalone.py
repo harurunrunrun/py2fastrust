@@ -20,6 +20,7 @@ SOURCE = '''from __future__ import annotations
 import gc
 import sys
 from typing import TypeVar, NoDefault
+from string.templatelib import Template, Interpolation, convert
 
 n = int(input())
 values = list(map(int, input().split()))
@@ -68,6 +69,20 @@ def generate():
 iterator = generate()
 print(next(iterator))
 iterator.close()
+template = t"sum={sum(values)!r:>3}"
+print(template.strings, template.values,
+      [(i.expression, i.conversion, i.format_spec) for i in template.interpolations])
+print(isinstance(template, Template),
+      isinstance(template.interpolations[0], Interpolation),
+      convert(template.values[0], "s"))
+def template_factory():
+    parts = [8, 9]
+    return t"{parts}"
+held_template = template_factory()
+gc.collect()
+print(held_template.values)
+exec("template = t'{sum([1, 2, 3])}'", space)
+print(space["template"].values)
 print(sys.stdin.readline() == "\\n")
 sys.stdout.flush()
 sys.stdout.buffer.write(b"standalone\\n")

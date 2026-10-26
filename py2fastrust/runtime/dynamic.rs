@@ -9,12 +9,12 @@ enum DTokenKind {
 struct DToken { kind: DTokenKind, line: usize, column: usize }
 
 struct DLexer {
-    source: Vec<char>, at: usize, line: usize, column: usize,
+    source: std::rc::Rc<Vec<char>>, at: usize, line: usize, column: usize,
     nesting: usize, line_start: bool, indents: Vec<usize>, tokens: Vec<DToken>,
 }
 impl DLexer {
     fn new(source: &str) -> Self {
-        Self { source: source.replace("\r\n", "\n").replace('\r', "\n").chars().collect(), at: 0,
+        Self { source: source.replace("\r\n", "\n").replace('\r', "\n").chars().collect::<Vec<_>>().into(), at: 0,
             line: 1, column: 0, nesting: 0, line_start: true, indents: vec![0], tokens: Vec::new() }
     }
     fn peek(&self, offset: usize) -> Option<char> { self.source.get(self.at + offset).copied() }
@@ -28,39 +28,29 @@ impl DLexer {
     fn error(&self, message: &str) -> String { format!("SyntaxError: {message} (line {}, column {})", self.line, self.column + 1) }
     fn emit(&mut self, kind: DTokenKind, line: usize, column: usize) { self.tokens.push(DToken { kind, line, column }); }
     fn string(&mut self, prefix: &str, line: usize, column: usize) -> Result<DTokenKind, String> {
+        if prefix.to_ascii_lowercase().contains(['f','t']) {
+            // The grammar tokenizer recognizes fields before decoding escapes.
+            // Sharing its source buffer also avoids rescanning/copying the file
+            // for each formatted literal.
+            let start=self.at-prefix.chars().count();
+            let mut lexer=PegLexer::new("");lexer.source=self.source.clone();lexer.at=self.at;lexer.line=self.line;lexer.column=self.column;
+            lexer.string(prefix,start,line,column).map_err(|error|format!("{}: {} (line {}, column {})",error.kind,error.message,error.line,error.column+1))?;
+            self.at=lexer.at;self.line=lexer.line;self.column=lexer.column;
+            let raw=self.source[start..self.at].iter().collect();
+            return Ok(if prefix.to_ascii_lowercase().contains('t'){DTokenKind::TString(raw)}else{DTokenKind::FString(raw)});
+        }
         let quote = self.bump().unwrap();
         let triple = self.peek(0) == Some(quote) && self.peek(1) == Some(quote);
         if triple { self.bump(); self.bump(); }
         let raw = prefix.contains('r') || prefix.contains('R');
         let bytes = prefix.contains('b') || prefix.contains('B');
-        let templated = prefix.contains('t') || prefix.contains('T');
-        let formatted = prefix.contains('f') || prefix.contains('F') || templated;
         let mut text = String::new();
-        let mut field_depth = 0usize;
-        let mut field_quote = None;
         loop {
             let ch = self.bump().ok_or_else(|| format!("SyntaxError: unterminated string literal (line {line}, column {})", column + 1))?;
-            if formatted && field_depth > 0 {
-                // PEP 701 permits the surrounding quote inside replacement fields.
-                // Preserve expression escapes for the nested expression lexer.
-                text.push(ch);
-                if let Some(inner_quote) = field_quote {
-                    if ch == '\\' { let next = self.bump().ok_or_else(|| self.error("unterminated f-string"))?; text.push(next); }
-                    else if ch == inner_quote { field_quote = None; }
-                } else if ch == '\'' || ch == '"' { field_quote = Some(ch); }
-                else if ch == '{' { field_depth += 1; }
-                else if ch == '}' { field_depth -= 1; }
-                continue;
-            }
             if ch == quote && (!triple || (self.peek(0) == Some(quote) && self.peek(1) == Some(quote))) {
                 if triple { self.bump(); self.bump(); } break;
             }
             if ch == '\n' && !triple { return Err(self.error("unterminated string literal")); }
-            if formatted && ch == '{' {
-                text.push(ch);
-                if self.peek(0) == Some('{') { text.push(self.bump().unwrap()); } else { field_depth = 1; }
-                continue;
-            }
             if ch != '\\' { if bytes && !ch.is_ascii() { return Err(self.error("bytes can only contain ASCII literal characters")); } text.push(ch); continue; }
             let escaped = self.bump().ok_or_else(|| self.error("unterminated string literal"))?;
             if raw { text.push('\\'); text.push(escaped); continue; }
@@ -92,7 +82,7 @@ impl DLexer {
             let mut result = Vec::new();
             for ch in text.chars() { if ch as u32 > 255 { return Err(self.error("bytes literals only contain byte characters")); } result.push(ch as u8); }
             Ok(DTokenKind::Bytes(result))
-        } else if templated { Ok(DTokenKind::TString(text)) } else if formatted { Ok(DTokenKind::FString(text)) } else if prefix == "u" { Ok(DTokenKind::UString(text)) } else { Ok(DTokenKind::String(text)) }
+        } else if prefix == "u" { Ok(DTokenKind::UString(text)) } else { Ok(DTokenKind::String(text)) }
     }
     fn lex(mut self) -> Result<Vec<DToken>, String> {
         while self.at < self.source.len() {
@@ -536,7 +526,7 @@ impl DParser {
                             formatted=true;
                             if bytes.is_some() { return Err(self.error("cannot mix bytes and nonbytes literals")); }
                             if !plain.is_empty() { values.push(self.expr_at(DExprKind::Constant(Const::Str(std::mem::take(&mut plain))), &token)); }
-                            values.extend(d_fstring(&text, token.line, token.column, self.future_flags,false)?); self.at += 1;
+                            values.extend(d_formatted_literal(&text, token.line, token.column, self.future_flags,false)?); self.at += 1;
                         }
                         _ => break,
                     }
@@ -547,7 +537,7 @@ impl DParser {
             }
             DTokenKind::TString(_) => {
                 let mut values=Vec::new();
-                while let DTokenKind::TString(text)=self.token().kind.clone() { values.extend(d_fstring(&text,token.line,token.column,self.future_flags,true)?);self.at+=1; }
+                while let DTokenKind::TString(text)=self.token().kind.clone() { values.extend(d_formatted_literal(&text,token.line,token.column,self.future_flags,true)?);self.at+=1; }
                 DExprKind::Template(values)
             }
             DTokenKind::Name(name) if name == "None" || name == "True" || name == "False" => { self.at += 1; DExprKind::Constant(match name.as_str() { "None" => Const::None, "True" => Const::Bool(true), _ => Const::Bool(false) }) }
@@ -1041,40 +1031,95 @@ fn d_imaginary(raw: &str) -> Result<f64,String> {
     body.replace('_',"").parse::<f64>().map_err(|_|"invalid imaginary literal".to_owned())
 }
 
-fn d_fstring(text: &str, line: usize, column: usize, future_flags: u32, templated: bool) -> Result<Vec<DExpr>,String> {
-    let chars: Vec<char> = text.chars().collect(); let mut at = 0; let mut literal = String::new(); let mut values = Vec::new();
-    let expr = |kind| DExpr { kind, line, column };
-    while at < chars.len() {
-        if chars[at] == '{' && chars.get(at+1) == Some(&'{') { literal.push('{'); at += 2; continue; }
-        if chars[at] == '}' && chars.get(at+1) == Some(&'}') { literal.push('}'); at += 2; continue; }
-        if chars[at] == '}' { return Err(format!("SyntaxError: single '}}' in f-string (line {line})")); }
-        if chars[at] != '{' { literal.push(chars[at]); at += 1; continue; }
-        if !literal.is_empty() { values.push(expr(DExprKind::Constant(Const::Str(std::mem::take(&mut literal))))); }
-        at += 1; let start = at; let mut nesting = 0isize; let mut quote = None; let mut escaped = false;
-        while at < chars.len() {
-            let ch = chars[at];
-            if let Some(q) = quote { if escaped { escaped = false; } else if ch == '\\' { escaped = true; } else if ch == q { quote = None; } at += 1; continue; }
-            if ch == '\'' || ch == '"' { quote = Some(ch); at += 1; continue; }
-            if nesting == 0 && (ch == '}' || ch == ':' || (ch == '!' && chars.get(at+1) != Some(&'='))) { break; }
-            if "([{".contains(ch) { nesting += 1; } if ")]}".contains(ch) { nesting -= 1; }
-            at += 1;
+// Decode only static pieces after the PEG tokenizer has recognized braces.
+fn d_decode_formatted_text(text:&str,raw:bool)->Result<String,String>{
+    if raw{return Ok(text.to_owned());}
+    let mut chars=text.chars().peekable();let mut result=String::new();
+    while let Some(ch)=chars.next(){
+        if ch!='\\'{result.push(ch);continue;}
+        let Some(next)=chars.next()else{result.push(ch);break;};
+        match next{
+            '\n'=>{},'\\'=>result.push('\\'),'\''=>result.push('\''),'"'=>result.push('"'),
+            'n'=>result.push('\n'),'r'=>result.push('\r'),'t'=>result.push('\t'),'a'=>result.push('\x07'),'b'=>result.push('\x08'),'f'=>result.push('\x0c'),'v'=>result.push('\x0b'),
+            'x'|'u'|'U'=>{
+                let width=if next=='x'{2}else if next=='u'{4}else{8};let mut value=0;
+                for _ in 0..width{value=value*16+chars.next().and_then(|ch|ch.to_digit(16)).ok_or_else(||"SyntaxError: truncated hexadecimal escape".to_owned())?;}
+                result.push(char::from_u32(value).ok_or_else(||"SyntaxError: invalid Unicode escape".to_owned())?);
+            },
+            '0'..='7'=>{
+                let mut value=next.to_digit(8).unwrap();for _ in 0..2{if let Some(digit)=chars.peek().and_then(|ch|ch.to_digit(8)){chars.next();value=value*8+digit;}else{break;}}
+                result.push(char::from_u32(value).unwrap());
+            },
+            'N'=>return Err("NotImplementedError: named Unicode escapes are not yet supported by dynamic compilation".to_owned()),
+            other=>{result.push('\\');result.push(other);},
         }
-        let mut source: String = chars[start..at].iter().collect(); let debug = source.trim_end().ends_with('=') && !source.trim_end().ends_with("==");
-        if debug { values.push(expr(DExprKind::Constant(Const::Str(source.clone())))); source = source.trim_end().trim_end_matches('=').to_owned(); }
-        let mut parser = DParser::new(&format!("({source})"),future_flags)?; let value = parser.expression_list()?;
-        if !matches!(parser.token().kind,DTokenKind::Newline | DTokenKind::Eof) { return Err(parser.error("invalid f-string expression")); }
-        let value=if templated {expr(DExprKind::RawInterpolation(source.trim_end().to_owned(),Box::new(value)))} else {value};
-        let mut conversion = if debug { 'r' as i32 } else { -1 };
-        if chars.get(at) == Some(&'!') { at += 1; let ch = *chars.get(at).ok_or_else(|| "SyntaxError: invalid f-string conversion".to_owned())?; if !"sra".contains(ch) { return Err("SyntaxError: invalid f-string conversion".to_owned()); } conversion = ch as i32; at += 1; }
-        let spec = if chars.get(at) == Some(&':') {
-            at += 1; let start = at; let mut nesting = 0;
-            while at < chars.len() { if chars[at] == '}' && nesting == 0 { break; } if chars[at] == '{' { nesting += 1; } else if chars[at] == '}' { nesting -= 1; } at += 1; }
-            let raw: String = chars[start..at].iter().collect(); Some(Box::new(expr(DExprKind::Joined(d_fstring(&raw,line,column,future_flags,false)?))))
-        } else { None };
-        if chars.get(at) != Some(&'}') { return Err(format!("SyntaxError: expecting '}}' in f-string (line {line})")); } at += 1;
-        values.push(expr(DExprKind::Formatted(Box::new(value), conversion, spec)));
     }
-    if !literal.is_empty() { values.push(expr(DExprKind::Constant(Const::Str(literal)))); } Ok(values)
+    Ok(result)
+}
+struct DFormattedLower<'a>{source:Vec<char>,lines:Vec<usize>,tokens:&'a [PegToken],tree:&'a PegTree,comments:&'a [(usize,usize)],raw:bool,line:usize,column:usize,future_flags:u32}
+impl<'a>DFormattedLower<'a>{
+    fn offset(&self,token:usize)->usize{let token=&self.tokens[token];self.lines[token.line-1]+token.column}
+    fn location(&self,token:usize)->(usize,usize){let token=&self.tokens[token];(self.line+token.line-1,token.column+if token.line==1{self.column}else{0})}
+    fn expression(&self,kind:DExprKind,token:usize)->DExpr{let(line,column)=self.location(token);DExpr{kind,line,column}}
+    fn text(&self,start:usize,end:usize)->String{
+        self.source[start..end].iter().enumerate().filter_map(|(offset,ch)|if self.comments.iter().any(|(a,b)|*a<=start+offset&&start+offset<*b){None}else{Some(*ch)}).collect()
+    }
+    fn binding(&self,node:usize,name:&str)->Option<usize>{self.tree.nodes[node].children.iter().copied().find(|child|matches!(self.tree.nodes[*child].kind,PegNodeKind::Binding(value)if value==name))}
+    fn present(&self,node:Option<usize>)->Option<usize>{node.filter(|node|self.tree.nodes[*node].start<self.tree.nodes[*node].end)}
+    fn walk(&self,node:usize,templated:bool,values:&mut Vec<DExpr>,depth:usize)->Result<(),String>{
+        let value=&self.tree.nodes[node];
+        match value.kind{
+            PegNodeKind::Rule(rule) if matches!(PEG_RULES[rule].name,"fstring_replacement_field"|"tstring_replacement_field"|"tstring_format_spec_replacement_field")=>{
+                self.field(node,templated,values,depth)?;return Ok(());
+            },
+            PegNodeKind::Token(token)if matches!(self.tokens[token].kind.as_str(),"FSTRING_MIDDLE"|"TSTRING_MIDDLE")=>{
+                let text=d_decode_formatted_text(&self.tokens[token].text,self.raw)?;
+                if !text.is_empty(){values.push(self.expression(DExprKind::Constant(Const::Str(text)),token));}
+                return Ok(());
+            },
+            _=>{},
+        }
+        for child in &value.children{self.walk(*child,templated,values,depth)?;}Ok(())
+    }
+    fn field(&self,node:usize,templated:bool,values:&mut Vec<DExpr>,depth:usize)->Result<(),String>{
+        if depth>2{return Err("SyntaxError: formatted-string expressions nested too deeply".to_owned());}
+        let field=&self.tree.nodes[node];let token=field.start;
+        let debug=self.present(self.binding(node,"debug_expr"));let conversion=self.present(self.binding(node,"conversion"));let format=self.present(self.binding(node,"format"));
+        let closing=self.binding(node,"rbrace").ok_or_else(||"SyntaxError: missing formatted-string closing brace".to_owned())?;
+        let delimiter=debug.or(conversion).or(format).unwrap_or(closing);
+        let start=self.offset(token)+1;let end=self.offset(self.tree.nodes[delimiter].start);
+        let expression=self.text(start,end).trim_end().to_owned();
+        if debug.is_some(){
+            let end=self.offset(self.tree.nodes[conversion.or(format).unwrap_or(closing)].start);
+            values.push(self.expression(DExprKind::Constant(Const::Str(self.text(start,end))),token));
+        }
+        let raw:String=self.source[start..end].iter().collect();
+        let mut parser=DParser::new(&format!("({raw})"),self.future_flags)?;
+        let (line,column)=self.location(token);let first_column=column+1;
+        for token in &mut parser.tokens{if token.line==1{token.column=token.column.saturating_add(first_column).saturating_sub(1);}token.line+=line-1;}
+        let parsed=parser.expression_list()?;
+        if !matches!(parser.token().kind,DTokenKind::Newline|DTokenKind::Eof){return Err(parser.error("invalid formatted-string expression"));}
+        let parsed=if templated{self.expression(DExprKind::RawInterpolation(expression,Box::new(parsed)),token)}else{parsed};
+        let conversion=if let Some(conversion)=conversion{
+            let binding=&self.tree.nodes[conversion];let bang=&self.tokens[binding.start];let name=&self.tokens[binding.end-1];let text=&name.text;
+            if name.line!=bang.line || name.column!=bang.column+1{return Err("SyntaxError: conversion type must come right after the exclamation mark".to_owned());}
+            let ch=if matches!(text.as_str(),"s"|"r"|"a"){text.chars().next().unwrap()}else{return Err("SyntaxError: invalid formatted-string conversion".to_owned());};ch as i32
+        }else if debug.is_some()&&format.is_none(){'r' as i32}else{-1};
+        let spec=if let Some(format)=format{let mut parts=Vec::new();for child in &self.tree.nodes[format].children{self.walk(*child,false,&mut parts,depth+1)?;}Some(Box::new(self.expression(DExprKind::Joined(parts),token)))}else{None};
+        values.push(self.expression(DExprKind::Formatted(Box::new(parsed),conversion,spec),token));Ok(())
+    }
+}
+fn d_formatted_literal(source:&str,line:usize,column:usize,future_flags:u32,templated:bool)->Result<Vec<DExpr>,String>{
+    let mut lexer=PegLexer::new(source).with_flags(future_flags);
+    // Retain comment ranges along with tokens for the expression metadata.
+    while lexer.at<lexer.source.len(){lexer.one(false).map_err(|error|format!("{}: {} (line {}, column {})",error.kind,error.message,line+error.line-1,error.column+1))?;}
+    let comments=lexer.comments.clone();
+    let tokens=lexer.lex("eval").map_err(|error|format!("{}: {} (line {}, column {})",error.kind,error.message,line+error.line-1,error.column+1))?;
+    let tree=PegParser::new(&tokens).parse("eval").map_err(|error|format!("SyntaxError: invalid formatted-string syntax (line {}, column {})",line+error.line-1,error.column+1))?;
+    let source:Vec<char>=source.chars().collect();let mut lines=vec![0];for(index,ch)in source.iter().enumerate(){if *ch=='\n'{lines.push(index+1);}}
+    let raw=source.iter().take_while(|ch|!matches!(ch,'\''|'"')).any(|ch|matches!(ch,'r'|'R'));
+    let lower=DFormattedLower{source,lines,tokens:&tokens,tree:&tree,comments:&comments,raw,line,column,future_flags};
+    let mut values=Vec::new();lower.walk(tree.root,templated,&mut values,0)?;Ok(values)
 }
 
 #[derive(Default)]
@@ -1843,7 +1888,14 @@ impl DCompiler {
                 if *from { self.emit(ctx,Op::GetYieldFromIter,line,col); self.emit(ctx,Op::YieldFrom,line,col); } else { self.emit(ctx,Op::Yield,line,col); }
             }
             DExprKind::Joined(values) => { for value in values { self.expr(ctx,value)?; } self.emit(ctx,Op::BuildString(values.len()),line,col); }
-            DExprKind::Template(_) => return Err(format!("NotImplementedError: template values are not implemented ({}:{line})",self.filename)),
+            DExprKind::Template(values) => {
+                for value in values{if let DExprKind::Formatted(inner,conversion,spec)=&value.kind{
+                    let(expression,inner)=if let DExprKind::RawInterpolation(source,inner)=&inner.kind{(Some(source.clone()),&**inner)}else{(None,&**inner)};
+                    self.expr(ctx,inner)?;if let Some(spec)=spec{self.expr(ctx,spec)?;}
+                    self.emit(ctx,Op::MakeInterpolation{expression,conversion:*conversion,spec:spec.is_some()},value.line,value.column);
+                }else{self.expr(ctx,value)?;}}
+                self.emit(ctx,Op::BuildTemplate(values.len()),line,col);
+            },
             DExprKind::RawInterpolation(_,value)=>self.expr(ctx,value)?,
             DExprKind::Formatted(value,conversion,spec) => { self.expr(ctx,value)?; if let Some(spec) = spec { self.expr(ctx,spec)?; } self.emit(ctx,Op::FormatValue { conversion:*conversion,spec:spec.is_some() },line,col); }
             DExprKind::Comprehension { kind,element,value,generators } => self.comprehension(ctx,kind,element,value.as_deref(),generators,line,col)?,

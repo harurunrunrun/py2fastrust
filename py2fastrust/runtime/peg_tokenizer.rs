@@ -4,13 +4,13 @@
 #[derive(Debug)]
 struct PegLexError { kind: &'static str, message: String, line: usize, column: usize }
 struct PegLexer {
-    source: Vec<char>, at: usize, line: usize, column: usize, line_start: bool,
-    indents: Vec<(usize,usize)>, brackets: Vec<char>, fields: usize, tokens: Vec<PegToken>, future_flags: u32,
+    source: std::rc::Rc<Vec<char>>, at: usize, line: usize, column: usize, line_start: bool,
+    comments:Vec<(usize,usize)>, indents: Vec<(usize,usize)>, brackets: Vec<char>, fields: usize, tokens: Vec<PegToken>, future_flags: u32,
 }
 impl PegLexer {
     fn new(source: &str) -> Self {
-        Self { source: source.replace("\r\n","\n").replace('\r',"\n").chars().collect(),
-            at:0,line:1,column:0,line_start:true,indents:vec![(0,0)],brackets:Vec::new(),fields:0,tokens:Vec::new(),future_flags:0 }
+        Self { source: source.replace("\r\n","\n").replace('\r',"\n").chars().collect::<Vec<_>>().into(),
+            at:0,line:1,column:0,line_start:true,comments:Vec::new(),indents:vec![(0,0)],brackets:Vec::new(),fields:0,tokens:Vec::new(),future_flags:0 }
     }
     fn with_flags(mut self, flags: u32) -> Self { self.future_flags=flags;self }
     fn peek(&self, offset: usize) -> Option<char> { self.source.get(self.at+offset).copied() }
@@ -178,7 +178,7 @@ impl PegLexer {
     fn one(&mut self, in_field: bool) -> Result<(),PegLexError> {
         let (line,column)=(self.line,self.column);let ch=self.peek(0).unwrap();
         if ch==' '||ch=='\t'||ch=='\x0c'{self.bump();return Ok(());}
-        if ch=='#'{while !matches!(self.peek(0),None|Some('\n')){self.bump();}return Ok(());}
+        if ch=='#'{let start=self.at;while !matches!(self.peek(0),None|Some('\n')){self.bump();}self.comments.push((start,self.at));return Ok(());}
         if ch=='\n' {
             self.bump();if self.brackets.is_empty()&&!in_field {self.emit("NEWLINE","\n".into(),line,column);self.line_start=true;}return Ok(());
         }

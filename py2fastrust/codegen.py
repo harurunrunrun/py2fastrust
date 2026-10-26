@@ -97,6 +97,8 @@ def operation(instruction):
         return f"Op::Import {{ module:{string(args[0])},names:{strings(args[1])},level:{args[2]} }}"
     elif name == "FormatValue":
         return f"Op::FormatValue {{ conversion:{args[0]},spec:{str(args[1]).lower()} }}"
+    elif name == "MakeInterpolation":
+        return f"Op::MakeInterpolation {{ expression:{optional(args[0])},conversion:{args[1]},spec:{str(args[2]).lower()} }}"
     elif name == "UnpackEx":
         return f"Op::UnpackEx {{ before:{args[0]},after:{args[1]} }}"
     elif name == "CallEx":
@@ -121,7 +123,7 @@ def generate(program: Program, integer="i64"):
     unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
     prefix += "\n".join("// " + line for line in unicode_license.splitlines()) + "\n"
     parts = [prefix]
-    for name in ("integer.rs", "vm.rs", "identity.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "type_parameters.rs"):
+    for name in ("integer.rs", "vm.rs", "identity.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "type_parameters.rs", "templates.rs"):
         parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
     parts.append("\nfn main() {\nlet codes = vec![\n")
     source_map = []

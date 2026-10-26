@@ -13,7 +13,8 @@ from .ir import Code, Instruction, Parameters, Pattern, Program
 
 BUILTIN_MODULES = {
     "sys", "math", "heapq", "bisect", "collections", "itertools", "functools",
-    "builtins", "operator", "types", "typing", "gc", "time", "_py2fastrust_functools", "__future__",
+    "builtins", "operator", "types", "typing", "string", "string.templatelib",
+    "gc", "time", "_py2fastrust_functools", "__future__",
 }
 VENDORED_MODULES = {"heapq", "bisect", "collections", "functools", "__future__"}
 FUTURE_ANNOTATIONS = __future__.annotations.compiler_flag
@@ -1266,6 +1267,18 @@ class Emitter:
         for value in node.values:
             self.visit(value)
         self.emit("BuildString", len(node.values), node=node)
+
+    def visit_TemplateStr(self, node):
+        for value in node.values:
+            self.visit(value)
+        self.emit("BuildTemplate", len(node.values), node=node)
+
+    def visit_Interpolation(self, node):
+        self.visit(node.value)
+        if node.format_spec is not None:
+            self.visit(node.format_spec)
+        self.emit("MakeInterpolation", node.str, node.conversion,
+                  node.format_spec is not None, node=node)
 
     def visit_FormattedValue(self, node):
         self.visit(node.value)
