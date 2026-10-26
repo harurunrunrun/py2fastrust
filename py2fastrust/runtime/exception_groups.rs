@@ -78,7 +78,7 @@ impl Runtime {
     }
     fn exception_initialize_fields(&mut self,error:&mut PyException,replace:bool){
         if self.exception_has_native_class(error,"StopIteration") && (replace || !error.attributes.contains_key("value")){
-            error.attributes.insert("value".into(),error.args.first().cloned().unwrap_or(Value::None));
+            error.0.attributes.insert("value".into(),error.0.args.first().cloned().unwrap_or(Value::None));
         }
         if self.exception_has_native_class(error,"SystemExit") && (replace || !error.attributes.contains_key("code")){
             let code=match error.args.as_slice(){[]=>Value::None,[value]=>value.clone(),values=>self.obj_value(Object::Tuple(values.to_vec()))};
@@ -110,11 +110,11 @@ impl Runtime {
     }
     fn exception_actual_class(&self, value: &Value) -> Option<Value> {
         let error = self.exception_data(value)?;
-        Some(error.class.unwrap_or_else(|| Value::Type(error.kind)))
+        Some(error.class.clone().unwrap_or_else(|| Value::Type(error.kind.clone())))
     }
     fn exception_group_items(&self, value: &Value) -> Option<Vec<Value>> {
         let error = self.exception_data(value)?;
-        let Value::Obj(index) = error.group?.exceptions else {
+        let Value::Obj(index) = error.0.group?.exceptions else {
             return None;
         };
         match self.heap.get(index).and_then(Option::as_ref) {
@@ -619,7 +619,7 @@ impl Runtime {
                     Ok(value)
                 }
                 "derive" => {
-                    let group = error.group.unwrap();
+                    let group = error.0.group.unwrap();
                     self.exception_group_construct(
                         Value::Type("BaseExceptionGroup".into()),
                         vec![group.message, args[0].clone()],

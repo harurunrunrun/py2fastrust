@@ -68,7 +68,7 @@ fn codec_error(codec: TextCodec, object: Value, start: usize, end: usize, reason
     let kind = if decoding { "UnicodeDecodeError" } else { "UnicodeEncodeError" };
     let mut error=pyerr(kind,codec_unicode_message(codec.name(),&object,start as i128,end as i128,reason,decoding));
     error.args=vec![Value::Str(codec.name().into()),object.clone(),Value::Int(Int::from_i128(start as i128).into()),Value::Int(Int::from_i128(end as i128).into()),Value::Str(reason.into())];
-    for (name,value) in ["encoding","object","start","end","reason"].iter().zip(error.args.iter()) { error.attributes.insert((*name).into(),value.clone()); }
+    for (name,value) in ["encoding","object","start","end","reason"].iter().zip(error.0.args.iter()) { error.0.attributes.insert((*name).into(),value.clone()); }
     error
 }
 

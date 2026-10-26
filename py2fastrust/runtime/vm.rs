@@ -190,8 +190,19 @@ enum Value {
     Builtin(String),
     Type(String),
 }
+// Error metadata is cold. Keeping it boxed makes normal Result temporaries
+// small, including Rust callbacks that re-enter the instruction executor.
 #[derive(Clone, Debug)]
-struct PyException {
+struct PyException(Box<PyExceptionData>);
+impl std::ops::Deref for PyException {
+    type Target=PyExceptionData;
+    fn deref(&self)->&PyExceptionData{&self.0}
+}
+impl std::ops::DerefMut for PyException {
+    fn deref_mut(&mut self)->&mut PyExceptionData{&mut self.0}
+}
+#[derive(Clone, Debug)]
+struct PyExceptionData {
     class: Option<Value>,
     group: Option<Box<ExceptionGroupData>>,
     dict: Option<usize>,
@@ -210,7 +221,7 @@ struct PyException {
 type PyResult<T> = Result<T, PyException>;
 fn pyerr(kind: &str, message: impl Into<String>) -> PyException {
     let message = message.into();
-    PyException {
+    PyException(Box::new(PyExceptionData {
         class: None,
         group: None,
         dict: None,
@@ -229,7 +240,7 @@ fn pyerr(kind: &str, message: impl Into<String>) -> PyException {
         suppress_context: false,
         skip_trace: false,
         trace: Vec::new(),
-    }
+    }))
 }
 fn int_error(s: String) -> PyException {
     let mut p = s.splitn(2, ':');
@@ -448,9 +459,9 @@ impl Runtime {
         error.args = args;
         error.message=self.exception_cached_message(&error)?;
         if kind == "StopIteration" {
-            error.attributes.insert(
+            error.0.attributes.insert(
                 "value".into(),
-                error.args.first().cloned().unwrap_or(Value::None),
+                error.0.args.first().cloned().unwrap_or(Value::None),
             );
         } else if kind == "SystemExit" {
             let code = match error.args.as_slice() {
@@ -685,7 +696,7 @@ impl Runtime {
             Value::Obj(index) => match self.object(*index)? {
                 Object::Instance { class, attrs }
                 | Object::BuiltinInstance { class, attrs, .. } => (*index, class, attrs),
-                Object::Exception(mut error) => {let attrs=self.exception_dict(&mut error);self.sync_exception(&error);(*index,error.class.unwrap_or_else(||Value::Type(error.kind)),attrs)},
+                Object::Exception(mut error) => {let attrs=self.exception_dict(&mut error);self.sync_exception(&error);(*index,error.class.clone().unwrap_or_else(||Value::Type(error.kind.clone())),attrs)},
                 _ => return Err(pyerr("TypeError", "descriptor requires an instance")),
             },
             _ => return Err(pyerr("TypeError", "descriptor requires an instance")),
@@ -8469,7 +8480,7 @@ impl Runtime {
                 Value::Obj(i) => match self.object(*i)? {
                     Object::Instance { class, .. } | Object::BuiltinInstance { class, .. } => class,
                     Object::Class(c) => c.metaclass,
-                    Object::Exception(e) => e.class.unwrap_or_else(||Value::Type(e.kind)),
+                    Object::Exception(e) => e.class.clone().unwrap_or_else(||Value::Type(e.kind.clone())),
                     _ => Value::Builtin(self.typename(&v)),
                 },
                 _ => Value::Builtin(self.typename(&v)),
@@ -8617,7 +8628,7 @@ impl Runtime {
                             Value::Obj(i) => match self.object(*i)? {
                                 Object::Instance { class, .. }
                                 | Object::BuiltinInstance { class, .. } => class,
-                                Object::Exception(error) => error.class.unwrap_or_else(||Value::Type(error.kind)),
+                                Object::Exception(error) => error.class.clone().unwrap_or_else(||Value::Type(error.kind.clone())),
                                 Object::Class(_) => recv.clone(),
                                 _ => recv.clone(),
                             },
@@ -8808,7 +8819,7 @@ impl Runtime {
                 Object::Exception(mut e) => {
                     if name=="__dict__"{let attrs=self.exception_dict(&mut e);self.sync_exception(&e);return Ok(Value::Obj(attrs));}
                     if name == "args" {
-                        if let Some(value) = e.args_tuple {
+                        if let Some(value) = e.0.args_tuple {
                             return Ok(value);
                         }
                         let value = self.obj_value(Object::Tuple(e.args.clone()));
@@ -8822,8 +8833,8 @@ impl Runtime {
                         return Ok(value.clone());
                     }
                     match name {
-                        "__cause__" => return Ok(e.cause.unwrap_or(Value::None)),
-                        "__context__" => return Ok(e.context.unwrap_or(Value::None)),
+                        "__cause__" => return Ok(e.0.cause.unwrap_or(Value::None)),
+                        "__context__" => return Ok(e.0.context.unwrap_or(Value::None)),
                         "__suppress_context__" => return Ok(Value::Bool(e.suppress_context)),
                         "__traceback__" => {
                             let traceback = self.exception_traceback(&e);
