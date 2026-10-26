@@ -22,6 +22,10 @@ they do not imply compatibility with all CPython internals or the entire standar
 Ordinary function recursion, including calls through `cache` and `lru_cache`, uses heap-allocated frames.
 Some calls made through protocols and built-ins still reenter the runtime through Rust calls.
 
+The general backend can omit dynamic-compilation components for simple module-level programs
+whose calls are proved to target unmodified leaf built-ins. Indirect calls, reflection, imports,
+and unknown syntax retain those components. `--no-optimize` disables this pruning.
+
 `frozenset` supports construction, hashing, iteration, membership, comparisons, read-only set methods,
 mixed operations with `set`, subclasses, and GenericAlias.
 Member hashes and the final frozenset hash are retained; operations that copy a set's contents reuse stored member hashes.

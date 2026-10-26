@@ -114,6 +114,10 @@ Unproved combinations use the general runtime.
 Ordinary user functions with proved integer parameters and results can also become Rust functions,
 including positional and keyword arguments, constant defaults, and calls between functions.
 Recursion and functions with dynamic global or closure state use the general runtime.
+For simple module-level code, the optimizer also proves whether dynamic compilation is unreachable.
+When that proof succeeds, the general backend omits the runtime parser and its Unicode name tables.
+Imports, reflection, indirect calls, user-defined functions or classes, and unknown syntax retain the full runtime.
+`--no-optimize` retains all runtime components.
 
 The runtime handles shared objects, GC, function frames, exceptions, classes, and closures.
 Calls retain original expanded keyword key objects and their stored hashes across functions, partials, caches, and metaclasses.
