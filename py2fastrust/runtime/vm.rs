@@ -161,10 +161,10 @@ impl OutputBuffer {
 enum Value {
     None,
     Bool(bool),
-    Int(Int),
-    Float(f64),
-    Str(String),
-    Bytes(Vec<u8>),
+    Int(Ident<Int>),
+    Float(Ident<f64>),
+    Str(Ident<String>),
+    Bytes(Ident<Vec<u8>>),
     Obj(usize),
     Builtin(String),
     Type(String),
@@ -191,7 +191,7 @@ fn pyerr(kind: &str, message: impl Into<String>) -> PyException {
         args: if message.is_empty() {
             Vec::new()
         } else {
-            vec![Value::Str(message.clone())]
+            vec![Value::Str(message.clone().into())]
         },
         args_tuple: None,
         attributes: HashMap::new(),
@@ -216,8 +216,8 @@ struct Function {
     annotate: Option<Value>,
     annotations_evaluated: bool,
     attrs: usize,
-    name: String,
-    qualname: String,
+    name: Ident<String>,
+    qualname: Ident<String>,
     module: Value,
     doc: Value,
     annotations: Value,
@@ -230,7 +230,7 @@ struct Function {
 }
 #[derive(Clone, Debug)]
 struct Class {
-    name: String,
+    name: Ident<String>,
     bases: Vec<Value>,
     attrs: usize,
     metaclass: Value,
@@ -312,7 +312,7 @@ enum Object {
     Slice(Option<Int>, Option<Int>, Option<Int>),
     Cell(Option<Value>),
     Code(usize),
-    Range(Int, Int, Int),
+    Range(Ident<Int>, Ident<Int>, Ident<Int>),
     Static(Value),
     ClassMethod(Value),
     Property {
@@ -361,6 +361,9 @@ enum FrameExit {
     Yield(Value),
 }
 struct Runtime {
+    literal_pools: HashMap<usize, HashMap<LiteralKey, Value>>,
+    identity_builtins: HashMap<String, u64>,
+    identity_types: HashMap<String, u64>,
     codes: Vec<Code>,
     heap: Vec<Option<Object>>,
     free: Vec<usize>,
@@ -479,7 +482,7 @@ impl Runtime {
                 };
                 if let Some(value) = value {
                     self.roots[root].push(value.clone());
-                    entries.push((Value::Str(name), value));
+                    entries.push((Value::Str(name.into()), value));
                 }
             }
             Ok(self.obj_value(Object::Dict(entries)))
@@ -543,7 +546,7 @@ impl Runtime {
     fn class_name(&self, class: &Value) -> String {
         match class {
             Value::Obj(index) => match self.heap.get(*index).and_then(Option::as_ref) {
-                Some(Object::Class(class)) => class.name.clone(),
+                Some(Object::Class(class)) => class.name.to_string(),
                 _ => "object".into(),
             },
             Value::Builtin(name) | Value::Type(name) => name.clone(),
@@ -774,6 +777,9 @@ impl Runtime {
                 return self.bind_descriptor(method, Some(v), class);
             }
             if let Some(payload) = self.native_payload(&v) {
+                let payload = if matches!(name, "__int__" | "__index__" | "conjugate") {
+                    payload.fresh_primitive()
+                } else { payload };
                 return self.getattr_default(payload, name);
             }
             return Err(pyerr("AttributeError", name));
@@ -848,7 +854,7 @@ impl Runtime {
                     .ok_or_else(|| pyerr("TypeError", "write expected 1 argument"))?;
                 let (bytes, count) = if binary {
                     match v {
-                        Value::Bytes(xs) => (xs.clone(), xs.len()),
+                        Value::Bytes(xs) => (xs.inner().clone(), xs.len()),
                         _ => return Err(pyerr("TypeError", "a bytes-like object is required")),
                     }
                 } else {
@@ -862,7 +868,7 @@ impl Runtime {
                 } else {
                     self.output.write_bytes(&bytes)
                 }
-                return Ok(Value::Int(Int::from_i128(count as i128)));
+                return Ok(Value::Int(Int::from_i128(count as i128).into()));
             }
             _ => {}
         }
@@ -927,7 +933,7 @@ impl Runtime {
                     break;
                 }
             }
-            return Ok(Value::Str(text));
+            return Ok(Value::Str(text.into()));
         }
         let start = self.input_pos;
         let mut end = self.input.len();
@@ -957,11 +963,11 @@ impl Runtime {
             let mut lines = Vec::new();
             for line in bytes.split_inclusive(|b| *b == b'\n') {
                 lines.push(if binary {
-                    Value::Bytes(line.to_vec())
+                    Value::Bytes(line.to_vec().into())
                 } else {
                     Value::Str(
                         String::from_utf8(line.to_vec())
-                            .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?,
+                            .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?.into(),
                     )
                 })
             }
@@ -971,11 +977,11 @@ impl Runtime {
             return Err(pyerr("AttributeError", method));
         }
         Ok(if binary {
-            Value::Bytes(bytes)
+            Value::Bytes(bytes.into())
         } else {
             Value::Str(
                 String::from_utf8(bytes)
-                    .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?,
+                    .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?.into(),
             )
         })
     }
@@ -1060,7 +1066,7 @@ impl Runtime {
             }
             let mut same = true;
             for (a, b) in e.args.iter().zip(&args) {
-                if (cache.typed && self.typename(a) != self.typename(b)) || !self.equal(a, b)? {
+                if (cache.typed && self.typename(a) != self.typename(b)) || !self.identical_or_equal(a, b)? {
                     same = false;
                     break;
                 }
@@ -1069,7 +1075,7 @@ impl Runtime {
                 for ((an, a), (bn, b)) in e.kwargs.iter().zip(&kwargs) {
                     if an != bn
                         || (cache.typed && self.typename(a) != self.typename(b))
-                        || !self.equal(a, b)?
+                        || !self.identical_or_equal(a, b)?
                     {
                         same = false;
                         break;
@@ -1128,7 +1134,7 @@ impl Runtime {
             self.ns_set(i, n, v);
             Ok(())
         } else {
-            self.setitem(Value::Obj(i), Value::Str(n), v)
+            self.setitem(Value::Obj(i), Value::Str(n.into()), v)
         }
     }
     fn mapping_del(&mut self, i: usize, n: &str) -> PyResult<bool> {
@@ -1147,6 +1153,9 @@ impl Runtime {
     }
     fn new(codes: Vec<Code>, modules: Vec<(String, usize)>) -> Self {
         let mut rt = Self {
+            literal_pools: HashMap::new(),
+            identity_builtins: HashMap::new(),
+            identity_types: HashMap::new(),
             codes,
             heap: Vec::new(),
             free: Vec::new(),
@@ -1342,7 +1351,7 @@ impl Runtime {
                     {
                         *old = v;
                     } else {
-                        m.push((Value::Str(name), v));
+                        m.push((Value::Str(name.into()), v));
                     }
                 }
                 _ => {}
@@ -1565,10 +1574,10 @@ impl Runtime {
         Ok(match c {
             Const::None => Value::None,
             Const::Bool(v) => Value::Bool(v),
-            Const::Int(s) => Value::Int(Int::parse(&s, 0).map_err(int_error)?),
-            Const::Float(v) => Value::Float(v),
-            Const::Str(v) => Value::Str(v),
-            Const::Bytes(v) => Value::Bytes(v),
+            Const::Int(s) => Value::Int(Int::parse(&s, 0).map_err(int_error)?.into()),
+            Const::Float(v) => Value::Float(v.into()),
+            Const::Str(v) => Value::Str(v.into()),
+            Const::Bytes(v) => Value::Bytes(v.into()),
         })
     }
     fn frame_roots(frame: &Frame, out: &mut Vec<Value>) {
@@ -1773,7 +1782,7 @@ impl Runtime {
                 }
             }
             Op::Const(c) => {
-                let v = self.constant(c)?;
+                let v = self.code_constant(f.code,c)?;
                 f.stack.push(v)
             }
             Op::Load(n) => {
@@ -2017,11 +2026,14 @@ impl Runtime {
                 let attrs = self.alloc(Object::Dict(Vec::new()));
                 let annotations = self.obj_value(Object::Dict(Vec::new()));
                 let type_params = self.obj_value(Object::Tuple(Vec::new()));
-                let name = self.codes[code].name.clone();
+                let name = match self.code_constant(code, Const::Str(self.codes[code].name.clone()))? {
+                    Value::Str(name) => name,
+                    _ => unreachable!(),
+                };
                 let qualname = name.clone();
                 let module = self.ns_get(f.globals, "__name__").unwrap_or(Value::None);
-                let doc = match self.codes[code].ops.first().map(|i| &i.op) {
-                    Some(Op::Const(Const::Str(s))) => Value::Str(s.clone()),
+                let doc = match self.codes[code].ops.first().map(|i| i.op.clone()) {
+                    Some(Op::Const(Const::Str(s))) => self.code_constant(code, Const::Str(s))?,
                     _ => Value::None,
                 };
                 let fun = self.obj_value(Object::Function(Function {
@@ -2298,9 +2310,9 @@ impl Runtime {
                 let specification = if spec { Some(Self::pop(f)?) } else { None };
                 let value = Self::pop(f)?;
                 let value = match conversion {
-                    114 => Value::Str(self.repr(&value)?),
-                    97 => Value::Str(text_ascii_escape(&self.repr(&value)?)),
-                    115 => Value::Str(self.str_value(&value)?),
+                    114 => Value::Str(self.repr(&value)?.into()),
+                    97 => Value::Str(text_ascii_escape(&self.repr(&value)?).into()),
+                    115 => Value::Str(self.str_value(&value)?.into()),
                     _ => value,
                 };
                 let specification = match specification {
@@ -2308,7 +2320,7 @@ impl Runtime {
                     None => String::new(),
                 };
                 let result = self.format_value(value, &specification)?;
-                f.stack.push(Value::Str(result))
+                f.stack.push(Value::Str(result.into()))
             }
             Op::BuildString(n) => {
                 let vs = Self::pop_many(f, n)?;
@@ -2316,7 +2328,7 @@ impl Runtime {
                 for v in vs {
                     s.push_str(&self.str_value(&v)?)
                 }
-                f.stack.push(Value::Str(s))
+                f.stack.push(Value::Str(s.into()))
             }
         }
         Ok(None)
@@ -2327,7 +2339,7 @@ impl Runtime {
     fn resolve_relative(&mut self, f: &Frame, module: &str, level: usize) -> PyResult<String> {
         let package = match self.ns_get(f.globals, "__package__") {
             Some(Value::Str(s)) => s,
-            _ => String::new(),
+            _ => String::new().into(),
         };
         let mut parts: Vec<_> = package.split('.').filter(|s| !s.is_empty()).collect();
         if parts.len() < level {
@@ -2547,7 +2559,7 @@ impl Runtime {
                 ("inf", f64::INFINITY),
                 ("nan", f64::NAN),
             ] {
-                self.ns_set(attrs, n.into(), Value::Float(x))
+                self.ns_set(attrs, n.into(), Value::Float(x.into()))
             }
         }
         if name == "builtins" {
@@ -2568,14 +2580,14 @@ impl Runtime {
                 "stderr".into(),
                 Value::Builtin("stream:stderr".into()),
             );
-            let mut values = vec![Value::Str(self.codes[0].filename.clone())];
-            values.extend(std::env::args().skip(1).map(Value::Str));
+            let mut values = vec![Value::Str(self.codes[0].filename.clone().into())];
+            values.extend(std::env::args().skip(1).map(|value| Value::Str(value.into())));
             let argv = self.obj_value(Object::List(values));
             self.ns_set(attrs, "argv".into(), argv);
             self.ns_set(
                 attrs,
                 "maxsize".into(),
-                Value::Int(Int::from_i128(i64::MAX as i128)),
+                Value::Int(Int::from_i128(i64::MAX as i128).into()),
             );
             self.ns_set(
                 attrs,
@@ -2585,7 +2597,7 @@ impl Runtime {
             let dict = self.obj_value(Object::Dict(
                 self.modules
                     .iter()
-                    .map(|(n, v)| (Value::Str(n.clone()), v.clone()))
+                    .map(|(n, v)| (Value::Str(n.clone().into()), v.clone()))
                     .collect(),
             ));
             self.ns_set(attrs, "modules".into(), dict);
@@ -2644,7 +2656,7 @@ impl Runtime {
                         .ok_or_else(|| pyerr("ValueError", "recursion limit must be positive"))?;
                     Ok(Value::None)
                 }
-                "getrecursionlimit" => Ok(Value::Int(Int::from_i128(self.recursion_limit as i128))),
+                "getrecursionlimit" => Ok(Value::Int(Int::from_i128(self.recursion_limit as i128).into())),
                 "exit" => {
                     if args.len() > 1 || !kwargs.is_empty() {
                         return Err(pyerr("TypeError", "sys.exit() takes at most 1 argument"));
@@ -2656,7 +2668,7 @@ impl Runtime {
             "gc" => {
                 if name == "collect" {
                     let count = self.collect();
-                    Ok(Value::Int(Int::from_i128(count as i128)))
+                    Ok(Value::Int(Int::from_i128(count as i128).into()))
                 } else if name == "isenabled" {
                     Ok(Value::Bool(self.gc_enabled))
                 } else {
@@ -2668,7 +2680,7 @@ impl Runtime {
                 let d = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default();
-                Ok(Value::Float(d.as_secs_f64()))
+                Ok(Value::Float(d.as_secs_f64().into()))
             }
             "math" => self.math_call(name, args, kwargs),
             "bisect" => {
@@ -2706,7 +2718,7 @@ impl Runtime {
                         return Ok(Value::None);
                     }
                 }
-                Ok(Value::Int(Int::from_i128(lo as i128)))
+                Ok(Value::Int(Int::from_i128(lo as i128).into()))
             }
             "heapq" => {
                 let i = if let Value::Obj(i) = arg(0)? {
@@ -2775,8 +2787,8 @@ impl Runtime {
                         for x in self.to_vec(v.clone())? {
                             let old = self
                                 .getitem(out.clone(), x.clone())
-                                .unwrap_or(Value::Int(Int::from_i128(0)));
-                            let n = self.binary("+", old, Value::Int(Int::from_i128(1)))?;
+                                .unwrap_or(Value::Int(Int::from_i128(0).into()));
+                            let n = self.binary("+", old, Value::Int(Int::from_i128(1).into()))?;
                             self.setitem(out.clone(), x, n)?
                         }
                     }
@@ -2845,7 +2857,7 @@ impl Runtime {
                         return Err(pyerr("TypeError", "trailing Placeholders are not allowed"));
                     }
                     let keywords = self.alloc(Object::Dict(
-                        kw.into_iter().map(|(k, v)| (Value::Str(k), v)).collect(),
+                        kw.into_iter().map(|(k, v)| (Value::Str(k.into()), v)).collect(),
                     ));
                     let attrs = self.alloc(Object::Dict(Vec::new()));
                     let args_tuple = self.alloc(Object::Tuple(stored.clone()));
@@ -2941,7 +2953,7 @@ impl Runtime {
                                 .find(|(n, _)| n == "maxsize")
                                 .map(|(_, v)| v.clone())
                         })
-                        .unwrap_or(Value::Int(Int::from_i128(128)));
+                        .unwrap_or(Value::Int(Int::from_i128(128).into()));
                     let captures = self.obj_value(Object::Tuple(vec![size, Value::Bool(typed)]));
                     Ok(self.obj_value(Object::Bound(
                         Value::Builtin("module:functools:decorate_cache".into()),
@@ -3220,7 +3232,7 @@ impl Runtime {
                         .first()
                         .cloned()
                         .ok_or_else(|| pyerr("TypeError", "missing value"))?;
-                    return Ok(Value::Bool(self.range_contains(start, stop, step, value)?));
+                    return Ok(Value::Bool(self.range_contains(start.into_inner(), stop.into_inner(), step.into_inner(), value)?));
                 }
                 if name == "__reversed__" {
                     let (start, stop, step) = range_reversed(&start, &stop, &step);
@@ -3231,6 +3243,9 @@ impl Runtime {
             }
         }
         if let Some(payload) = self.native_payload(&receiver) {
+            if matches!(name,"__int__" | "__index__" | "conjugate") && matches!(payload,Value::Int(_)) {
+                return self.method(name,payload.fresh_primitive(),args,kwargs);
+            }
             return self.method(name, payload, args, kwargs);
         }
         if let Value::Obj(i) = receiver.clone() {
@@ -3315,7 +3330,7 @@ impl Runtime {
                 Some(Value::Str(spec)) => spec,
                 _ => return Err(pyerr("TypeError", "format specifier must be a string")),
             };
-            return Ok(Value::Str(self.format_value(receiver, spec)?));
+            return Ok(Value::Str(self.format_value(receiver, spec)?.into()));
         }
         if name == "__getitem__" {
             return self.getitem(receiver, arg(0)?);
@@ -3326,14 +3341,14 @@ impl Runtime {
         }
         if let Value::Int(n) = &receiver {
             return match name {
-                "bit_length" => Ok(Value::Int(Int::from_i128(n.bit_length() as i128))),
-                "bit_count" => Ok(Value::Int(Int::from_i128(n.bit_count() as i128))),
+                "bit_length" => Ok(Value::Int(Int::from_i128(n.bit_length() as i128).into())),
+                "bit_count" => Ok(Value::Int(Int::from_i128(n.bit_count() as i128).into())),
                 "__index__" | "__int__" | "conjugate" => Ok(receiver),
                 _ => Err(pyerr("AttributeError", name)),
             };
         }
         if let Value::Bytes(b) = &receiver {
-            if let Some(result) = self.bytes_method(b.clone(), name, args.clone(), kwargs.clone()) {
+            if let Some(result) = self.bytes_method(b.to_vec(), name, args.clone(), kwargs.clone()) {
                 return result;
             }
             match name {
@@ -3345,11 +3360,12 @@ impl Runtime {
             }
         }
         if let Value::Str(s) = receiver.clone() {
-            if let Some(result) = self.text_method(s.clone(), name, args.clone(), kwargs.clone()) {
+            let s=s.into_inner();
+            if let Some(result) = self.text_method(s.to_string(), name, args.clone(), kwargs.clone()) {
                 return result;
             }
             let strarg = |i: usize| match args.get(i) {
-                Some(Value::Str(s)) => Ok(s.clone()),
+                Some(Value::Str(s)) => Ok(s.inner().clone()),
                 _ => Err(pyerr("TypeError", "expected str argument")),
             };
             let result = match name {
@@ -3369,16 +3385,16 @@ impl Runtime {
                             return Err(pyerr("ValueError", "empty separator"));
                         }
                         if limit < 0 {
-                            s.split(&sep).map(String::from).collect()
+                            s.split(&*sep).map(String::from).collect()
                         } else if name == "rsplit" {
                             let mut p: Vec<_> = s
-                                .rsplitn(limit as usize + 1, &sep)
+                                .rsplitn(limit as usize + 1, &*sep)
                                 .map(String::from)
                                 .collect();
                             p.reverse();
                             p
                         } else {
-                            s.splitn(limit as usize + 1, &sep)
+                            s.splitn(limit as usize + 1, &*sep)
                                 .map(String::from)
                                 .collect()
                         }
@@ -3408,7 +3424,7 @@ impl Runtime {
                         out
                     };
                     return Ok(
-                        self.obj_value(Object::List(parts.into_iter().map(Value::Str).collect()))
+                        self.obj_value(Object::List(parts.into_iter().map(|value| Value::Str(value.into())).collect()))
                     );
                 }
                 "splitlines" => {
@@ -3455,9 +3471,9 @@ impl Runtime {
                         -1
                     };
                     if limit < 0 {
-                        s.replace(&a, &b)
+                        s.replace(&*a, &b)
                     } else {
-                        s.replacen(&a, &b, limit as usize)
+                        s.replacen(&*a, &b, limit as usize)
                     }
                 }
                 "find" | "index" | "rfind" | "rindex" | "count" => {
@@ -3489,13 +3505,13 @@ impl Runtime {
                         if needle.is_empty() {
                             segment.chars().count() as i128 + 1
                         } else {
-                            segment.matches(&needle).count() as i128
+                            segment.matches(&*needle).count() as i128
                         }
                     } else {
                         let p = if name.starts_with('r') {
-                            segment.rfind(&needle)
+                            segment.rfind(&*needle)
                         } else {
-                            segment.find(&needle)
+                            segment.find(&*needle)
                         };
                         match p {
                             Some(p) => (start + segment[..p].chars().count()) as i128,
@@ -3505,7 +3521,7 @@ impl Runtime {
                     if n < 0 && (name == "index" || name == "rindex") {
                         return Err(pyerr("ValueError", "substring not found"));
                     }
-                    return Ok(Value::Int(Int::from_i128(n)));
+                    return Ok(Value::Int(Int::from_i128(n).into()));
                 }
                 "startswith" | "endswith" => {
                     let value = arg(0)?;
@@ -3535,7 +3551,7 @@ impl Runtime {
                     let mut cs = s.chars();
                     match cs.next() {
                         Some(c) => format!("{}{}", c.to_uppercase(), cs.as_str().to_lowercase()),
-                        None => s,
+                        None => s.to_string(),
                     }
                 }
                 "swapcase" => s
@@ -3623,28 +3639,28 @@ impl Runtime {
                         format!("{}{}", fill.to_string().repeat(count), s)
                     }
                 }
-                "removeprefix" => s.strip_prefix(&strarg(0)?).unwrap_or(&s).to_string(),
-                "removesuffix" => s.strip_suffix(&strarg(0)?).unwrap_or(&s).to_string(),
+                "removeprefix" => s.strip_prefix(&*strarg(0)?).unwrap_or(&s).to_string(),
+                "removesuffix" => s.strip_suffix(&*strarg(0)?).unwrap_or(&s).to_string(),
                 "partition" | "rpartition" => {
                     let sep = strarg(0)?;
                     if sep.is_empty() {
                         return Err(pyerr("ValueError", "empty separator"));
                     }
                     let p = if name == "partition" {
-                        s.find(&sep)
+                        s.find(&*sep)
                     } else {
-                        s.rfind(&sep)
+                        s.rfind(&*sep)
                     };
                     let out = if let Some(p) = p {
                         vec![
                             Value::Str(s[..p].into()),
-                            Value::Str(sep.clone()),
+                            Value::Str(sep.clone().into()),
                             Value::Str(s[p + sep.len()..].into()),
                         ]
                     } else if name == "partition" {
-                        vec![Value::Str(s), Value::Str("".into()), Value::Str("".into())]
+                        vec![Value::Str(s.into()), Value::Str("".into()), Value::Str("".into())]
                     } else {
-                        vec![Value::Str("".into()), Value::Str("".into()), Value::Str(s)]
+                        vec![Value::Str("".into()), Value::Str("".into()), Value::Str(s.into())]
                     };
                     return Ok(self.obj_value(Object::Tuple(out)));
                 }
@@ -3679,9 +3695,9 @@ impl Runtime {
                                 kw(key).ok_or_else(|| pyerr("KeyError", key))?
                             };
                             let value = match conversion {
-                                "r" => Value::Str(self.repr(&value)?),
-                                "a" => Value::Str(text_ascii_escape(&self.repr(&value)?)),
-                                "s" => Value::Str(self.str_value(&value)?),
+                                "r" => Value::Str(self.repr(&value)?.into()),
+                                "a" => Value::Str(text_ascii_escape(&self.repr(&value)?).into()),
+                                "s" => Value::Str(self.str_value(&value)?.into()),
                                 "" => value,
                                 _ => {
                                     return Err(pyerr("ValueError", "Unknown conversion specifier"))
@@ -3699,7 +3715,7 @@ impl Runtime {
                 }
                 _ => return Err(pyerr("AttributeError", name)),
             };
-            return Ok(Value::Str(result));
+            return Ok(Value::Str(result.into()));
         }
         if let Value::Obj(i) = receiver.clone() {
             match self.object(i)? {
@@ -3743,7 +3759,7 @@ impl Runtime {
                             let v = arg(0)?;
                             let mut found = None;
                             for (j, x) in xs.iter().enumerate() {
-                                if self.equal(x, &v)? {
+                                if self.identical_or_equal(x, &v)? {
                                     found = Some(j);
                                     break;
                                 }
@@ -3756,11 +3772,11 @@ impl Runtime {
                             let v = arg(0)?;
                             let mut n = 0;
                             for x in &xs {
-                                if self.equal(x, &v)? {
+                                if self.identical_or_equal(x, &v)? {
                                     n += 1
                                 }
                             }
-                            return Ok(Value::Int(Int::from_i128(n)));
+                            return Ok(Value::Int(Int::from_i128(n).into()));
                         }
                         "index" => {
                             let v = arg(0)?;
@@ -3778,8 +3794,8 @@ impl Runtime {
                                 xs.len()
                             };
                             for j in start..stop {
-                                if self.equal(&xs[j], &v)? {
-                                    return Ok(Value::Int(Int::from_i128(j as i128)));
+                                if self.identical_or_equal(&xs[j], &v)? {
+                                    return Ok(Value::Int(Int::from_i128(j as i128).into()));
                                 }
                             }
                             return Err(pyerr("ValueError", "value is not in sequence"));
@@ -3883,7 +3899,7 @@ impl Runtime {
                                 }
                             }
                             for (k, v) in kwargs {
-                                let k = Value::Str(k);
+                                let k = Value::Str(k.into());
                                 if let Some(p) = self.find_key(&xs, &k)? {
                                     xs[p].1 = v
                                 } else {
@@ -3899,10 +3915,10 @@ impl Runtime {
                     return Ok(Value::None);
                 }
                 Object::Range(a, b, step) => {
-                    return self.range_method(a, b, step, name, args, kwargs)
+                    return self.range_method(a.into_inner(), b.into_inner(), step.into_inner(), name, args, kwargs)
                 }
                 Object::Namespace(m, parent) => {
-                    let mut xs: Vec<_> = m.into_iter().map(|(k, v)| (Value::Str(k), v)).collect();
+                    let mut xs = m.ident_items();
                     self.heap[i] = Some(Object::Dict(xs));
                     let result = self.method(name, receiver.clone(), args, kwargs);
                     if let Some(Some(Object::Dict(entries))) = self.heap.get(i) {
@@ -3910,7 +3926,7 @@ impl Runtime {
                         let mut map = OrderedNamespace::new();
                         for (k, v) in xs {
                             if let Value::Str(k) = k {
-                                map.insert(k, v);
+                                map.insert_ident(k, v);
                             }
                         }
                         self.heap[i] = Some(Object::Namespace(map, parent));
@@ -3938,7 +3954,7 @@ impl Runtime {
                             let v = arg(0)?;
                             let mut at = None;
                             for (j, x) in xs.iter().enumerate() {
-                                if self.equal(x, &v)? {
+                                if self.identical_or_equal(x, &v)? {
                                     at = Some(j);
                                     break;
                                 }
@@ -4157,7 +4173,9 @@ impl Runtime {
             if let Some(Value::Obj(i)) = args.first() {
                 if let Object::BuiltinInstance { payload, .. } = self.object(*i)? {
                     if self.typename(&payload) == owner {
-                        args[0] = payload
+                        args[0] = if matches!(method, "__int__" | "__index__" | "conjugate") {
+                            payload.fresh_primitive()
+                        } else { payload }
                     }
                 }
             }
@@ -4208,22 +4226,22 @@ impl Runtime {
                     fields: vec![
                         (
                             "hits".into(),
-                            Value::Int(Int::from_i128(cache.hits as i128)),
+                            Value::Int(Int::from_i128(cache.hits as i128).into()),
                         ),
                         (
                             "misses".into(),
-                            Value::Int(Int::from_i128(cache.misses as i128)),
+                            Value::Int(Int::from_i128(cache.misses as i128).into()),
                         ),
                         (
                             "maxsize".into(),
                             cache
                                 .maxsize
-                                .map(|n| Value::Int(Int::from_i128(n as i128)))
+                                .map(|n| Value::Int(Int::from_i128(n as i128).into()))
                                 .unwrap_or(Value::None),
                         ),
                         (
                             "currsize".into(),
-                            Value::Int(Int::from_i128(cache.entries.len() as i128)),
+                            Value::Int(Int::from_i128(cache.entries.len() as i128).into()),
                         ),
                     ],
                 })),
@@ -4239,7 +4257,7 @@ impl Runtime {
                         Value::Str("maxsize".into()),
                         cache
                             .maxsize
-                            .map(|n| Value::Int(Int::from_i128(n as i128)))
+                            .map(|n| Value::Int(Int::from_i128(n as i128).into()))
                             .unwrap_or(Value::None),
                     ),
                     (Value::Str("typed".into()), Value::Bool(cache.typed)),
@@ -4368,7 +4386,7 @@ impl Runtime {
                 let text = format!("{}{}", ss.join(&sep), end);
                 if let Some(file) = kw("file").filter(|v| !matches!(v, Value::None)) {
                     let write = self.getattr(file, "write")?;
-                    self.call(write, vec![Value::Str(text)], Vec::new(), None)?;
+                    self.call(write, vec![Value::Str(text.into())], Vec::new(), None)?;
                 } else {
                     self.output.push_str(&text)
                 }
@@ -4396,47 +4414,74 @@ impl Runtime {
                 }
             }
             "int" => {
-                let v = args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Value::Int(Int::from_i128(0)));
+                if args.len()>2 || kwargs.iter().any(|(name,_)|name!="base") { return Err(pyerr("TypeError","invalid arguments for int()")); }
+                let mut arguments=args;
+                if let Some((_,base))=kwargs.first() {
+                    if arguments.is_empty() || arguments.len()>1 || kwargs.len()>1 { return Err(pyerr("TypeError","invalid or repeated base argument")); }
+                    arguments.push(base.clone());
+                }
+                let base=if arguments.len()==2 {
+                    let base=self.as_int(&arguments[1])?.to_i128().unwrap_or(-1);
+                    if base!=0 && !(2..=36).contains(&base) { return Err(pyerr("ValueError","int() base must be >= 2 and <= 36, or 0")); }
+                    Some(base as u32)
+                } else { None };
+                let v=arguments.first().cloned().unwrap_or(Value::Int(Int::from_i128(0).into()));
+                if base.is_some() && !matches!(v,Value::Str(_) | Value::Bytes(_)) { return Err(pyerr("TypeError","int() can't convert non-string with explicit base")); }
                 Ok(Value::Int(match v {
                     Value::Int(i) => i,
-                    Value::Bool(b) => Int::from_i128(if b { 1 } else { 0 }),
-                    Value::Float(f) => Int::from_f64(f).map_err(int_error)?,
+                    Value::Bool(b) => Int::from_i128(if b { 1 } else { 0 }).into(),
+                    Value::Float(f) => Int::from_f64(*f).map_err(int_error)?.into(),
                     Value::Str(s) => {
-                        let base = if args.len() > 1 {
-                            self.as_int(&args[1])?.to_usize().unwrap_or(10) as u32
-                        } else {
-                            10
-                        };
-                        Int::parse(s.trim(), base).map_err(int_error)?
+                        Int::parse(s.trim(), base.unwrap_or(10)).map_err(int_error)?.into()
                     }
                     Value::Bytes(b) => {
-                        let s = String::from_utf8(b)
+                        let s = String::from_utf8(b.to_vec())
                             .map_err(|_| pyerr("ValueError", "invalid literal for int"))?;
-                        Int::parse(s.trim(), 10).map_err(int_error)?
+                        Int::parse(s.trim(), base.unwrap_or(10)).map_err(int_error)?.into()
                     }
                     v => {
-                        if let Ok(fun) = self.special_method(v.clone(), "__int__") {
-                            let out = self.call(fun, Vec::new(), Vec::new(), None)?;
-                            self.as_int(&out)?
-                        } else {
-                            self.as_int(&v)?
+                        for method in ["__int__","__index__"] {
+                            match self.special_method(v.clone(),method) {
+                                Ok(fun)=>{
+                                    let out=self.call(fun,Vec::new(),Vec::new(),None)?;
+                                    match out {
+                                        Value::Int(value)=>return Ok(Value::Int(value)),
+                                        Value::Bool(value)=>return Ok(Value::Int(Int::from_i128(if value{1}else{0}).into())),
+                                        value=>if let Some(Value::Int(value))=self.native_payload(&value) {return Ok(Value::Int(value.into_inner().into()));},
+                                    }
+                                    return Err(pyerr("TypeError",format!("{method} returned non-int")));
+                                },
+                                Err(error) if error.kind=="AttributeError"=>(),
+                                Err(error)=>return Err(error),
+                            }
                         }
+                        return Err(pyerr("TypeError","int() argument must be a string or a real number"));
                     }
                 }))
             }
             "float" => {
-                let v = args.first().cloned().unwrap_or(Value::Float(0.0));
+                if args.len()>1 || !kwargs.is_empty(){return Err(pyerr("TypeError","float() takes at most one positional argument"));}
+                let v = args.first().cloned().unwrap_or(Value::Float(0.0.into()));
                 Ok(Value::Float(match v {
+                    Value::Float(value) => value,
                     Value::Str(s) => s.trim().parse().map_err(|_| {
                         pyerr(
                             "ValueError",
                             format!("could not convert string to float: {:?}", s),
                         )
                     })?,
-                    v => self.as_float(&v)?,
+                    v => {
+                        match self.special_method(v.clone(),"__float__") {
+                            Ok(fun)=>{
+                                let out=self.call(fun,Vec::new(),Vec::new(),None)?;
+                                match out { Value::Float(value)=>return Ok(Value::Float(value)),value=>if let Some(Value::Float(value))=self.native_payload(&value){return Ok(Value::Float(value.into_inner().into()));} }
+                                return Err(pyerr("TypeError","__float__ returned non-float"));
+                            },
+                            Err(error) if error.kind=="AttributeError"=>(),
+                            Err(error)=>return Err(error),
+                        }
+                        self.as_float(&v)?.into()
+                    },
                 }))
             }
             "bool" => Ok(Value::Bool(if args.is_empty() {
@@ -4445,8 +4490,8 @@ impl Runtime {
                 self.truth(&args[0])?
             })),
             "str" => self.str_constructor(args, kwargs),
-            "repr" => Ok(Value::Str(self.repr(&arg(0)?)?)),
-            "ascii" => Ok(Value::Str(text_ascii_escape(&self.repr(&arg(0)?)?))),
+            "repr" => Ok(Value::Str(self.repr(&arg(0)?)?.into())),
+            "ascii" => Ok(Value::Str(text_ascii_escape(&self.repr(&arg(0)?)?).into())),
             "frozenset" => Err(pyerr(
                 "NotImplementedError",
                 "frozenset values are not implemented",
@@ -4456,6 +4501,16 @@ impl Runtime {
                 "memoryview values are not implemented",
             )),
             "list" | "tuple" | "set" => {
+                if args.len() > 1 || !kwargs.is_empty() {
+                    return Err(pyerr("TypeError", format!("{}() takes at most one argument", name)));
+                }
+                if name == "tuple" {
+                    if let Some(Value::Obj(index)) = args.first() {
+                        if matches!(self.object(*index)?, Object::Tuple(_)) {
+                            return Ok(args[0].clone());
+                        }
+                    }
+                }
                 let mut vs = if args.is_empty() {
                     Vec::new()
                 } else {
@@ -4484,7 +4539,7 @@ impl Runtime {
                     }
                 }
                 for (k, v) in kwargs {
-                    self.setitem(d.clone(), Value::Str(k), v)?
+                    self.setitem(d.clone(), Value::Str(k.into()), v)?
                 }
                 Ok(d)
             }
@@ -4509,7 +4564,7 @@ impl Runtime {
                     None
                 };
                 if let Some(n) = fastlen {
-                    return Ok(Value::Int(Int::from_i128(n as i128)));
+                    return Ok(Value::Int(Int::from_i128(n as i128).into()));
                 }
                 let n = match &v {
                     Value::Str(s) => s.chars().count(),
@@ -4526,21 +4581,21 @@ impl Runtime {
                     },
                     _ => return Err(pyerr("TypeError", "object has no len()")),
                 };
-                Ok(Value::Int(Int::from_i128(n as i128)))
+                Ok(Value::Int(Int::from_i128(n as i128).into()))
             }
             "range" => {
                 if args.is_empty() || args.len() > 3 || !kwargs.is_empty() {
                     return Err(pyerr("TypeError", "range expected 1 to 3 arguments"));
                 }
                 let (start, stop) = if args.len() == 1 {
-                    (Int::from_i128(0), self.as_int(&args[0])?)
+                    (Int::from_i128(0).into(), self.index_identity(&args[0])?)
                 } else {
-                    (self.as_int(&args[0])?, self.as_int(&args[1])?)
+                    (self.index_identity(&args[0])?, self.index_identity(&args[1])?)
                 };
                 let step = if args.len() == 3 {
-                    self.as_int(&args[2])?
+                    self.index_identity(&args[2])?
                 } else {
-                    Int::from_i128(1)
+                    Int::from_i128(1).into()
                 };
                 if step.is_zero() {
                     return Err(pyerr("ValueError", "range() arg 3 must not be zero"));
@@ -4600,7 +4655,7 @@ impl Runtime {
                 let mut out = args
                     .get(1)
                     .cloned()
-                    .unwrap_or(Value::Int(Int::from_i128(0)));
+                    .unwrap_or(Value::Int(Int::from_i128(0).into()));
                 let it = self.iter(arg(0)?)?;
                 while let Some(v) = self.next(it.clone())? {
                     out = self.binary("+", out, v)?
@@ -4671,11 +4726,16 @@ impl Runtime {
             "abs" => {
                 let v = arg(0)?;
                 match v {
-                    Value::Int(n) => Ok(Value::Int(n.abs())),
-                    Value::Float(n) => Ok(Value::Float(n.abs())),
+                    Value::Int(n) if !n.is_negative() => Ok(Value::Int(n)),
+                    Value::Int(n) => Ok(Value::Int(n.abs().into())),
+                    Value::Bool(value) => Ok(Value::Int(Int::from_i128(if value{1}else{0}).into())),
+                    Value::Float(n) => Ok(Value::Float(n.abs().into())),
                     v => {
-                        let fun = self.special_method(v, "__abs__")?;
-                        self.call(fun, Vec::new(), Vec::new(), caller)
+                        match self.special_method(v.clone(),"__abs__") {
+                            Ok(fun)=>self.call(fun,Vec::new(),Vec::new(),caller),
+                            Err(error) if error.kind=="AttributeError"=>if let Some(payload)=self.native_payload(&v){self.builtin("abs",vec![payload.fresh_primitive()],Vec::new(),caller)}else{Err(error)},
+                            Err(error)=>Err(error),
+                        }
                     }
                 }
             }
@@ -4684,7 +4744,7 @@ impl Runtime {
                     let a = self.as_int(&args[0])?;
                     let b = self.as_int(&args[1])?;
                     let m = self.as_int(&args[2])?;
-                    Ok(Value::Int(a.modpow(&b, &m).map_err(int_error)?))
+                    Ok(Value::Int(a.modpow(&b, &m).map_err(int_error)?.into()))
                 } else {
                     self.binary("**", arg(0)?, arg(1)?)
                 }
@@ -4695,23 +4755,31 @@ impl Runtime {
                 Ok(self.obj_value(Object::Tuple(vec![a, b])))
             }
             "round" => {
-                let x = self.as_float(&arg(0)?)?;
-                let n = if args.len() > 1 {
-                    self.as_int(&args[1])?.to_i128().unwrap_or(0)
-                } else {
-                    0
-                };
-                let scale = 10f64.powf(n as f64);
-                let y = x * scale;
-                let rounded = if y.fract().abs() == 0.5 {
-                    (y / 2.0).round() * 2.0
-                } else {
-                    y.round()
-                } / scale;
-                if args.len() > 1 {
-                    Ok(Value::Float(rounded))
-                } else {
-                    Ok(Value::Int(Int::from_f64(rounded).map_err(int_error)?))
+                let mut values=codec_bind("round",args,kwargs,&["number","ndigits"])?;
+                let value=values[0].take().ok_or_else(||pyerr("TypeError","round() missing required argument 'number'"))?;
+                let digits=values[1].take().filter(|value|!matches!(value,Value::None));
+                match value {
+                    Value::Int(number)=>{
+                        let digits=digits.as_ref().map(|value|self.as_int(value)).transpose()?;
+                        if digits.as_ref().map(|value|!value.is_negative()).unwrap_or(true){return Ok(Value::Int(number));}
+                        Ok(Value::Int(number.round_decimal(digits.as_ref().unwrap()).into()))
+                    },
+                    Value::Bool(number)=>{
+                        let number=Int::from_i128(if number{1}else{0});
+                        let digits=digits.as_ref().map(|value|self.as_int(value)).transpose()?;
+                        Ok(Value::Int(if let Some(digits)=digits{number.round_decimal(&digits)}else{number}.into()))
+                    },
+                    Value::Float(number)=>if let Some(digits)=digits {
+                        let digits=self.as_int(&digits)?;
+                        Ok(Value::Float(Int::round_float_decimal(*number,&digits).map_err(int_error)?.into()))
+                    }else{Ok(Value::Int(Int::from_f64(number.round_ties_even()).map_err(int_error)?.into()))},
+                    value=>match self.special_method(value.clone(),"__round__") {
+                        Ok(fun)=>self.call(fun,digits.into_iter().collect(),Vec::new(),caller),
+                        Err(error) if error.kind=="AttributeError"=>if let Some(payload)=self.native_payload(&value){
+                            let mut arguments=vec![payload.fresh_primitive()];arguments.extend(digits);self.builtin("round",arguments,Vec::new(),caller)
+                        }else{Err(pyerr("TypeError","type doesn't define __round__ method"))},
+                        Err(error)=>Err(error),
+                    },
                 }
             }
             "bin" | "oct" | "hex" => {
@@ -4722,7 +4790,7 @@ impl Runtime {
                     _ => "#x",
                 };
                 Ok(Value::Str(
-                    number.format_integer(spec).map_err(int_error)?.unwrap(),
+                    number.format_integer(spec).map_err(int_error)?.unwrap().into(),
                 ))
             }
             "chr" => {
@@ -4733,7 +4801,7 @@ impl Runtime {
                 Ok(Value::Str(
                     char::from_u32(n as u32)
                         .ok_or_else(|| pyerr("ValueError", "chr() arg not in range(0x110000)"))?
-                        .to_string(),
+                        .to_string().into(),
                 ))
             }
             "ord" => match arg(0)? {
@@ -4742,9 +4810,9 @@ impl Runtime {
                     if cs.len() != 1 {
                         return Err(pyerr("TypeError", "ord() expected a character"));
                     }
-                    Ok(Value::Int(Int::from_i128(cs[0] as i128)))
+                    Ok(Value::Int(Int::from_i128(cs[0] as i128).into()))
                 }
-                Value::Bytes(b) if b.len() == 1 => Ok(Value::Int(Int::from_i128(b[0] as i128))),
+                Value::Bytes(b) if b.len() == 1 => Ok(Value::Int(Int::from_i128(b[0] as i128).into())),
                 _ => Err(pyerr("TypeError", "ord() expected a character")),
             },
             "format" => {
@@ -4753,7 +4821,7 @@ impl Runtime {
                 } else {
                     String::new()
                 };
-                Ok(Value::Str(self.format_value(arg(0)?, &spec)?))
+                Ok(Value::Str(self.format_value(arg(0)?, &spec)?.into()))
             }
             "getattr" => {
                 let n = self.str_value(&arg(1)?)?;
@@ -4822,26 +4890,15 @@ impl Runtime {
             }
             "id" => {
                 let v = arg(0)?;
-                let id = match v {
-                    Value::Obj(i) => i as i128 + 1000,
-                    Value::None => 1,
-                    Value::Bool(false) => 2,
-                    Value::Bool(true) => 3,
-                    _ => {
-                        use std::hash::{Hash, Hasher};
-                        let mut h = std::collections::hash_map::DefaultHasher::new();
-                        self.repr(&v)?.hash(&mut h);
-                        (h.finish() & 0x7fffffffffffffff) as i128
-                    }
-                };
-                Ok(Value::Int(Int::from_i128(id)))
+                let id=self.identity_number(&v);
+                Ok(Value::Int(Int::from_i128(id as i128).into()))
             }
             "hash" => {
                 use std::hash::{Hash, Hasher};
                 let v = arg(0)?;
                 if let Value::Obj(index) = &v {
                     if let Object::Range(start, stop, step) = self.object(*index)? {
-                        return self.range_hash(start, stop, step);
+                        return self.range_hash(start.into_inner(), stop.into_inner(), step.into_inner());
                     }
                 }
                 if let Some(class) = self.object_class(&v) {
@@ -4860,7 +4917,7 @@ impl Runtime {
                                 "__hash__ method should return an integer",
                             ));
                         }
-                        return Ok(Value::Int(self.as_int(&result)?));
+                        return Ok(Value::Int(self.as_int(&result)?.into()));
                     }
                 }
                 if let Some(payload) = self.native_payload(&v) {
@@ -4880,7 +4937,7 @@ impl Runtime {
                             ));
                         }
                         Some(Object::Instance { .. }) => {
-                            return Ok(Value::Int(Int::from_i128(i as i128)))
+                            return Ok(Value::Int(Int::from_i128(i as i128).into()))
                         }
                         _ => {}
                     }
@@ -4889,11 +4946,11 @@ impl Runtime {
                     return Ok(Value::Int(n));
                 }
                 if let Value::Bool(b) = v {
-                    return Ok(Value::Int(Int::from_i128(if b { 1 } else { 0 })));
+                    return Ok(Value::Int(Int::from_i128(if b { 1 } else { 0 }).into()));
                 }
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 self.repr(&v)?.hash(&mut h);
-                Ok(Value::Int(Int::from_i128(h.finish() as i64 as i128)))
+                Ok(Value::Int(Int::from_i128(h.finish() as i64 as i128).into()))
             }
             "globals" => Ok(Value::Obj(
                 caller.map(|f| f.globals).unwrap_or(self.globals),
@@ -4932,7 +4989,7 @@ impl Runtime {
                     vec![]
                 };
                 names.sort();
-                Ok(self.obj_value(Object::List(names.into_iter().map(Value::Str).collect())))
+                Ok(self.obj_value(Object::List(names.into_iter().map(|value| Value::Str(value.into())).collect())))
             }
             "compile" => {
                 let src = self.str_value(&arg(0)?)?;
@@ -5327,7 +5384,10 @@ impl Runtime {
         if args.len() < 3 {
             return Err(pyerr("TypeError", "type() takes 1 or 3 arguments"));
         }
-        let name = self.str_value(&args[0])?;
+        let name = match &args[0] {
+            Value::Str(name) => name.clone(),
+            _ => return Err(pyerr("TypeError", "type() argument 1 must be str")),
+        };
         let mut bases = self.to_vec(args[1].clone())?;
         if bases.is_empty() {
             bases.push(Value::Builtin("object".into()))
@@ -5508,7 +5568,7 @@ impl Runtime {
             if let Ok(items) = self.attribute_items(&Value::Obj(ns)) {
                 for (n, v) in items {
                     if let Ok(setname) = self.getattr(v, "__set_name__") {
-                        self.call(setname, vec![out.clone(), Value::Str(n)], Vec::new(), None)?;
+                        self.call(setname, vec![out.clone(), Value::Str(n.into())], Vec::new(), None)?;
                     }
                 }
             }
@@ -5542,7 +5602,7 @@ impl Runtime {
         let namespace = if let Ok(prepare) = self.getattr(metaclass.clone(), "__prepare__") {
             let v = self.call(
                 prepare,
-                vec![Value::Str(name.clone()), basesvalue.clone()],
+                vec![Value::Str(name.clone().into()), basesvalue.clone()],
                 keywords.clone(),
                 Some(f),
             )?;
@@ -5559,7 +5619,7 @@ impl Runtime {
             self.ns_get(f.globals, "__name__")
                 .unwrap_or(Value::Str("__main__".into())),
         )?;
-        self.mapping_set(namespace, "__qualname__".into(), Value::Str(name.clone()))?;
+        self.mapping_set(namespace, "__qualname__".into(), Value::Str(name.clone().into()))?;
         let parent = if self.codes[f.code].kind == ScopeKind::Class {
             f.closure
         } else {
@@ -5615,7 +5675,7 @@ impl Runtime {
         };
         let cls = self.call(
             metaclass,
-            vec![Value::Str(name), basesvalue, Value::Obj(namespace)],
+            vec![Value::Str(name.into()), basesvalue, Value::Obj(namespace)],
             keywords,
             Some(f),
         )?;
@@ -5708,7 +5768,7 @@ impl Runtime {
             match b {
                 Value::Type(n) => n.clone(),
                 Value::Obj(i) => match self.object(*i)? {
-                    Object::Class(c) => c.name,
+                    Object::Class(c) => c.name.to_string(),
                     _ => return Err(pyerr(
                         "TypeError",
                         "catching classes that do not inherit from BaseException is not allowed",
@@ -5735,7 +5795,7 @@ impl Runtime {
     }
     fn str_value(&mut self, v: &Value) -> PyResult<String> {
         match v {
-            Value::Str(s) => Ok(s.clone()),
+            Value::Str(s) => Ok(s.to_string()),
             Value::None => Ok("None".into()),
             Value::Bool(b) => Ok(if *b { "True" } else { "False" }.into()),
             Value::Int(n) => Ok(n.to_string()),
@@ -5760,7 +5820,7 @@ impl Runtime {
                     if let Ok(fun) = self.special_method(v.clone(), "__str__") {
                         let r = self.call(fun, Vec::new(), Vec::new(), None)?;
                         if let Value::Str(s) = r {
-                            return Ok(s);
+                            return Ok(s.to_string());
                         }
                         return Err(pyerr("TypeError", "__str__ returned non-string"));
                     }
@@ -5829,7 +5889,7 @@ impl Runtime {
                         for (k, v) in entries {
                             ss.push(format!(
                                 "{}: {}",
-                                self.repr(&Value::Str(k))?,
+                                self.repr(&Value::Str(k.into()))?,
                                 self.repr_inner(&v, seen)?
                             ))
                         }
@@ -5967,7 +6027,7 @@ impl Runtime {
                 }
                 return Ok(result);
             }
-            let value = Value::Float(self.as_float(&v)?);
+            let value = Value::Float(self.as_float(&v)?.into());
             return self.text_format_value(value, spec).unwrap();
         }
         if let Some(result) = self.text_format_value(v.clone(), spec) {
@@ -5976,7 +6036,7 @@ impl Runtime {
         if let Ok(method) = self.special_method(v.clone(), "__format__") {
             let result = self.call(method, vec![Value::Str(spec.into())], Vec::new(), None)?;
             return match result {
-                Value::Str(text) => Ok(text),
+                Value::Str(text) => Ok(text.to_string()),
                 _ => Err(pyerr("TypeError", "__format__ must return a str")),
             };
         }
@@ -6140,14 +6200,14 @@ impl Runtime {
                     class: Value::Obj(c),
                     ..
                 }) => match self.heap.get(*c).and_then(|o| o.as_ref()) {
-                    Some(Object::Class(c)) => c.name.clone(),
+                    Some(Object::Class(c)) => c.name.to_string(),
                     _ => "object".into(),
                 },
                 Some(Object::BuiltinInstance {
                     class: Value::Obj(c),
                     ..
                 }) => match self.heap.get(*c).and_then(|o| o.as_ref()) {
-                    Some(Object::Class(c)) => c.name.clone(),
+                    Some(Object::Class(c)) => c.name.to_string(),
                     _ => "object".into(),
                 },
                 Some(Object::Exception(e)) => e.kind.clone(),
@@ -6165,13 +6225,13 @@ impl Runtime {
     }
     fn as_int(&mut self, v: &Value) -> PyResult<Int> {
         match v {
-            Value::Int(n) => Ok(n.clone()),
+            Value::Int(n) => Ok(n.inner().clone()),
             Value::Bool(b) => Ok(Int::from_i128(if *b { 1 } else { 0 })),
             _ => {
                 if let Ok(m) = self.special_method(v.clone(), "__index__") {
                     let x = self.call(m, Vec::new(), Vec::new(), None)?;
                     if let Value::Int(i) = x {
-                        return Ok(i);
+                        return Ok(i.into_inner());
                     }
                 }
                 Err(pyerr(
@@ -6189,7 +6249,7 @@ impl Runtime {
             return self.as_float(&payload);
         }
         let n = match v {
-            Value::Float(f) => return Ok(*f),
+            Value::Float(f) => return Ok(**f),
             Value::Int(n) => n.to_f64(),
             Value::Bool(b) => {
                 if *b {
@@ -6260,7 +6320,7 @@ impl Runtime {
     }
     fn contains_vec(&mut self, vs: &[Value], v: &Value) -> PyResult<bool> {
         for x in vs {
-            if self.equal(x, v)? {
+            if self.identical_or_equal(x, v)? {
                 return Ok(true);
             }
         }
@@ -6303,17 +6363,17 @@ impl Runtime {
             (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
             (Value::Int(a), Value::Int(b)) => Ok(a == b),
             (Value::Bool(a), Value::Int(b)) | (Value::Int(b), Value::Bool(a)) => {
-                Ok(&Int::from_i128(if *a { 1 } else { 0 }) == b)
+                Ok(Int::from_i128(if *a { 1 } else { 0 }) == **b)
             }
             (Value::Float(a), Value::Float(b)) => Ok(a == b),
             (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
                 if !b.is_finite() || b.fract() != 0.0 {
                     return Ok(false);
                 }
-                Ok(a.cmp_f64(*b) == Some(std::cmp::Ordering::Equal))
+                Ok(a.cmp_f64(**b) == Some(std::cmp::Ordering::Equal))
             }
             (Value::Bool(a), Value::Float(b)) | (Value::Float(b), Value::Bool(a)) => {
-                Ok((if *a { 1.0 } else { 0.0 }) == *b)
+                Ok((if *a { 1.0 } else { 0.0 }) == **b)
             }
             (Value::Str(a), Value::Str(b)) => Ok(a == b),
             (Value::Bytes(a), Value::Bytes(b)) => Ok(a == b),
@@ -6324,7 +6384,7 @@ impl Runtime {
                         return Ok(false);
                     }
                     for (x, y) in a.iter().zip(&b) {
-                        if !self.equal(x, y)? {
+                        if !self.identical_or_equal(x, y)? {
                             return Ok(false);
                         }
                     }
@@ -6337,8 +6397,8 @@ impl Runtime {
                     for (k, v) in a {
                         let mut matched = false;
                         for (k2, v2) in &b {
-                            if self.equal(&k, k2)? {
-                                if !self.equal(&v, v2)? {
+                            if self.identical_or_equal(&k, k2)? {
+                                if !self.identical_or_equal(&v, v2)? {
                                     return Ok(false);
                                 }
                                 matched = true;
@@ -6371,9 +6431,9 @@ impl Runtime {
         use std::cmp::Ordering;
         match (a, b) {
             (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
-            (Value::Int(a), Value::Float(b)) => Ok(a.cmp_f64(*b).unwrap_or(Ordering::Equal)),
+            (Value::Int(a), Value::Float(b)) => Ok(a.cmp_f64(**b).unwrap_or(Ordering::Equal)),
             (Value::Float(a), Value::Int(b)) => Ok(b
-                .cmp_f64(*a)
+                .cmp_f64(**a)
                 .map(|x| x.reverse())
                 .unwrap_or(Ordering::Equal)),
             (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
@@ -6389,7 +6449,7 @@ impl Runtime {
             (Value::Obj(i), Value::Obj(j)) => match (self.object(*i)?, self.object(*j)?) {
                 (Object::List(a), Object::List(b)) | (Object::Tuple(a), Object::Tuple(b)) => {
                     for (x, y) in a.iter().zip(&b) {
-                        if !self.equal(x, y)? {
+                        if !self.identical_or_equal(x, y)? {
                             return self.ordering(x, y);
                         }
                     }
@@ -6418,32 +6478,33 @@ impl Runtime {
                     bp.as_ref().unwrap_or(b),
                 );
             }
+            if let (Value::Obj(a),Value::Obj(b))=(a,b) {
+                let sequences=match (self.object(*a)?,self.object(*b)?) {
+                    (Object::List(a),Object::List(b)) | (Object::Tuple(a),Object::Tuple(b))=>Some((a,b)),_=>None,
+                };
+                if let Some((a,b))=sequences {
+                    for (a,b) in a.iter().zip(&b) { if !self.identical_or_equal(a,b)? {return self.compare(op,a,b);} }
+                    return Ok(match op {"<"=>a.len()<b.len(),"<="=>a.len()<=b.len(),">"=>a.len()>b.len(),_=>a.len()>=b.len()});
+                }
+            }
         }
         use std::cmp::Ordering::*;
         match op {
             "==" => self.equal_default(a, b),
             "!=" => Ok(!self.equal_default(a, b)?),
             "is" | "is not" => {
-                let eq = match (a, b) {
-                    (Value::Obj(x), Value::Obj(y)) => x == y,
-                    (Value::None, Value::None) => true,
-                    (Value::Bool(x), Value::Bool(y)) => x == y,
-                    (Value::Builtin(x), Value::Builtin(y)) | (Value::Type(x), Value::Type(y)) => {
-                        x == y
-                    }
-                    _ => false,
-                };
+                let eq = a.same_identity(b);
                 Ok(if op == "is" { eq } else { !eq })
             }
             "in" | "not in" => {
                 if let Value::Obj(index) = b {
                     if let Object::Range(start, stop, step) = self.object(*index)? {
-                        let found = self.range_contains(start, stop, step, a.clone())?;
+                        let found = self.range_contains(start.into_inner(), stop.into_inner(), step.into_inner(), a.clone())?;
                         return Ok(if op == "in" { found } else { !found });
                     }
                 }
                 let yes = match (a, b) {
-                    (Value::Str(x), Value::Str(y)) => y.contains(x),
+                    (Value::Str(x), Value::Str(y)) => y.contains(x.as_str()),
                     _ => {
                         if let Ok(fun) = self.special_method(b.clone(), "__contains__") {
                             let v = self.call(fun, vec![a.clone()], Vec::new(), None)?;
@@ -6488,17 +6549,17 @@ impl Runtime {
         match &a {
             Value::Int(n) => Ok(Value::Int(match op {
                 "+" => n.clone(),
-                "-" => n.neg(),
-                "~" => n.invert(),
+                "-" => n.neg().into(),
+                "~" => n.invert().into(),
                 _ => return Err(pyerr("TypeError", "unsupported unary operator")),
             })),
             Value::Bool(_) => {
                 let n = self.as_int(&a)?;
-                self.unary(op, Value::Int(n))
+                self.unary(op, Value::Int(n.into()))
             }
             Value::Float(x) => match op {
                 "+" => Ok(a),
-                "-" => Ok(Value::Float(-x)),
+                "-" => Ok(Value::Float((-**x).into())),
                 _ => Err(pyerr("TypeError", "bad operand type")),
             },
             _ => {
@@ -6512,7 +6573,7 @@ impl Runtime {
                     Ok(fun) => self.call(fun, Vec::new(), Vec::new(), None),
                     Err(error) => {
                         if let Some(payload) = self.native_payload(&a) {
-                            self.unary(op, payload)
+                            self.unary(op, if op=="+"{payload.fresh_primitive()}else{payload})
                         } else {
                             Err(error)
                         }
@@ -6668,14 +6729,14 @@ impl Runtime {
                 ">>" => x.shr(&y).map_err(int_error)?,
                 "**" => {
                     if y.is_negative() {
-                        return Ok(Value::Float(self.as_float(&a)?.powf(self.as_float(&b)?)));
+                        return Ok(Value::Float(self.as_float(&a)?.powf(self.as_float(&b)?).into()));
                     }
                     x.pow(&y).map_err(int_error)?
                 }
-                "/" => return Ok(Value::Float(x.ratio(&y).map_err(int_error)?)),
+                "/" => return Ok(Value::Float(x.ratio(&y).map_err(int_error)?.into())),
                 _ => return Err(pyerr("TypeError", "unsupported integer operation")),
             };
-            return Ok(Value::Int(n));
+            return Ok(Value::Int(n.into()));
         }
         if matches!(a, Value::Float(_) | Value::Int(_) | Value::Bool(_))
             && matches!(b, Value::Float(_) | Value::Int(_) | Value::Bool(_))
@@ -6712,16 +6773,16 @@ impl Runtime {
                 "**" => x.powf(y),
                 _ => return Err(pyerr("TypeError", "unsupported float operation")),
             };
-            return Ok(Value::Float(z));
+            return Ok(Value::Float(z.into()));
         }
         match (&a, &b, op) {
             (Value::Str(x), Value::Str(y), "+" | "+=") => {
-                return Ok(Value::Str(format!("{}{}", x, y)))
+                return Ok(Value::Str(format!("{}{}", x, y).into()))
             }
             (Value::Bytes(x), Value::Bytes(y), "+") => {
-                let mut z = x.clone();
+                let mut z = x.inner().clone();
                 z.extend(y);
-                return Ok(Value::Bytes(z));
+                return Ok(Value::Bytes(z.into()));
             }
             (Value::Str(s), Value::Int(_) | Value::Bool(_), "*")
             | (Value::Int(_) | Value::Bool(_), Value::Str(s), "*") => {
@@ -6730,10 +6791,10 @@ impl Runtime {
                 if n > 100_000_000 {
                     return Err(pyerr("OverflowError", "repeated string is too long"));
                 }
-                return Ok(Value::Str(s.repeat(n as usize)));
+                return Ok(Value::Str(s.repeat(n as usize).into()));
             }
             (Value::Str(fmt), _, "%") => {
-                return Ok(Value::Str(self.percent_format(fmt, b.clone())?))
+                return Ok(Value::Str(self.percent_format(fmt, b.clone())?.into()))
             }
             _ => {}
         }
@@ -6955,7 +7016,7 @@ impl Runtime {
     }
     fn find_key(&mut self, items: &[(Value, Value)], key: &Value) -> PyResult<Option<usize>> {
         for (i, (k, _)) in items.iter().enumerate() {
-            if self.equal(k, key)? {
+            if self.identical_or_equal(k, key)? {
                 return Ok(Some(i));
             }
         }
@@ -6964,7 +7025,7 @@ impl Runtime {
     fn getitem(&mut self, obj: Value, key: Value) -> PyResult<Value> {
         if let Value::Obj(index) = &obj {
             if let Object::Range(start, stop, step) = self.object(*index)? {
-                return self.range_getitem(start, stop, step, key);
+                return self.range_getitem(start.into_inner(), stop.into_inner(), step.into_inner(), key);
             }
         }
         if let Value::Obj(i) = &obj {
@@ -7014,7 +7075,7 @@ impl Runtime {
                     Ok(Value::Str(ids.into_iter().map(|i| chars[i]).collect()))
                 } else {
                     let i = self.index(&key, chars.len())?;
-                    Ok(Value::Str(chars[i].to_string()))
+                    Ok(Value::Str(chars[i].to_string().into()))
                 }
             }
             Value::Bytes(xs) => {
@@ -7023,7 +7084,7 @@ impl Runtime {
                     Ok(Value::Bytes(ids.into_iter().map(|i| xs[i]).collect()))
                 } else {
                     let i = self.index(&key, xs.len())?;
-                    Ok(Value::Int(Int::from_i128(xs[i] as i128)))
+                    Ok(Value::Int(Int::from_i128(xs[i] as i128).into()))
                 }
             }
             Value::Obj(i) => match self.object(i)? {
@@ -7151,7 +7212,9 @@ impl Runtime {
                 }
                 Object::Namespace(_, _) => {
                     if let Value::Str(s) = key {
-                        self.ns_set(i, s, value);
+                        if let Some(Some(Object::Namespace(map, _))) = self.heap.get_mut(i) {
+                            map.insert_ident(s, value);
+                        }
                         return Ok(());
                     }
                 }
@@ -7217,7 +7280,7 @@ impl Runtime {
                         if self.ns_del(i, &s) {
                             return Ok(());
                         }
-                        return Err(pyerr("KeyError", s));
+                        return Err(pyerr("KeyError", s.into_inner()));
                     }
                 }
                 Object::Instance { .. } => {
@@ -7261,7 +7324,7 @@ impl Runtime {
             match self.object(i)? {
                 Object::Dict(xs) => return Ok(xs),
                 Object::Namespace(m, _) => {
-                    return Ok(m.into_iter().map(|(k, v)| (Value::Str(k), v)).collect())
+                    return Ok(m.ident_items())
                 }
                 Object::Module { attrs, .. } => return self.dict_items(Value::Obj(attrs)),
                 _ => {}
@@ -7293,7 +7356,7 @@ impl Runtime {
         let mut out = Vec::new();
         for (k, v) in self.dict_items(v)? {
             if let Value::Str(k) = k {
-                out.push((k, v))
+                out.push((k.into_inner(), v))
             } else {
                 return Err(pyerr("TypeError", "keywords must be strings"));
             }
@@ -7339,11 +7402,11 @@ impl Runtime {
         }
         let state = match v.clone() {
             Value::Str(s) => {
-                IteratorState::Values(s.chars().map(|c| Value::Str(c.to_string())).collect(), 0)
+                IteratorState::Values(s.chars().map(|c| Value::Str(c.to_string().into())).collect(), 0)
             }
             Value::Bytes(s) => IteratorState::Values(
                 s.into_iter()
-                    .map(|x| Value::Int(Int::from_i128(x as i128)))
+                    .map(|x| Value::Int(Int::from_i128(x as i128).into()))
                     .collect(),
                 0,
             ),
@@ -7352,13 +7415,13 @@ impl Runtime {
                     IteratorState::Values(fields.into_iter().map(|(_, v)| v).collect(), 0)
                 }
                 Object::List(_) => IteratorState::List(i, 0),
-                Object::Range(a, b, c) => IteratorState::Range(a, b, c),
+                Object::Range(a, b, c) => IteratorState::Range(a.into_inner(), b.into_inner(), c.into_inner()),
                 Object::Tuple(v) | Object::Set(v) => IteratorState::Values(v, 0),
                 Object::Dict(v) => {
                     IteratorState::Values(v.into_iter().map(|(k, _)| k).collect(), 0)
                 }
                 Object::Namespace(v, _) => {
-                    IteratorState::Values(v.keys().map(|s| Value::Str(s.clone())).collect(), 0)
+                    IteratorState::Values(v.ident_keys(), 0)
                 }
                 Object::Iterator(_) | Object::Generator(_) => return Ok(v),
                 Object::Instance { .. } => {
@@ -7476,7 +7539,7 @@ impl Runtime {
                             stop,
                             step,
                         )));
-                        return Ok(Some(Value::Int(value)));
+                        return Ok(Some(Value::Int(value.into())));
                     }
                     IteratorState::Enumerate(inner, n) => {
                         if let Some(v) = self.next(inner.clone())? {
@@ -7484,7 +7547,7 @@ impl Runtime {
                                 inner,
                                 n.add(&Int::from_i128(1)),
                             )));
-                            return Ok(Some(self.obj_value(Object::Tuple(vec![Value::Int(n), v]))));
+                            return Ok(Some(self.obj_value(Object::Tuple(vec![Value::Int(n.into()), v]))));
                         }
                         return Ok(None);
                     }
@@ -7530,7 +7593,7 @@ impl Runtime {
                     }
                     IteratorState::Callable(fun, sentinel) => {
                         let v = self.call(fun, Vec::new(), Vec::new(), None)?;
-                        return if self.equal(&v, &sentinel)? {
+                        return if self.identical_or_equal(&v, &sentinel)? {
                             Ok(None)
                         } else {
                             Ok(Some(v))
@@ -7539,7 +7602,7 @@ impl Runtime {
                     IteratorState::Reversed(obj, p) => {
                         let k = if p <= -2 { -p - 2 } else { p };
                         let result =
-                            self.getitem(obj.clone(), Value::Int(Int::from_i128(k as i128)));
+                            self.getitem(obj.clone(), Value::Int(Int::from_i128(k as i128).into()));
                         match result {
                             Ok(v) => {
                                 let np = if p <= -2 { p - 1 } else { p - 1 };
@@ -7863,9 +7926,9 @@ impl Runtime {
         if let Value::Obj(i) = v.clone() {
             match self.object(i)? {
                 Object::Range(start, stop, step) => match name {
-                    "start" => return Ok(Value::Int(start)),
-                    "stop" => return Ok(Value::Int(stop)),
-                    "step" => return Ok(Value::Int(step)),
+                    "start" => return Ok(Value::Int(start.into())),
+                    "stop" => return Ok(Value::Int(stop.into())),
+                    "step" => return Ok(Value::Int(step.into())),
                     "count" | "index" | "__iter__" | "__len__" | "__getitem__" | "__contains__"
                     | "__reversed__" => {
                         return Ok(self.obj_value(Object::Bound(
@@ -7881,7 +7944,7 @@ impl Runtime {
                     ..
                 } => {
                     if name == "__name__" {
-                        return Ok(Value::Str(slot_name));
+                        return Ok(Value::Str(slot_name.into()));
                     }
                     if name == "__objclass__" {
                         return Ok(owner);
@@ -8083,12 +8146,12 @@ impl Runtime {
                         return Ok(self.obj_value(Object::Tuple(mro)));
                     }
                     if name == "__name__" {
-                        return Ok(Value::Str(c.name));
+                        return Ok(Value::Str(c.name.into()));
                     }
                     if name == "__qualname__" {
                         return Ok(self
                             .ns_get(c.attrs, "__qualname__")
-                            .unwrap_or(Value::Str(c.name)));
+                            .unwrap_or(Value::Str(c.name.into())));
                     }
                     if name == "__dict__" {
                         return Ok(Value::Obj(c.attrs));
@@ -8104,8 +8167,8 @@ impl Runtime {
                     }
                 }
                 Object::Function(fun) => match name {
-                    "__name__" => return Ok(Value::Str(fun.name)),
-                    "__qualname__" => return Ok(Value::Str(fun.qualname)),
+                    "__name__" => return Ok(Value::Str(fun.name.into())),
+                    "__qualname__" => return Ok(Value::Str(fun.qualname.into())),
                     "__module__" => return Ok(fun.module),
                     "__doc__" => return Ok(fun.doc),
                     "__annotations__" => {
@@ -8113,7 +8176,7 @@ impl Runtime {
                             let annotations = if let Some(annotate) = fun.annotate.clone() {
                                 self.call(
                                     annotate,
-                                    vec![Value::Int(Int::from_i128(1))],
+                                    vec![Value::Int(Int::from_i128(1).into())],
                                     Vec::new(),
                                     None,
                                 )?
@@ -8154,7 +8217,7 @@ impl Runtime {
                             self.obj_value(Object::Dict(
                                 fun.kwdefaults
                                     .into_iter()
-                                    .map(|(n, v)| (Value::Str(n), v))
+                                    .map(|(n, v)| (Value::Str(n.into()), v))
                                     .collect(),
                             ))
                         })
@@ -8410,7 +8473,7 @@ impl Runtime {
                     return Ok(Value::Str("utf-8".into()));
                 }
                 if name == "__name__" {
-                    return Ok(Value::Str(n.clone()));
+                    return Ok(Value::Str(n.clone().into()));
                 }
                 if name == "__mro__" {
                     if let Some(mro) = self.class_mro(&v, 0) {
@@ -8852,7 +8915,7 @@ impl Runtime {
         }
         if let Some(n) = &params.kwarg {
             let v = self.obj_value(Object::Dict(
-                kw.into_iter().map(|(k, v)| (Value::Str(k), v)).collect(),
+                kw.into_iter().map(|(k, v)| (Value::Str(k.into()), v)).collect(),
             ));
             self.ns_set(ns, n.clone(), v)
         } else if let Some(n) = kw.first().map(|(n, _)| n) {

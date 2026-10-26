@@ -469,7 +469,7 @@ impl Runtime {
             Ok(method) => {
                 let result = self.call(method, Vec::new(), Vec::new(), None)?;
                 if let Value::Float(x) = result {
-                    return Ok(x);
+                    return Ok(*x);
                 }
                 return Err(pyerr("TypeError", "__float__ returned non-float"));
             }
@@ -477,7 +477,7 @@ impl Runtime {
             _ => {}
         }
         let integer = self.as_int(value)?;
-        self.as_float(&Value::Int(integer))
+        self.as_float(&Value::Int(integer.into()))
     }
     fn math_log(&mut self, value: &Value, base: &str) -> PyResult<f64> {
         if let Value::Int(n) = value {
@@ -576,7 +576,7 @@ impl Runtime {
                         result.exact_divmod(&a).map_err(int_error)?.0.exact_mul(&n)
                     };
                 }
-                return Ok(Value::Int(result.normalized()));
+                return Ok(Value::Int(result.normalized().into()));
             }
             "factorial" | "comb" | "perm" => {
                 let n = self.as_int(&args[0])?;
@@ -595,7 +595,7 @@ impl Runtime {
                     return Err(pyerr("ValueError", "k must be a non-negative integer"));
                 }
                 if k > n {
-                    return Ok(Value::Int(Int::from_i128(0)));
+                    return Ok(Value::Int(Int::from_i128(0).into()));
                 }
                 if name == "comb" {
                     let complement = n.exact_add(&k.exact_neg());
@@ -616,7 +616,7 @@ impl Runtime {
                             .0;
                     }
                 }
-                return Ok(Value::Int(result.normalized()));
+                return Ok(Value::Int(result.normalized().into()));
             }
             "isqrt" => {
                 let n = self.as_int(&args[0])?;
@@ -624,7 +624,7 @@ impl Runtime {
                     return Err(pyerr("ValueError", "isqrt() argument must be nonnegative"));
                 }
                 if n.is_zero() {
-                    return Ok(Value::Int(n));
+                    return Ok(Value::Int(n.into()));
                 }
                 let mut x = Int::exact_parts(false, Int::nat_shl(&[1], (n.bit_length() + 1) / 2));
                 loop {
@@ -634,7 +634,7 @@ impl Runtime {
                         .map_err(int_error)?
                         .0;
                     if y >= x {
-                        return Ok(Value::Int(x.normalized()));
+                        return Ok(Value::Int(x.normalized().into()));
                     }
                     x = y;
                 }
@@ -644,7 +644,7 @@ impl Runtime {
                     return Ok(Value::Int(n.clone()));
                 }
                 if let Value::Bool(b) = &args[0] {
-                    return Ok(Value::Int(Int::from_i128(i128::from(*b))));
+                    return Ok(Value::Int(Int::from_i128(i128::from(*b)).into()));
                 }
                 if !matches!(args[0], Value::Float(_)) {
                     match self.getattr(args[0].clone(), &format!("__{}__", name)) {
@@ -662,14 +662,14 @@ impl Runtime {
                     "floor" => x.floor(),
                     _ => x.trunc(),
                 };
-                return Ok(Value::Int(Int::from_f64(result).map_err(int_error)?));
+                return Ok(Value::Int(Int::from_f64(result).map_err(int_error)?.into()));
             }
             "prod" => {
                 let mut result = kwargs
                     .iter()
                     .find(|(key, _)| key == "start")
                     .map(|(_, value)| value.clone())
-                    .unwrap_or(Value::Int(Int::from_i128(1)));
+                    .unwrap_or(Value::Int(Int::from_i128(1).into()));
                 let iterator = self.iter(args[0].clone())?;
                 self.math_keep(root, base, iterator.clone());
                 self.math_keep(root, base + 1, result.clone());
@@ -688,7 +688,7 @@ impl Runtime {
                     let value = self.math_keep(root, base + 1, value);
                     accumulator.push(self.math_float(&value)?)?;
                 }
-                return Ok(Value::Float(accumulator.finish()?));
+                return Ok(Value::Float(accumulator.finish()?.into()));
             }
             "sumprod" => {
                 let first = self.iter(args[0].clone())?;
@@ -725,7 +725,7 @@ impl Runtime {
                         && matches!(b, Value::Int(_) | Value::Bool(_) | Value::Float(_));
                     if generic.is_none() && numeric {
                         if !floating {
-                            let seed = self.math_float(&Value::Int(integer.clone()))?;
+                            let seed = self.math_float(&Value::Int(integer.clone().into()))?;
                             triple.add_product(seed, 1.0);
                             floating = true;
                         }
@@ -734,15 +734,15 @@ impl Runtime {
                         if triple.add_product(x, y) {
                             continue;
                         }
-                        generic = Some(Value::Float(triple.value() + x * y));
+                        generic = Some(Value::Float((triple.value() + x * y).into()));
                         floating = false;
                         continue;
                     }
                     let current = generic.take().unwrap_or_else(|| {
                         if floating {
-                            Value::Float(triple.value())
+                            Value::Float(triple.value().into())
                         } else {
-                            Value::Int(integer.clone())
+                            Value::Int(integer.clone().into())
                         }
                     });
                     self.math_keep(root, base + 4, current.clone());
@@ -754,9 +754,9 @@ impl Runtime {
                 }
                 return Ok(generic.unwrap_or_else(|| {
                     if floating {
-                        Value::Float(triple.value())
+                        Value::Float(triple.value().into())
                     } else {
-                        Value::Int(integer.normalized())
+                        Value::Int(integer.normalized().into())
                     }
                 }));
             }
@@ -796,7 +796,7 @@ impl Runtime {
                         }
                     }
                 }
-                return Ok(Value::Float(math_norm(&coordinates)));
+                return Ok(Value::Float(math_norm(&coordinates).into()));
             }
             "log" | "log2" | "log10" => {
                 let mut result = self.math_log(&args[0], name)?;
@@ -807,7 +807,7 @@ impl Runtime {
                     }
                     result /= base;
                 }
-                return Ok(Value::Float(result));
+                return Ok(Value::Float(result.into()));
             }
             "isclose" => {
                 let x = self.math_float(&args[0])?;
@@ -850,7 +850,7 @@ impl Runtime {
                 return if result.is_infinite() && x.is_finite() {
                     Err(math_overflow())
                 } else {
-                    Ok(Value::Float(result))
+                    Ok(Value::Float(result.into()))
                 };
             }
             "nextafter" => {
@@ -872,7 +872,7 @@ impl Runtime {
                         .map(|n| n.min(u64::MAX as i128) as u64)
                         .unwrap_or(u64::MAX)
                 };
-                return Ok(Value::Float(math_nextafter(x, y, steps)));
+                return Ok(Value::Float(math_nextafter(x, y, steps).into()));
             }
             _ => {}
         }
@@ -889,8 +889,8 @@ impl Runtime {
         if name == "frexp" {
             let (mantissa, exponent) = math_frexp(x);
             return Ok(Value::Obj(self.alloc(Object::Tuple(vec![
-                Value::Float(mantissa),
-                Value::Int(Int::from_i128(exponent as i128)),
+                Value::Float(mantissa.into()),
+                Value::Int(Int::from_i128(exponent as i128).into()),
             ]))));
         }
         if name == "modf" {
@@ -900,8 +900,8 @@ impl Runtime {
                 x.fract().copysign(x)
             };
             return Ok(Value::Obj(self.alloc(Object::Tuple(vec![
-                Value::Float(fraction),
-                Value::Float(x.trunc()),
+                Value::Float(fraction.into()),
+                Value::Float(x.trunc().into()),
             ]))));
         }
         if name == "ulp" {
@@ -913,13 +913,13 @@ impl Runtime {
             } else {
                 f64::from_bits(a.to_bits() + 1) - a
             };
-            return Ok(Value::Float(result));
+            return Ok(Value::Float(result.into()));
         }
         if name == "gamma" || name == "lgamma" {
-            return math_gamma(x, name == "lgamma").map(Value::Float);
+            return math_gamma(x, name == "lgamma").map(|value| Value::Float(value.into()));
         }
         if name == "erf" || name == "erfc" {
-            return Ok(Value::Float(math_erf(x, name == "erfc")));
+            return Ok(Value::Float(math_erf(x, name == "erfc").into()));
         }
         let y = if args.len() > 1 {
             self.math_float(&args[1])?
@@ -927,19 +927,19 @@ impl Runtime {
             0.0
         };
         if name == "remainder" {
-            return math_remainder(x, y).map(Value::Float);
+            return math_remainder(x, y).map(|value| Value::Float(value.into()));
         }
         if name == "fmod" {
             if x.is_nan() {
-                return Ok(Value::Float(x));
+                return Ok(Value::Float(x.into()));
             }
             if y.is_nan() {
-                return Ok(Value::Float(y));
+                return Ok(Value::Float(y.into()));
             }
             if x.is_infinite() || y == 0.0 {
                 return Err(math_domain());
             }
-            return Ok(Value::Float(x % y));
+            return Ok(Value::Float((x % y).into()));
         }
         if name == "fma" {
             let z = self.math_float(&args[2])?;
@@ -950,7 +950,7 @@ impl Runtime {
             if result.is_infinite() && x.is_finite() && y.is_finite() && z.is_finite() {
                 return Err(math_overflow());
             }
-            return Ok(Value::Float(result));
+            return Ok(Value::Float(result.into()));
         }
         if (name == "log1p" && x <= -1.0) || (name == "atanh" && x.abs() >= 1.0) {
             return Err(math_domain());
@@ -1001,6 +1001,6 @@ impl Runtime {
         {
             return Err(math_overflow());
         }
-        Ok(Value::Float(result))
+        Ok(Value::Float(result.into()))
     }
 }

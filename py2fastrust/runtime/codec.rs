@@ -32,7 +32,7 @@ fn codec_bind(name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>, names: 
     Ok(values)
 }
 fn codec_argument(runtime: &Runtime, value: Option<&Value>, default: &str, name: &str) -> PyResult<String> {
-    let value = match value { None => default.to_owned(),Some(Value::Str(value)) => value.clone(),Some(value) => match runtime.native_payload(value) { Some(Value::Str(value))=>value,_=>return Err(pyerr("TypeError",format!("{name} must be str"))) } };
+    let value = match value { None => default.to_owned(),Some(Value::Str(value)) => value.to_string(),Some(value) => match runtime.native_payload(value) { Some(Value::Str(value))=>value.into_inner(),_=>return Err(pyerr("TypeError",format!("{name} must be str"))) } };
     if value.contains('\0') { return Err(pyerr("ValueError","embedded null character")); }
     Ok(value)
 }
@@ -67,7 +67,7 @@ fn codec_exception_message(kind: &str, args: &[Value]) -> Option<String> {
 fn codec_error(codec: TextCodec, object: Value, start: usize, end: usize, reason: &str, decoding: bool) -> PyException {
     let kind = if decoding { "UnicodeDecodeError" } else { "UnicodeEncodeError" };
     let mut error=pyerr(kind,codec_unicode_message(codec.name(),&object,start as i128,end as i128,reason,decoding));
-    error.args=vec![Value::Str(codec.name().into()),object.clone(),Value::Int(Int::from_i128(start as i128)),Value::Int(Int::from_i128(end as i128)),Value::Str(reason.into())];
+    error.args=vec![Value::Str(codec.name().into()),object.clone(),Value::Int(Int::from_i128(start as i128).into()),Value::Int(Int::from_i128(end as i128).into()),Value::Str(reason.into())];
     for (name,value) in ["encoding","object","start","end","reason"].iter().zip(error.args.iter()) { error.attributes.insert((*name).into(),value.clone()); }
     error
 }
@@ -83,7 +83,7 @@ impl Runtime {
             let payload=self.native_payload(&source).unwrap_or_else(||source.clone());
             if let Value::Str(_) = &payload {
                 if !encoded { return Err(pyerr("TypeError","string argument without an encoding")); }
-                return self.codec_encode(payload,vec![Value::Str(encoding),Value::Str(errors)],Vec::new());
+                return self.codec_encode(payload,vec![Value::Str(encoding.into()),Value::Str(errors.into())],Vec::new());
             }
             if encoded || error_argument { return Err(pyerr("TypeError",if encoded{"encoding without a string argument"}else{"errors without a string argument"})); }
             if let Value::Bytes(_) = &source { return Ok(source); }
@@ -102,14 +102,14 @@ impl Runtime {
                 if matches!(payload,Value::Bytes(_)){return Ok(payload);}
                 let count=if matches!(payload,Value::Int(_) | Value::Bool(_)) { Some(self.as_int(&payload)?) }
                 else { match self.special_method(source.clone(),"__index__") {
-                    Ok(method)=>{let value=self.call(method,Vec::new(),Vec::new(),None)?;match value{Value::Int(value)=>Some(value),Value::Bool(value)=>Some(Int::from_i128(if value{1}else{0})),_=>return Err(pyerr("TypeError","__index__ returned non-int"))}},
+                    Ok(method)=>{let value=self.call(method,Vec::new(),Vec::new(),None)?;match value{Value::Int(value)=>Some(value.into_inner()),Value::Bool(value)=>Some(Int::from_i128(if value{1}else{0})),_=>return Err(pyerr("TypeError","__index__ returned non-int"))}},
                     Err(error) if error.kind=="AttributeError"=>None,Err(error)=>return Err(error),
                 }};
                 if let Some(count)=count {
                     if count.is_negative(){return Err(pyerr("ValueError","negative count"));}
                     let count=count.to_usize().filter(|count|*count<=isize::MAX as usize).ok_or_else(||pyerr("OverflowError","cannot fit 'int' into an index-sized integer"))?;
                     let mut result=Vec::new();result.try_reserve_exact(count).map_err(|_|pyerr("MemoryError","cannot allocate bytes"))?;result.resize(count,0);
-                    return Ok(Value::Bytes(result));
+                    return Ok(Value::Bytes(result.into()));
                 }
                 let iterator=self.iter(source)?;self.roots[root].push(iterator.clone());let mut result=Vec::new();
                 while let Some(value)=self.next(iterator.clone())? {
@@ -117,11 +117,11 @@ impl Runtime {
                     let number=self.as_int(&value)?.to_usize().filter(|value|*value<256).ok_or_else(||pyerr("ValueError","bytes must be in range(0, 256)"))?;
                     result.push(number as u8);
                 }
-                Ok(Value::Bytes(result))
+                Ok(Value::Bytes(result.into()))
             })();self.roots.truncate(root);result
         } else {
             if encoded || error_argument { return Err(pyerr("TypeError",if encoded{"encoding without a string argument"}else{"errors without a string argument"})); }
-            Ok(Value::Bytes(Vec::new()))
+            Ok(Value::Bytes(Vec::new().into()))
         }
     }
     fn str_constructor(&mut self, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
@@ -129,13 +129,21 @@ impl Runtime {
         let encoding=codec_argument(self,values[1].as_ref(),"utf-8","encoding")?;
         let errors=codec_argument(self,values[2].as_ref(),"strict","errors")?;
         let decoding=values[1].is_some() || values[2].is_some();
-        let source=match values[0].take(){Some(value)=>value,None=>return Ok(Value::Str(String::new()))};
+        let source=match values[0].take(){Some(value)=>value,None=>return Ok(Value::Str(String::new().into()))};
         if decoding {
             let source=self.native_payload(&source).unwrap_or(source);
-            return self.codec_decode(source,vec![Value::Str(encoding),Value::Str(errors)],Vec::new());
+            return self.codec_decode(source,vec![Value::Str(encoding.into()),Value::Str(errors.into())],Vec::new());
         }
         if matches!(source,Value::Str(_)){return Ok(source);}
-        Ok(Value::Str(self.str_value(&source)?))
+        match self.special_method(source.clone(),"__str__") {
+            Ok(method)=>{
+                let result=self.call(method,Vec::new(),Vec::new(),None)?;
+                if matches!(result,Value::Str(_)) || matches!(self.native_payload(&result),Some(Value::Str(_))) {return Ok(result);}
+                return Err(pyerr("TypeError","__str__ returned non-string"));
+            },
+            Err(error) if error.kind=="AttributeError"=>(),Err(error)=>return Err(error),
+        }
+        Ok(Value::Str(self.str_value(&source)?.into()))
     }
     fn codec_encode(&mut self, source: Value, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
         let values=codec_bind("encode",args,kwargs,&["encoding","errors"])?;
@@ -143,7 +151,7 @@ impl Runtime {
         let errors=codec_argument(self,values[1].as_ref(),"strict","errors")?;
         let codec=TextCodec::lookup(&encoding)?;
         let text=match &source{Value::Str(text)=>text,_=>return Err(pyerr("TypeError","encoding requires a string"))};
-        if matches!(codec,TextCodec::Utf8){return Ok(Value::Bytes(text.as_bytes().to_vec()));}
+        if matches!(codec,TextCodec::Utf8){return Ok(Value::Bytes(text.as_bytes().to_vec().into()));}
         let maximum=if matches!(codec,TextCodec::Ascii){127}else{255};
         let characters:Vec<char>=text.chars().collect();let mut at=0;let mut output=Vec::with_capacity(text.len());
         while at<characters.len() {
@@ -159,7 +167,7 @@ impl Runtime {
                 _=>return Err(codec_unknown_handler(&errors,false)),
             }
         }
-        Ok(Value::Bytes(output))
+        Ok(Value::Bytes(output.into()))
     }
     fn codec_decode(&mut self, source: Value, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
         let values=codec_bind("decode",args,kwargs,&["encoding","errors"])?;
@@ -193,6 +201,6 @@ impl Runtime {
             }
             at=end;
         }
-        Ok(Value::Str(output))
+        Ok(Value::Str(output.into()))
     }
 }

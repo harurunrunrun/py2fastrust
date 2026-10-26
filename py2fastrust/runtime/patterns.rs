@@ -135,7 +135,7 @@ impl Runtime {
                 for (key, pattern) in keys.iter().zip(patterns) {
                     let key = self.pattern_key(frame, key, root)?;
                     self.roots[root].push(key.clone());
-                    for prior in &matched_keys { if self.equal(prior, &key)? { return Err(pyerr("ValueError", "mapping pattern checks duplicate key")); } }
+                    for prior in &matched_keys { if self.identical_or_equal(prior, &key)? { return Err(pyerr("ValueError", "mapping pattern checks duplicate key")); } }
                     let get = self.getattr(subject.clone(), "get")?;
                     let value = self.call(get, vec![key.clone(), missing.clone()], Vec::new(), Some(frame))?;
                     if self.compare("is", &value, &missing)? { return Ok(false); }
@@ -146,7 +146,7 @@ impl Runtime {
                     let mut remaining = Vec::new();
                     for (key, value) in self.dict_items(subject)? {
                         let mut consumed = false;
-                        for matched in &matched_keys { if self.equal(&key, matched)? { consumed = true; break; } }
+                        for matched in &matched_keys { if self.identical_or_equal(&key, matched)? { consumed = true; break; } }
                         if !consumed { remaining.push((key, value)); }
                     }
                     let value = self.obj_value(Object::Dict(remaining));
@@ -182,7 +182,7 @@ impl Runtime {
                     };
                     if positional.len() > names.len() { return Err(pyerr("TypeError", "too many positional subpatterns")); }
                     for name in names.into_iter().take(positional.len()) {
-                        match name { Value::Str(name) => attributes.push(name), _ => return Err(pyerr("TypeError", "__match_args__ elements must be strings")) }
+                        match name { Value::Str(name) => attributes.push(name.into_inner()), _ => return Err(pyerr("TypeError", "__match_args__ elements must be strings")) }
                     }
                 }
                 let mut seen = Vec::new();

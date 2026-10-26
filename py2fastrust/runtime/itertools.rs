@@ -83,7 +83,7 @@ impl Runtime {
         let result = self.itertools_construct(name,args,kwargs,root); self.roots.truncate(root); result
     }
     fn itertools_construct(&mut self, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>, root: usize) -> PyResult<Value> {
-        let zero = || Value::Int(Int::from_i128(0)); let one = || Value::Int(Int::from_i128(1));
+        let zero = || Value::Int(Int::from_i128(0).into()); let one = || Value::Int(Int::from_i128(1).into());
         let state = match name {
             "accumulate" => {
                 let mut a = self.tools_arguments(name,args,kwargs,&["iterable","func","initial"],2,0,1)?;
@@ -114,7 +114,7 @@ impl Runtime {
             "count" => {
                 let mut a = self.tools_arguments(name,args,kwargs,&["start","step"],2,0,0)?; let mut current = a[0].take().unwrap_or_else(zero); let step = a[1].take().unwrap_or_else(one);
                 if !matches!(current,Value::Int(_) | Value::Float(_) | Value::Bool(_)) || !matches!(step,Value::Int(_) | Value::Float(_) | Value::Bool(_)) { return Err(pyerr("TypeError","a number is required")); }
-                if matches!(&step,Value::Int(value) if *value==Int::from_i128(1)) || matches!(step,Value::Bool(true)) { if let Value::Bool(value)=current { current=Value::Int(Int::from_i128(if value{1}else{0})); } }
+                if matches!(&step,Value::Int(value) if *value==Int::from_i128(1)) || matches!(step,Value::Bool(true)) { if let Value::Bool(value)=current { current=Value::Int(Int::from_i128(if value{1}else{0}).into()); } }
                 ToolsState::Count { current,step,started:false }
             }
             "cycle" => { let mut a = self.tools_arguments(name,args,kwargs,&["iterable"],1,1,1)?; ToolsState::Cycle { iter:Some(self.iter(a[0].take().unwrap())?),cache:Vec::new(),index:0 } }
@@ -228,7 +228,7 @@ impl Runtime {
                 loop {
                     let (current,consumed,active,exhausted)={let state=shared.borrow();(state.current.clone(),state.consumed,state.active_key.clone(),state.exhausted)};
                     if exhausted{return Ok(None)}
-                    match current {None=>{if !self.tools_group_advance(shared,root)?{return Ok(None)}},Some((key,_))=>{if consumed {if !self.tools_group_advance(shared,root)?{return Ok(None)}}else if let Some(active)=active{if self.equal(&key,&active)?{if !self.tools_group_advance(shared,root)?{return Ok(None)}}else{break}}else{break}}}
+                    match current {None=>{if !self.tools_group_advance(shared,root)?{return Ok(None)}},Some((key,_))=>{if consumed {if !self.tools_group_advance(shared,root)?{return Ok(None)}}else if let Some(active)=active{if self.identical_or_equal(&key,&active)?{if !self.tools_group_advance(shared,root)?{return Ok(None)}}else{break}}else{break}}}
                 }
                 let (key,generation)={let mut state=shared.borrow_mut();let key=state.current.as_ref().unwrap().0.clone();state.active_key=Some(key.clone());state.generation=state.generation.checked_add(1).ok_or_else(||pyerr("OverflowError","too many groups"))?;(key,state.generation)};
                 let group=self.tools_iterator(ToolsState::Group { shared:shared.clone(),generation,key:key.clone() });self.tools_keep(root,group.clone());Ok(Some(self.obj_value(Object::Tuple(vec![key,group]))))
@@ -236,7 +236,7 @@ impl Runtime {
             ToolsState::Group { shared,generation,key } => {
                 let (actual,consumed)={let state=shared.borrow();(state.generation,state.consumed)};if actual!=*generation{return Ok(None)}
                 if consumed && !self.tools_group_advance(shared,root)?{return Ok(None)}
-                let current=shared.borrow().current.clone();if let Some((current_key,value))=current{if self.equal(&current_key,key)?{shared.borrow_mut().consumed=true;return Ok(Some(value));}}Ok(None)
+                let current=shared.borrow().current.clone();if let Some((current_key,value))=current{if self.identical_or_equal(&current_key,key)?{shared.borrow_mut().consumed=true;return Ok(Some(value));}}Ok(None)
             }
             ToolsState::ISlice { iter,start,stop,step,index,target,done } => {
                 if *done{return Ok(None)}

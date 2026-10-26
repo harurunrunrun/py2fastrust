@@ -7352,13 +7352,13 @@ fn text_format_float(value: f64, options: &TextFormatSpec) -> PyResult<String> {
 impl Runtime {
     fn text_format_value(&mut self, value: Value, specification: &str) -> Option<PyResult<String>> {
         match value {
-            Value::Float(value) => Some(TextFormatSpec::parse(specification, true).and_then(|options| text_format_float(value, &options))),
+            Value::Float(value) => Some(TextFormatSpec::parse(specification, true).and_then(|options| text_format_float(*value, &options))),
             Value::Str(value) => Some((|| {
                 let options = TextFormatSpec::parse(specification, false)?;
                 if options.presentation.is_some_and(|value| value != 's') { return Err(pyerr("ValueError", "Unknown format code for object of type 'str'")); }
                 if options.sign.is_some() || options.negative_zero || options.alternate || options.integer_group.is_some() || options.fractional_group.is_some() || options.align == '=' { return Err(pyerr("ValueError", "Invalid format specifier for string")); }
                 let value = if let Some(precision) = options.precision { value.chars().take(precision).collect() } else { value };
-                text_format_pad(value, &options, 0)
+                text_format_pad(value.to_string(), &options, 0)
             })()),
             _ => None,
         }
@@ -7465,12 +7465,12 @@ impl Runtime {
             if args.len()<2||args.len()>3{return Err(pyerr("TypeError","replace() requires old, new and an optional count"));}
             let old=match &args[0]{Value::Str(value)=>value,_=>return Err(pyerr("TypeError","replace() argument old must be str"))};let new=match &args[1]{Value::Str(value)=>value,_=>return Err(pyerr("TypeError","replace() argument new must be str"))};
             let mut count=args.get(2).cloned();for (name,value) in kwargs{if name!="count"||count.is_some(){return Err(pyerr("TypeError","invalid or repeated keyword argument for replace()"));}count=Some(value);}
-            let count=self.text_maxsplit(count.as_ref())?;return Ok(Value::Str(if let Some(count)=count{source.replacen(old,new,count)}else{source.replace(old,new)}));
+            let count=self.text_maxsplit(count.as_ref())?;return Ok(Value::Str(if let Some(count)=count{source.replacen(old.as_str(),new.as_str(),count).into()}else{source.replace(old.as_str(),new.as_str()).into()}));
         }
         if name=="casefold" {
             self.text_arity(name,&args,&kwargs,0,0)?;
-            if source.is_ascii(){return Ok(Value::Str(source.to_ascii_lowercase()));}
-            let mut result=String::with_capacity(source.len());for character in source.chars(){if let Ok(at)=TEXT_CASEFOLD.binary_search_by_key(&(character as u32),|(codepoint,_)|*codepoint){result.push_str(TEXT_CASEFOLD[at].1);}else{result.push(character);}}return Ok(Value::Str(result));
+            if source.is_ascii(){return Ok(Value::Str(source.to_ascii_lowercase().into()));}
+            let mut result=String::with_capacity(source.len());for character in source.chars(){if let Ok(at)=TEXT_CASEFOLD.binary_search_by_key(&(character as u32),|(codepoint,_)|*codepoint){result.push_str(TEXT_CASEFOLD[at].1);}else{result.push(character);}}return Ok(Value::Str(result.into()));
         }
         if ["isdigit","isdecimal","isnumeric","isspace","isalpha","isalnum","islower","isupper"].contains(&name) {
             self.text_arity(name,&args,&kwargs,0,0)?;
@@ -7483,7 +7483,7 @@ impl Runtime {
         if ["strip","lstrip","rstrip"].contains(&name) {
             self.text_arity(name,&args,&kwargs,0,1)?;let characters=match args.first(){None|Some(Value::None)=>None,Some(Value::Str(value))=>Some(value),_=>return Err(pyerr("TypeError","strip arg must be None or str"))};
             let whitespace=|character:char|characters.map(|characters|characters.contains(character)).unwrap_or_else(||text_space(character));
-            let result=match name{"lstrip"=>source.trim_start_matches(whitespace),"rstrip"=>source.trim_end_matches(whitespace),_=>source.trim_matches(whitespace)};return Ok(Value::Str(result.to_owned()));
+            let result=match name{"lstrip"=>source.trim_start_matches(whitespace),"rstrip"=>source.trim_end_matches(whitespace),_=>source.trim_matches(whitespace)};return Ok(Value::Str(result.to_owned().into()));
         }
         if name=="split"||name=="rsplit" {
             let (separator,maximum)=self.text_split_args(args,kwargs)?;let maximum=self.text_maxsplit(maximum.as_ref())?;let separator=match separator{None|Some(Value::None)=>None,Some(Value::Str(value))=>{if value.is_empty(){return Err(pyerr("ValueError","empty separator"));}Some(value)},_=>return Err(pyerr("TypeError","must be str or None"))};
@@ -7491,25 +7491,25 @@ impl Runtime {
             let parts:Vec<String>=if source.is_ascii() {
                 let parts=if let Some(separator)=separator{ text_split_separator(source.as_bytes(),separator.as_bytes(),maximum,reverse) }else{ text_split_whitespace(source.as_bytes(),maximum,reverse,|value|matches!(value,9..=13|28..=32)) };parts.into_iter().map(|part|String::from_utf8(part).unwrap()).collect()
             }else{let characters:Vec<char>=source.chars().collect();let parts=if let Some(separator)=separator{let separator:Vec<char>=separator.chars().collect();text_split_separator(&characters,&separator,maximum,reverse)}else{text_split_whitespace(&characters,maximum,reverse,text_space)};parts.into_iter().map(|part|part.into_iter().collect()).collect()};
-            return Ok(self.obj_value(Object::List(parts.into_iter().map(Value::Str).collect())));
+            return Ok(self.obj_value(Object::List(parts.into_iter().map(|value| Value::Str(value.into())).collect())));
         }
         self.text_arity(name,&args,&kwargs,1,3)?;
         let length=if source.is_ascii(){source.len()}else{source.chars().count()};let (start,stop)=self.text_limits(&args,length)?;
         if name=="startswith"||name=="endswith" {
             let prefixes=match &args[0]{Value::Str(value)=>vec![Value::Str(value.clone())],Value::Obj(index)=>match self.object(*index)?{Object::Tuple(values)=>values,_=>return Err(pyerr("TypeError","first arg must be str or a tuple of str"))},_=>return Err(pyerr("TypeError","first arg must be str or a tuple of str"))};
             let window=if start<=stop&&start<=length{Some(if source.is_ascii(){std::borrow::Cow::Borrowed(&source[start..stop])}else{std::borrow::Cow::Owned(source.chars().skip(start).take(stop-start).collect::<String>())})}else{None};
-            for prefix in prefixes{let prefix=match prefix{Value::Str(value)=>value,_=>return Err(pyerr("TypeError","tuple for startswith must only contain str"))};if let Some(window)=&window{if if name=="startswith"{window.starts_with(&prefix)}else{window.ends_with(&prefix)}{return Ok(Value::Bool(true));}}}return Ok(Value::Bool(false));
+            for prefix in prefixes{let prefix=match prefix{Value::Str(value)=>value,_=>return Err(pyerr("TypeError","tuple for startswith must only contain str"))};if let Some(window)=&window{if if name=="startswith"{window.starts_with(&*prefix)}else{window.ends_with(&*prefix)}{return Ok(Value::Bool(true));}}}return Ok(Value::Bool(false));
         }
         let needle=match &args[0]{Value::Str(value)=>value,_=>return Err(pyerr("TypeError","must be str"))};
         let valid=start<=stop&&start<=length;
         if name=="count" {
-            let count=if !valid{0}else if source.is_ascii(){text_count_slice(&source.as_bytes()[start..stop],needle.as_bytes())}else{let characters:Vec<char>=source.chars().collect();let needle:Vec<char>=needle.chars().collect();text_count_slice(&characters[start..stop],&needle)};return Ok(Value::Int(Int::from_i128(count as i128)));
+            let count=if !valid{0}else if source.is_ascii(){text_count_slice(&source.as_bytes()[start..stop],needle.as_bytes())}else{let characters:Vec<char>=source.chars().collect();let needle:Vec<char>=needle.chars().collect();text_count_slice(&characters[start..stop],&needle)};return Ok(Value::Int(Int::from_i128(count as i128).into()));
         }
         let position=if !valid{None}else if source.is_ascii(){text_find_slice(&source.as_bytes()[start..stop],needle.as_bytes(),name.starts_with('r')).map(|position|start+position)}else{let characters:Vec<char>=source.chars().collect();let needle:Vec<char>=needle.chars().collect();text_find_slice(&characters[start..stop],&needle,name.starts_with('r')).map(|position|start+position)};
-        match position{Some(position)=>Ok(Value::Int(Int::from_i128(position as i128))),None if name=="index"||name=="rindex"=>Err(pyerr("ValueError","substring not found")),None=>Ok(Value::Int(Int::from_i128(-1)))}
+        match position{Some(position)=>Ok(Value::Int(Int::from_i128(position as i128).into())),None if name=="index"||name=="rindex"=>Err(pyerr("ValueError","substring not found")),None=>Ok(Value::Int(Int::from_i128(-1).into()))}
     }
     fn bytes_needle(&mut self, value: &Value, integer: bool) -> PyResult<Vec<u8>> {
-        match value { Value::Bytes(value)=>Ok(value.clone()),Value::Int(_) | Value::Bool(_) if integer=>{let value=self.as_int(value)?.to_i128().ok_or_else(||pyerr("ValueError","byte must be in range(0, 256)"))?;if !(0..256).contains(&value){return Err(pyerr("ValueError","byte must be in range(0, 256)"));}Ok(vec![value as u8])},_=>Err(pyerr("TypeError","a bytes-like object is required")) }
+        match value { Value::Bytes(value)=>Ok(value.to_vec()),Value::Int(_) | Value::Bool(_) if integer=>{let value=self.as_int(value)?.to_i128().ok_or_else(||pyerr("ValueError","byte must be in range(0, 256)"))?;if !(0..256).contains(&value){return Err(pyerr("ValueError","byte must be in range(0, 256)"));}Ok(vec![value as u8])},_=>Err(pyerr("TypeError","a bytes-like object is required")) }
     }
     fn bytes_method(&mut self, source: Vec<u8>, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> Option<PyResult<Value>> {
         if !["split","rsplit","strip","lstrip","rstrip","join","replace","startswith","endswith","find","rfind","index","rindex","count"].contains(&name){return None}
@@ -7518,19 +7518,19 @@ impl Runtime {
     fn bytes_method_inner(&mut self, source: Vec<u8>, name: &str, args: Vec<Value>, kwargs: Vec<(String,Value)>) -> PyResult<Value> {
         if name=="split"||name=="rsplit" {
             let (separator,maximum)=self.text_split_args(args,kwargs)?;let maximum=self.text_maxsplit(maximum.as_ref())?;let separator=match separator{None|Some(Value::None)=>None,Some(value)=>{let value=self.bytes_needle(&value,false)?;if value.is_empty(){return Err(pyerr("ValueError","empty separator"));}Some(value)}};
-            let parts=if let Some(separator)=separator{text_split_separator(&source,&separator,maximum,name=="rsplit")}else{text_split_whitespace(&source,maximum,name=="rsplit",bytes_space)};return Ok(self.obj_value(Object::List(parts.into_iter().map(Value::Bytes).collect())));
+            let parts=if let Some(separator)=separator{text_split_separator(&source,&separator,maximum,name=="rsplit")}else{text_split_whitespace(&source,maximum,name=="rsplit",bytes_space)};return Ok(self.obj_value(Object::List(parts.into_iter().map(|value| Value::Bytes(value.into())).collect())));
         }
         if ["strip","lstrip","rstrip"].contains(&name) {
             self.text_arity(name,&args,&kwargs,0,1)?;let characters=match args.first(){None|Some(Value::None)=>None,Some(value)=>Some(self.bytes_needle(value,false)?)};let whitespace=|value:u8|characters.as_ref().map(|characters|characters.contains(&value)).unwrap_or_else(||bytes_space(value));
-            let mut start=0;let mut stop=source.len();if name!="rstrip"{while start<stop&&whitespace(source[start]){start+=1;}}if name!="lstrip"{while stop>start&&whitespace(source[stop-1]){stop-=1;}}return Ok(Value::Bytes(source[start..stop].to_vec()));
+            let mut start=0;let mut stop=source.len();if name!="rstrip"{while start<stop&&whitespace(source[start]){start+=1;}}if name!="lstrip"{while stop>start&&whitespace(source[stop-1]){stop-=1;}}return Ok(Value::Bytes(source[start..stop].to_vec().into()));
         }
         if name=="join" {
-            self.text_arity(name,&args,&kwargs,1,1)?;let values=self.to_vec(args[0].clone())?;let mut result=Vec::new();for (index,value) in values.into_iter().enumerate(){if index!=0{result.extend_from_slice(&source);}result.extend(self.bytes_needle(&value,false)?);}return Ok(Value::Bytes(result));
+            self.text_arity(name,&args,&kwargs,1,1)?;let values=self.to_vec(args[0].clone())?;let mut result=Vec::new();for (index,value) in values.into_iter().enumerate(){if index!=0{result.extend_from_slice(&source);}result.extend(self.bytes_needle(&value,false)?);}return Ok(Value::Bytes(result.into()));
         }
         if name=="replace" {
             self.text_arity(name,&args,&kwargs,2,3)?;let old=self.bytes_needle(&args[0],false)?;let new=self.bytes_needle(&args[1],false)?;let limit=self.text_maxsplit(args.get(2))?.unwrap_or(usize::MAX);let mut result=Vec::new();let mut start=0;let mut count=0;
             if old.is_empty(){for index in 0..=source.len(){if count<limit{result.extend_from_slice(&new);count+=1;}if index<source.len(){result.push(source[index]);}}}
-            else{while count<limit{match text_find_slice(&source[start..],&old,false){Some(index)=>{let index=start+index;result.extend_from_slice(&source[start..index]);result.extend_from_slice(&new);start=index+old.len();count+=1;},None=>break}}result.extend_from_slice(&source[start..]);}return Ok(Value::Bytes(result));
+            else{while count<limit{match text_find_slice(&source[start..],&old,false){Some(index)=>{let index=start+index;result.extend_from_slice(&source[start..index]);result.extend_from_slice(&new);start=index+old.len();count+=1;},None=>break}}result.extend_from_slice(&source[start..]);}return Ok(Value::Bytes(result.into()));
         }
         self.text_arity(name,&args,&kwargs,1,3)?;let (start,stop)=self.text_limits(&args,source.len())?;let valid=start<=stop&&start<=source.len();
         if name=="startswith"||name=="endswith" {
@@ -7538,8 +7538,8 @@ impl Runtime {
             for prefix in prefixes{let prefix=self.bytes_needle(&prefix,false)?;if valid && if name=="startswith"{source[start..stop].starts_with(&prefix)}else{source[start..stop].ends_with(&prefix)}{return Ok(Value::Bool(true));}}return Ok(Value::Bool(false));
         }
         let needle=self.bytes_needle(&args[0],true)?;
-        if name=="count"{return Ok(Value::Int(Int::from_i128(if valid{text_count_slice(&source[start..stop],&needle) as i128}else{0})));}
+        if name=="count"{return Ok(Value::Int(Int::from_i128(if valid{text_count_slice(&source[start..stop],&needle) as i128}else{0}).into()));}
         let position=if valid{text_find_slice(&source[start..stop],&needle,name.starts_with('r')).map(|position|start+position)}else{None};
-        match position{Some(position)=>Ok(Value::Int(Int::from_i128(position as i128))),None if name=="index"||name=="rindex"=>Err(pyerr("ValueError","subsection not found")),None=>Ok(Value::Int(Int::from_i128(-1)))}
+        match position{Some(position)=>Ok(Value::Int(Int::from_i128(position as i128).into())),None if name=="index"||name=="rindex"=>Err(pyerr("ValueError","subsection not found")),None=>Ok(Value::Int(Int::from_i128(-1).into()))}
     }
 }

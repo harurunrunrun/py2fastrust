@@ -96,6 +96,13 @@ impl Runtime {
             "dict" => self.obj_value(Object::Dict(Vec::new())),
             "set" => self.obj_value(Object::Set(Vec::new())),
             "tuple" => {
+                if Self::same_type(&class, &Value::Builtin("tuple".into())) {
+                    if let Some(Value::Obj(index)) = args.first() {
+                        if matches!(self.object(*index)?, Object::Tuple(_)) {
+                            return Ok(args[0].clone());
+                        }
+                    }
+                }
                 let values = if let Some(iterable) = args.first() {
                     self.builtin_collect(iterable.clone(), root)?
                 } else {
@@ -130,8 +137,8 @@ impl Runtime {
                     }
                     if let Value::Bytes(bytes) = &converted[0] {
                         converted[0] = Value::Str(
-                            String::from_utf8(bytes.clone())
-                                .map_err(|_| pyerr("ValueError", "invalid literal for int"))?,
+                            String::from_utf8(bytes.to_vec())
+                                .map_err(|_| pyerr("ValueError", "invalid literal for int"))?.into(),
                         );
                     }
                 }
@@ -291,7 +298,7 @@ impl Runtime {
             }
         }
         for (key, value) in kwargs {
-            self.setitem(payload.clone(), Value::Str(key), value)?;
+            self.setitem(payload.clone(), Value::Str(key.into()), value)?;
         }
         Ok(Value::None)
     }

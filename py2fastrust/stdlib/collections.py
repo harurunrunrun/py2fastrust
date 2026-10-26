@@ -614,7 +614,8 @@ class OrderedDict(_Mapping):
         keys = list(self._data)
         if key not in self._data:
             raise KeyError(key)
-        if keys[-1 if last else 0] == key:
+        boundary = keys[-1 if last else 0]
+        if boundary is key or boundary == key:
             return
         value = self._data.pop(key)
         if last:

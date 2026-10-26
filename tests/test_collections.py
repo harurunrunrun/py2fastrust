@@ -287,3 +287,15 @@ class CollectionsTests(unittest.TestCase):
                 d['d'] = 4
                 print(list(it))
         ''')
+
+    def test_ordered_dict_same_nan_boundary_does_not_invalidate_iteration(self):
+        self.run_source('''
+            from collections import OrderedDict
+            key = float("nan")
+            for last in [False, True]:
+                pairs = [("other", 1), (key, 2)] if last else [(key, 2), ("other", 1)]
+                mapping = OrderedDict(pairs)
+                iterator = iter(mapping)
+                mapping.move_to_end(key, last=last)
+                print(len(list(iterator)), mapping[key], len(mapping))
+        ''')

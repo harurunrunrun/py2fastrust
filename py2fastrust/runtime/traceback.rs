@@ -17,7 +17,7 @@ impl Runtime {
             let code = self.obj_value(Object::Record {
                 name: "code".into(),
                 fields: vec![
-                    ("co_filename".into(), Value::Str(filename.clone())),
+                    ("co_filename".into(), Value::Str(filename.clone().into())),
                     ("co_name".into(), Value::Str(name.into())),
                 ],
             });
@@ -25,13 +25,13 @@ impl Runtime {
                 name: "frame".into(),
                 fields: vec![
                     ("f_code".into(), code),
-                    ("f_lineno".into(), Value::Int(Int::from_i128(*line as i128))),
+                    ("f_lineno".into(), Value::Int(Int::from_i128(*line as i128).into())),
                 ],
             });
             next = self.obj_value(Object::Record {
                 name: "traceback".into(),
                 fields: vec![
-                    ("tb_lineno".into(), Value::Int(Int::from_i128(*line as i128))),
+                    ("tb_lineno".into(), Value::Int(Int::from_i128(*line as i128).into())),
                     ("tb_frame".into(), frame),
                     ("tb_next".into(), next),
                 ],

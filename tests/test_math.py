@@ -34,9 +34,9 @@ def rust_value(value):
     if isinstance(value, bool):
         return f"Value::Bool({str(value).lower()})"
     if isinstance(value, int):
-        return f'Value::Int(Int::parse("{value}",10).unwrap())'
+        return f'Value::Int(Int::parse("{value}",10).unwrap().into())'
     if isinstance(value, float):
-        return f"Value::Float(f64::from_bits({bits(value)}u64))"
+        return f"Value::Float(f64::from_bits({bits(value)}u64).into())"
     if isinstance(value, (tuple, list)):
         variant = "Tuple" if isinstance(value, tuple) else "List"
         return f"Value::Obj(rt.alloc(Object::{variant}(vec![{','.join(map(rust_value, value))}])))"

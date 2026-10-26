@@ -184,14 +184,14 @@ impl Runtime {
         let first = if length.is_zero() {
             Value::None
         } else {
-            Value::Int(start)
+            Value::Int(start.into())
         };
         let stride = if length <= Int::exact_small(1) {
             Value::None
         } else {
-            Value::Int(step)
+            Value::Int(step.into())
         };
-        let parts = self.obj_value(Object::Tuple(vec![Value::Int(length), first, stride]));
+        let parts = self.obj_value(Object::Tuple(vec![Value::Int(length.into()), first, stride]));
         self.call(Value::Builtin("hash".into()), vec![parts], Vec::new(), None)
     }
 
@@ -200,21 +200,21 @@ impl Runtime {
             if let Object::Slice(lower, upper, stride) = self.object(*index)? {
                 let (start, stop, step) =
                     range_slice(&start, &stop, &step, lower, upper, stride).map_err(int_error)?;
-                return Ok(self.obj_value(Object::Range(start, stop, step)));
+                return Ok(self.obj_value(Object::Range(start.into(), stop.into(), step.into())));
             }
         }
         let index = self.as_int(&key)?;
         Ok(Value::Int(
-            range_item(&start, &stop, &step, &index).map_err(int_error)?,
+            range_item(&start, &stop, &step, &index).map_err(int_error)?.into(),
         ))
     }
 
     fn range_numeric_value(&self, value: &Value) -> Option<Int> {
         match value {
-            Value::Int(value) => Some(value.clone()),
+            Value::Int(value) => Some(value.inner().clone()),
             Value::Bool(value) => Some(Int::exact_small(if *value { 1 } else { 0 })),
             Value::Float(value) if value.is_finite() && value.fract() == 0.0 => {
-                Int::exact_from_f64(*value).ok()
+                Int::exact_from_f64(**value).ok()
             }
             _ => None,
         }
@@ -229,7 +229,7 @@ impl Runtime {
         }
         let mut current = start;
         while range_nonempty(&current, &stop, &step) {
-            if self.equal(&Value::Int(current.clone()), &value)? {
+            if self.identical_or_equal(&Value::Int(current.clone().into()), &value)? {
                 return Ok(true);
             }
             current = range_cursor_next(&current, &stop, &step);
@@ -256,7 +256,7 @@ impl Runtime {
         if let Some(number) = self.range_numeric_value(value) {
             let contains = range_contains_integer(&start, &stop, &step, &number);
             if name == "count" {
-                return Ok(Value::Int(Int::exact_small(if contains { 1 } else { 0 })));
+                return Ok(Value::Int(Int::exact_small(if contains { 1 } else { 0 }).into()));
             }
             if contains {
                 return Ok(Value::Int(
@@ -264,14 +264,14 @@ impl Runtime {
                         .exact_add(&start.exact_neg())
                         .exact_divmod(&step)
                         .map_err(int_error)?
-                        .0,
+                        .0.into(),
                 ));
             }
             return Err(pyerr("ValueError", "value is not in range"));
         }
         if matches!(value, Value::Float(_)) {
             return if name == "count" {
-                Ok(Value::Int(Int::exact_small(0)))
+                Ok(Value::Int(Int::exact_small(0).into()))
             } else {
                 Err(pyerr("ValueError", "value is not in range"))
             };
@@ -280,9 +280,9 @@ impl Runtime {
         let mut index = Int::exact_small(0);
         let mut count = Int::exact_small(0);
         while range_nonempty(&current, &stop, &step) {
-            if self.equal(&Value::Int(current.clone()), value)? {
+            if self.identical_or_equal(&Value::Int(current.clone().into()), value)? {
                 if name == "index" {
-                    return Ok(Value::Int(index));
+                    return Ok(Value::Int(index.into()));
                 }
                 count = count.exact_add(&Int::exact_small(1));
             }
@@ -290,7 +290,7 @@ impl Runtime {
             index = index.exact_add(&Int::exact_small(1));
         }
         if name == "count" {
-            Ok(Value::Int(count))
+            Ok(Value::Int(count.into()))
         } else {
             Err(pyerr("ValueError", "value is not in range"))
         }
