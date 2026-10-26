@@ -311,7 +311,7 @@ print(b[0],b[1],b[-1],len(b))
     def test_integer_list_alias_and_mutation_fallback(self):
         rejected = [
             "a=[1]\nb=a\nprint(b[0])", "a=b=[1]\nprint(a[0])",
-            "a=[1]\na[0]=True", "a=[True,1]", "a=[[1]]", "a=[1]\na=2",
+            "a=[1]\na[0]=True", "a=[True,1]", "a=[[1]]",
             "a=[1]\na.append('mixed')", "a=[1]\nfor x in a:\n a[0]=2",
             "a=[1]\nfor x in a:\n a=[3]", "a=[1]\nfor x in a:\n a.append(x)",
             "a=[1]\nb=a if True else [2]\nprint(b[0])", "a=[1]\nb=a or [2]",
@@ -324,6 +324,7 @@ print(b[0],b[1],b[-1],len(b))
         for source in rejected:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+        self.differential("a=[1]\na=2\nprint(a)")
 
     def test_integer_dictionary_lookup_order_and_views(self):
         source = '''
@@ -458,7 +459,7 @@ print(d[0],d[-1],len(d))
 
     def test_dictionary_ownership_view_and_mutation_fallback(self):
         rejected = [
-            'd={1:2}\ne=d', 'd=e={}', 'd={1:2}\nd=3', 'dict=1\nd={}',
+            'd={1:2}\ne=d', 'd=e={}', 'dict=1\nd={}',
             'd={True:2}', 'd={1:True}', 'd={}\nd[True]=3', 'd={}\nd[1]=True',
             'd={}\nd[1]=[]', 'd={1:2}\ne={**d}', 'd={1:[2]}',
             'd={1:2}\ne=d if True else {}', 'd={1:2}\ne=d or {}',
@@ -482,6 +483,8 @@ print(d[0],d[-1],len(d))
         for source in rejected:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source,'fallback.py','i64'))
+
+        self.differential("d={1:2}\nd=3\nprint(d)")
 
     def test_container_cardinality_is_widened_before_loop_iterations(self):
         source='d={1:0}\nfor i in range(2):\n for j in range(0,4,len(d)):\n  print(j)\n d[2]=0\n'
@@ -507,7 +510,7 @@ print(d[0],d[-1],len(d))
             "for i in range(int(input())):\n pass\nprint(i)",
             "for i in range(0):\n pass\nprint(i)",
             "while int(input()):\n x=1\nprint(x)",
-            "x=1\nx=True\nprint(x)", "x=1\nx='hi'\nprint(x)",
+            "x=1\nx='hi'\nprint(x)",
             "print(1)\nprint=2", "int=1\nx=int(input())", "range=3\nfor i in range(3):\n pass",
             "x=eval(input())", "exec('x=1')", "import math\nprint(1)",
             "class A:\n pass", "x=[1,2]\nprint(x)",
@@ -519,6 +522,7 @@ print(d[0],d[-1],len(d))
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
         self.assertIsNone(try_generate_native("print(1)", "fallback.py", "bigint"))
+        self.differential("x=1\nx=True\nprint(x)")
         self.differential("def f():\n return 1\nprint(f())")
 
     def test_no_argument_entry_wrapper(self):

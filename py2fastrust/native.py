@@ -1,9 +1,10 @@
 """Conservative scalar/container AOT lowering; unproved programs use the VM.
 
-The analysis tracks definite bindings along normal control-flow paths and one
-stable scalar or uniquely owned integer-container type for every name. No user expression is executed during
-analysis. In particular, potentially dynamic Python programs are never
-partially lowered by this backend.
+The analysis tracks definite bindings along control-flow paths. A Python name
+can change type by moving to a different typed Rust slot; compatible paths join
+through scalar copies or uniquely owned integer-container moves. No user
+expression is executed during analysis. Programs that fail the complete proof
+use the VM instead of being partially lowered by this backend.
 """
 
 import ast
@@ -40,6 +41,22 @@ class _DictInfo:
 @dataclass(frozen=True)
 class _SetInfo:
     length: int | None
+
+
+@dataclass(frozen=True)
+class _Binding:
+    slot: str
+    info: object
+
+    @property
+    def kind(self):
+        if isinstance(self.info, _ListInfo):
+            return "list_int"
+        if isinstance(self.info, _DictInfo):
+            return "dict_int"
+        if isinstance(self.info, _SetInfo):
+            return "set_int"
+        return self.info
 
 
 @dataclass
@@ -306,7 +323,6 @@ class _Generator:
     def __init__(self, bits, functions=None, function=None, function_input=False):
         self.bits = bits
         self.bindings = {}
-        self.names = {}
         self.counter = 0
         self.loops = []
         self.needs_integer_runtime = False
@@ -334,14 +350,29 @@ class _Generator:
             return "NativeInt::MIN"
         return f"({value}_i128 as NativeInt)"
 
-    def bind(self, name, kind):
-        if (kind not in {"int", "bool", "list_int", "dict_int", "set_int"}
-                or name in self.BUILTINS or self.bindings.get(name, kind) != kind):
+    def slot(self, kind):
+        if kind not in {"int", "bool", "list_int", "dict_int", "set_int"}:
             raise _Unsupported
-        self.bindings[name] = kind
-        if name not in self.names:
-            self.names[name] = f"native_var_{len(self.names)}"
-        return self.names[name]
+        slot = f"native_var_{len(self.bindings)}"
+        self.bindings[slot] = kind
+        return slot
+
+    def bind(self, name, value, environment):
+        if name in self.BUILTINS:
+            raise _Unsupported
+        kind = value.kind if isinstance(value, _Expression) else value
+        previous = environment.get(name)
+        slot = previous.slot if isinstance(previous, _Binding) and previous.kind == kind else self.slot(kind)
+        info = self.binding(value) if isinstance(value, _Expression) else value
+        environment[name] = _Binding(slot, info)
+        return slot
+
+    @staticmethod
+    def update_info(environment, name, info):
+        previous = environment[name]
+        if not isinstance(previous, _Binding):
+            raise _Unsupported
+        environment[name] = _Binding(previous.slot, info)
 
     @staticmethod
     def number(expression):
@@ -498,13 +529,16 @@ class _Generator:
             information = environment[node.id]
             if isinstance(information, _Function):
                 raise _Unsupported
-            if isinstance(information, _ListInfo):
-                return _Expression(self.names[node.id], "list_int", owned=False, length=information.length)
-            if isinstance(information, _DictInfo):
-                return _Expression(self.names[node.id], "dict_int", owned=False, length=information.length, nonempty=information.nonempty)
-            if isinstance(information, _SetInfo):
-                return _Expression(self.names[node.id], "set_int", owned=False, length=information.length)
-            return _Expression(self.names[node.id], information)
+            if not isinstance(information, _Binding):
+                raise _Unsupported
+            info = information.info
+            if isinstance(info, _ListInfo):
+                return _Expression(information.slot, "list_int", owned=False, length=info.length)
+            if isinstance(info, _DictInfo):
+                return _Expression(information.slot, "dict_int", owned=False, length=info.length, nonempty=info.nonempty)
+            if isinstance(info, _SetInfo):
+                return _Expression(information.slot, "set_int", owned=False, length=info.length)
+            return _Expression(information.slot, info)
         if isinstance(node, ast.List):
             values = [self.expression(value, environment) for value in node.elts]
             if any(value.kind != "int" for value in values):
@@ -570,18 +604,10 @@ class _Generator:
             setup, iterator, arguments = self.range_iterator(comprehension.iter, environment)
             target = comprehension.target.id
             local = self.temporary()
-            previous = self.names.get(target)
-            self.names[target] = local
             inside = environment.copy()
-            inside[target] = "int"
-            try:
-                filters = [self.expression(condition, inside) for condition in comprehension.ifs]
-                element = self.expression(node.elt, inside)
-            finally:
-                if previous is None:
-                    self.names.pop(target, None)
-                else:
-                    self.names[target] = previous
+            inside[target] = _Binding(local, "int")
+            filters = [self.expression(condition, inside) for condition in comprehension.ifs]
+            element = self.expression(node.elt, inside)
             if element.kind != "int":
                 raise _Unsupported
             self.has_lists = True
@@ -822,33 +848,160 @@ class _Generator:
             code.append(rendered)
         return "\n".join(code), environment
 
-    @staticmethod
-    def join(first, second):
-        if first is None:
-            return second
-        if second is None:
-            return first
+    def join(self, environments, preferred=None):
+        """Merge normal paths, emitting moves into a typed phi slot per name.
+
+        An incompatible or possibly unbound name is deliberately absent. A
+        later independent assignment can restore its proof; a read cannot.
+        """
+        live = [environment for environment in environments if environment is not None]
+        moves = [[] for _ in environments]
+        if not live:
+            return None, moves
         result = {}
-        for name, kind in first.items():
-            other = second.get(name)
-            if isinstance(kind, _ListInfo) and isinstance(other, _ListInfo):
-                result[name] = kind if kind == other else _ListInfo(None)
-            elif isinstance(kind, _DictInfo) and isinstance(other, _DictInfo):
-                result[name] = kind if kind == other else _DictInfo(None, kind.nonempty and other.nonempty)
-            elif isinstance(kind, _SetInfo) and isinstance(other, _SetInfo):
-                result[name] = kind if kind == other else _SetInfo(None)
-            elif other == kind:
-                result[name] = kind
-        return result
+        for name, first in live[0].items():
+            values = [environment.get(name) for environment in live]
+            if isinstance(first, _Function):
+                if all(value is first for value in values):
+                    result[name] = first
+                continue
+            if not isinstance(first, _Binding) or any(not isinstance(value, _Binding) or value.kind != first.kind for value in values):
+                continue
+            infos = [value.info for value in values]
+            info = infos[0]
+            if isinstance(info, _ListInfo) and any(value != info for value in infos):
+                info = _ListInfo(None)
+            elif isinstance(info, _DictInfo) and any(value != info for value in infos):
+                info = _DictInfo(None, all(value.nonempty for value in infos))
+            elif isinstance(info, _SetInfo) and any(value != info for value in infos):
+                info = _SetInfo(None)
+            candidate = (preferred or {}).get(name)
+            if isinstance(candidate, _Binding) and candidate.kind == first.kind:
+                slot = candidate.slot
+            elif all(value.slot == first.slot for value in values):
+                slot = first.slot
+            else:
+                slot = self.slot(first.kind)
+            result[name] = _Binding(slot, info)
+            for index, environment in enumerate(environments):
+                if environment is not None and environment[name].slot != slot:
+                    moves[index].append(f"{slot} = {environment[name].slot};")
+        return result, moves
 
     @staticmethod
     def after_loop(environment):
         # A body can resize or replace a list on any normal/break/continue
         # path. Its pre-loop cardinality is no longer a valid proof.
-        return {name: _ListInfo(None) if isinstance(kind, _ListInfo)
-                else _DictInfo(None) if isinstance(kind, _DictInfo)
-                else _SetInfo(None) if isinstance(kind, _SetInfo) else kind
-                for name, kind in environment.items()}
+        result = {}
+        for name, binding in environment.items():
+            if isinstance(binding, _Binding):
+                info = binding.info
+                widened = (_ListInfo(None) if isinstance(info, _ListInfo)
+                           else _DictInfo(None) if isinstance(info, _DictInfo)
+                           else _SetInfo(None) if isinstance(info, _SetInfo) else info)
+                binding = _Binding(binding.slot, widened)
+            result[name] = binding
+        return result
+
+    @staticmethod
+    def read_before_write(statements):
+        """Conservative loop-header liveness; nested loops cannot prove stores."""
+        reads = set()
+
+        def loads(node, defined):
+            reads.update(value.id for value in ast.walk(node)
+                         if isinstance(value, ast.Name) and isinstance(value.ctx, ast.Load) and value.id not in defined)
+
+        def targets(node):
+            if isinstance(node, ast.Name):
+                return {node.id}
+            if isinstance(node, (ast.Tuple, ast.List)):
+                return set().union(*(targets(value) for value in node.elts))
+            return set()
+
+        def block(body, defined):
+            defined = set(defined)
+            for statement in body:
+                if isinstance(statement, ast.Assign):
+                    loads(statement.value, defined)
+                    for target in statement.targets:
+                        loads(target, defined)
+                        defined |= targets(target)
+                elif isinstance(statement, ast.AugAssign):
+                    loads(statement.target, defined)
+                    if isinstance(statement.target, ast.Name) and statement.target.id not in defined:
+                        reads.add(statement.target.id)
+                    loads(statement.value, defined)
+                    defined |= targets(statement.target)
+                elif isinstance(statement, ast.If):
+                    loads(statement.test, defined)
+                    yes = block(statement.body, defined)
+                    no = block(statement.orelse, defined)
+                    if yes is None and no is None:
+                        return None
+                    defined = no if yes is None else yes if no is None else yes & no
+                elif isinstance(statement, (ast.Break, ast.Continue, ast.Return)):
+                    loads(statement, defined)
+                    return None
+                else:
+                    # This includes nested loops and comprehensions. Their
+                    # loads are safe overapproximations; their stores do not
+                    # establish a binding on every current iteration.
+                    loads(statement, defined)
+            return defined
+
+        block(statements, set())
+        return reads
+
+    def finish_loop(self, node, entry, header, context, body, remaining, nonempty, may_repeat, zero=False):
+        if remaining is not None:
+            marker = "// " + self.temporary() + "_edge"
+            context["edges"].append((marker, "normal", remaining))
+            body += "\n" + marker
+        edges = context["edges"]
+        environments = ([entry] if not nonempty else []) + [environment for _, _, environment in edges]
+        if zero:
+            environments = [entry]
+        joined, post_moves = self.join(environments, preferred=entry)
+        if joined is None:
+            # All executed paths leave the function. Keeping only old definite
+            # bindings conservatively lets the Rust tail remain type checked.
+            joined = self.after_loop(entry)
+        initializers = []
+        entry_slots = {value.slot for value in entry.values() if isinstance(value, _Binding)}
+        for name, binding in joined.items():
+            if isinstance(binding, _Binding) and binding.slot not in entry_slots:
+                default = {"int": "0", "bool": "false", "list_int": "Vec::new()",
+                           "dict_int": "NativeDict::new()", "set_int": "NativeSet::new()"}[binding.kind]
+                initializers.append(f"{binding.slot} = {default};")
+        live = self.read_before_write(node.body)
+        if isinstance(node, ast.While):
+            live |= {value.id for value in ast.walk(node.test) if isinstance(value, ast.Name) and isinstance(value.ctx, ast.Load)}
+        else:
+            live -= {value.id for value in ast.walk(node.target) if isinstance(value, ast.Name)}
+        replacements = {}
+        offset = 0 if nonempty else 1
+        for index, (marker, kind, environment) in enumerate(edges):
+            copies = []
+            if kind != "break" and may_repeat and not zero:
+                for name, previous in header.items():
+                    if not isinstance(previous, _Binding):
+                        continue
+                    current = environment.get(name)
+                    if not isinstance(current, _Binding) or current.kind != previous.kind:
+                        if name in live:
+                            raise _Unsupported
+                    elif current.slot != previous.slot:
+                        copies.append(f"{previous.slot} = {current.slot};")
+            if not zero:
+                copies += post_moves[index + offset]
+            # Same-kind header/post phis use the same slot. Moving an owned
+            # container once is required; duplicating the move would alias it.
+            replacements[marker] = "\n".join(dict.fromkeys(copies))
+        # Markers occupy entire generated lines, so replacement never touches
+        # user strings (their newlines are escaped by _string).
+        body = "\n".join(replacements.get(line, line) for line in body.split("\n"))
+        return "\n".join(initializers), body, self.after_loop(joined)
 
     def statement(self, node, environment):
         if isinstance(node, ast.FunctionDef):
@@ -899,8 +1052,7 @@ class _Generator:
                 # Check all cardinality/conversion errors before binding any
                 # target. Scalar copies cannot introduce list aliases.
                 for index, target in enumerate(targets):
-                    lines.append(f"{self.bind(target.id, 'int')} = {name}[{index}];")
-                    environment[target.id] = "int"
+                    lines.append(f"{self.bind(target.id, 'int', environment)} = {name}[{index}];")
                 return "\n".join(lines), environment
             value = self.expression(node.value, environment)
             if len(node.targets) == 1 and isinstance(node.targets[0], ast.Subscript):
@@ -915,7 +1067,7 @@ class _Generator:
                 if values.kind == "dict_int":
                     if index.kind != "int":
                         raise _Unsupported
-                    environment[target.value.id] = _DictInfo(None, True)
+                    self.update_info(environment, target.value.id, _DictInfo(None, True))
                     return f"let {result} = {value.code};\nlet {offset} = {index.code};\n{values.code}.set({offset}, {result});", environment
                 setter = self.at(f"native_set(&mut {values.code}, {offset}, {result})", node)
                 return f"let {result} = {value.code};\nlet {offset} = {self.number(index)};\n{setter};", environment
@@ -926,8 +1078,7 @@ class _Generator:
             name = self.temporary()
             lines = [f"let {name} = {value.code};"]
             for target in node.targets:
-                lines.append(f"{self.bind(target.id, value.kind)} = {name};")
-                environment[target.id] = self.binding(value)
+                lines.append(f"{self.bind(target.id, value, environment)} = {name};")
             return "\n".join(lines), environment
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Subscript):
             target = node.target
@@ -957,8 +1108,7 @@ class _Generator:
                 raise _Unsupported
             right = self.expression(node.value, environment)
             value = self.binary(node.op, left, right, node)
-            name = self.bind(node.target.id, value.kind)
-            environment[node.target.id] = value.kind
+            name = self.bind(node.target.id, value, environment)
             return f"{name} = {value.code};", environment
         if isinstance(node, ast.If):
             if self.function is None and self.functions and _main_guard(node):
@@ -966,33 +1116,44 @@ class _Generator:
             test = self.expression(node.test, environment)
             yes, yes_environment = self.statements(node.body, environment)
             no, no_environment = self.statements(node.orelse, environment)
-            return f"if {self.truth(test)} {{\n{yes}\n}} else {{\n{no}\n}}", self.join(yes_environment, no_environment)
+            joined, moves = self.join([yes_environment, no_environment])
+            yes += "\n" + "\n".join(moves[0])
+            no += "\n" + "\n".join(moves[1])
+            return f"if {self.truth(test)} {{\n{yes}\n}} else {{\n{no}\n}}", joined
         if isinstance(node, (ast.For, ast.While)):
             if node.orelse:
                 raise _Unsupported
             label = self.temporary()
+            context = {"label": label, "edges": []}
+            widened = self.after_loop(environment)
             if isinstance(node, ast.While):
                 # Subsequent iterations may see containers resized or replaced
                 # by the body. Their entry cardinality is not a loop invariant.
-                widened = self.after_loop(environment)
                 test = self.expression(node.test, widened)
-                self.loops.append(label)
-                body, _ = self.statements(node.body, widened)
+                self.loops.append(context)
+                body, remaining = self.statements(node.body, widened)
                 self.loops.pop()
-                return f"'{label}: while {self.truth(test)} {{\n{body}\n}}", self.after_loop(environment)
+                nonempty = test.constant is not None and bool(test.constant)
+                zero = test.constant is not None and not bool(test.constant)
+                initialization, body, joined = self.finish_loop(node, environment, widened, context, body, remaining,
+                                                               nonempty, not zero, zero)
+                return f"{initialization}\n'{label}: while {self.truth(test)} {{\n{body}\n}}", joined
             is_range = isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name) and node.iter.func.id == "range"
             list_name = None
             item_pair = False
+            count = None
             if is_range:
                 if not isinstance(node.target, ast.Name):
                     raise _Unsupported
                 setup, iterator, arguments = self.range_iterator(node.iter, environment)
                 nonempty = False
-                initial = self.literal(0)
                 if all(argument.constant is not None for argument in arguments):
                     start, stop, step = (int(argument.constant) for argument in arguments)
                     nonempty = (step > 0 and start < stop) or (step < 0 and start > stop)
-                    initial = self.literal(start)
+                    if step > 0:
+                        count = max(0, (stop-start+step-1)//step)
+                    elif step < 0:
+                        count = max(0, (start-stop-step-1)//-step)
             else:
                 view = self.dict_view(node.iter, environment)
                 values = view[0] if view else self.expression(node.iter, environment)
@@ -1021,7 +1182,7 @@ class _Generator:
                 else:
                     iterator = f"{iterable}.{'iter().copied()' if borrowed else 'into_iter()'}"
                     nonempty = values.length is not None and values.length > 0
-                initial = self.literal(0)
+                count = values.length
             if item_pair:
                 if (not isinstance(node.target, (ast.Tuple, ast.List)) or len(node.target.elts) != 2
                         or not all(isinstance(target, ast.Name) for target in node.target.elts)
@@ -1032,33 +1193,30 @@ class _Generator:
                 if not isinstance(node.target, ast.Name):
                     raise _Unsupported
                 targets = [node.target]
-            if any(target.id in self.iterating_lists for target in targets):
+            if any(target.id in self.iterating_lists or target.id == list_name for target in targets):
                 raise _Unsupported
-            target_names = [self.bind(target.id, "int") for target in targets]
-            inside = self.after_loop(environment)
-            for target in targets:
-                inside[target.id] = "int"
-            self.loops.append(label)
+            inside = widened.copy()
+            target_names = [self.bind(target.id, "int", inside) for target in targets]
+            self.loops.append(context)
             if list_name is not None:
                 self.iterating_lists.append(list_name)
-            body, _ = self.statements(node.body, inside)
+            body, remaining = self.statements(node.body, inside)
             if list_name is not None:
                 self.iterating_lists.pop()
             self.loops.pop()
+            initialization, body, joined = self.finish_loop(node, environment, inside, context, body, remaining,
+                                                           nonempty, count is None or count > 1, count == 0)
             item = self.temporary()
             assignments = "\n".join(f"{target} = {item}.{index};" if item_pair else f"{target} = {item};"
                                     for index, target in enumerate(target_names))
-            code = f"{setup}\n'{label}: for {item} in {iterator} {{\n{assignments}\n{body}\n}}"
-            if nonempty:
-                # This initialization is unobservable: the proved nonempty
-                # loop assigns its actual first item before any body operation.
-                for target, name in zip(targets, target_names):
-                    if target.id not in environment:
-                        code = f"{name} = {initial};\n" + code
-                    environment[target.id] = "int"
-            return code, self.after_loop(environment)
+            code = f"{setup}\n{initialization}\n'{label}: for {item} in {iterator} {{\n{assignments}\n{body}\n}}"
+            return code, joined
         if isinstance(node, (ast.Break, ast.Continue)) and self.loops:
-            return f"{'break' if isinstance(node, ast.Break) else 'continue'} '{self.loops[-1]};", None
+            context = self.loops[-1]
+            kind = "break" if isinstance(node, ast.Break) else "continue"
+            marker = "// " + self.temporary() + "_edge"
+            context["edges"].append((marker, kind, environment.copy()))
+            return f"{marker}\n{kind} '{context['label']};", None
         if isinstance(node, ast.Expr):
             call = node.value
             if isinstance(call, ast.Constant) and type(call.value) is str:
@@ -1072,7 +1230,7 @@ class _Generator:
                         raise _Unsupported
                     method = call.func.attr
                     if method == "clear" and not call.args:
-                        environment[target.id] = _SetInfo(0)
+                        self.update_info(environment, target.id, _SetInfo(0))
                         return f"{values.code}.clear();", environment
                     if method in {"add", "discard", "remove"} and len(call.args) == 1:
                         argument = self.expression(call.args[0], environment)
@@ -1085,7 +1243,7 @@ class _Generator:
                             action = f"{values.code}.remove(&{item})"
                         else:
                             action = self.at(f"native_set_remove(&mut {values.code}, {item})", node)
-                        environment[target.id] = _SetInfo(None)
+                        self.update_info(environment, target.id, _SetInfo(None))
                         return f"let {item} = {argument.code};\n{action};", environment
                     if method == "update" and len(call.args) <= 1:
                         if not call.args:
@@ -1094,7 +1252,7 @@ class _Generator:
                             return ";", environment
                         setup, iterator = self.set_iterable(call.args[0], environment)
                         item = self.temporary()
-                        environment[target.id] = _SetInfo(None)
+                        self.update_info(environment, target.id, _SetInfo(None))
                         return f"{{ {setup} for {item} in {iterator} {{ {values.code}.insert({item}); }} }}", environment
                     raise _Unsupported
                 if values.kind == "dict_int":
@@ -1110,7 +1268,7 @@ class _Generator:
                     if argument.kind != "int":
                         raise _Unsupported
                     item = self.temporary()
-                    environment[target.id] = _ListInfo(None if values.length is None else values.length + 1)
+                    self.update_info(environment, target.id, _ListInfo(None if values.length is None else values.length + 1))
                     return f"let {item} = {argument.code};\n{values.code}.push({item});", environment
                 if method == "extend" and len(call.args) == 1 and not call.keywords:
                     argument = self.expression(call.args[0], environment)
@@ -1120,7 +1278,7 @@ class _Generator:
                     # Own a snapshot before the mutable receiver borrow, even
                     # for a.extend(a), preserving Python's self-extension.
                     length = None if values.length is None or argument.length is None else values.length + argument.length
-                    environment[target.id] = _ListInfo(length)
+                    self.update_info(environment, target.id, _ListInfo(length))
                     return f"let {item} = {self.consume_list(argument)};\n{values.code}.extend({item});", environment
                 if method == "reverse" and not call.args and not call.keywords:
                     return f"{values.code}.reverse();", environment
@@ -1300,8 +1458,8 @@ def _function_requirements(functions):
 def _declarations(generator):
     types = {"int": "NativeInt", "bool": "bool", "list_int": "Vec<NativeInt>",
              "dict_int": "NativeDict", "set_int": "NativeSet"}
-    return "\n".join(f"let mut {generator.names[name]}: {types[kind]};"
-                     for name, kind in generator.bindings.items())
+    return "\n".join(f"let mut {slot}: {types[kind]};"
+                     for slot, kind in generator.bindings.items())
 
 
 def try_generate_native(source: str, filename: str, integer: str) -> str | None:
@@ -1333,8 +1491,7 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
             initializers = []
             signature = []
             for index, name in enumerate(parameters):
-                initializers.append(f"{local.bind(name, 'int')} = native_argument_{index};")
-                environment[name] = "int"
+                initializers.append(f"{local.bind(name, 'int', environment)} = native_argument_{index};")
                 signature.append(f"native_argument_{index}: NativeInt")
             if function_input:
                 signature.append("mut native_input: &mut NativeInput")
