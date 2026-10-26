@@ -27,6 +27,11 @@ mixed operations with `set`, subclasses, and GenericAlias.
 Member hashes and the final frozenset hash are retained; operations that copy a set's contents reuse stored member hashes.
 Set iteration order is not guaranteed to match CPython's internal hash-table order.
 
+Non-raw string literals, f-strings, and t-strings support Unicode 16.0 character names
+and all 477 formal name aliases in `\N{name}` escapes, including Hangul and algorithmic names.
+Named character sequences are not accepted in literal escapes, matching Python.
+Raw strings and bytes literals retain their normal escape behavior.
+
 ## Standard modules
 
 | Module | Scope |
@@ -52,7 +57,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - Some basic-value behavior, including unpaired Unicode surrogates, remains unsupported.
 - `bytearray`, `memoryview`, and file I/O through `open` are unsupported. Standard streams provide text and binary I/O.
 - Encoding conversion covers UTF-8, ASCII, and Latin-1, with limitations on supported `errors` modes. Constructing a `str` subclass with an encoding is unsupported.
-- Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, and features such as Unicode named escapes remain unsupported.
+- Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, remains unsupported.
 - Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.
 - AST input/output for `compile()`, top-level await, and incomplete-input flags are unsupported.
 - Imports whose names are determined at runtime, external C extensions, networking, threads, `asyncio`, and CPython-specific internal APIs are out of scope.

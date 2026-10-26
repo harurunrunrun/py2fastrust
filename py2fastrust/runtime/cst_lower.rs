@@ -186,7 +186,7 @@ impl CstLower {
                     other=>{bytes.push(b'\\');bytes.push(other as u8);},
                 }
             }DExprKind::Constant(Const::Bytes(bytes))
-        }else{let text=d_decode_formatted_text(&body,prefix.contains('r'))?;if original_prefix=="u"{DExprKind::UnicodeString(text)}else{DExprKind::Constant(Const::Str(text))}};
+        }else{let text=d_decode_formatted_text(&body,prefix.contains('r')).map_err(|error|self.error(n,error.strip_prefix("SyntaxError: ").unwrap_or(&error)))?;if original_prefix=="u"{DExprKind::UnicodeString(text)}else{DExprKind::Constant(Const::Str(text))}};
         Ok(self.expr_at(n,kind))
     }
     fn strings(&mut self,n:usize)->Result<DExpr,String>{
@@ -218,7 +218,7 @@ impl CstLower {
             values.push(self.expr_at(n,DExprKind::Formatted(Box::new(value),conversion,spec)));return Ok(());
         }
         if let PegNodeKind::Token(token)=self.tree.nodes[n].kind{if matches!(self.tokens[token].kind.as_str(),"FSTRING_MIDDLE"|"TSTRING_MIDDLE"){
-            let value=d_decode_formatted_text(&self.tokens[token].text,raw)?;if !value.is_empty(){values.push(self.expr_at(n,DExprKind::Constant(Const::Str(value))));}return Ok(());
+            let value=d_decode_formatted_text(&self.tokens[token].text,raw).map_err(|error|self.error(n,error.strip_prefix("SyntaxError: ").unwrap_or(&error)))?;if !value.is_empty(){values.push(self.expr_at(n,DExprKind::Constant(Const::Str(value))));}return Ok(());
         }}
         for child in self.children(n){self.formatted(child,templated,values,depth,raw)?;}Ok(())
     }

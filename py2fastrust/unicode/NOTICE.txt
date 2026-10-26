@@ -1,0 +1,14 @@
+NameAliases-16.0.0.txt is copied from the Unicode 16.0.0 Character Database:
+https://www.unicode.org/Public/16.0.0/ucd/NameAliases.txt
+
+Copyright (c) 2024 Unicode, Inc. The upstream copyright and terms-of-use
+comments are retained. The Unicode License V3 is bundled in
+../stdlib/UNICODE_LICENSE.txt and in generated general-runtime Rust files.
+
+runtime/unicode_names_tables.rs is generated from this file and the official
+CPython 3.14 Unicode 16.0.0 unicodedata names and lookup behavior. Hangul and
+algorithmic character ranges are represented separately. Named sequences are
+excluded because Python literal escapes resolve only a single character.
+
+Run tools/generate_unicode_names.py --check to check the pinned alias source
+checksum, all 477 aliases against CPython, and generated-table reproducibility.

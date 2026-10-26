@@ -121,6 +121,8 @@ The runtime also supports `__future__` declarations and flag inheritance, Unicod
 type parameters, lazy type aliases, and GenericAlias parameter substitution in both static and dynamic code.
 T-strings produce `Template` and `Interpolation` objects that retain expression values, conversions, and format specifications.
 Complex literals, arithmetic, and conversions, as well as runtime `compile(optimize=1/2)`, are supported.
+Unicode 16.0 character names and aliases in `\N{name}` escapes work in dynamically compiled strings,
+f-strings, and t-strings.
 Immutable `frozenset` values support mixed operations with `set`, cached hashing, subclasses, and generic aliases.
 
 The benchmarks check that CPython, generated Rust, and handwritten Rust produce the same results.

@@ -395,7 +395,14 @@ fn d_decode_formatted_text(text:&str,raw:bool)->Result<String,String>{
                 let mut value=next.to_digit(8).unwrap();for _ in 0..2{if let Some(digit)=chars.peek().and_then(|ch|ch.to_digit(8)){chars.next();value=value*8+digit;}else{break;}}
                 result.push(char::from_u32(value).unwrap());
             },
-            'N'=>return Err("NotImplementedError: named Unicode escapes are not yet supported by dynamic compilation".to_owned()),
+            'N'=>{
+                if chars.next()!=Some('{'){return Err("SyntaxError: malformed \\N character escape".to_owned());}
+                let mut name=String::new();let mut closed=false;
+                for ch in chars.by_ref(){if ch=='}'{closed=true;break;}name.push(ch);}
+                if !closed || name.is_empty(){return Err("SyntaxError: malformed \\N character escape".to_owned());}
+                let value=unicode_character_name(&name).ok_or_else(||"SyntaxError: unknown Unicode character name".to_owned())?;
+                result.push(value);
+            },
             other=>{result.push('\\');result.push(other);},
         }
     }
