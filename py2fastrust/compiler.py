@@ -172,6 +172,8 @@ class Emitter:
         if node.value is Ellipsis:
             self.emit("Load", "Ellipsis", node=node)
         elif isinstance(node.value, (type(None), bool, int, float, str, bytes)):
+            if isinstance(node.value, str) and any(0xD800 <= ord(char) <= 0xDFFF for char in node.value):
+                self.fail(node, "unpaired Unicode surrogates are not supported")
             self.emit("Const", node.value, node=node)
         else:
             self.fail(node, "complex constants are not implemented")
@@ -549,10 +551,18 @@ class Emitter:
             if clause.name:
                 self.emit("LoadException", node=clause)
                 self.emit("Store", clause.name, node=clause)
+            cleanup = self.emit("SetupFinally", 0, node=clause)
             self.statements(clause.body)
+            self.emit("PopHandler", node=clause)
+            normal = self.emit("Jump", 0, node=clause)
+            self.patch(cleanup)
+            self.patch(normal)
             if clause.name:
+                self.emit("Const", None, node=clause)
+                self.emit("Store", clause.name, node=clause)
                 self.emit("Delete", clause.name, node=clause)
             self.emit("ClearException", node=clause)
+            self.emit("EndFinally", node=clause)
             end.append(self.emit("Jump", 0, node=clause))
             if skip is not None:
                 self.patch(skip)
