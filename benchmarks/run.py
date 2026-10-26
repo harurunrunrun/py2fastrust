@@ -97,7 +97,7 @@ def main():
                         memory.append(rss)
             results[name] = {"median_seconds": statistics.median(durations),
                              "max_rss_kib": max(memory) if memory else None}
-        print(json.dumps({"case": args.case, "size": args.size, "int": mode,
+        print(json.dumps({"case": args.case, "size": args.size, "int": mode, "backend": result.backend,
                           "python": sys.version, "platform": sys.platform, "cpu_count": os.cpu_count(),
                           "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
                           "transpile_seconds": transpile_seconds, "compile_seconds": compile_seconds,

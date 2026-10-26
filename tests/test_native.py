@@ -10,6 +10,7 @@ import time
 import unittest
 
 from py2fastrust.native import try_generate_native
+from py2fastrust import TranspileOptions, transpile
 
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
@@ -139,6 +140,44 @@ print(True, False, sep="", end="\\b\\f")
 '''
         self.differential(source, ("１２\r\n-３\r\n٤\n", "12\n-3\n4", " 12 \n -3 \n 4 \n", "１２\r\n-３\r٤\n"))
 
+    def test_input_map_unpack_and_typed_list(self):
+        source = '''
+n, m = map(int, input().split())
+a = list(map(int, input().split()))
+b = [int(word) for word in input().split()]
+print(n, m, len(a), sum(a), sum(b), a[-1])
+'''
+        for integer in ("i64", "i128"):
+            self.differential(source, ("3 4\n1 2 3\n5 6\n", "１２\\t３\n-1 ٤ 5\n  \n".replace("\\t", "\t")), integer)
+        self.differential("print(9)\na,b=map(int,input().split())\nprint(a,b)",
+                          ("1\n", "\n", "1 2 3 invalid\n", "1 invalid 3\n", "1 2 invalid\n"))
+        self.differential("a,b=map(int,input().split())\nprint(a,b)", ("1\x1c2\n",))
+
+    def test_typed_list_mutations_sort_and_unpack(self):
+        source = '''
+a = list()
+for i in range(8):
+    a.append((i * 7) % 11)
+a.extend(a)
+a.extend([17, -4])
+a.sort(reverse=True)
+a.reverse()
+x, y = [a[0], a[-1]]
+print(len(a), sum(a), x, y)
+'''
+        self.differential(source)
+        self.differential("a=[1]\na.extend([2])\nx,y=a\nprint(x,y)")
+        self.differential("a=[1]\nx,y=a\nprint(x,y)")
+        self.differential("a=[1,2,3]\nx,y=a\nprint(x,y)")
+        # Body mutation is supported only when no iterator observes that list.
+        self.assertIsNone(try_generate_native("a=[1]\nfor x in a:\n a.append(x)\n", "x.py", "i64"))
+
+    def test_loop_list_cardinality_is_not_reused_as_a_proof(self):
+        source = "a=[1]\nfor i in range(1):\n a=[]\nfor x in a:\n pass\nprint(x)\n"
+        self.assertIsNone(try_generate_native(source, "x.py", "i64"))
+        source = "a=[]\ni=0\nwhile i<3:\n a.append(i)\n i+=1\nprint(len(a),sum(a))\n"
+        self.differential(source)
+
     def test_errors_preserve_preceding_output(self):
         for source, data in [("print(9)\na=int(input())\nprint(a)", ""), ("print(9)\na=int(input())\nprint(a)", "\n"), ("print(9)\nprint(1//0)", ""), ("print(9)\nprint(1<<-1)", ""), ("print(9)\nfor i in range(1,2,0):\n print(i)", "")]:
             self.differential(source, (data,))
@@ -256,7 +295,7 @@ print(b[0],b[1],b[-1],len(b))
         rejected = [
             "a=[1]\nb=a\nprint(b[0])", "a=b=[1]\nprint(a[0])",
             "a=[1]\na[0]=True", "a=[True,1]", "a=[[1]]", "a=[1]\na=2",
-            "a=[1]\na.append(2)", "a=[1]\nfor x in a:\n a[0]=2",
+            "a=[1]\na.append('mixed')", "a=[1]\nfor x in a:\n a[0]=2",
             "a=[1]\nfor x in a:\n a=[3]", "a=[1]\nfor x in a:\n a.append(x)",
             "a=[1]\nb=a if True else [2]\nprint(b[0])", "a=[1]\nb=a or [2]",
             "a=[1]\na*=3", "a=[1]\nprint(a[:])", "a=[1]\nb=a[0:1]",
@@ -287,6 +326,92 @@ print(b[0],b[1],b[-1],len(b))
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
         self.assertIsNone(try_generate_native("print(1)", "fallback.py", "bigint"))
+
+    def test_no_argument_entry_wrapper(self):
+        source = '''
+def solve():
+    n=int(input())
+    total=0
+    for i in range(n):
+        total += i*i
+    print(total)
+solve()
+'''
+        for integer in ("i64", "i128"):
+            self.differential(source, ("0\n", "1\n", "100\n"), integer)
+        result = transpile(source)
+        self.assertTrue(result.success, result.diagnostics)
+        self.assertEqual(result.backend, "native")
+        self.assertEqual(transpile(source, TranspileOptions(optimize=False)).backend, "vm")
+
+    def test_guarded_entry_wrapper_with_docstrings_and_arrays(self):
+        source = '''
+"Module documentation"
+def main():
+    "Entry documentation"
+    n=int(input())
+    values=[0]*(n+2)
+    values[1]=1
+    for i in range(2,n+1):
+        values[i]=values[i-1]+values[i-2]
+    print(values[n])
+    return None
+if __name__ == "__main__":
+    main()
+'''
+        self.differential(source, ("0\n", "1\n", "10\n"))
+        self.assertEqual(transpile(source).backend, "native")
+
+    def test_wrapper_early_return_leaves_nested_loops(self):
+        source = '''
+def solve():
+    n=int(input())
+    total=0
+    for i in range(n):
+        for j in range(4):
+            if i+j==3:
+                return print(total,i,j)
+            total+=i*10+j
+    print(total)
+    return
+    print(999)
+if "__main__" == __name__:
+    solve()
+'''
+        self.differential(source, ("0\n", "1\n", "5\n"))
+
+    def test_wrapper_unused_return_evaluates_side_effects_and_errors(self):
+        source = '''
+def solve():
+    print(7)
+    if int(input()):
+        return int(input())//int(input())
+    return print(int(input()))
+solve()
+'''
+        self.differential(source, ("1\n8\n2\n", "1\n8\n0\n", "0\n9\n"))
+
+    def test_entry_wrapper_rejects_observable_or_dynamic_functions(self):
+        rejected = [
+            "def solve(x=1):\n print(x)\nsolve()",
+            "def solve()->None:\n print(1)\nsolve()",
+            "def solve[T]():\n print(1)\nsolve()",
+            "@decorator\ndef solve():\n print(1)\nsolve()",
+            "def solve():\n yield 1\nsolve()",
+            "def solve():\n print(1)\n return\n yield 2\nsolve()",
+            "def solve():\n print(locals())\nsolve()",
+            "def solve():\n exec('print(1)')\nsolve()",
+            "def solve():\n return solve()\nsolve()",
+            "def solve():\n print(solve)\nsolve()",
+            "def solve():\n print(1)\nprint(solve())",
+            "def solve():\n print(1)\nsolve()\nprint(2)",
+            "def solve():\n print(1)\nif __name__=='__main__':\n solve()\nelse:\n print(2)",
+            "def int():\n print(int(input()))\nint()",
+            "def __name__():\n print(1)\nif __name__=='__main__':\n __name__()",
+        ]
+        for source in rejected:
+            with self.subTest(source=source):
+                self.assertIsNone(try_generate_native(source,"fallback.py","i64"))
 
     @unittest.skipUnless("--benchmark-native" in sys.argv, "optional performance benchmark")
     def test_native_loop_performance(self):

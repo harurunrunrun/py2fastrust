@@ -117,15 +117,64 @@ impl NativeInput {
         std::io::stdin().read_to_string(&mut text).map_err(|e| format!("OSError: {}", e))?;
         Ok(Self { text, position: 0 })
     }
-    fn integer(&mut self) -> Result<NativeInt, String> {
+    fn line(&mut self) -> Result<&str, String> {
         if self.position == self.text.len() { return Err("EOFError: EOF when reading a line".into()); }
         let start = self.position;
         let bytes = self.text.as_bytes();
         while self.position < bytes.len() && bytes[self.position] != b'\n' { self.position += 1; }
         let end = self.position;
         if self.position < bytes.len() { self.position += 1; }
-        Int::parse(&self.text[start..end], 10).map(|n| n.to_i128().unwrap() as NativeInt)
+        Ok(&self.text[start..end])
     }
+    fn integer(&mut self) -> Result<NativeInt, String> {
+        native_parse_integer(self.line()?)
+    }
+    fn integers(&mut self) -> Result<Vec<NativeInt>, String> {
+        self.line()?.split(native_space).filter(|word| !word.is_empty())
+            .map(native_parse_integer).collect()
+    }
+    fn unpack_integers(&mut self, count: usize) -> Result<Vec<NativeInt>, String> {
+        let mut words = self.line()?.split(native_space).filter(|word| !word.is_empty());
+        let mut result = Vec::with_capacity(count);
+        for index in 0..count {
+            let word = words.next().ok_or_else(|| format!("ValueError: not enough values to unpack (expected {}, got {})", count, index))?;
+            result.push(native_parse_integer(word)?);
+        }
+        if let Some(word) = words.next() {
+            // Unpacking asks a lazy map for precisely one extra item. Later
+            // invalid tokens must not replace the too-many-values error.
+            native_parse_integer(word)?;
+            return Err(format!("ValueError: too many values to unpack (expected {})", count));
+        }
+        Ok(result)
+    }
+}
+fn native_space(character: char) -> bool {
+    character.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&character)
+}
+#[inline]
+fn native_parse_integer(word: &str) -> Result<NativeInt, String> {
+    // Decimal contest input avoids arbitrary-precision temporaries entirely.
+    // Accumulating with wrapping operations equals normalization of the full
+    // mathematical integer, including literals longer than the machine width.
+    if word.is_ascii() {
+        let word = word.trim_matches(|c: char| c.is_ascii_whitespace());
+        let bytes = word.as_bytes();
+        let negative = bytes.first() == Some(&b'-');
+        let digits = if negative || bytes.first() == Some(&b'+') { &bytes[1..] } else { bytes };
+        let mut value: NativeInt = 0;
+        let mut preceding_digit = false;
+        let mut valid = true;
+        for &byte in digits {
+            if byte.is_ascii_digit() {
+                value = value.wrapping_mul(10).wrapping_add((byte - b'0') as NativeInt);
+                preceding_digit = true;
+            } else if byte == b'_' && preceding_digit { preceding_digit = false; }
+            else { valid = false; break; }
+        }
+        if valid && preceding_digit { return Ok(if negative { value.wrapping_neg() } else { value }); }
+    }
+    Int::parse(word, 10).map(|n| n.to_i128().unwrap() as NativeInt)
 }
 '''
 
@@ -149,6 +198,11 @@ fn native_set(values: &mut [NativeInt], index: NativeInt, value: NativeInt) -> R
     values[index] = value;
     Ok(())
 }
+fn native_unpack_length(length: usize, count: usize) -> Result<(), String> {
+    if length < count { Err(format!("ValueError: not enough values to unpack (expected {}, got {})", count, length)) }
+    else if length > count { Err(format!("ValueError: too many values to unpack (expected {})", count)) }
+    else { Ok(()) }
+}
 fn native_repeat(values: Vec<NativeInt>, count: NativeInt) -> Result<Vec<NativeInt>, String> {
     let count = isize::try_from(count).map_err(|_| "OverflowError: cannot fit 'int' into an index-sized integer".to_string())?;
     if count <= 0 || values.is_empty() { return Ok(Vec::new()); }
@@ -164,7 +218,7 @@ fn native_repeat(values: Vec<NativeInt>, count: NativeInt) -> Result<Vec<NativeI
 
 
 class _Generator:
-    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum"}
+    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "list", "map"}
 
     def __init__(self, bits):
         self.bits = bits
@@ -176,6 +230,7 @@ class _Generator:
         self.has_input = False
         self.has_lists = False
         self.iterating_lists = []
+        self.return_label = None
 
     def temporary(self):
         self.counter += 1
@@ -225,6 +280,25 @@ class _Generator:
     def at(code, node):
         return f"native_at({code}, {node.lineno})?"
 
+    @staticmethod
+    def input_words(node):
+        if not (isinstance(node, ast.Call) and not node.args and not node.keywords
+                and isinstance(node.func, ast.Attribute) and node.func.attr == "split"):
+            return False
+        source = node.func.value
+        return (isinstance(source, ast.Call) and isinstance(source.func, ast.Name)
+                and source.func.id == "input" and not source.args and not source.keywords)
+
+    def input_map(self, node):
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "map" and len(node.args) == 2 and not node.keywords
+                and isinstance(node.args[0], ast.Name) and node.args[0].id == "int"
+                and self.input_words(node.args[1]))
+
+    def integer_input_list(self, node):
+        self.needs_integer_runtime = self.has_input = self.has_lists = True
+        return _Expression(self.at("native_input.integers()", node), "list_int")
+
     def expression(self, node, environment):
         if isinstance(node, ast.Constant):
             if type(node.value) is bool:
@@ -254,6 +328,15 @@ class _Generator:
             index = self.expression(node.slice, environment)
             return _Expression(self.at(f"native_get(&({values.code}), {self.number(index)})", node), "int")
         if isinstance(node, ast.ListComp):
+            if len(node.generators) == 1:
+                gen = node.generators[0]
+                if (not gen.is_async and not gen.ifs and isinstance(gen.target, ast.Name)
+                        and self.input_words(gen.iter) and isinstance(node.elt, ast.Call)
+                        and isinstance(node.elt.func, ast.Name) and node.elt.func.id == "int"
+                        and not node.elt.keywords and len(node.elt.args) == 1
+                        and isinstance(node.elt.args[0], ast.Name)
+                        and node.elt.args[0].id == gen.target.id):
+                    return self.integer_input_list(node)
             if len(node.generators) != 1 or node.generators[0].is_async or not isinstance(node.generators[0].target, ast.Name):
                 raise _Unsupported
             comprehension = node.generators[0]
@@ -338,6 +421,11 @@ class _Generator:
             return _Expression(f"(if {self.truth(test)} {{ {yes.code} }} else {{ {no.code} }})", yes.kind)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
+            if name == "list" and not node.args:
+                self.has_lists = True
+                return _Expression("Vec::<NativeInt>::new()", "list_int", length=0)
+            if name == "list" and len(node.args) == 1 and self.input_map(node.args[0]):
+                return self.integer_input_list(node)
             if name == "int" and not node.args:
                 return _Expression(self.literal(0), "int", 0)
             if name == "int" and len(node.args) == 1:
@@ -470,12 +558,57 @@ class _Generator:
             return second
         if second is None:
             return first
-        return {name: kind for name, kind in first.items() if second.get(name) == kind}
+        result = {}
+        for name, kind in first.items():
+            other = second.get(name)
+            if isinstance(kind, _ListInfo) and isinstance(other, _ListInfo):
+                result[name] = kind if kind == other else _ListInfo(None)
+            elif other == kind:
+                result[name] = kind
+        return result
+
+    @staticmethod
+    def after_loop(environment):
+        # A body can resize or replace a list on any normal/break/continue
+        # path. Its pre-loop cardinality is no longer a valid proof.
+        return {name: _ListInfo(None) if isinstance(kind, _ListInfo) else kind
+                for name, kind in environment.items()}
 
     def statement(self, node, environment):
+        if isinstance(node, ast.Return) and self.return_label is not None:
+            lines = []
+            if node.value is not None and not isinstance(node.value, ast.Constant):
+                expression = ast.copy_location(ast.Expr(value=node.value), node)
+                rendered, _ = self.statement(expression, environment)
+                lines.append(rendered)
+            lines.append(f"break '{self.return_label};")
+            return "\n".join(lines), None
         if isinstance(node, ast.Pass):
             return ";", environment
         if isinstance(node, ast.Assign):
+            if len(node.targets) == 1 and isinstance(node.targets[0], (ast.Tuple, ast.List)):
+                targets = node.targets[0].elts
+                if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in targets):
+                    raise _Unsupported
+                count = len(targets)
+                name = self.temporary()
+                if self.input_map(node.value):
+                    self.needs_integer_runtime = self.has_input = True
+                    value_code = self.at(f"native_input.unpack_integers({count})", node)
+                    lines = [f"let {name} = {value_code};"]
+                else:
+                    value = self.expression(node.value, environment)
+                    if value.kind != "list_int":
+                        raise _Unsupported
+                    lines = [f"let {name} = {value.code if value.owned else '&' + value.code};"]
+                    check = f'native_unpack_length({name}.len(), {count})'
+                    lines.append(f"{self.at(check, node)};")
+                # Check all cardinality/conversion errors before binding any
+                # target. Scalar copies cannot introduce list aliases.
+                for index, target in enumerate(targets):
+                    lines.append(f"{self.bind(target.id, 'int')} = {name}[{index}];")
+                    environment[target.id] = "int"
+                return "\n".join(lines), environment
             value = self.expression(node.value, environment)
             if len(node.targets) == 1 and isinstance(node.targets[0], ast.Subscript):
                 target = node.targets[0]
@@ -538,7 +671,7 @@ class _Generator:
                 self.loops.append(label)
                 body, _ = self.statements(node.body, environment)
                 self.loops.pop()
-                return f"'{label}: while {self.truth(test)} {{\n{body}\n}}", environment
+                return f"'{label}: while {self.truth(test)} {{\n{body}\n}}", self.after_loop(environment)
             if not isinstance(node.target, ast.Name):
                 raise _Unsupported
             is_range = isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name) and node.iter.func.id == "range"
@@ -585,13 +718,53 @@ class _Generator:
                 if node.target.id not in environment:
                     code = f"{target} = {initial};\n" + code
                 environment[node.target.id] = "int"
-            return code, environment
+            return code, self.after_loop(environment)
         if isinstance(node, (ast.Break, ast.Continue)) and self.loops:
             return f"{'break' if isinstance(node, ast.Break) else 'continue'} '{self.loops[-1]};", None
         if isinstance(node, ast.Expr):
             call = node.value
             if isinstance(call, ast.Constant) and type(call.value) is str:
                 return ";", environment
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name)):
+                target = call.func.value
+                if target.id in self.iterating_lists:
+                    raise _Unsupported
+                values = self.expression(target, environment)
+                if values.kind != "list_int":
+                    raise _Unsupported
+                method = call.func.attr
+                if method == "append" and len(call.args) == 1 and not call.keywords:
+                    argument = self.expression(call.args[0], environment)
+                    if argument.kind != "int":
+                        raise _Unsupported
+                    item = self.temporary()
+                    environment[target.id] = _ListInfo(None if values.length is None else values.length + 1)
+                    return f"let {item} = {argument.code};\n{values.code}.push({item});", environment
+                if method == "extend" and len(call.args) == 1 and not call.keywords:
+                    argument = self.expression(call.args[0], environment)
+                    if argument.kind != "list_int":
+                        raise _Unsupported
+                    item = self.temporary()
+                    # Own a snapshot before the mutable receiver borrow, even
+                    # for a.extend(a), preserving Python's self-extension.
+                    length = None if values.length is None or argument.length is None else values.length + argument.length
+                    environment[target.id] = _ListInfo(length)
+                    return f"let {item} = {self.consume_list(argument)};\n{values.code}.extend({item});", environment
+                if method == "reverse" and not call.args and not call.keywords:
+                    return f"{values.code}.reverse();", environment
+                if method == "sort" and not call.args:
+                    reverse = False
+                    if call.keywords:
+                        if (len(call.keywords) != 1 or call.keywords[0].arg != "reverse"
+                                or not isinstance(call.keywords[0].value, ast.Constant)
+                                or type(call.keywords[0].value.value) is not bool):
+                            raise _Unsupported
+                        reverse = call.keywords[0].value.value
+                    lines = f"{values.code}.sort_unstable();"
+                    if reverse:
+                        lines += f"\n{values.code}.reverse();"
+                    return lines, environment
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "print":
                 separator, end = " ", "\n"
                 seen = set()
@@ -618,6 +791,49 @@ class _Generator:
         raise _Unsupported
 
 
+def _main_wrapper(tree):
+    """Find an unobservable, no-argument entry function and its one call.
+
+    The existing native validator still proves the complete function body. An
+    exact top-level shape prevents function objects or local namespace changes
+    from becoming observable while lowering the entry body to ordinary Rust.
+    """
+    statements = list(tree.body)
+    while statements and isinstance(statements[0], ast.Expr) and isinstance(statements[0].value, ast.Constant) and type(statements[0].value.value) is str:
+        statements.pop(0)
+    if len(statements) != 2 or not isinstance(statements[0], ast.FunctionDef):
+        return tree.body, False
+    function, invocation = statements
+    parameters = function.args
+    if (function.decorator_list or function.returns is not None or getattr(function, "type_params", ())
+            or parameters.posonlyargs or parameters.args or parameters.kwonlyargs
+            or parameters.vararg is not None or parameters.kwarg is not None
+            or parameters.defaults or parameters.kw_defaults
+            or function.name in _Generator.BUILTINS | {"__name__", "__builtins__"}):
+        return tree.body, False
+    if any(isinstance(node, (ast.Yield, ast.YieldFrom)) for node in ast.walk(function)):
+        return tree.body, False
+    if isinstance(invocation, ast.If):
+        guard = invocation.test
+        if (invocation.orelse or len(invocation.body) != 1 or not isinstance(guard, ast.Compare)
+                or len(guard.ops) != 1 or not isinstance(guard.ops[0], ast.Eq)
+                or len(guard.comparators) != 1):
+            return tree.body, False
+        left, right = guard.left, guard.comparators[0]
+        if isinstance(right, ast.Name) and right.id == "__name__":
+            left, right = right, left
+        if not (isinstance(left, ast.Name) and left.id == "__name__"
+                and isinstance(right, ast.Constant) and right.value == "__main__"):
+            return tree.body, False
+        invocation = invocation.body[0]
+    if (not isinstance(invocation, ast.Expr) or not isinstance(invocation.value, ast.Call)
+            or not isinstance(invocation.value.func, ast.Name)
+            or invocation.value.func.id != function.name
+            or invocation.value.args or invocation.value.keywords):
+        return tree.body, False
+    return function.body, (function.name, invocation.lineno)
+
+
 def try_generate_native(source: str, filename: str, integer: str) -> str | None:
     """Return standalone scalar/list Rust, or None when semantic proof fails.
 
@@ -633,7 +849,12 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
         if any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in _Generator.BUILTINS for node in ast.walk(tree)):
             return None
         generator = _Generator(64 if integer == "i64" else 128)
-        body, _ = generator.statements(tree.body, {})
+        statements, wrapper = _main_wrapper(tree)
+        if wrapper:
+            generator.return_label = "native_entrypoint"
+        body, _ = generator.statements(statements, {})
+        if wrapper:
+            body = f"'native_entrypoint: {{\n{body}\n}}"
     except (SyntaxError, _Unsupported, RecursionError):
         return None
     runtime = files("py2fastrust").joinpath("runtime")
@@ -646,6 +867,8 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
         _HELPERS,
     ]
     if generator.needs_integer_runtime:
+        unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
+        result.append("\n".join("// " + line for line in unicode_license.splitlines()) + "\n")
         result.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
     if generator.has_input:
         result.append(_INPUT_HELPERS)
@@ -661,7 +884,13 @@ def try_generate_native(source: str, filename: str, integer: str) -> str | None:
         result.append(f"let mut {generator.names[name]}: {rust_type};\n")
     result.append(body + "\nOk(())\n})();\n")
     result.append("std::io::stdout().write_all(native_output.as_bytes()).unwrap();\n")
-    result.append("if let Err(error) = native_result {\n"
-                  f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {{}}, in <module>\\n{{}}", {_string(filename)}, error.line, error.message);\n'
-                  "std::process::exit(1);\n}\n}\n")
+    if wrapper:
+        function_name, call_line = wrapper
+        result.append("if let Err(error) = native_result {\n"
+                      f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {call_line}, in <module>\\n  File {{:?}}, line {{}}, in {{}}\\n{{}}", {_string(filename)}, {_string(filename)}, error.line, {_string(function_name)}, error.message);\n'
+                      "std::process::exit(1);\n}\n}\n")
+    else:
+        result.append("if let Err(error) = native_result {\n"
+                      f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {{}}, in <module>\\n{{}}", {_string(filename)}, error.line, error.message);\n'
+                      "std::process::exit(1);\n}\n}\n")
     return "\n".join(result)
