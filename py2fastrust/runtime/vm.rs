@@ -125,6 +125,10 @@ enum Op {
     SetupAnnotations,
     Match(MatchPattern),
     ExceptionMatch,
+    BeginExceptStar,
+    SplitExceptStar,
+    RecordExceptStar(bool),
+    EndExceptStar,
     Break(usize),
     Continue(usize),
     YieldFrom,
@@ -182,6 +186,9 @@ enum Value {
 }
 #[derive(Clone, Debug)]
 struct PyException {
+    class: Option<Value>,
+    group: Option<Box<ExceptionGroupData>>,
+    dict: Option<usize>,
     kind: String,
     message: String,
     args: Vec<Value>,
@@ -198,6 +205,9 @@ type PyResult<T> = Result<T, PyException>;
 fn pyerr(kind: &str, message: impl Into<String>) -> PyException {
     let message = message.into();
     PyException {
+        class: None,
+        group: None,
+        dict: None,
         kind: kind.into(),
         args: if message.is_empty() {
             Vec::new()
@@ -281,6 +291,7 @@ enum IteratorState {
 }
 #[derive(Clone, Debug)]
 enum Object {
+    ExceptStarState(Box<ExceptStarState>),
     Template { strings: usize, interpolations: usize },
     Interpolation { value: Value, expression: Value, conversion: Value, format_spec: Value },
     GenericAlias { origin: Value, args: Vec<Value>, args_tuple: usize, parameters: Option<usize>, typing: bool },
@@ -329,7 +340,7 @@ enum Object {
     },
     Bound(Value, Value),
     Iterator(IteratorState),
-    Generator(Frame),
+    Generator(Box<Frame>),
     Module {
         name: String,
         attrs: usize,
@@ -376,6 +387,8 @@ struct Frame {
     pending: Vec<Pending>,
     exception: Option<PyException>,
     exception_stack: Vec<Option<PyException>>,
+    inherited_exception: Option<PyException>,
+    except_star: Vec<Value>,
     next_call: Option<Box<Frame>>,
     resume_value: Option<Value>,
     injected_exception: Option<PyException>,
@@ -418,12 +431,13 @@ struct Runtime {
     instance_slots: HashMap<usize, HashMap<usize, Value>>,
     next_slot: usize,
     active_future_flags: u32,
+    handled_exception: Option<PyException>,
 }
 impl Runtime {
     fn new_exception(&mut self, kind: &str, args: Vec<Value>) -> PyResult<PyException> {
-        let message = self.exception_message(kind, &args)?;
-        let mut error = pyerr(kind, message);
+        let mut error = pyerr(kind, "");
         error.args = args;
+        error.message=self.exception_cached_message(&error)?;
         if kind == "StopIteration" {
             error.attributes.insert(
                 "value".into(),
@@ -467,6 +481,7 @@ impl Runtime {
         if let Some(value) = &error.value {
             return value.clone();
         }
+        self.exception_initialize_fields(error,false);
         let value = self.obj_value(Object::Exception(error.clone()));
         error.value = Some(value.clone());
         self.sync_exception(error);
@@ -475,6 +490,9 @@ impl Runtime {
     fn exception_roots(error: &PyException, roots: &mut Vec<Value>) {
         roots.extend(error.args.iter().cloned());
         roots.extend(error.args_tuple.iter().cloned());
+        roots.extend(error.dict.iter().map(|index|Value::Obj(*index)));
+        roots.extend(error.class.iter().cloned());
+        if let Some(group)=&error.group {roots.extend([group.message.clone(),group.exceptions.clone(),group.original.clone()]);}
         roots.extend(error.attributes.values().cloned());
         roots.extend(error.value.iter().cloned());
         roots.extend(error.cause.iter().cloned());
@@ -591,6 +609,7 @@ impl Runtime {
                 matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Class(class)) if class.dict_allowed)
             }
             Value::Builtin(name) if name == "super" => true,
+            Value::Type(_) => true,
             _ => false,
         }
     }
@@ -657,6 +676,7 @@ impl Runtime {
             Value::Obj(index) => match self.object(*index)? {
                 Object::Instance { class, attrs }
                 | Object::BuiltinInstance { class, attrs, .. } => (*index, class, attrs),
+                Object::Exception(mut error) => {let attrs=self.exception_dict(&mut error);self.sync_exception(&error);(*index,error.class.unwrap_or_else(||Value::Type(error.kind)),attrs)},
                 _ => return Err(pyerr("TypeError", "descriptor requires an instance")),
             },
             _ => return Err(pyerr("TypeError", "descriptor requires an instance")),
@@ -674,6 +694,7 @@ impl Runtime {
                     Object::Instance { attrs, .. } | Object::BuiltinInstance { attrs, .. } => {
                         *attrs = replacement
                     }
+                    Object::Exception(error) => error.dict=Some(replacement),
                     _ => {}
                 }
                 return Ok(Value::None);
@@ -694,6 +715,7 @@ impl Runtime {
                     Object::Instance { attrs, .. } | Object::BuiltinInstance { attrs, .. } => {
                         *attrs = replacement
                     }
+                    Object::Exception(error) => error.dict=Some(replacement),
                     _ => {}
                 }
                 return Ok(Value::None);
@@ -799,6 +821,7 @@ impl Runtime {
                     Some(class.clone())
                 }
                 Some(Object::Class(c)) => Some(c.metaclass.clone()),
+                Some(Object::Exception(error)) => error.class.clone(),
                 _ => None,
             }
         } else {
@@ -1222,6 +1245,7 @@ impl Runtime {
             instance_slots: HashMap::new(),
             next_slot: 0,
             active_future_flags: 0,
+            handled_exception: None,
         };
         rt.builtins = rt.alloc(Object::Namespace(OrderedNamespace::new(), None));
         rt.globals = rt.alloc(Object::Namespace(OrderedNamespace::new(), None));
@@ -1298,6 +1322,8 @@ impl Runtime {
         }
         for name in [
             "BaseException",
+            "BaseExceptionGroup",
+            "ExceptionGroup",
             "Exception",
             "ArithmeticError",
             "AssertionError",
@@ -1326,6 +1352,7 @@ impl Runtime {
             "ZeroDivisionError",
             "GeneratorExit",
             "SystemExit",
+            "KeyboardInterrupt",
         ] {
             rt.ns_set(rt.builtins, name.into(), Value::Type(name.into()));
         }
@@ -1544,6 +1571,8 @@ impl Runtime {
             pending: Vec::new(),
             exception: None,
             exception_stack: Vec::new(),
+                inherited_exception: None,
+                except_star: Vec::new(),
             next_call: None,
             resume_value: None,
             injected_exception: None,
@@ -1558,10 +1587,12 @@ impl Runtime {
         let _ = std::io::stdout().flush();
         self.output.clear();
     }
-    fn report_exception(&self, e: &PyException) {
+    fn report_exception(&mut self, e: &PyException) {
+        let root=self.roots.len();let mut values=Vec::new();Self::exception_roots(e,&mut values);self.roots.push(values);
         self.report_exception_chain(e, &mut std::collections::HashSet::new());
+        self.roots.truncate(root);
     }
-    fn report_exception_chain(&self, e: &PyException, seen: &mut std::collections::HashSet<usize>) {
+    fn report_exception_chain(&mut self, e: &PyException, seen: &mut std::collections::HashSet<usize>) {
         if let Some(Value::Obj(index)) = e.value {
             if !seen.insert(index) {
                 return;
@@ -1577,9 +1608,9 @@ impl Runtime {
         if let Some((Value::Obj(index), direct)) = linked {
             if !seen.contains(index) {
                 if let Some(Object::Exception(previous)) =
-                    self.heap.get(*index).and_then(Option::as_ref)
+                    self.heap.get(*index).and_then(Option::as_ref).cloned()
                 {
-                    self.report_exception_chain(previous, seen);
+                    self.report_exception_chain(&previous, seen);
                     eprintln!(
                         "\n{}\n",
                         if direct {
@@ -1597,10 +1628,11 @@ impl Runtime {
                 eprintln!("  File {:?}, line {}, in {}", file, line, name);
             }
         }
-        if e.message.is_empty() {
+        let message=if let Some(value)=&e.value{self.str_value(value)}else{self.exception_object_message(e)}.unwrap_or_else(|_|"<exception str() failed>".into());
+        if message.is_empty() {
             eprintln!("{}", e.kind);
         } else {
-            eprintln!("{}: {}", e.kind, e.message);
+            eprintln!("{}: {}", e.kind, message);
         }
     }
     fn pop(f: &mut Frame) -> PyResult<Value> {
@@ -1630,6 +1662,8 @@ impl Runtime {
         if let Some(e) = &frame.injected_exception {
             Self::exception_roots(e, out);
         }
+        if let Some(error)=&frame.inherited_exception{Self::exception_roots(error,out);}
+        out.extend(frame.except_star.iter().cloned());
         out.push(Value::Obj(frame.locals));
         out.push(Value::Obj(frame.temps));
         out.push(Value::Obj(frame.globals));
@@ -1657,6 +1691,8 @@ impl Runtime {
         if self.recursion >= self.recursion_limit {
             return Err(pyerr("RecursionError", "maximum recursion depth exceeded"));
         }
+        let previous_exception=self.handled_exception.clone();
+        f.inherited_exception=previous_exception.clone();
         let previous_flags=self.active_future_flags;
         let base_depth = self.recursion;
         let root = self.roots.len();
@@ -1665,6 +1701,7 @@ impl Runtime {
         let mut frames: Vec<Frame> = Vec::new();
         let result = (|| loop {
             self.active_future_flags=self.codes[f.code].future_flags;
+            self.handled_exception=f.exception.clone().or_else(||f.inherited_exception.clone());
             let mut roots = Vec::new();
             Self::frame_roots(&f, &mut roots);
             let current = root + frames.len();
@@ -1713,15 +1750,17 @@ impl Runtime {
                                 "maximum recursion depth exceeded",
                             ));
                         }
+                        let inherited=f.exception.clone().or_else(||f.inherited_exception.clone());
                         frames.push(f);
                         self.recursion += 1;
                         f = *child;
+                        f.inherited_exception=inherited;
                     }
                 }
                 Err(mut e) => loop {
                     self.active_future_flags=self.codes[f.code].future_flags;
                     if e.context.is_none() {
-                        if let Some(mut previous) = f.exception.clone() {
+                        if let Some(mut previous) = f.exception.clone().or_else(||f.inherited_exception.clone()) {
                             let previous = self.exception_value(&mut previous);
                             if !matches!((&e.value, &previous), (Some(Value::Obj(a)), Value::Obj(b)) if a == b)
                             {
@@ -1748,6 +1787,7 @@ impl Runtime {
                     }
                     e.skip_trace = false;
                     self.sync_exception(&e);
+                    self.exception_star_unwind(&mut f);
                     if let Some(h) = f.handlers.pop() {
                         f.stack.truncate(h.depth);
                         Self::discard_finalizers(&mut f, h.pending_depth);
@@ -1771,6 +1811,7 @@ impl Runtime {
         })();
         self.roots.truncate(root);
         self.active_future_flags=previous_flags;
+        self.handled_exception=previous_exception;
         self.recursion = base_depth;
         result
     }
@@ -1870,7 +1911,9 @@ impl Runtime {
                 } else {
                     f.locals
                 };
-                if !self.mapping_del(ns, &n)? {
+                let deleted=self.mapping_del(ns,&n);
+                let deleted=if self.codes[f.code].kind==ScopeKind::Class{deleted.unwrap_or(false)}else{deleted?};
+                if !deleted {
                     return Err(pyerr("NameError", format!("name '{}' is not defined", n)));
                 }
             }
@@ -1916,6 +1959,10 @@ impl Runtime {
                 let v = self.compare_value(&op, &a, &b)?;
                 f.stack.push(v)
             }
+            Op::BeginExceptStar => {let state=self.exception_star_begin(f)?;f.stack.push(state);}
+            Op::SplitExceptStar => {let condition=Self::pop(f)?;let state=Self::pop(f)?;let matched=self.exception_star_split(f,state,condition)?;f.stack.push(Value::Bool(matched));}
+            Op::RecordExceptStar(raised) => {let state=Self::pop(f)?;self.exception_star_record(f,state,raised)?;}
+            Op::EndExceptStar => {let state=Self::pop(f)?;self.exception_star_end(f,state)?;}
             Op::ExceptionMatch => {
                 let b = Self::pop(f)?;
                 let a = Self::pop(f)?;
@@ -2213,7 +2260,7 @@ impl Runtime {
                 if n == 0 {
                     let error = f
                         .exception
-                        .clone()
+                        .clone().or_else(||f.inherited_exception.clone())
                         .ok_or_else(|| pyerr("RuntimeError", "No active exception to reraise"))?;
                     let mut error = if let Some(value) = error.value.clone() {
                         self.as_exception(value)?
@@ -2226,7 +2273,7 @@ impl Runtime {
                 let cause = if n == 2 { Some(Self::pop(f)?) } else { None };
                 let v = Self::pop(f)?;
                 let mut error = self.as_exception(v)?;
-                if let Some(mut previous) = f.exception.clone() {
+                if let Some(mut previous) = f.exception.clone().or_else(||f.inherited_exception.clone()) {
                     let previous = self.exception_value(&mut previous);
                     if !matches!((&error.value, &previous), (Some(Value::Obj(a)), Value::Obj(b)) if a == b)
                     {
@@ -2630,7 +2677,7 @@ impl Runtime {
                     "length_hint",
                 ],
                 "collections" => &["deque", "Counter", "defaultdict", "namedtuple"],
-                "sys" => &["setrecursionlimit", "getrecursionlimit", "exit"],
+                "sys" => &["setrecursionlimit", "getrecursionlimit", "exit", "exception", "exc_info"],
                 "gc" => &["collect", "enable", "disable", "isenabled"],
                 "time" => &["time", "perf_counter", "monotonic"],
                 "builtins" => &[],
@@ -2743,6 +2790,8 @@ impl Runtime {
                 pending: Vec::new(),
                 exception: None,
                 exception_stack: Vec::new(),
+                inherited_exception: None,
+                except_star: Vec::new(),
                 next_call: None,
                 resume_value: None,
                 injected_exception: None,
@@ -2784,6 +2833,11 @@ impl Runtime {
                         .to_usize()
                         .ok_or_else(|| pyerr("ValueError", "recursion limit must be positive"))?;
                     Ok(Value::None)
+                }
+                "exception" | "exc_info" => {
+                    if !args.is_empty() || !kwargs.is_empty(){return Err(pyerr("TypeError",format!("sys.{}() takes no arguments",name)));}
+                    let value=if let Some(mut error)=self.handled_exception.clone(){self.exception_value(&mut error)}else{Value::None};
+                    if name=="exception"{Ok(value)}else if matches!(value,Value::None){Ok(self.obj_value(Object::Tuple(vec![Value::None;3])))}else{let class=self.exception_actual_class(&value).unwrap_or(Value::None);let trace=self.getattr(value.clone(),"__traceback__")?;Ok(self.obj_value(Object::Tuple(vec![class,value,trace])))}
                 }
                 "getrecursionlimit" => Ok(Value::Int(Int::from_i128(self.recursion_limit as i128).into())),
                 "exit" => {
@@ -3285,6 +3339,7 @@ impl Runtime {
                 Object::Record { fields, .. } => {
                     pending.extend(fields.iter().map(|(_, v)| v.clone()))
                 }
+                Object::ExceptStarState(state) => state.roots(&mut pending),
                 Object::Cell(v) => pending.extend(v.iter().cloned()),
                 Object::Static(v) | Object::ClassMethod(v) => pending.push(v.clone()),
                 Object::Property { get, set, del } => {
@@ -3383,6 +3438,7 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> PyResult<Value> {
+        if self.is_exception_value(&receiver){if let Some(result)=self.exception_group_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if self.is_template_value(&receiver){if let Some(result)=self.template_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if self.is_typing_value(&receiver){if let Some(result)=self.typing_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if let Some(result)=self.dictview_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
@@ -4317,6 +4373,10 @@ impl Runtime {
             if args.is_empty() {
                 return Err(pyerr("TypeError", "unbound descriptor needs an instance"));
             }
+            if method == "__delitem__" {
+                if args.len()!=2 || !kwargs.is_empty(){return Err(pyerr("TypeError","__delitem__() takes exactly one argument"));}
+                self.delitem(args[0].clone(),args[1].clone())?;return Ok(Value::None);
+            }
             if method == "__setitem__" {
                 self.setitem(
                     args[0].clone(),
@@ -4428,6 +4488,7 @@ impl Runtime {
             }
             return self.method(method, args[0].clone(), args[1..].to_vec(), kwargs);
         }
+        if let Some(rest) = name.strip_prefix("exception_type:") {return self.exception_type_method(rest,args,kwargs,caller);}
         if let Some(rest) = name.strip_prefix("type_method:") {
             let mut p = rest.split(':');
             let typ = p.next().unwrap_or("");
@@ -5268,6 +5329,8 @@ impl Runtime {
                     pending: Vec::new(),
                     exception: None,
                     exception_stack: Vec::new(),
+                inherited_exception: None,
+                except_star: Vec::new(),
                     next_call: None,
                     resume_value: None,
                     injected_exception: None,
@@ -5377,6 +5440,7 @@ impl Runtime {
         if bn == "object" || an == "bool" && bn == "int" {
             return Ok(true);
         }
+        if an=="ExceptionGroup" && bn=="BaseExceptionGroup" {return Ok(true);}
         if !an.is_empty() && !bn.is_empty() {
             let mut k = an.as_str();
             for _ in 0..30 {
@@ -5446,6 +5510,7 @@ impl Runtime {
         let result = (|| match fun.clone() {
             Value::Builtin(name) => self.builtin(&name, args, kwargs, caller),
             Value::Type(kind) => {
+                if group_type_name(&kind) {return self.exception_group_construct(Value::Type(kind),args,kwargs);}
                 if !kwargs.is_empty() {
                     return Err(pyerr(
                         "TypeError",
@@ -5501,13 +5566,14 @@ impl Runtime {
                 Object::Function(function) => {
                     let frame = self.bind_function(&function, args, kwargs)?;
                     if self.codes[function.code].is_generator {
-                        return Ok(self.obj_value(Object::Generator(frame)));
+                        return Ok(self.obj_value(Object::Generator(Box::new(frame))));
                     }
                     match self.execute(frame)?.0 {
                         FrameExit::Return(v) | FrameExit::Yield(v) => Ok(v),
                     }
                 }
                 Object::Class(class) => {
+                    if self.is_subclass(&fun,&Value::Type("BaseException".into()))? {return self.exception_subclass_call(fun,args,kwargs,caller);}
                     let is_meta = self.is_subclass(&fun, &Value::Builtin("type".into()))?;
                     if is_meta {
                         if let Some(new) = self.class_lookup(&fun, "__new__", 0) {
@@ -5877,6 +5943,8 @@ impl Runtime {
             pending: Vec::new(),
             exception: None,
             exception_stack: Vec::new(),
+                inherited_exception: None,
+                except_star: Vec::new(),
             next_call: None,
             resume_value: None,
             injected_exception: None,
@@ -5939,7 +6007,7 @@ impl Runtime {
             Value::Obj(i) => match self.object(i)? {
                 Object::Exception(mut e) => {
                     e.value = Some(Value::Obj(i));
-                    e.message = self.exception_message(&e.kind, &e.args)?;
+                    e.message = self.exception_cached_message(&e)?;
                     Ok(e)
                 }
                 Object::Instance { class, .. } => {
@@ -5970,7 +6038,8 @@ impl Runtime {
     fn exception_parent(kind: &str) -> &str {
         match kind {
             "BaseException" => "",
-            "Exception" | "GeneratorExit" | "SystemExit" => "BaseException",
+            "Exception" | "BaseExceptionGroup" | "GeneratorExit" | "SystemExit" | "KeyboardInterrupt" => "BaseException",
+            "ExceptionGroup" => "Exception",
             "ArithmeticError" | "AssertionError" | "AttributeError" | "EOFError"
             | "ImportError" | "LookupError" | "NameError" | "OSError" | "RuntimeError"
             | "StopIteration" | "SyntaxError" | "TypeError" | "ValueError" => "Exception",
@@ -5984,53 +6053,12 @@ impl Runtime {
             _ => "",
         }
     }
-    fn exception_match(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
-        if let Value::Obj(i) = b {
-            if let Object::Tuple(v) = self.object(*i)? {
-                for t in v {
-                    if self.exception_match(a, &t)? {
-                        return Ok(true);
-                    }
-                }
-                return Ok(false);
-            }
-        }
-        let kind = match a {
-            Value::Obj(i) => match self.object(*i)? {
-                Object::Exception(e) => e.kind,
-                _ => self.typename(a),
-            },
-            Value::Type(n) => n.clone(),
-            _ => self.typename(a),
-        };
-        let expected =
-            match b {
-                Value::Type(n) => n.clone(),
-                Value::Obj(i) => match self.object(*i)? {
-                    Object::Class(c) => c.name.to_string(),
-                    _ => return Err(pyerr(
-                        "TypeError",
-                        "catching classes that do not inherit from BaseException is not allowed",
-                    )),
-                },
-                _ => {
-                    return Err(pyerr(
-                        "TypeError",
-                        "catching classes that do not inherit from BaseException is not allowed",
-                    ))
-                }
-            };
-        let mut k = kind.as_str();
-        for _ in 0..30 {
-            if k == expected {
-                return Ok(true);
-            }
-            if k.is_empty() {
-                break;
-            }
-            k = Self::exception_parent(k)
-        }
-        Ok(false)
+    fn exception_match(&mut self,a:&Value,b:&Value)->PyResult<bool> {
+        if let Value::Obj(index)=b {if let Some(Object::Tuple(items))=self.heap.get(*index).and_then(Option::as_ref) {let items=items.clone();for item in items {if self.exception_match(a,&item)?{return Ok(true);}}return Ok(false);}}
+        let valid=matches!(b,Value::Type(_))||matches!(b,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))));
+        if !valid || !self.is_subclass(b,&Value::Type("BaseException".into()))? {return Err(pyerr("TypeError","catching classes that do not inherit from BaseException is not allowed"));}
+        let actual=if matches!(a,Value::Type(_)){a.clone()}else if let Some(class)=self.exception_actual_class(a).or_else(||self.object_class(a)){class}else{self.getattr(a.clone(),"__class__")?};
+        self.is_subclass(&actual,b)
     }
     fn str_value(&mut self, v: &Value) -> PyResult<String> {
         if let Some(payload)=self.proxy_payload(v) {return self.str_value(&payload);}
@@ -6055,7 +6083,10 @@ impl Runtime {
                 }
             }
             Value::Obj(i) => match self.object(*i)? {
-                Object::Exception(e) => self.exception_message(&e.kind, &e.args),
+                Object::Exception(e) => {
+                    if let Some(class)=&e.class {if let Some(method)=self.class_lookup(class,"__str__",0){let method=self.bind_descriptor(method,Some(v.clone()),class.clone())?;let result=self.call(method,Vec::new(),Vec::new(),None)?;if let Value::Str(text)=result{return Ok(text.to_string());}return Err(pyerr("TypeError","__str__ returned non-string"));}}
+                    self.exception_object_message(&e)
+                },
                 Object::Instance { .. } | Object::BuiltinInstance { .. } => {
                     if let Ok(fun) = self.special_method(v.clone(), "__str__") {
                         let r = self.call(fun, Vec::new(), Vec::new(), None)?;
@@ -6151,11 +6182,14 @@ impl Runtime {
                     Object::Class(c) => format!("<class '{}'>", c.name),
                     Object::Module { name, .. } => format!("<module '{}'>", name),
                     Object::Exception(e) => {
+                        if let Some(class)=&e.class {if let Some(method)=self.class_lookup(class,"__repr__",0){let method=self.bind_descriptor(method,Some(v.clone()),class.clone())?;let result=self.call(method,Vec::new(),Vec::new(),None)?;if let Value::Str(text)=result{return Ok(text.to_string());}return Err(pyerr("TypeError","__repr__ returned non-string"));}}
+                        if e.group.is_some() {self.exception_group_repr(&e,seen)?}else{
                         let mut args = Vec::new();
                         for argument in &e.args {
                             args.push(self.repr_inner(argument, seen)?);
                         }
                         format!("{}({})", e.kind, args.join(", "))
+                        }
                     }
                     Object::BuiltinInstance { payload, .. } => {
                         if let Ok(fun) = self.special_method(v.clone(), "__repr__") {
@@ -6210,6 +6244,7 @@ impl Runtime {
                     Object::Static(_) => "<staticmethod>".into(),
                     Object::ClassMethod(_) => "<classmethod>".into(),
                     Object::Property { .. } => "<property>".into(),
+                    Object::ExceptStarState(_) => "<except* state>".into(),
                     Object::Cell(_) => "<cell>".into(),
                     Object::Code(_) => "<code object>".into(),
                     Object::Slot { owner, name, .. } => format!(
@@ -6492,6 +6527,7 @@ impl Runtime {
                 Some(Object::Module { .. }) => "module".into(),
                 Some(Object::Iterator(_)) => "iterator".into(),
                 Some(Object::Slice(..)) => "slice".into(),
+                Some(Object::ExceptStarState(_)) => "except* state".into(),
                 Some(Object::Cell(_)) => "cell".into(),
                 Some(Object::Range(..)) => "range".into(),
                 Some(Object::Record { name, .. }) => name.clone(),
@@ -7976,7 +8012,7 @@ impl Runtime {
                         return Err(pyerr("ValueError", "generator already executing"));
                     }
                     self.running_generators.push(i);
-                    let executed = self.execute(frame);
+                    let executed = self.execute(*frame);
                     self.running_generators.pop();
                     let (exit, mut f) = match executed {
                         Ok(result) => result,
@@ -8001,13 +8037,13 @@ impl Runtime {
                     };
                     match exit {
                         FrameExit::Yield(v) => {
-                            self.heap[i] = Some(Object::Generator(f));
+                            self.heap[i] = Some(Object::Generator(Box::new(f)));
                             return Ok(Some(v));
                         }
                         FrameExit::Return(value) => {
                             self.ns_set(f.temps, "$generator_return".into(), value);
                             f.pc = usize::MAX;
-                            self.heap[i] = Some(Object::Generator(f));
+                            self.heap[i] = Some(Object::Generator(Box::new(f)));
                             return Ok(None);
                         }
                     }
@@ -8050,6 +8086,7 @@ impl Runtime {
             Value::Builtin(n) if n == "object" => return Some(vec![class.clone()]),
             Value::Builtin(n) if n == "bool" => vec![Value::Builtin("int".into())],
             Value::Builtin(_) => vec![Value::Builtin("object".into())],
+            Value::Type(n) if n=="ExceptionGroup" => vec![Value::Type("BaseExceptionGroup".into()),Value::Type("Exception".into())],
             Value::Type(n) => {
                 let p = Self::exception_parent(n);
                 if p.is_empty() {
@@ -8145,6 +8182,7 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if self.is_exception_value(&v) || matches!(&v,Value::Type(_)){if let Some(result)=self.exception_group_attr(v.clone(),name){return result;}}
         if self.is_template_value(&v){if let Some(result)=self.template_attr(v.clone(),name){return result;}}
         if name=="__class__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{typing:true,..}))) {return Ok(Value::Builtin("typing._GenericAlias".into()));}
         if self.is_typing_value(&v){if let Some(result)=self.typing_attr(v.clone(),name){return result;}}
@@ -8274,7 +8312,7 @@ impl Runtime {
                 Value::Obj(i) => match self.object(*i)? {
                     Object::Instance { class, .. } | Object::BuiltinInstance { class, .. } => class,
                     Object::Class(c) => c.metaclass,
-                    Object::Exception(e) => Value::Type(e.kind),
+                    Object::Exception(e) => e.class.unwrap_or_else(||Value::Type(e.kind)),
                     _ => Value::Builtin(self.typename(&v)),
                 },
                 _ => Value::Builtin(self.typename(&v)),
@@ -8422,6 +8460,7 @@ impl Runtime {
                             Value::Obj(i) => match self.object(*i)? {
                                 Object::Instance { class, .. }
                                 | Object::BuiltinInstance { class, .. } => class,
+                                Object::Exception(error) => error.class.unwrap_or_else(||Value::Type(error.kind)),
                                 Object::Class(_) => recv.clone(),
                                 _ => recv.clone(),
                             },
@@ -8609,6 +8648,7 @@ impl Runtime {
                     }
                 },
                 Object::Exception(mut e) => {
+                    if name=="__dict__"{let attrs=self.exception_dict(&mut e);self.sync_exception(&e);return Ok(Value::Obj(attrs));}
                     if name == "args" {
                         if let Some(value) = e.args_tuple {
                             return Ok(value);
@@ -8618,20 +8658,12 @@ impl Runtime {
                         self.heap[i] = Some(Object::Exception(e));
                         return Ok(value);
                     }
+                    if self.exception_native_attribute(&e,name){return Ok(e.attributes.get(name).cloned().unwrap_or(Value::None));}
+                    if !["__cause__","__context__","__suppress_context__","__traceback__"].contains(&name){if let Some(value)=e.dict.and_then(|index|self.ns_get(index,name)){return Ok(value);}}
                     if let Some(value) = e.attributes.get(name) {
                         return Ok(value.clone());
                     }
                     match name {
-                        "value" if e.kind == "StopIteration" => {
-                            return Ok(e.args.first().cloned().unwrap_or(Value::None))
-                        }
-                        "code" if e.kind == "SystemExit" => {
-                            return Ok(match e.args.as_slice() {
-                                [] => Value::None,
-                                [value] => value.clone(),
-                                values => self.obj_value(Object::Tuple(values.to_vec())),
-                            })
-                        }
                         "__cause__" => return Ok(e.cause.unwrap_or(Value::None)),
                         "__context__" => return Ok(e.context.unwrap_or(Value::None)),
                         "__suppress_context__" => return Ok(Value::Bool(e.suppress_context)),
@@ -8873,6 +8905,7 @@ impl Runtime {
                     && [
                         "__getitem__",
                         "__setitem__",
+                        "__delitem__",
                         "__iter__",
                         "__len__",
                         "get",
@@ -8895,12 +8928,27 @@ impl Runtime {
             }
             _ => {}
         }
+        if self.is_exception_value(&v){if let Some(class)=self.object_class(&v){if let Some(method)=self.class_lookup(&class,"__getattr__",0){let bound=self.bind_descriptor(method,Some(v),class)?;return self.call(bound,vec![Value::Str(name.into())],Vec::new(),None);}}}
         Err(pyerr(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", self.typename(&v), name),
         ))
     }
     fn setattr_default(&mut self, obj: Value, name: &str, value: Value) -> PyResult<()> {
+        if self.is_exception_value(&obj) {
+            if let Some(class)=self.object_class(&obj) {
+                if let Some(descriptor)=self.class_lookup(&class,name,0) {
+                    if let Value::Obj(index)=&descriptor {
+                        match self.object(*index)? {
+                            Object::Slot{..}=>{self.slot_access(descriptor,obj,Some(value),false)?;return Ok(());}
+                            Object::Property{set,..}=>{let set=set.ok_or_else(||pyerr("AttributeError","property has no setter"))?;self.call(set,vec![obj,value],Vec::new(),None)?;return Ok(());}
+                            _=>{}
+                        }
+                    }
+                    if let Ok(set)=self.getattr(descriptor,"__set__"){self.call(set,vec![obj,value],Vec::new(),None)?;return Ok(());}
+                }
+            }
+        }
         if let Value::Obj(index)=&obj {
             if let Object::TypeParameter(mut parameter)=self.object(*index)? {
                 let protected=["__name__","__default__"].contains(&name) || (parameter.kind!="typevartuple" && ["__bound__","__constraints__","__infer_variance__","__covariant__","__contravariant__"].contains(&name));
@@ -8912,7 +8960,10 @@ impl Runtime {
         if let Value::Obj(i) = obj.clone() {
             match self.object(i)? {
                 Object::Exception(mut error) => {
+                    if error.group.is_some() && ["message","exceptions"].contains(&name){return Err(pyerr("AttributeError",format!("readonly attribute: {}",name)));}
                     match name {
+                        "value"|"code" if self.exception_native_attribute(&error,name)=>{error.attributes.insert(name.into(),value);}
+                        "__dict__"=>{let Value::Obj(index)=value else{return Err(pyerr("TypeError","__dict__ must be set to a dictionary"));};if !matches!(self.heap.get(index).and_then(Option::as_ref),Some(Object::Dict(_)|Object::Namespace(..))){return Err(pyerr("TypeError","__dict__ must be set to a dictionary"));}error.dict=Some(index);}
                         "args" => {
                             error.args = self.to_vec(value.clone())?;
                             error.args_tuple = Some(match value {
@@ -8926,7 +8977,7 @@ impl Runtime {
                                 }
                                 _ => self.obj_value(Object::Tuple(error.args.clone())),
                             });
-                            error.message = self.exception_message(&error.kind, &error.args)?;
+                            error.message = self.exception_cached_message(&error)?;
                         }
                         "__cause__" | "__context__" => {
                             let value = if matches!(value, Value::None) {
@@ -8950,6 +9001,10 @@ impl Runtime {
                                 error.context = value;
                             }
                         }
+                        "__traceback__" => {
+                            if matches!(value,Value::None){error.trace.clear();}else if !matches!(&value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Record{name,..})if name=="traceback")){return Err(pyerr("TypeError","__traceback__ must be a traceback or None"));}
+                            error.attributes.insert(name.into(),value);
+                        }
                         "__suppress_context__" => {
                             if let Value::Bool(value) = value {
                                 error.suppress_context = value;
@@ -8961,7 +9016,7 @@ impl Runtime {
                             }
                         }
                         _ => {
-                            error.attributes.insert(name.into(), value);
+                            let attrs=self.exception_dict(&mut error);self.ns_set(attrs,name.into(),value);
                         }
                     }
                     self.heap[i] = Some(Object::Exception(error));
@@ -9212,6 +9267,12 @@ impl Runtime {
         }
         if let Value::Obj(i) = obj {
             let attrs = match self.object(i)? {
+                Object::Exception(mut error) => {
+                    if name=="__dict__"{return Err(pyerr("TypeError","cannot delete __dict__"));}
+                    if self.exception_native_attribute(&error,name){error.attributes.insert(name.into(),Value::None);self.heap[i]=Some(Object::Exception(error));return Ok(());}
+                    if error.dict.is_some_and(|attrs|self.ns_del(attrs,name)){self.heap[i]=Some(Object::Exception(error));return Ok(());}
+                    return Err(pyerr("AttributeError",name));
+                }
                 Object::Instance { attrs, .. }
                 | Object::BuiltinInstance { attrs, .. }
                 | Object::Module { attrs, .. } => Some(attrs),
@@ -9342,6 +9403,8 @@ impl Runtime {
             pending: Vec::new(),
             exception: None,
             exception_stack: Vec::new(),
+                inherited_exception: None,
+                except_star: Vec::new(),
             next_call: None,
             resume_value: None,
             injected_exception: None,

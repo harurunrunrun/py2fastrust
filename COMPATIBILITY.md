@@ -11,7 +11,7 @@
 | 制御 | if、while、for、break/continue、else、短絡演算、比較連鎖 |
 | 関数 | 既定値、位置専用・キーワード専用引数、可変長引数、再帰、lambda、クロージャ、型パラメータとその遅延評価する境界・既定値 |
 | コンテナ式 | 内包表記、ジェネレータ式、展開、負の添字、スライス |
-| 例外 | raise、except、else、finally、assert、元のargs・cause/context、例外対象変数の後始末、tracebackのソース情報 |
+| 例外 | raise、except、except*、例外グループの分割・再結合、else、finally、assert、元のargs・cause/context・notes、例外対象変数の後始末、tracebackのソース情報 |
 | クラス | 継承、C3 MRO、descriptor、property、staticmethod/classmethod、super、メタクラス、__slots__、list/tuple/dict/set/str/intの継承 |
 | 名前空間 | 任意mappingを返す__prepare__、private名、Unicode NFKC識別子、辞書の挿入順、内部一時変数の分離、free変数を含むPython 3.14関数localsのsnapshot |
 | その他 | with、ジェネレータのsend/throw/closeとyield from、f-string、t-string、match/case |
@@ -30,7 +30,7 @@
 | itertools | 公開API。無限イテレータ、tee、groupbyを含む遅延実行 |
 | functools | 公開API。cache/lru_cache、partial、decorator、dispatch、cached_property |
 | collections | deque、defaultdict、Counter、namedtuple、OrderedDict |
-| sys | 標準入出力、argv、exit、再帰制限設定 |
+| sys | 標準入出力、argv、exit、再帰制限設定、exception/exc_info |
 | gc | collectなど、ランタイムのGC制御 |
 
 mathの浮動小数点特殊関数は精度テストを行いますが、OSやCPythonのlibmによる結果と常にbit単位で一致することは保証しません。
@@ -40,7 +40,7 @@ APIごとの名前は [API_SUPPORT.md](API_SUPPORT.md) を参照してくださ�
 
 ## 既知の制約
 
-- async/await、except*は未対応です。
+- async/awaitは未対応です。
 - complex、未対のUnicodeサロゲートなど、基本値にも未対応範囲があります。
 - bytearray、memoryview、frozenset、openによるファイル入出力は未対応です。標準ストリームのtext/binary入出力を提供します。
 - 文字コード変換はUTF-8・ASCII・Latin-1を対象とし、利用可能なerrors指定にも制約があります。str subclassのencoding付き構築は未対応です。

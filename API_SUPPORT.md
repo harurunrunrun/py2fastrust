@@ -169,6 +169,7 @@ ChainMap、UserDict、UserList、UserStringは対象に含めていません。
 | `argv` | 実行ファイルに渡された引数 |
 | `exit` | SystemExit |
 | `setrecursionlimit`、`getrecursionlimit` | 再帰制限の設定・取得 |
+| `exception`、`exc_info` | 現在処理中の例外。except*の部分グループ、関数への継承、ジェネレータの中断・再開を含む |
 
 一覧にないsysのAPIはサポート対象に含めていません。
 

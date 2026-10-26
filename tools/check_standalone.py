@@ -83,6 +83,23 @@ gc.collect()
 print(held_template.values)
 exec("template = t'{sum([1, 2, 3])}'", space)
 print(space["template"].values)
+
+def active_exception():
+    return sys.exception()
+
+group = ExceptionGroup("standalone", [ValueError("value"), TypeError("type")])
+group.add_note("retained")
+gc.collect()
+try:
+    try:
+        raise group
+    except* ValueError as matched:
+        print(matched.message, matched.__notes__, active_exception() is matched,
+              sys.exc_info()[0] is ExceptionGroup)
+except ExceptionGroup as remaining:
+    print([type(error).__name__ for error in remaining.exceptions])
+exec("try: raise ValueError('dynamic')\\nexcept* ValueError as caught: print(caught.message, str(caught.exceptions[0]))", space)
+print(sys.exception())
 print(sys.stdin.readline() == "\\n")
 sys.stdout.flush()
 sys.stdout.buffer.write(b"standalone\\n")

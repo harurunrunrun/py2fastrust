@@ -123,7 +123,7 @@ def generate(program: Program, integer="i64"):
     unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
     prefix += "\n".join("// " + line for line in unicode_license.splitlines()) + "\n"
     parts = [prefix]
-    for name in ("integer.rs", "vm.rs", "identity.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "type_parameters.rs", "templates.rs"):
+    for name in ("integer.rs", "vm.rs", "identity.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "namespace.rs", "dict_views.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
         parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
     parts.append("\nfn main() {\nlet codes = vec![\n")
     source_map = []
@@ -141,6 +141,6 @@ def generate(program: Program, integer="i64"):
     parts.append("];\nlet modules = vec![" + ",".join(f"({string(name)},{index})" for name, index in program.modules) + "];\n")
     parts.append("let mut runtime = Runtime::new(codes, modules);\n"
                  "if let Err(error) = runtime.run() { runtime.finish(); "
-                 "if error.kind == \"SystemExit\" { let status = runtime.system_exit_status(&error); std::process::exit(status); } "
+                 "if runtime.exception_has_native_class(&error, \"SystemExit\") { let status = runtime.system_exit_status(&error); std::process::exit(status); } "
                  "runtime.report_exception(&error); std::process::exit(1); }\nruntime.finish();\n}\n")
     return "\n".join(parts), tuple(source_map)

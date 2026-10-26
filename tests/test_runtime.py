@@ -35,8 +35,12 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(actual.returncode, expected.returncode, actual_error + "\n" + expected_error)
             self.assertEqual(actual.stdout, expected.stdout, actual_error)
             if expected.returncode:
-                self.assertEqual(actual_error.strip().splitlines()[-1].split(":")[0],
-                                 expected_error.strip().splitlines()[-1].split(":")[0])
+                if expected_error.strip():
+                    self.assertTrue(actual_error.strip(), "expected an exception diagnostic")
+                    self.assertEqual(actual_error.strip().splitlines()[-1].split(":")[0],
+                                     expected_error.strip().splitlines()[-1].split(":")[0])
+                else:
+                    self.assertEqual(actual_error, expected_error)
             return actual
 
     def test_binary_standard_streams_and_command_line_arguments(self):

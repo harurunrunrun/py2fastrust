@@ -181,6 +181,7 @@ enum DStmtKind {
     Return(Option<DExpr>), Break, Continue, Pass, Raise(Option<DExpr>, Option<DExpr>), Assert(DExpr, Option<DExpr>),
     Global(Vec<String>), Nonlocal(Vec<String>),
     Try(Vec<DStmt>, Vec<(Option<DExpr>, Option<String>, Vec<DStmt>)>, Vec<DStmt>, Vec<DStmt>),
+    TryStar(Vec<DStmt>, Vec<(Option<DExpr>, Option<String>, Vec<DStmt>)>, Vec<DStmt>, Vec<DStmt>),
     With(Vec<(DExpr, Option<DExpr>)>, Vec<DStmt>),
     Match(DExpr, Vec<(MatchPattern, Option<DExpr>, Vec<DStmt>)>),
     Import(Vec<(String, Option<String>)>), ImportFrom(String, Vec<(String, Option<String>)>, usize),
@@ -284,10 +285,13 @@ impl DParser {
             let definition=DStmtKind::Class(name, bases, keywords, self.suite()?, decorators.clone());
             if type_params.is_empty(){definition}else{DStmtKind::Generic(type_params,Box::new(definition))}
         } else if self.eat("try") {
-            let body = self.suite()?; let mut handlers = Vec::new();
+            let body = self.suite()?; let mut handlers = Vec::new();let mut starred=None;
             while self.eat("except") {
-                if self.eat("*") { return Err(self.error("except* is not yet supported")); }
-                let exception = if self.is(":") { None } else { Some(self.expression()?) };
+                let is_starred=self.eat("*");
+                if starred.is_some_and(|previous|previous!=is_starred){return Err(self.error("cannot have both 'except' and 'except*' on the same 'try'"));}
+                starred=Some(is_starred);
+                if is_starred&&self.is(":"){return Err(self.error("expected one or more exception types"));}
+                let exception = if self.is(":") { None } else { Some(self.expression_list()?) };
                 let name = if self.eat("as") { Some(self.name()?) } else { None };
                 let handler = self.suite()?; handlers.push((exception, name, handler));
             }
@@ -296,7 +300,7 @@ impl DParser {
             if handlers.is_empty() && finally.is_empty() { return Err(self.error("try requires except or finally")); }
             if handlers.is_empty() && !tail.is_empty() { return Err(self.error("try/else requires except")); }
             for (index, (exception, _, _)) in handlers.iter().enumerate() { if exception.is_none() && index + 1 < handlers.len() { return Err(self.error("default except must be last")); } }
-            DStmtKind::Try(body, handlers, tail, finally)
+            if starred==Some(true){DStmtKind::TryStar(body, handlers, tail, finally)}else{DStmtKind::Try(body, handlers, tail, finally)}
         } else if self.eat("with") {
             let parenthesized = self.eat("("); let mut items = Vec::new();
             loop {
@@ -825,7 +829,7 @@ fn d_static_attributes(body: &[DStmt], in_function: bool, names: &mut Vec<String
             DStmtKind::AnnAssign(target,_,Some(_),_) if in_function => d_static_target(target,names),
             DStmtKind::If(_,body,tail) | DStmtKind::While(_,body,tail) => { d_static_attributes(body,in_function,names); d_static_attributes(tail,in_function,names); },
             DStmtKind::For(target,_,body,tail) => { if in_function { d_static_target(target,names); } d_static_attributes(body,in_function,names); d_static_attributes(tail,in_function,names); },
-            DStmtKind::Try(body,handlers,tail,finally) => { d_static_attributes(body,in_function,names); for (_,_,body) in handlers { d_static_attributes(body,in_function,names); } d_static_attributes(tail,in_function,names); d_static_attributes(finally,in_function,names); },
+            DStmtKind::Try(body,handlers,tail,finally) | DStmtKind::TryStar(body,handlers,tail,finally) => { d_static_attributes(body,in_function,names); for (_,_,body) in handlers { d_static_attributes(body,in_function,names); } d_static_attributes(tail,in_function,names); d_static_attributes(finally,in_function,names); },
             DStmtKind::With(items,body) => { if in_function { for (_,target) in items { if let Some(target) = target { d_static_target(target,names); } } } d_static_attributes(body,in_function,names); },
             DStmtKind::Match(_,cases) => for (_,_,body) in cases { d_static_attributes(body,in_function,names); },
             _ => (),
@@ -848,13 +852,37 @@ fn d_validate_futures(body: &[DStmt], filename: &str, top_level: bool) -> Result
             DStmtKind::Generic(_,definition)=>d_validate_futures(&[DStmt{kind:(**definition).clone(),line:stmt.line,column:stmt.column}],filename,false)?,
             DStmtKind::Function(_,_,body,_) | DStmtKind::Class(_,_,_,body,_) => d_validate_futures(body,filename,false)?,
             DStmtKind::If(_,body,tail) | DStmtKind::While(_,body,tail) | DStmtKind::For(_,_,body,tail) => { d_validate_futures(body,filename,false)?; d_validate_futures(tail,filename,false)?; },
-            DStmtKind::Try(body,handlers,tail,finally) => { d_validate_futures(body,filename,false)?; for (_,_,body) in handlers { d_validate_futures(body,filename,false)?; } d_validate_futures(tail,filename,false)?; d_validate_futures(finally,filename,false)?; },
+            DStmtKind::Try(body,handlers,tail,finally) | DStmtKind::TryStar(body,handlers,tail,finally) => { d_validate_futures(body,filename,false)?; for (_,_,body) in handlers { d_validate_futures(body,filename,false)?; } d_validate_futures(tail,filename,false)?; d_validate_futures(finally,filename,false)?; },
             DStmtKind::With(_,body) => d_validate_futures(body,filename,false)?,
             DStmtKind::Match(_,cases) => for (_,_,body) in cases { d_validate_futures(body,filename,false)?; },
             _ => (),
         }
     }
     Ok(())
+}
+
+// A control transfer may leave an inner loop while remaining in the except*
+// handler. It cannot escape any active except* handler in the same code scope.
+fn d_validate_except_star(body:&[DStmt],filename:&str,loops:usize,barriers:&[usize])->Result<(),String>{
+    for statement in body{
+        let invalid=match statement.kind{DStmtKind::Return(_)=>!barriers.is_empty(),DStmtKind::Break|DStmtKind::Continue=>barriers.last().is_some_and(|boundary|loops<=*boundary),_=>false};
+        if invalid{return Err(format!("SyntaxError: 'break', 'continue' and 'return' cannot appear in an except* block ({filename}:{})",statement.line));}
+        match &statement.kind{
+            DStmtKind::Function(_,_,body,_)|DStmtKind::Class(_,_,_,body,_)=>d_validate_except_star(body,filename,0,&[])?,
+            DStmtKind::Generic(_,definition)=>d_validate_except_star(&[DStmt{kind:(**definition).clone(),line:statement.line,column:statement.column}],filename,loops,barriers)?,
+            DStmtKind::If(_,body,tail)=>{d_validate_except_star(body,filename,loops,barriers)?;d_validate_except_star(tail,filename,loops,barriers)?;},
+            DStmtKind::While(_,body,tail)|DStmtKind::For(_,_,body,tail)=>{d_validate_except_star(body,filename,loops+1,barriers)?;d_validate_except_star(tail,filename,loops,barriers)?;},
+            DStmtKind::With(_,body)=>d_validate_except_star(body,filename,loops,barriers)?,
+            DStmtKind::Match(_,cases)=>for (_,_,body)in cases{d_validate_except_star(body,filename,loops,barriers)?;},
+            DStmtKind::Try(body,handlers,tail,finally)|DStmtKind::TryStar(body,handlers,tail,finally)=>{
+                d_validate_except_star(body,filename,loops,barriers)?;
+                let mut handler_barriers=barriers.to_vec();if matches!(statement.kind,DStmtKind::TryStar(..)){handler_barriers.push(loops);}
+                for(_,_,body)in handlers{d_validate_except_star(body,filename,loops,&handler_barriers)?;}
+                d_validate_except_star(tail,filename,loops,barriers)?;d_validate_except_star(finally,filename,loops,barriers)?;
+            },
+            _=>{},
+        }
+    }Ok(())
 }
 
 fn d_docstring(statement: &DStmt) -> Option<&String> {
@@ -865,7 +893,7 @@ fn d_has_annotations(body: &[DStmt]) -> bool {
     body.iter().any(|stmt| match &stmt.kind {
         DStmtKind::AnnAssign(..) => true,
         DStmtKind::If(_,body,tail) | DStmtKind::While(_,body,tail) | DStmtKind::For(_,_,body,tail) => d_has_annotations(body) || d_has_annotations(tail),
-        DStmtKind::Try(body,handlers,tail,finally) => d_has_annotations(body) || handlers.iter().any(|(_,_,body)|d_has_annotations(body)) || d_has_annotations(tail) || d_has_annotations(finally),
+        DStmtKind::Try(body,handlers,tail,finally) | DStmtKind::TryStar(body,handlers,tail,finally) => d_has_annotations(body) || handlers.iter().any(|(_,_,body)|d_has_annotations(body)) || d_has_annotations(tail) || d_has_annotations(finally),
         DStmtKind::With(_,body) => d_has_annotations(body),
         DStmtKind::Match(_,cases) => cases.iter().any(|(_,_,body)|d_has_annotations(body)),
         _ => false,
@@ -1262,7 +1290,7 @@ impl DSymbols {
             DStmtKind::Return(value) => if let Some(value) = value { self.expr(value); },
             DStmtKind::Raise(value,cause) => { if let Some(value) = value { self.expr(value); } if let Some(cause) = cause { self.expr(cause); } },
             DStmtKind::Assert(test,message) => { self.expr(test); if let Some(message) = message { self.expr(message); } },
-            DStmtKind::Try(body,handlers,tail,finally) => {
+            DStmtKind::Try(body,handlers,tail,finally) | DStmtKind::TryStar(body,handlers,tail,finally) => {
                 self.block(body); for (exception,name,handler) in handlers { if let Some(exception) = exception { self.expr(exception); } if let Some(name) = name { d_push_name(&mut self.locals,&d_mangle(&self.private,name)); } self.block(handler); } self.block(tail); self.block(finally);
             }
             DStmtKind::With(items,body) => { for (value,target) in items { self.expr(value); if let Some(target) = target { self.target(target); } } self.block(body); },
@@ -1307,7 +1335,7 @@ fn d_collect_annotations(body:&[DStmt],conditional:bool,records:&mut Vec<DAnnota
             d_collect_annotations(body,true,records,next);d_collect_annotations(tail,true,records,next);
         },
         DStmtKind::With(_,body)=>d_collect_annotations(body,true,records,next),
-        DStmtKind::Try(body,handlers,tail,finally)=>{
+        DStmtKind::Try(body,handlers,tail,finally) | DStmtKind::TryStar(body,handlers,tail,finally)=>{
             d_collect_annotations(body,true,records,next);for (_,_,body) in handlers{d_collect_annotations(body,true,records,next);}
             d_collect_annotations(tail,true,records,next);d_collect_annotations(finally,true,records,next);
         },
@@ -1595,6 +1623,7 @@ impl DCompiler {
                 if let Some(message) = message { self.expr(ctx,message)?; } self.emit(ctx,Op::Call { pos:if message.is_some(){1}else{0},keywords:Vec::new() },line,col); self.emit(ctx,Op::Raise(1),line,col); self.patch(ctx,end,self.here(ctx));
             }
             DStmtKind::Try(body,handlers,tail,finally) => self.try_statement(ctx,body,handlers,tail,finally,line,col)?,
+            DStmtKind::TryStar(body,handlers,tail,finally) => self.try_star_statement(ctx,body,handlers,tail,finally,line,col)?,
             DStmtKind::With(items,body) => self.with_statement(ctx,items,body,line,col)?,
             DStmtKind::Match(subject,cases) => {
                 let saved = self.temporary(ctx); self.expr(ctx,subject)?; self.emit(ctx,Op::Store(saved.clone()),line,col); let mut ends = Vec::new();
@@ -1617,6 +1646,41 @@ impl DCompiler {
             }
         }
         Ok(())
+    }
+    fn try_star_statement(&mut self,ctx:&mut DCtx,body:&[DStmt],handlers:&[(Option<DExpr>,Option<String>,Vec<DStmt>)],tail:&[DStmt],finally:&[DStmt],line:usize,column:usize)->Result<(),String>{
+        let final_setup=if finally.is_empty(){None}else{Some(self.emit(ctx,Op::SetupFinally(0),line,column))};
+        let setup=self.emit(ctx,Op::SetupExcept(0),line,column);
+        self.block(ctx,body)?;self.emit(ctx,Op::PopHandler,line,column);self.block(ctx,tail)?;
+        let normal=self.emit(ctx,Op::Jump(0),line,column);self.patch(ctx,setup,self.here(ctx));
+        let state=self.temporary(ctx);self.emit(ctx,Op::BeginExceptStar,line,column);self.emit(ctx,Op::Store(state.clone()),line,column);
+        let state_cleanup=self.emit(ctx,Op::SetupFinally(0),line,column);
+        for(exception,name,body)in handlers{
+            self.emit(ctx,Op::Load(state.clone()),line,column);
+            let exception=exception.as_ref().ok_or_else(||self.error(line,"except* requires an exception type"))?;self.expr(ctx,exception)?;
+            self.emit(ctx,Op::SplitExceptStar,line,column);let unmatched=self.emit(ctx,Op::JumpFalse(0),line,column);
+            if let Some(name)=name{self.emit(ctx,Op::LoadException,line,column);self.emit(ctx,Op::Store(name.clone()),line,column);}
+            // Only errors raised by the user handler body join the pending
+            // exception group. Binding/clearing its alias can itself call a
+            // prepared namespace mapping and must abort dispatch on failure.
+            let caught=self.emit(ctx,Op::SetupExcept(0),line,column);
+            self.block(ctx,body)?;self.emit(ctx,Op::PopHandler,line,column);
+            self.star_alias_cleanup(ctx,name,line,column);
+            self.emit(ctx,Op::Load(state.clone()),line,column);self.emit(ctx,Op::RecordExceptStar(false),line,column);
+            let next=self.emit(ctx,Op::Jump(0),line,column);self.patch(ctx,caught,self.here(ctx));
+            self.emit(ctx,Op::Load(state.clone()),line,column);self.emit(ctx,Op::RecordExceptStar(true),line,column);
+            self.star_alias_cleanup(ctx,name,line,column);
+            let end=self.here(ctx);self.patch(ctx,next,end);self.patch(ctx,unmatched,end);
+        }
+        self.emit(ctx,Op::Load(state.clone()),line,column);self.emit(ctx,Op::EndExceptStar,line,column);
+        self.emit(ctx,Op::PopHandler,line,column);self.patch(ctx,state_cleanup,self.here(ctx));
+        self.emit(ctx,Op::Delete(state),line,column);self.emit(ctx,Op::EndFinally,line,column);
+        self.patch(ctx,normal,self.here(ctx));
+        if let Some(setup)=final_setup{
+            self.emit(ctx,Op::PopHandler,line,column);self.patch(ctx,setup,self.here(ctx));self.block(ctx,finally)?;self.emit(ctx,Op::EndFinally,line,column);
+        }Ok(())
+    }
+    fn star_alias_cleanup(&mut self,ctx:&DCtx,name:&Option<String>,line:usize,column:usize){
+        if let Some(name)=name{self.emit(ctx,Op::Const(Const::None),line,column);self.emit(ctx,Op::Store(name.clone()),line,column);self.emit(ctx,Op::Delete(name.clone()),line,column);}
     }
     fn try_statement(&mut self, ctx: &mut DCtx, body: &[DStmt], handlers: &[(Option<DExpr>,Option<String>,Vec<DStmt>)], tail: &[DStmt], finally: &[DStmt], line: usize, col: usize) -> Result<(),String> {
         let final_setup = if finally.is_empty() { None } else { Some(self.emit(ctx,Op::SetupFinally(0),line,col)) };
@@ -1963,6 +2027,7 @@ fn compile_dynamic(source: &str, filename: &str, mode: &str, code_offset: usize,
     let future_flags = parser.future_flags;
     validate_python_peg(source,mode,future_flags)?;
     d_validate_futures(&body,filename,true)?;
+    d_validate_except_star(&body,filename,0,&[])?;
     if mode == "single" && (body.is_empty() || body.iter().any(|stmt| stmt.line != body[0].line)) { return Err(format!("SyntaxError: multiple statements found while compiling a single statement ({filename}:1)")); }
     let mut symbols = DSymbols::default(); symbols.block(&body);
     if let Some(error) = symbols.error { return Err(error); }

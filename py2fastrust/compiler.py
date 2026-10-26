@@ -1069,10 +1069,59 @@ class Emitter:
         for jump in end:
             self.patch(jump)
 
+    def try_except_star(self, node):
+        handler = self.emit("SetupExcept", 0, node=node)
+        self.statements(node.body)
+        self.emit("PopHandler", node=node)
+        self.statements(node.orelse)
+        normal = self.emit("Jump", 0, node=node)
+        self.patch(handler)
+        state = self.temp()
+        self.emit("BeginExceptStar", node=node)
+        self.emit("Store", state, node=node)
+        state_cleanup = self.emit("SetupFinally", 0, node=node)
+        for clause in node.handlers:
+            self.emit("Load", state, node=clause)
+            self.visit(clause.type)
+            self.emit("SplitExceptStar", node=clause)
+            skip = self.emit("JumpFalse", 0, node=clause)
+            if clause.name:
+                self.emit("LoadException", node=clause)
+                self.emit("Store", clause.name, node=clause)
+            failed = self.emit("SetupExcept", 0, node=clause)
+            self.statements(clause.body)
+            self.emit("PopHandler", node=clause)
+            if clause.name:
+                self.emit("Const", None, node=clause)
+                self.emit("Store", clause.name, node=clause)
+                self.emit("Delete", clause.name, node=clause)
+            self.emit("Load", state, node=clause)
+            self.emit("RecordExceptStar", False, node=clause)
+            recorded = self.emit("Jump", 0, node=clause)
+            self.patch(failed)
+            self.emit("Load", state, node=clause)
+            self.emit("RecordExceptStar", True, node=clause)
+            if clause.name:
+                self.emit("Const", None, node=clause)
+                self.emit("Store", clause.name, node=clause)
+                self.emit("Delete", clause.name, node=clause)
+            self.patch(recorded)
+            self.patch(skip)
+        self.emit("Load", state, node=node)
+        self.emit("EndExceptStar", node=node)
+        self.emit("PopHandler", node=node)
+        self.patch(state_cleanup)
+        self.emit("Delete", state, node=node)
+        self.emit("EndFinally", node=node)
+        self.patch(normal)
+
     def visit_Try(self, node):
         final = self.emit("SetupFinally", 0, node=node) if node.finalbody else None
         if node.handlers:
-            self.try_except(node)
+            if isinstance(node, ast.TryStar):
+                self.try_except_star(node)
+            else:
+                self.try_except(node)
         else:
             self.statements(node.body)
         if final is not None:
@@ -1082,6 +1131,8 @@ class Emitter:
             self.patch(jump)
             self.statements(node.finalbody)
             self.emit("EndFinally", node=node)
+
+    visit_TryStar = visit_Try
 
     def visit_With(self, node):
         item = node.items[0]
@@ -1315,7 +1366,6 @@ class Emitter:
                 self.emit("ImportFrom", "*", node=node)
                 self.emit("Pop", node=node)
                 return
-            self.emit("Dup", node=node)
             self.emit("ImportFrom", self.mangle(alias.name), node=node)
             self.emit("Store", alias.asname or alias.name, node=node)
         self.emit("Pop", node=node)
