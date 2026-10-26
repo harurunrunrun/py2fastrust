@@ -59,7 +59,7 @@ def source_directives(source, filename):
     for line_number, line in enumerate(lines, 1):
         line = line.removeprefix("\ufeff") if line_number == 1 else line
         stripped = line.lstrip(" \t\f")
-        if not stripped.strip():
+        if not stripped:
             continue
         if not stripped.startswith("#"):
             break

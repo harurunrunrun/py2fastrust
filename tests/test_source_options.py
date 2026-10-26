@@ -33,6 +33,7 @@ class SourceOptionsTests(unittest.TestCase):
         self.assertTrue(transpile('print(1)\n# py2fastrust: --int invalid\n').success)
         self.assertEqual(source_directives('# pytors: --int i128 --license MIT\nprint(1)', 'input.py'),
                          {'integer': 'i128', 'license': 'MIT'})
+        self.assertEqual(source_directives('\u00a0\n# pytors: --int invalid\npass', 'input.py'), {})
 
     def test_cli_name_and_license_catalog(self):
         result = subprocess.run([sys.executable, '-m', 'py2fastrust', '--help'], capture_output=True, text=True)
