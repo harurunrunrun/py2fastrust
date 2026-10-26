@@ -13,11 +13,11 @@ from py2fastrust import TranspileOptions, transpile
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
 class RuntimeTests(unittest.TestCase):
-    def run_source(self, source, stdin="", integer="i64"):
+    def run_source(self, source, stdin="", integer="i64", argv=()):
         source = textwrap.dedent(source)
         with tempfile.TemporaryDirectory(prefix="py2fastrust-test-") as directory:
             root = Path(directory)
-            options = TranspileOptions(integer=integer, filename="case.py")
+            options = TranspileOptions(integer=integer, filename="case.py", optimize=False)
             result = transpile(source, options)
             self.assertTrue(result.success, "\n".join(map(str, result.diagnostics)))
             target = root / "main.rs"
@@ -25,15 +25,31 @@ class RuntimeTests(unittest.TestCase):
             compiled = subprocess.run(["rustc", "--edition=2021", str(target), "-o", str(root / "main")],
                                       capture_output=True, text=True, timeout=90)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
-            actual = subprocess.run([str(root / "main")], input=stdin, capture_output=True, text=True, timeout=15)
-            expected = subprocess.run([sys.executable, "-I", "-c", source], input=stdin,
-                                      capture_output=True, text=True, timeout=15)
-            self.assertEqual(actual.returncode, expected.returncode, actual.stderr + "\n" + expected.stderr)
-            self.assertEqual(actual.stdout, expected.stdout, actual.stderr)
+            text_mode = isinstance(stdin, str)
+            actual = subprocess.run([str(root / "main"), *argv], input=stdin,
+                                    capture_output=True, text=text_mode, timeout=15)
+            expected = subprocess.run([sys.executable, "-I", "-c", source, *argv], input=stdin,
+                                      capture_output=True, text=text_mode, timeout=15)
+            actual_error = actual.stderr if text_mode else actual.stderr.decode("utf-8", errors="replace")
+            expected_error = expected.stderr if text_mode else expected.stderr.decode("utf-8", errors="replace")
+            self.assertEqual(actual.returncode, expected.returncode, actual_error + "\n" + expected_error)
+            self.assertEqual(actual.stdout, expected.stdout, actual_error)
             if expected.returncode:
-                self.assertEqual(actual.stderr.strip().splitlines()[-1].split(":")[0],
-                                 expected.stderr.strip().splitlines()[-1].split(":")[0])
+                self.assertEqual(actual_error.strip().splitlines()[-1].split(":")[0],
+                                 expected_error.strip().splitlines()[-1].split(":")[0])
             return actual
+
+    def test_binary_standard_streams_and_command_line_arguments(self):
+        self.run_source('''
+            import sys
+            print(sys.argv[1:], flush=True)
+            print(repr(sys.stdin.buffer.readline()), flush=True)
+            print(sys.stdin.buffer.read(2), flush=True)
+            sys.stdout.buffer.write(sys.stdin.buffer.read())
+            sys.stdout.buffer.write(b"\\x00\\xff")
+            sys.stdout.buffer.flush()
+            print("tail", flush=True)
+        ''', stdin=b"12 34\nraw\xff\n", argv=("alpha", "日本語"))
 
     def test_scalars_rebinding_and_short_circuit(self):
         self.run_source('''

@@ -3,16 +3,18 @@
 import ast
 import symtable
 import tokenize
+from importlib.resources import files
 from pathlib import Path
 
 from .diagnostics import CompilationError, Diagnostic
-from .ir import Code, Instruction, Parameters, Program
+from .ir import Code, Instruction, Parameters, Pattern, Program
 
 
 BUILTIN_MODULES = {
     "sys", "math", "heapq", "bisect", "collections", "itertools", "functools",
-    "builtins", "operator", "types",
+    "builtins", "operator", "types", "gc", "time", "_py2fastrust_functools",
 }
+VENDORED_MODULES = {"heapq", "bisect", "collections", "functools"}
 BINARY = {
     ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.FloorDiv: "//",
     ast.Mod: "%", ast.Pow: "**", ast.LShift: "<<", ast.RShift: ">>",
@@ -57,7 +59,7 @@ class Compiler:
         symbols = table.get_symbols()
         code = Code(name, filename, kind,
                     locals=[s.get_name() for s in symbols if s.is_local() or s.is_parameter()],
-                    globals=[s.get_name() for s in symbols if s.is_global()],
+                    globals=[s.get_name() for s in symbols if s.is_declared_global()],
                     nonlocals=[s.get_name() for s in symbols if s.is_nonlocal()])
         code_id = len(self.program.codes)
         self.program.codes.append(code)
@@ -73,9 +75,13 @@ class Compiler:
         return None
 
     def load_module(self, name, node, filename):
-        if not name or name.split(".")[0] in BUILTIN_MODULES or name in self.module_ids:
+        if not name or name in self.module_ids:
             return
         path = self.find_module(name)
+        if path is None and name in VENDORED_MODULES:
+            path = Path(str(files("py2fastrust").joinpath("stdlib", name + ".py")))
+        if path is None and name in BUILTIN_MODULES:
+            return
         if path is None:
             raise CompilationError(Diagnostic(f"module {name!r} is not supported or could not be found", filename,
                                              getattr(node, "lineno", 1), getattr(node, "col_offset", 0) + 1, "E003"))
@@ -100,6 +106,7 @@ class Emitter:
         self.table = table
         self.used_scopes = set()
         self.loops = []
+        self.enclosing = None
 
     def emit(self, op, *args, node=None):
         self.code.ops.append(Instruction(op, args, getattr(node, "lineno", 1), getattr(node, "col_offset", 0) + 1))
@@ -125,11 +132,15 @@ class Emitter:
         for table in sorted(candidates, key=lambda t: t.get_lineno() != node.lineno):
             if table.get_id() not in self.used_scopes and table.get_name() == name and table.get_lineno() == node.lineno:
                 self.used_scopes.add(table.get_id())
-                return self.compiler.scope(node, table, name, kind, self.code.filename)
+                child = self.compiler.scope(node, table, name, kind, self.code.filename)
+                child.enclosing = self
+                return child
         if len(candidates) == 1:
             table = candidates[0]
             self.used_scopes.add(table.get_id())
-            return self.compiler.scope(node, table, name, kind, self.code.filename)
+            child = self.compiler.scope(node, table, name, kind, self.code.filename)
+            child.enclosing = self
+            return child
         self.fail(node, f"could not associate the official symbol table with {name}")
 
     def visit(self, node):
@@ -318,6 +329,64 @@ class Emitter:
         self.statements(node.orelse)
         self.patch(end)
 
+    def pattern_path(self, node):
+        if isinstance(node, ast.Name):
+            return [node.id]
+        if isinstance(node, ast.Attribute):
+            return self.pattern_path(node.value) + [node.attr]
+        self.fail(node, "pattern value must be a literal or dotted name")
+
+    def value_pattern(self, node):
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            return Pattern("ValuePath", (self.pattern_path(node),))
+        try:
+            value = ast.literal_eval(node)
+        except (ValueError, TypeError):
+            self.fail(node, "unsupported pattern constant")
+        if isinstance(value, complex):
+            self.fail(node, "complex patterns are not implemented")
+        return Pattern("Literal", (value,))
+
+    def pattern(self, node):
+        if isinstance(node, ast.MatchValue):
+            return self.value_pattern(node.value)
+        if isinstance(node, ast.MatchSingleton):
+            return Pattern("Literal", (node.value,))
+        if isinstance(node, ast.MatchSequence):
+            return Pattern("Sequence", ([self.pattern(p) for p in node.patterns],))
+        if isinstance(node, ast.MatchMapping):
+            return Pattern("Mapping", ([self.value_pattern(k) for k in node.keys],
+                                       [self.pattern(p) for p in node.patterns], node.rest))
+        if isinstance(node, ast.MatchClass):
+            return Pattern("Class", (self.pattern_path(node.cls), [self.pattern(p) for p in node.patterns],
+                                     node.kwd_attrs, [self.pattern(p) for p in node.kwd_patterns]))
+        if isinstance(node, ast.MatchAs):
+            return Pattern("As", (self.pattern(node.pattern) if node.pattern is not None else None, node.name))
+        if isinstance(node, ast.MatchStar):
+            return Pattern("Star", (node.name,))
+        if isinstance(node, ast.MatchOr):
+            return Pattern("Or", ([self.pattern(p) for p in node.patterns],))
+        self.fail(node, "unsupported match pattern")
+
+    def visit_Match(self, node):
+        subject = self.temp()
+        self.visit(node.subject)
+        self.emit("Store", subject, node=node)
+        ends = []
+        for case in node.cases:
+            self.emit("Load", subject, node=node)
+            self.emit("Match", self.pattern(case.pattern), node=case.pattern)
+            skips = [self.emit("JumpFalse", 0, node=case.pattern)]
+            if case.guard is not None:
+                self.visit(case.guard)
+                skips.append(self.emit("JumpFalse", 0, node=case.guard))
+            self.statements(case.body)
+            ends.append(self.emit("Jump", 0, node=node))
+            for jump in skips:
+                self.patch(jump)
+        for jump in ends:
+            self.patch(jump)
+
     def loop(self, node, is_for):
         if is_for:
             self.visit(node.iter)
@@ -365,6 +434,8 @@ class Emitter:
                 self.visit(elt.value if isinstance(elt, ast.Starred) else elt)
                 if not isinstance(elt, ast.Starred):
                     self.emit("BuildTuple", 1, node=elt)
+                else:
+                    self.emit("BuildListUnpack", 1, node=elt)
             self.emit(f"Build{kind}Unpack", len(node.elts), node=node)
         else:
             for elt in node.elts:
@@ -379,9 +450,19 @@ class Emitter:
 
     def visit_Set(self, node):
         if any(isinstance(elt, ast.Starred) for elt in node.elts):
-            self.emit("Load", "set", node=node)
-            self.sequence(node, "List")
-            self.emit("Call", 1, [], node=node)
+            self.emit("BuildSet", 0, node=node)
+            for elt in node.elts:
+                if isinstance(elt, ast.Starred):
+                    self.visit(elt.value)
+                    self.emit("GetIter", node=elt)
+                    start = len(self.code.ops)
+                    end = self.emit("ForIter", 0, node=elt)
+                    self.emit("SetAdd", 2, node=elt)
+                    self.emit("Jump", start, node=elt)
+                    self.patch(end)
+                else:
+                    self.visit(elt)
+                    self.emit("SetAdd", 1, node=elt)
         else:
             self.sequence(node, "Set")
 
@@ -430,7 +511,10 @@ class Emitter:
             self.visit(arg.value if isinstance(arg, ast.Starred) else arg)
             if not isinstance(arg, ast.Starred):
                 self.emit("BuildTuple", 1, node=arg)
-        self.emit("BuildTupleUnpack", len(node.args), node=node)
+            elif len(node.args) > 1:
+                self.emit("BuildTupleUnpack", 1, node=arg)
+        if not (len(node.args) == 1 and isinstance(node.args[0], ast.Starred)):
+            self.emit("BuildTupleUnpack", len(node.args), node=node)
         if node.keywords:
             self.emit("BuildDict", 0, node=node)
             for keyword in node.keywords:
@@ -469,8 +553,41 @@ class Emitter:
             emitter.statements(body)
         emitter.finish()
         self.emit("MakeFunction", emitter.code_id, len(node.args.defaults), kwdefaults, node=node)
+        self.function_annotations(node)
         for decorator in reversed(decorators):
             self.emit("Call", 1, [], node=decorator)
+
+    def function_annotations(self, node):
+        arguments = node.args.posonlyargs + node.args.args
+        if node.args.vararg:
+            arguments += [node.args.vararg]
+        arguments += node.args.kwonlyargs
+        if node.args.kwarg:
+            arguments += [node.args.kwarg]
+        annotations = [(arg.arg, arg.annotation) for arg in arguments if arg.annotation is not None]
+        if getattr(node, "returns", None) is not None:
+            annotations.append(("return", node.returns))
+        if not annotations:
+            return
+        annotate = self.child(node, "__annotate__", "Annotation")
+        annotate.code.params = Parameters(positional=[".format"])
+        annotate.emit("Load", ".format", node=node)
+        annotate.emit("Const", 2, node=node)
+        annotate.emit("Compare", ">", node=node)
+        valid = annotate.emit("JumpFalse", 0, node=node)
+        annotate.emit("Load", "NotImplementedError", node=node)
+        annotate.emit("Call", 0, [], node=node)
+        annotate.emit("Raise", 1, node=node)
+        annotate.patch(valid)
+        for name, expression in annotations:
+            annotate.emit("Const", name, node=expression)
+            annotate.visit(expression)
+        annotate.emit("BuildDict", len(annotations), node=node)
+        annotate.emit("Return", node=node)
+        self.emit("Dup", node=node)
+        self.emit("MakeFunction", annotate.code_id, 0, [], node=node)
+        self.emit("Swap", node=node)
+        self.emit("SetAttr", "__annotate__", node=node)
 
     def visit_FunctionDef(self, node):
         self.make_function(node, node.name, node.body, node.decorator_list)
@@ -504,7 +621,40 @@ class Emitter:
                 self.fail(node, "expanded class keywords are not implemented")
             self.visit(keyword.value)
         emitter = self.child(node, node.name, "Class")
-        emitter.statements(node.body)
+        first_line = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
+        emitter.emit("Const", first_line, node=node)
+        emitter.emit("Store", "__firstlineno__", node=node)
+        body = node.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+            emitter.emit("Const", body[0].value.value, node=body[0])
+            emitter.emit("Store", "__doc__", node=body[0])
+            body = body[1:]
+        emitter.statements(body)
+        attributes = set()
+        class StaticAttributes(ast.NodeVisitor):
+            def visit_ClassDef(self, nested):
+                pass
+
+            def visit_AugAssign(self, assignment):
+                self.visit(assignment.value)
+
+            def visit_AnnAssign(self, assignment):
+                if assignment.value is not None:
+                    self.visit(assignment.target)
+                    self.visit(assignment.value)
+
+            def visit_Attribute(self, attribute):
+                if (isinstance(attribute.ctx, ast.Store) and isinstance(attribute.value, ast.Name)
+                        and attribute.value.id == "self"):
+                    attributes.add(attribute.attr)
+                self.generic_visit(attribute)
+        for statement in body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                StaticAttributes().visit(statement)
+        for attribute in sorted(attributes):
+            emitter.emit("Const", attribute, node=node)
+        emitter.emit("BuildTuple", len(attributes), node=node)
+        emitter.emit("Store", "__static_attributes__", node=node)
         emitter.finish()
         self.emit("MakeClass", node.name, emitter.code_id, len(node.bases), [k.arg for k in node.keywords], node=node)
         for decorator in reversed(node.decorator_list):
@@ -586,20 +736,22 @@ class Emitter:
 
     def visit_With(self, node):
         item = node.items[0]
-        manager, exit_method, needed = self.temp(), self.temp(), self.temp()
+        manager, exit_method, needed, entered = self.temp(), self.temp(), self.temp(), self.temp()
         self.visit(item.context_expr)
         self.emit("Store", manager, node=node)
         self.emit("Load", manager, node=node)
-        self.emit("GetAttr", "__exit__", node=node)
+        self.emit("GetSpecialAttr", "__exit__", node=node)
         self.emit("Store", exit_method, node=node)
         self.emit("Load", manager, node=node)
-        self.emit("GetAttr", "__enter__", node=node)
+        self.emit("GetSpecialAttr", "__enter__", node=node)
         self.emit("Call", 0, [], node=node)
-        self.store(item.optional_vars) if item.optional_vars else self.emit("Pop", node=node)
+        self.emit("Store", entered, node=node)
         self.emit("Const", True, node=node)
         self.emit("Store", needed, node=node)
         final = self.emit("SetupFinally", 0, node=node)
         handler = self.emit("SetupExcept", 0, node=node)
+        self.emit("Load", entered, node=node)
+        self.store(item.optional_vars) if item.optional_vars else self.emit("Pop", node=node)
         if len(node.items) > 1:
             nested = ast.copy_location(ast.With(items=node.items[1:], body=node.body, type_comment=None), node)
             self.visit_With(nested)
@@ -650,8 +802,33 @@ class Emitter:
             table = next(t for t in symtable.symtable(source, self.code.filename, "exec").get_children()
                          if t.get_name() == "genexpr")
             emitter = self.compiler.scope(node, table, name, "Comprehension", self.code.filename)
+            emitter.enclosing = self
             emitter.code.globals = [name for name in emitter.code.globals
                                     if name not in self.code.locals and name not in self.code.nonlocals]
+        # PEP 572 binds comprehension walrus targets in the enclosing ordinary
+        # scope, including targets that have not yet received a value there.
+        targets = []
+        class Walrus(ast.NodeVisitor):
+            def visit_Lambda(self, expr):
+                pass
+
+            def visit_NamedExpr(self, expr):
+                targets.append(expr.target.id)
+                self.visit(expr.value)
+        Walrus().visit(node)
+        owner = self
+        while owner.code.kind == "Comprehension" and owner.enclosing is not None:
+            owner = owner.enclosing
+        for target in targets:
+            global_target = owner.code.kind == "Module" or target in owner.code.globals
+            destination = emitter.code.globals if global_target else emitter.code.nonlocals
+            other = emitter.code.nonlocals if global_target else emitter.code.globals
+            if target in other:
+                other.remove(target)
+            if target not in destination:
+                destination.append(target)
+            if not global_target and target not in owner.code.locals:
+                owner.code.locals.append(target)
         emitter.code.params = Parameters(positional=[".0"])
         result = emitter.temp()
         if kind != "Generator":

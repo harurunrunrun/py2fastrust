@@ -12,6 +12,12 @@ class Instruction:
 
 
 @dataclass
+class Pattern:
+    kind: str
+    args: tuple = ()
+
+
+@dataclass
 class Parameters:
     posonly: int = 0
     positional: list[str] = field(default_factory=list)

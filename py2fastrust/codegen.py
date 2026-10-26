@@ -54,10 +54,35 @@ def constant(value):
     raise TypeError(f"unsupported IR constant {type(value)}")
 
 
+def pattern(value):
+    kind, args = value.kind, value.args
+    patterns = lambda items: "vec![" + ",".join(pattern(item) for item in items) + "]"
+    if kind == "Literal":
+        body = constant(args[0])
+    elif kind == "ValuePath":
+        body = strings(args[0])
+    elif kind in {"Sequence", "Or"}:
+        body = patterns(args[0])
+    elif kind == "Star":
+        body = optional(args[0])
+    elif kind == "Mapping":
+        return f"MatchPattern::Mapping {{ keys:{patterns(args[0])},patterns:{patterns(args[1])},rest:{optional(args[2])} }}"
+    elif kind == "Class":
+        return f"MatchPattern::Class {{ path:{strings(args[0])},positional:{patterns(args[1])},keyword_names:{strings(args[2])},keyword_patterns:{patterns(args[3])} }}"
+    elif kind == "As":
+        child = "None" if args[0] is None else f"Some(Box::new({pattern(args[0])}))"
+        return f"MatchPattern::As {{ pattern:{child},name:{optional(args[1])} }}"
+    else:
+        raise ValueError(f"unknown pattern {kind}")
+    return f"MatchPattern::{kind}({body})"
+
+
 def operation(instruction):
     name, args = instruction.op, instruction.args
     if name == "Const":
         body = constant(args[0])
+    elif name == "Match":
+        body = pattern(args[0])
     elif name == "Call":
         return f"Op::Call {{ pos:{args[0]},keywords:{strings(args[1])} }}"
     elif name == "MakeFunction":
@@ -86,8 +111,13 @@ def generate(program: Program, integer="i64"):
     prefix += f"const INT_BITS: u32 = {bits};\n"
     notice = files("py2fastrust").joinpath("runtime", "NOTICE.txt").read_text(encoding="utf-8")
     prefix += "/*\n" + notice + "\n*/\n"
+    # Generated code can contain PSF-licensed standard-library algorithms.
+    python_license = files("py2fastrust").joinpath("stdlib", "PYTHON_LICENSE.txt").read_text(encoding="utf-8")
+    prefix += "\n".join("// " + line for line in python_license.splitlines()) + "\n"
+    unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
+    prefix += "\n".join("// " + line for line in unicode_license.splitlines()) + "\n"
     parts = [prefix]
-    for name in ("integer.rs", "vm.rs", "dynamic.rs"):
+    for name in ("integer.rs", "vm.rs", "dynamic.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "text.rs"):
         parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
     parts.append("\nfn main() {\nlet codes = vec![\n")
     source_map = []

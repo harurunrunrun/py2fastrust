@@ -6,16 +6,20 @@ build-backend = "setuptools.build_meta"
 name = "py2fastrust"
 version = "0.1.0a1"
 description = "Compile Python programs into standalone, standard-library-only Rust"
+readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
 authors = [{name = "Codex"}]
 dependencies = []
 
+[project.urls]
+Repository = "https://github.com/harurunrunrun/py2fastrust"
+
 [project.scripts]
 py2fastrust = "py2fastrust.cli:main"
 
 [tool.setuptools.package-data]
-py2fastrust = ["runtime/*.rs", "runtime/NOTICE.txt"]
+py2fastrust = ["runtime/*.rs", "runtime/NOTICE.txt", "stdlib/*.py", "stdlib/*LICENSE.txt"]
 
 [tool.setuptools.packages.find]
 include = ["py2fastrust*"]

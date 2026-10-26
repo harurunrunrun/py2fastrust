@@ -173,7 +173,7 @@ enum DExprKind {
 #[derive(Clone, Debug)]
 struct DGenerator { target: DExpr, iter: DExpr, filters: Vec<DExpr> }
 #[derive(Clone, Debug, Default)]
-struct DParams { params: Params, defaults: Vec<DExpr>, kwdefaults: Vec<(String, DExpr)> }
+struct DParams { params: Params, defaults: Vec<DExpr>, kwdefaults: Vec<(String, DExpr)>, annotations: Vec<(String,DExpr)> }
 #[derive(Clone, Debug)]
 struct DStmt { kind: DStmtKind, line: usize, column: usize }
 #[derive(Clone, Debug)]
@@ -185,6 +185,7 @@ enum DStmtKind {
     Global(Vec<String>), Nonlocal(Vec<String>),
     Try(Vec<DStmt>, Vec<(Option<DExpr>, Option<String>, Vec<DStmt>)>, Vec<DStmt>, Vec<DStmt>),
     With(Vec<(DExpr, Option<DExpr>)>, Vec<DStmt>),
+    Match(DExpr, Vec<(MatchPattern, Option<DExpr>, Vec<DStmt>)>),
     Import(Vec<(String, Option<String>)>), ImportFrom(String, Vec<(String, Option<String>)>, usize),
 }
 
@@ -232,7 +233,15 @@ impl DParser {
             if !matches!(self.token().kind, DTokenKind::Newline) { return Err(self.error("expected newline after decorator")); }
             self.at += 1;
         }
-        let kind = if self.eat("if") { let condition = self.expression()?; let body = self.suite()?; let tail = self.if_tail()?; DStmtKind::If(condition, body, tail) }
+        let match_subject = if self.is("match") {
+            let saved = self.at; self.at += 1;
+            match self.expression_list() {
+                Ok(subject) if self.is(":") && self.tokens.get(self.at+1).is_some_and(|token|matches!(token.kind,DTokenKind::Newline)) => Some(subject),
+                _ => { self.at = saved; None }
+            }
+        } else { None };
+        let kind = if let Some(subject) = match_subject { self.match_statement(subject)? }
+        else if self.eat("if") { let condition = self.expression()?; let body = self.suite()?; let tail = self.if_tail()?; DStmtKind::If(condition, body, tail) }
         else if self.eat("while") {
             let condition = self.expression()?; let body = self.suite()?;
             let tail = if self.eat("else") { self.suite()? } else { Vec::new() };
@@ -242,8 +251,8 @@ impl DParser {
             let body = self.suite()?; let tail = if self.eat("else") { self.suite()? } else { Vec::new() };
             DStmtKind::For(target, iter, body, tail)
         } else if self.eat("def") {
-            let name = self.name()?; self.expect("(")?; let params = self.parameters(")")?; self.expect(")")?;
-            if self.eat("->") { self.expression()?; }
+            let name = self.name()?; self.expect("(")?; let mut params = self.parameters(")")?; self.expect(")")?;
+            if self.eat("->") { params.annotations.push(("return".to_owned(),self.expression()?)); }
             DStmtKind::Function(name, params, self.suite()?, decorators.clone())
         } else if self.eat("class") {
             let name = self.name()?; let mut bases = Vec::new(); let mut keywords = Vec::new();
@@ -522,7 +531,7 @@ impl DParser {
                     else { let mut items = vec![first]; while self.eat(",") { if self.is("}") { break; } items.push(self.star_expression()?); } self.expect("}")?; DExprKind::Set(items) }
                 }
             }
-            DTokenKind::Symbol(symbol) if symbol == "..." => return Err(self.error("Ellipsis is not yet supported by dynamic compilation")),
+            DTokenKind::Symbol(symbol) if symbol == "..." => { self.at+=1; DExprKind::Name("Ellipsis".to_owned()) },
             _ => return Err(self.error("expected expression")),
         };
         Ok(self.expr_at(kind, &token))
@@ -543,16 +552,16 @@ impl DParser {
                 if seen_slash || keyword_only || params.params.positional.is_empty() { return Err(self.error("invalid positional-only separator")); }
                 params.params.posonly = params.params.positional.len(); seen_slash = true;
             } else if self.eat("**") {
-                params.params.kwarg = Some(self.name()?); if closing == ")" && self.eat(":") { self.expression()?; }
+                let name=self.name()?; params.params.kwarg = Some(name.clone()); if closing == ")" && self.eat(":") { params.annotations.push((name,self.expression()?)); }
                 if self.eat(",") && !self.is(closing) { return Err(self.error("arguments cannot follow **kwargs")); }
                 break;
             } else if self.eat("*") {
                 if keyword_only { return Err(self.error("duplicate * parameter")); } keyword_only = true;
-                if !self.is(",") && !self.is(closing) { params.params.vararg = Some(self.name()?); if closing == ")" && self.eat(":") { self.expression()?; } }
+                if !self.is(",") && !self.is(closing) { let name=self.name()?;params.params.vararg = Some(name.clone()); if closing == ")" && self.eat(":") { params.annotations.push((name,self.expression()?)); } }
             } else {
                 let name = self.name()?;
                 if params.params.positional.contains(&name) || params.params.kwonly.contains(&name) || params.params.vararg.as_ref() == Some(&name) || params.params.kwarg.as_ref() == Some(&name) { return Err(self.error("duplicate parameter")); }
-                if closing == ")" && self.eat(":") { self.expression()?; }
+                if closing == ")" && self.eat(":") { params.annotations.push((name.clone(),self.expression()?)); }
                 let default = if self.eat("=") { Some(self.expression()?) } else { None };
                 if keyword_only { params.params.kwonly.push(name.clone()); if let Some(default) = default { params.kwdefaults.push((name,default)); } }
                 else { params.params.positional.push(name); if let Some(default) = default { seen_default = true; params.defaults.push(default); } else if seen_default { return Err(self.error("nondefault argument follows default argument")); } }
@@ -561,6 +570,192 @@ impl DParser {
         }
         if keyword_only && params.params.vararg.is_none() && params.params.kwonly.is_empty() { return Err(self.error("named arguments must follow bare *")); }
         Ok(params)
+    }
+    fn match_statement(&mut self, subject: DExpr) -> Result<DStmtKind,String> {
+        self.expect(":")?;
+        if !matches!(self.token().kind,DTokenKind::Newline) { return Err(self.error("expected a newline after match subject")); } self.at += 1;
+        if !matches!(self.token().kind,DTokenKind::Indent) { return Err(self.error("expected an indented case block")); } self.at += 1;
+        let mut cases = Vec::new(); let mut irrefutable = false;
+        while !matches!(self.token().kind,DTokenKind::Dedent | DTokenKind::Eof) {
+            if matches!(self.token().kind,DTokenKind::Newline) { self.at += 1; continue; }
+            if irrefutable { return Err(self.error("irrefutable pattern makes remaining patterns unreachable")); }
+            self.expect("case")?; let first = self.pattern()?;
+            let pattern = if self.eat(",") {
+                let mut values = vec![first];
+                while !self.is(":") && !self.is("if") { values.push(self.pattern()?); if !self.eat(",") { break; } }
+                MatchPattern::Sequence(values)
+            } else { first };
+            d_pattern_bindings(&pattern).map_err(|message|self.error(&message))?;
+            if matches!(pattern,MatchPattern::Star(_)) { return Err(self.error("star pattern requires a sequence")); }
+            let guard = if self.eat("if") { Some(self.expression()?) } else { None };
+            irrefutable = guard.is_none() && d_pattern_irrefutable(&pattern);
+            let body = self.suite()?; cases.push((pattern,guard,body));
+        }
+        if cases.is_empty() { return Err(self.error("match statement requires at least one case")); }
+        if !matches!(self.token().kind,DTokenKind::Dedent) { return Err(self.error("expected end of case block")); } self.at += 1;
+        Ok(DStmtKind::Match(subject,cases))
+    }
+    fn pattern(&mut self) -> Result<MatchPattern,String> {
+        let first = self.closed_pattern()?;
+        let mut pattern = if self.eat("|") {
+            let mut alternatives = vec![first,self.closed_pattern()?]; while self.eat("|") { alternatives.push(self.closed_pattern()?); }
+            MatchPattern::Or(alternatives)
+        } else { first };
+        if self.eat("as") {
+            let name = self.name()?; if name == "_" { return Err(self.error("cannot use '_' as an as-pattern target")); }
+            pattern = MatchPattern::As { pattern:Some(Box::new(pattern)),name:Some(name) };
+        }
+        Ok(pattern)
+    }
+    fn closed_pattern(&mut self) -> Result<MatchPattern,String> {
+        if self.eat("*") { let name = self.name()?; return Ok(MatchPattern::Star(if name=="_"{None}else{Some(name)})); }
+        if self.eat("[") {
+            let mut values = Vec::new(); while !self.is("]") { values.push(self.pattern()?); if !self.eat(",") { break; } } self.expect("]")?; return Ok(MatchPattern::Sequence(values));
+        }
+        if self.eat("(") {
+            if self.eat(")") { return Ok(MatchPattern::Sequence(Vec::new())); }
+            let first = self.pattern()?;
+            if self.eat(",") { let mut values = vec![first]; while !self.is(")") { values.push(self.pattern()?); if !self.eat(",") { break; } } self.expect(")")?; return Ok(MatchPattern::Sequence(values)); }
+            self.expect(")")?;
+            if matches!(first,MatchPattern::Star(_)) { return Err(self.error("star pattern requires a sequence")); }
+            return Ok(first);
+        }
+        if self.eat("{") {
+            let mut keys = Vec::new(); let mut patterns = Vec::new(); let mut rest = None;
+            while !self.is("}") {
+                if self.eat("**") {
+                    let name = self.name()?; if name == "_" { return Err(self.error("mapping rest pattern cannot be '_'")); } rest = Some(name);
+                    self.eat(","); if !self.is("}") { return Err(self.error("mapping rest pattern must be last")); } break;
+                }
+                let key = self.pattern_key()?;
+                if keys.iter().any(|prior| d_pattern_literal_equal(prior,&key)) { return Err(self.error("mapping pattern checks duplicate key")); }
+                self.expect(":")?; keys.push(key); patterns.push(self.pattern()?); if !self.eat(",") { break; }
+            }
+            self.expect("}")?; return Ok(MatchPattern::Mapping { keys,patterns,rest });
+        }
+        if self.is("-") || matches!(self.token().kind,DTokenKind::Number(_) | DTokenKind::String(_) | DTokenKind::Bytes(_)) || self.is("None") || self.is("True") || self.is("False") {
+            return self.pattern_literal();
+        }
+        let first = self.name()?; let mut path = vec![first.clone()]; while self.eat(".") { path.push(self.name()?); }
+        if self.eat("(") {
+            let mut positional = Vec::new(); let mut keyword_names = Vec::new(); let mut keyword_patterns = Vec::new();
+            while !self.is(")") {
+                if matches!(self.token().kind,DTokenKind::Name(_)) && self.next_is("=") {
+                    let name = self.name()?; self.expect("=")?;
+                    if keyword_names.contains(&name) { return Err(self.error("attribute name repeated in class pattern")); }
+                    keyword_names.push(name); keyword_patterns.push(self.pattern()?);
+                } else {
+                    if !keyword_names.is_empty() { return Err(self.error("positional patterns follow keyword patterns")); }
+                    positional.push(self.pattern()?);
+                }
+                if !self.eat(",") { break; }
+            }
+            self.expect(")")?; return Ok(MatchPattern::Class { path,positional,keyword_names,keyword_patterns });
+        }
+        if path.len() > 1 { Ok(MatchPattern::ValuePath(path)) }
+        else { Ok(MatchPattern::As { pattern:None,name:if first=="_"{None}else{Some(first)} }) }
+    }
+    fn pattern_key(&mut self) -> Result<MatchPattern,String> {
+        if self.is("-") || matches!(self.token().kind,DTokenKind::Number(_) | DTokenKind::String(_) | DTokenKind::Bytes(_)) || self.is("None") || self.is("True") || self.is("False") { return self.pattern_literal(); }
+        let mut path = vec![self.name()?]; while self.eat(".") { path.push(self.name()?); }
+        if path.len() < 2 { return Err(self.error("mapping pattern key must be a literal or an attribute path")); }
+        Ok(MatchPattern::ValuePath(path))
+    }
+    fn pattern_literal(&mut self) -> Result<MatchPattern,String> {
+        let negative = self.eat("-");
+        if negative && !matches!(self.token().kind,DTokenKind::Number(_)) { return Err(self.error("negative pattern requires a numeric literal")); }
+        let value = self.atom()?;
+        let constant = match value.kind {
+            DExprKind::Constant(mut constant) => {
+                if negative { constant = match constant { Const::Int(value)=>Const::Int(format!("-{value}")),Const::Float(value)=>Const::Float(-value),_=>return Err(self.error("negative pattern requires a number")) }; }
+                constant
+            }
+            _ => return Err(self.error("pattern requires a literal")),
+        };
+        Ok(MatchPattern::Literal(constant))
+    }
+}
+
+fn d_pattern_irrefutable(pattern: &MatchPattern) -> bool {
+    match pattern { MatchPattern::As { pattern:None,.. }=>true,MatchPattern::As { pattern:Some(pattern),.. }=>d_pattern_irrefutable(pattern),MatchPattern::Or(patterns)=>patterns.iter().any(d_pattern_irrefutable),_=>false }
+}
+fn d_pattern_bindings(pattern: &MatchPattern) -> Result<Vec<String>,String> {
+    let mut names = Vec::new();
+    let mut extend = |new_names: Vec<String>| -> Result<(),String> { for name in new_names { if names.contains(&name) { return Err(format!("multiple assignments to name '{name}' in pattern")); } names.push(name); } Ok(()) };
+    match pattern {
+        MatchPattern::As { pattern,name } => { if let Some(pattern) = pattern { if matches!(**pattern,MatchPattern::Star(_)) { return Err("star pattern requires a sequence".to_owned()); } extend(d_pattern_bindings(pattern)?)?; } if let Some(name) = name { extend(vec![name.clone()])?; } }
+        MatchPattern::Star(name) => if let Some(name) = name { extend(vec![name.clone()])?; },
+        MatchPattern::Sequence(patterns) => {
+            if patterns.iter().filter(|pattern|matches!(pattern,MatchPattern::Star(_))).count() > 1 { return Err("multiple starred names in sequence pattern".to_owned()); }
+            for pattern in patterns { extend(d_pattern_bindings(pattern)?)?; }
+        }
+        MatchPattern::Mapping { patterns,rest,.. } => { for pattern in patterns { if matches!(pattern,MatchPattern::Star(_)) { return Err("star pattern requires a sequence".to_owned()); } extend(d_pattern_bindings(pattern)?)?; } if let Some(name) = rest { extend(vec![name.clone()])?; } }
+        MatchPattern::Class { positional,keyword_patterns,.. } => for pattern in positional.iter().chain(keyword_patterns) { if matches!(pattern,MatchPattern::Star(_)) { return Err("star pattern requires a sequence".to_owned()); } extend(d_pattern_bindings(pattern)?)?; },
+        MatchPattern::Or(patterns) => {
+            for (index,pattern) in patterns.iter().enumerate() {
+                if d_pattern_irrefutable(pattern) && index+1 < patterns.len() { return Err("irrefutable alternative makes remaining patterns unreachable".to_owned()); }
+                if matches!(pattern,MatchPattern::Star(_)) { return Err("star pattern requires a sequence".to_owned()); }
+                let mut bound = d_pattern_bindings(pattern)?; bound.sort();
+                if index == 0 { names = bound; } else if names != bound { return Err("alternative patterns bind different names".to_owned()); }
+            }
+        }
+        _ => (),
+    }
+    Ok(names)
+}
+fn d_pattern_literal_equal(a: &MatchPattern, b: &MatchPattern) -> bool {
+    match (a,b) {
+        (MatchPattern::Literal(a),MatchPattern::Literal(b)) => match (a,b) {
+            (Const::None,Const::None)=>true,(Const::Bool(a),Const::Bool(b))=>a==b,(Const::Str(a),Const::Str(b))=>a==b,(Const::Bytes(a),Const::Bytes(b))=>a==b,(Const::Int(a),Const::Int(b))=>Int::parse(a,10).ok()==Int::parse(b,10).ok(),
+            (Const::Bool(a),Const::Int(b))|(Const::Int(b),Const::Bool(a))=>Int::parse(b,10).ok()==Some(Int::from_i128(if *a{1}else{0})),
+            (Const::Float(a),Const::Float(b))=>a==b,(Const::Int(a),Const::Float(b))|(Const::Float(b),Const::Int(a))=>Int::parse(a,10).ok().is_some_and(|a|a.cmp_f64(*b)==Some(std::cmp::Ordering::Equal)),
+            (Const::Bool(a),Const::Float(b))|(Const::Float(b),Const::Bool(a))=>(if *a{1.0}else{0.0})==*b,
+            _=>false,
+        },
+        _=>false,
+    }
+}
+
+fn d_contains_named(expr: &DExpr) -> bool {
+    match &expr.kind {
+        DExprKind::Named(..) => true,
+        DExprKind::List(values) | DExprKind::Tuple(values) | DExprKind::Set(values) | DExprKind::Joined(values) | DExprKind::Bool(_,values) => values.iter().any(d_contains_named),
+        DExprKind::Dict(items) => items.iter().any(|(key,value)|key.as_ref().is_some_and(d_contains_named) || d_contains_named(value)),
+        DExprKind::Unary(_,value) | DExprKind::Star(value) | DExprKind::Attribute(value,_) => d_contains_named(value),
+        DExprKind::Binary(_,a,b) | DExprKind::Subscript(a,b) => d_contains_named(a) || d_contains_named(b),
+        DExprKind::Compare(a,tail) => d_contains_named(a) || tail.iter().any(|(_,value)|d_contains_named(value)),
+        DExprKind::Conditional(a,b,c) => d_contains_named(a) || d_contains_named(b) || d_contains_named(c),
+        DExprKind::Slice(a,b,c) => [a,b,c].iter().any(|value|value.as_deref().is_some_and(d_contains_named)),
+        DExprKind::Call(fun,args,keywords) => d_contains_named(fun) || args.iter().any(d_contains_named) || keywords.iter().any(|(_,value)|d_contains_named(value)),
+        DExprKind::Lambda(params,body) => d_contains_named(body) || params.defaults.iter().any(d_contains_named) || params.kwdefaults.iter().any(|(_,value)|d_contains_named(value)),
+        DExprKind::Yield(value,_) => value.as_deref().is_some_and(d_contains_named),
+        DExprKind::Formatted(value,_,spec) => d_contains_named(value) || spec.as_deref().is_some_and(d_contains_named),
+        DExprKind::Comprehension { element,value,generators,.. } => d_contains_named(element) || value.as_deref().is_some_and(d_contains_named) || generators.iter().any(|generator|d_contains_named(&generator.iter) || d_contains_named(&generator.target) || generator.filters.iter().any(d_contains_named)),
+        _ => false,
+    }
+}
+
+fn d_static_target(target: &DExpr, names: &mut Vec<String>) {
+    match &target.kind {
+        DExprKind::Attribute(object,name) if matches!(&object.kind,DExprKind::Name(name) if name == "self") => d_push_name(names,name),
+        DExprKind::Tuple(items) | DExprKind::List(items) => for item in items { d_static_target(item,names); },
+        DExprKind::Star(target) => d_static_target(target,names),
+        _ => (),
+    }
+}
+fn d_static_attributes(body: &[DStmt], in_function: bool, names: &mut Vec<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            DStmtKind::Function(_,_,body,_) => d_static_attributes(body,true,names),
+            DStmtKind::Class(..) => (),
+            DStmtKind::Assign(targets,value) if in_function && !matches!(&value.kind,DExprKind::Name(name) if name == "$unbound_annotation") => for target in targets { d_static_target(target,names); },
+            DStmtKind::If(_,body,tail) | DStmtKind::While(_,body,tail) => { d_static_attributes(body,in_function,names); d_static_attributes(tail,in_function,names); },
+            DStmtKind::For(target,_,body,tail) => { if in_function { d_static_target(target,names); } d_static_attributes(body,in_function,names); d_static_attributes(tail,in_function,names); },
+            DStmtKind::Try(body,handlers,tail,finally) => { d_static_attributes(body,in_function,names); for (_,_,body) in handlers { d_static_attributes(body,in_function,names); } d_static_attributes(tail,in_function,names); d_static_attributes(finally,in_function,names); },
+            DStmtKind::With(items,body) => { if in_function { for (_,target) in items { if let Some(target) = target { d_static_target(target,names); } } } d_static_attributes(body,in_function,names); },
+            DStmtKind::Match(_,cases) => for (_,_,body) in cases { d_static_attributes(body,in_function,names); },
+            _ => (),
+        }
     }
 }
 
@@ -711,6 +906,13 @@ impl DSymbols {
                 self.block(body); for (exception,name,handler) in handlers { if let Some(exception) = exception { self.expr(exception); } if let Some(name) = name { d_push_name(&mut self.locals,name); } self.block(handler); } self.block(tail); self.block(finally);
             }
             DStmtKind::With(items,body) => { for (value,target) in items { self.expr(value); if let Some(target) = target { self.target(target); } } self.block(body); },
+            DStmtKind::Match(subject,cases) => {
+                self.expr(subject);
+                for (pattern,guard,body) in cases {
+                    if let Ok(names) = d_pattern_bindings(pattern) { for name in names { d_push_name(&mut self.locals,&name); } }
+                    if let Some(guard) = guard { self.expr(guard); } self.block(body);
+                }
+            }
             DStmtKind::Import(names) => for (name,alias) in names { d_push_name(&mut self.locals,alias.as_ref().map(|x| x.as_str()).unwrap_or_else(|| name.split('.').next().unwrap())); },
             DStmtKind::ImportFrom(_,names,_) => for (name,alias) in names { if name != "*" { d_push_name(&mut self.locals,alias.as_ref().unwrap_or(name)); } },
             _ => (),
@@ -737,7 +939,7 @@ impl DCompiler {
             _ => unreachable!("not a branch instruction"),
         }
     }
-    fn code(&mut self, name: &str, kind: ScopeKind, params: &DParams, body: &[DStmt], enclosing: &DCtx) -> Result<usize,String> {
+    fn code(&mut self, name: &str, kind: ScopeKind, params: &DParams, body: &[DStmt], enclosing: &DCtx, definition_line: usize) -> Result<usize,String> {
         let mut symbols = DSymbols::default(); symbols.block(body);
         if let Some(error) = symbols.error { return Err(error); }
         for name in params.params.positional.iter().chain(params.params.kwonly.iter()).chain(params.params.vararg.iter()).chain(params.params.kwarg.iter()) {
@@ -753,9 +955,22 @@ impl DCompiler {
         if symbols.generator && kind == ScopeKind::Class { return Err(self.error(1,"yield outside function")); }
         let index = self.codes.len();
         self.codes.push(Code { name:name.to_owned(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),globals:symbols.globals,nonlocals:symbols.nonlocals,params:params.params.clone(),ops:Vec::new(),is_generator:symbols.generator });
+        let is_class = kind == ScopeKind::Class;
         let mut scopes = enclosing.scopes.clone(); scopes.push((kind,symbols.locals));
         let mut ctx = DCtx { index,loops:Vec::new(),scopes };
-        self.block(&mut ctx,body)?;
+        let mut body_start = 0;
+        if is_class {
+            self.emit(&ctx,Op::Const(Const::Int(definition_line.to_string())),definition_line,0); self.emit(&ctx,Op::Store("__firstlineno__".to_owned()),definition_line,0);
+            if let Some(DStmt { kind:DStmtKind::Expr(DExpr { kind:DExprKind::Constant(Const::Str(doc)),.. }),line,column }) = body.first() {
+                self.emit(&ctx,Op::Const(Const::Str(doc.clone())),*line,*column); self.emit(&ctx,Op::Store("__doc__".to_owned()),*line,*column); body_start = 1;
+            }
+        }
+        self.block(&mut ctx,&body[body_start..])?;
+        if is_class {
+            let mut attributes = Vec::new(); d_static_attributes(body,false,&mut attributes); attributes.sort();
+            for name in &attributes { self.emit(&ctx,Op::Const(Const::Str(name.clone())),definition_line,0); }
+            self.emit(&ctx,Op::BuildTuple(attributes.len()),definition_line,0); self.emit(&ctx,Op::Store("__static_attributes__".to_owned()),definition_line,0);
+        }
         self.emit(&ctx,Op::Const(Const::None),body.last().map(|x|x.line).unwrap_or(1),0); self.emit(&ctx,Op::Return,body.last().map(|x|x.line).unwrap_or(1),0);
         Ok(index)
     }
@@ -813,19 +1028,20 @@ impl DCompiler {
             DStmtKind::Function(name,params,body,decorators) => {
                 for decorator in decorators { self.expr(ctx,decorator)?; }
                 for default in &params.defaults { self.expr(ctx,default)?; } for (_,default) in &params.kwdefaults { self.expr(ctx,default)?; }
-                let code = self.code(name,ScopeKind::Function,params,body,ctx)?;
+                let code = self.code(name,ScopeKind::Function,params,body,ctx,line)?;
                 self.emit(ctx,Op::MakeFunction { code:self.offset+code,defaults:params.defaults.len(),kwdefaults:params.kwdefaults.iter().map(|(name,_)|name.clone()).collect() },line,col);
+                self.annotations(ctx,params,line,col)?;
                 for _ in decorators { self.emit(ctx,Op::Call { pos:1,keywords:Vec::new() },line,col); }
                 self.emit(ctx,Op::Store(name.clone()),line,col);
             }
             DStmtKind::Class(name,bases,keywords,body,decorators) => {
                 for decorator in decorators { self.expr(ctx,decorator)?; } for base in bases { self.expr(ctx,base)?; } for (_,value) in keywords { self.expr(ctx,value)?; }
-                let code = self.code(name,ScopeKind::Class,&DParams::default(),body,ctx)?;
+                let code = self.code(name,ScopeKind::Class,&DParams::default(),body,ctx,line)?;
                 self.emit(ctx,Op::MakeClass { name:name.clone(),code:self.offset+code,bases:bases.len(),keywords:keywords.iter().map(|(name,_)|name.clone()).collect() },line,col);
                 for _ in decorators { self.emit(ctx,Op::Call { pos:1,keywords:Vec::new() },line,col); } self.emit(ctx,Op::Store(name.clone()),line,col);
             }
             DStmtKind::Return(value) => {
-                if !matches!(self.codes[ctx.index].kind,ScopeKind::Function | ScopeKind::Comprehension) { return Err(self.error(line,"return outside function")); }
+                if !matches!(self.codes[ctx.index].kind,ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::Annotation) { return Err(self.error(line,"return outside function")); }
                 if let Some(value) = value { self.expr(ctx,value)?; } else { self.emit(ctx,Op::Const(Const::None),line,col); } self.emit(ctx,Op::Return,line,col);
             }
             DStmtKind::Raise(value,cause) => {
@@ -838,6 +1054,15 @@ impl DCompiler {
             }
             DStmtKind::Try(body,handlers,tail,finally) => self.try_statement(ctx,body,handlers,tail,finally,line,col)?,
             DStmtKind::With(items,body) => self.with_statement(ctx,items,body,line,col)?,
+            DStmtKind::Match(subject,cases) => {
+                let saved = self.temporary(ctx); self.expr(ctx,subject)?; self.emit(ctx,Op::Store(saved.clone()),line,col); let mut ends = Vec::new();
+                for (pattern,guard,body) in cases {
+                    self.emit(ctx,Op::Load(saved.clone()),line,col); self.emit(ctx,Op::Match(pattern.clone()),line,col); let failed = self.emit(ctx,Op::JumpFalse(0),line,col);
+                    let guarded = if let Some(guard) = guard { self.expr(ctx,guard)?; Some(self.emit(ctx,Op::JumpFalse(0),line,col)) } else { None };
+                    self.block(ctx,body)?; ends.push(self.emit(ctx,Op::Jump(0),line,col)); let next = self.here(ctx); self.patch(ctx,failed,next); if let Some(guarded) = guarded { self.patch(ctx,guarded,next); }
+                }
+                let end = self.here(ctx); for at in ends { self.patch(ctx,at,end); }
+            }
             DStmtKind::Import(names) => for (name,alias) in names {
                 self.emit(ctx,Op::Import { module:name.clone(),names:if alias.is_some(){vec!["*".to_owned()]}else{Vec::new()},level:0 },line,col);
                 self.emit(ctx,Op::Store(alias.clone().unwrap_or_else(||name.split('.').next().unwrap().to_owned())),line,col);
@@ -873,12 +1098,25 @@ impl DCompiler {
         if let Some(setup) = final_setup { self.emit(ctx,Op::PopHandler,line,col); let start = self.here(ctx); self.patch(ctx,setup,start); self.block(ctx,finally)?; self.emit(ctx,Op::EndFinally,line,col); }
         Ok(())
     }
+    fn annotations(&mut self, ctx: &mut DCtx, params: &DParams, line: usize, column: usize) -> Result<(),String> {
+        if params.annotations.is_empty() { return Ok(()); }
+        let make = |kind| DExpr { kind,line,column };
+        let condition=make(DExprKind::Compare(Box::new(make(DExprKind::Name("format".to_owned()))),vec![(">".to_owned(),make(DExprKind::Constant(Const::Int("2".to_owned()))))]));
+        let error=make(DExprKind::Call(Box::new(make(DExprKind::Name("NotImplementedError".to_owned()))),Vec::new(),Vec::new()));
+        let check=DStmt { kind:DStmtKind::If(condition,vec![DStmt { kind:DStmtKind::Raise(Some(error),None),line,column }],Vec::new()),line,column };
+        let annotations=make(DExprKind::Dict(params.annotations.iter().map(|(name,value)|(Some(make(DExprKind::Constant(Const::Str(name.clone())))),value.clone())).collect()));
+        let returned=DStmt { kind:DStmtKind::Return(Some(annotations)),line,column };
+        let mut parameters=DParams::default();parameters.params.positional.push("format".to_owned());
+        let code=self.code("<annotate>",ScopeKind::Annotation,&parameters,&[check,returned],ctx,line)?;
+        self.emit(ctx,Op::Dup,line,column); self.emit(ctx,Op::MakeFunction { code:self.offset+code,defaults:0,kwdefaults:Vec::new() },line,column);self.emit(ctx,Op::Swap,line,column);self.emit(ctx,Op::SetAttr("__annotate__".to_owned()),line,column);
+        Ok(())
+    }
     fn with_statement(&mut self, ctx: &mut DCtx, items: &[(DExpr,Option<DExpr>)], body: &[DStmt], line: usize, col: usize) -> Result<(),String> {
         if items.is_empty() { return self.block(ctx,body); }
         let (manager,target) = &items[0]; let manager_tmp = self.temporary(ctx); let exit_tmp = self.temporary(ctx); let enter_tmp = self.temporary(ctx); let exceptional_tmp = self.temporary(ctx);
         self.expr(ctx,manager)?; self.emit(ctx,Op::Store(manager_tmp.clone()),line,col);
-        self.emit(ctx,Op::Load(manager_tmp.clone()),line,col); self.emit(ctx,Op::GetAttr("__exit__".to_owned()),line,col); self.emit(ctx,Op::Store(exit_tmp.clone()),line,col);
-        self.emit(ctx,Op::Load(manager_tmp),line,col); self.emit(ctx,Op::GetAttr("__enter__".to_owned()),line,col); self.emit(ctx,Op::Call { pos:0,keywords:Vec::new() },line,col); self.emit(ctx,Op::Store(enter_tmp.clone()),line,col);
+        self.emit(ctx,Op::Load(manager_tmp.clone()),line,col); self.emit(ctx,Op::GetSpecialAttr("__exit__".to_owned()),line,col); self.emit(ctx,Op::Store(exit_tmp.clone()),line,col);
+        self.emit(ctx,Op::Load(manager_tmp),line,col); self.emit(ctx,Op::GetSpecialAttr("__enter__".to_owned()),line,col); self.emit(ctx,Op::Call { pos:0,keywords:Vec::new() },line,col); self.emit(ctx,Op::Store(enter_tmp.clone()),line,col);
         self.emit(ctx,Op::Const(Const::Bool(false)),line,col); self.emit(ctx,Op::Store(exceptional_tmp.clone()),line,col);
         let final_setup = self.emit(ctx,Op::SetupFinally(0),line,col); let except_setup = self.emit(ctx,Op::SetupExcept(0),line,col);
         if let Some(target) = target { self.emit(ctx,Op::Load(enter_tmp),line,col); self.store(ctx,target)?; }
@@ -929,15 +1167,21 @@ impl DCompiler {
             DExprKind::Name(name) => { self.emit(ctx,Op::Load(name.clone()),line,col); }
             DExprKind::List(items) | DExprKind::Tuple(items) => {
                 let tuple = matches!(expr.kind,DExprKind::Tuple(_)); let unpack = items.iter().any(|x|matches!(x.kind,DExprKind::Star(_)));
-                for item in items { if let DExprKind::Star(value) = &item.kind { self.expr(ctx,value)?; } else { self.expr(ctx,item)?; if unpack { self.emit(ctx,Op::BuildTuple(1),line,col); } } }
+                for item in items { if let DExprKind::Star(value) = &item.kind { self.expr(ctx,value)?; self.emit(ctx,Op::BuildListUnpack(1),line,col); } else { self.expr(ctx,item)?; if unpack { self.emit(ctx,Op::BuildTuple(1),line,col); } } }
                 let op = match (tuple,unpack) { (false,false)=>Op::BuildList(items.len()),(true,false)=>Op::BuildTuple(items.len()),(false,true)=>Op::BuildListUnpack(items.len()),(true,true)=>Op::BuildTupleUnpack(items.len()) };
                 self.emit(ctx,op,line,col);
             }
             DExprKind::Set(items) => {
                 let unpack = items.iter().any(|x|matches!(x.kind,DExprKind::Star(_)));
-                if unpack { self.emit(ctx,Op::Load("set".to_owned()),line,col); }
-                for item in items { if let DExprKind::Star(value) = &item.kind { self.expr(ctx,value)?; } else { self.expr(ctx,item)?; if unpack { self.emit(ctx,Op::BuildTuple(1),line,col); } } }
-                if unpack { self.emit(ctx,Op::BuildTupleUnpack(items.len()),line,col); self.emit(ctx,Op::Call { pos:1,keywords:Vec::new() },line,col); } else { self.emit(ctx,Op::BuildSet(items.len()),line,col); }
+                if unpack {
+                    self.emit(ctx,Op::BuildSet(0),line,col);
+                    for item in items {
+                        if let DExprKind::Star(value) = &item.kind {
+                            self.expr(ctx,value)?; self.emit(ctx,Op::GetIter,line,col); let start = self.here(ctx); let exhausted = self.emit(ctx,Op::ForIter(0),line,col);
+                            self.emit(ctx,Op::SetAdd(2),line,col); self.emit(ctx,Op::Jump(start),line,col); self.patch(ctx,exhausted,self.here(ctx));
+                        } else { self.expr(ctx,item)?; self.emit(ctx,Op::SetAdd(1),line,col); }
+                    }
+                } else { for item in items { self.expr(ctx,item)?; } self.emit(ctx,Op::BuildSet(items.len()),line,col); }
             }
             DExprKind::Dict(items) => {
                 if items.iter().all(|(key,_)|key.is_some()) { for (key,value) in items { self.expr(ctx,key.as_ref().unwrap())?; self.expr(ctx,value)?; } self.emit(ctx,Op::BuildDict(items.len()),line,col); }
@@ -971,8 +1215,9 @@ impl DCompiler {
                 let extended = args.iter().any(|x|matches!(x.kind,DExprKind::Star(_))) || keywords.iter().any(|(name,_)|name.is_none());
                 if !extended { for arg in args { self.expr(ctx,arg)?; } for (_,value) in keywords { self.expr(ctx,value)?; } self.emit(ctx,Op::Call { pos:args.len(),keywords:keywords.iter().map(|(name,_)|name.clone().unwrap()).collect() },line,col); }
                 else {
-                    for arg in args { if let DExprKind::Star(value) = &arg.kind { self.expr(ctx,value)?; } else { self.expr(ctx,arg)?; self.emit(ctx,Op::BuildTuple(1),line,col); } }
-                    self.emit(ctx,Op::BuildTupleUnpack(args.len()),line,col);
+                    let sole_star = args.len() == 1 && matches!(args[0].kind,DExprKind::Star(_));
+                    for arg in args { if let DExprKind::Star(value) = &arg.kind { self.expr(ctx,value)?; if !sole_star { self.emit(ctx,Op::BuildListUnpack(1),line,col); } } else { self.expr(ctx,arg)?; self.emit(ctx,Op::BuildTuple(1),line,col); } }
+                    if !sole_star { self.emit(ctx,Op::BuildTupleUnpack(args.len()),line,col); }
                     if !keywords.is_empty() { self.emit(ctx,Op::BuildDict(0),line,col); for (name,value) in keywords { if let Some(name) = name { self.emit(ctx,Op::Const(Const::Str(name.clone())),line,col); self.expr(ctx,value)?; self.emit(ctx,Op::BuildDict(1),line,col); } else { self.expr(ctx,value)?; } self.emit(ctx,Op::Binary("kwargs_merge".to_owned()),line,col); } }
                     self.emit(ctx,Op::CallEx { kwargs:!keywords.is_empty() },line,col);
                 }
@@ -981,7 +1226,7 @@ impl DCompiler {
             DExprKind::Lambda(params,body) => {
                 for value in &params.defaults { self.expr(ctx,value)?; } for (_,value) in &params.kwdefaults { self.expr(ctx,value)?; }
                 let stmt = DStmt { kind:DStmtKind::Return(Some(*body.clone())),line,column:col };
-                let code = self.code("<lambda>",ScopeKind::Function,params,&[stmt],ctx)?;
+                let code = self.code("<lambda>",ScopeKind::Function,params,&[stmt],ctx,line)?;
                 self.emit(ctx,Op::MakeFunction { code:self.offset+code,defaults:params.defaults.len(),kwdefaults:params.kwdefaults.iter().map(|(name,_)|name.clone()).collect() },line,col);
             }
             DExprKind::Yield(value,from) => {
@@ -999,10 +1244,18 @@ impl DCompiler {
     }
     fn comprehension(&mut self, outer: &mut DCtx, kind: &str, element: &DExpr, value: Option<&DExpr>, generators: &[DGenerator], line: usize, col: usize) -> Result<(),String> {
         if generators.is_empty() { return Err(self.error(line,"comprehension requires a generator")); }
+        for generator in generators { if d_contains_named(&generator.iter) { return Err(self.error(line,"assignment expression cannot be used in a comprehension iterable expression")); } }
         let mut symbols = DSymbols::default();
         for generator in generators { symbols.target(&generator.target); }
         let mut named = DSymbols::default(); named.expr(element); if let Some(value) = value { named.expr(value); } for generator in generators { for value in &generator.filters { named.expr(value); } }
-        for name in &named.locals { if symbols.locals.contains(name) { return Err(self.error(line,"assignment expression cannot rebind a comprehension iteration variable")); } }
+        for name in &named.locals {
+            if symbols.locals.contains(name) { return Err(self.error(line,"assignment expression cannot rebind a comprehension iteration variable")); }
+            for (kind,names) in outer.scopes.iter().rev() {
+                if *kind != ScopeKind::Comprehension { break; }
+                if names.contains(name) { return Err(self.error(line,"assignment expression cannot rebind an enclosing comprehension iteration variable")); }
+            }
+        }
+        if !named.locals.is_empty() && outer.scopes.iter().rev().find(|(kind,_)|*kind != ScopeKind::Comprehension).is_some_and(|(kind,_)|*kind == ScopeKind::Class) { return Err(self.error(line,"assignment expression within a comprehension cannot be used in a class body")); }
         symbols.locals.push(".0".to_owned());
         let mut globals = Vec::new(); let mut nonlocals = Vec::new();
         for name in named.locals { if self.codes[outer.index].kind == ScopeKind::Module || self.codes[outer.index].globals.contains(&name) { globals.push(name); } else { nonlocals.push(name); } }

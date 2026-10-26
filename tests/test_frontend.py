@@ -16,7 +16,8 @@ class FrontendTests(unittest.TestCase):
         function = program.codes[1]
         self.assertIn("x", function.locals)
         self.assertNotIn("x", function.globals)
-        self.assertIn("print", function.globals)
+        self.assertNotIn("print", function.globals)
+        self.assertIn("print", [op.args[0] for op in function.ops if op.op == "Load"])
 
     def test_comprehension_has_isolated_bindings(self):
         program = Compiler().compile("def f(n):\n return [x+n for x in range(n)]\n")
@@ -36,6 +37,13 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(caught.exception.diagnostic.filename, "case.py")
         self.assertEqual(caught.exception.diagnostic.line, 1)
         self.assertEqual(caught.exception.diagnostic.code, "E002")
+
+    def test_unknown_standard_submodule_is_a_static_diagnostic(self):
+        with self.assertRaises(CompilationError) as caught:
+            Compiler("imports.py").compile("import math.missing\n")
+        self.assertEqual(caught.exception.diagnostic.code, "E003")
+        self.assertEqual(caught.exception.diagnostic.filename, "imports.py")
+        self.assertEqual(caught.exception.diagnostic.line, 1)
 
 
 if __name__ == "__main__":
