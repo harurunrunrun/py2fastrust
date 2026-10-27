@@ -642,7 +642,7 @@ impl DCompiler {
             Op::GetSpecialAttr(name) => Op::GetSpecialAttr(d_mangle(&ctx.private,&name)),
             Op::SetAttr(name) => Op::SetAttr(d_mangle(&ctx.private,&name)),
             Op::DelAttr(name) => Op::DelAttr(d_mangle(&ctx.private,&name)),
-            Op::Import { module,names,level } => Op::Import { module:d_mangle(&ctx.private,&module),names,level },
+            Op::Import { module,names,level } => Op::Import { module:if module.contains('.') {module}else{d_mangle(&ctx.private,&module)},names,level },
             Op::ImportFrom(name) => Op::ImportFrom(d_mangle(&ctx.private,&name)),
             Op::MakeFunction { code,defaults,kwdefaults } => Op::MakeFunction { code,defaults,kwdefaults:kwdefaults.into_iter().map(|name|d_mangle(&ctx.private,&name)).collect() },
             Op::Match(pattern) => Op::Match(d_mangle_pattern(&ctx.private,pattern)),
@@ -740,6 +740,8 @@ impl DCompiler {
         let mut ctx = DCtx { index,loops:Vec::new(),scopes,comp_locals:comp_scopes,private };
         let mut body_start = 0;
         if is_class {
+            self.emit(&ctx,Op::Load("__name__".to_owned()),definition_line,0);self.emit(&ctx,Op::Store("__module__".to_owned()),definition_line,0);
+            self.emit(&ctx,Op::Const(Const::Str(name.to_owned())),definition_line,0);self.emit(&ctx,Op::Store("__qualname__".to_owned()),definition_line,0);
             self.emit(&ctx,Op::Const(Const::Int(definition_line.to_string())),definition_line,0); self.emit(&ctx,Op::Store("__firstlineno__".to_owned()),definition_line,0);
             if generic_class {self.emit(&ctx,Op::Load(".type_params".to_owned()),definition_line,0);self.emit(&ctx,Op::Store("__type_params__".to_owned()),definition_line,0);}
             if self.future_flags & D_FUTURE_ANNOTATIONS != 0 && d_has_annotations(body) { self.emit(&ctx,Op::SetupAnnotations,definition_line,0); }
@@ -798,9 +800,10 @@ impl DCompiler {
                         for base in bases.iter().chain(keywords.iter().map(|(_,value)|value)) {
                             if let Some(message)=d_annotation_violation(base){return Err(self.error(line,message));}
                         }
-                        self.emit(ctx,Op::CaptureBuiltins,line,col);
+                        let prepare=self.emit(ctx,Op::PrepareClass(0),line,col);
                         let expanded=self.class_arguments(ctx,bases,keywords,true,line,col)?;
                         let code=self.code(name,ScopeKind::Class,&DParams::default(),body,ctx,line)?;
+                        self.codes[ctx.index].ops[prepare].op=Op::PrepareClass(self.offset+code);
                         let op=if expanded{Op::MakeClassEx{name:name.clone(),code:self.offset+code}}else{Op::MakeClass{name:name.clone(),code:self.offset+code,bases:bases.len()+1,keywords:keywords.iter().map(|(name,_)|name.clone().unwrap()).collect()}};
                         self.emit(ctx,op,line,col);
                     },
@@ -894,9 +897,10 @@ impl DCompiler {
             }
             DStmtKind::Class(name,bases,keywords,body,decorators) => {
                 for decorator in decorators { self.expr(ctx,decorator)?; }
-                self.emit(ctx,Op::CaptureBuiltins,line,col);
+                let prepare=self.emit(ctx,Op::PrepareClass(0),line,col);
                 let expanded=self.class_arguments(ctx,bases,keywords,false,line,col)?;
                 let code = self.code(name,ScopeKind::Class,&DParams::default(),body,ctx,line)?;
+                self.codes[ctx.index].ops[prepare].op=Op::PrepareClass(self.offset+code);
                 let op=if expanded{Op::MakeClassEx{name:name.clone(),code:self.offset+code}}else{Op::MakeClass { name:name.clone(),code:self.offset+code,bases:bases.len(),keywords:keywords.iter().map(|(name,_)|name.clone().unwrap()).collect() }};
                 self.emit(ctx,op,line,col);
                 for _ in decorators { self.emit(ctx,Op::Call { pos:1,keywords:Vec::new() },line,col); } self.emit(ctx,Op::Store(name.clone()),line,col);
@@ -927,7 +931,12 @@ impl DCompiler {
                 let end = self.here(ctx); for at in ends { self.patch(ctx,at,end); }
             }
             DStmtKind::Import(names) => for (name,alias) in names {
-                self.emit(ctx,Op::Import { module:name.clone(),names:if alias.is_some(){vec!["*".to_owned()]}else{Vec::new()},level:0 },line,col);
+                self.emit(ctx,Op::Import { module:name.clone(),names:Vec::new(),level:0 },line,col);
+                if alias.is_some(){for part in name.split('.').skip(1){
+                    // Qualified module components do not undergo private mangling.
+                    self.codes[ctx.index].ops.push(Instr{op:Op::ImportFrom(part.to_owned()),line,column:col});
+                    self.emit(ctx,Op::Swap,line,col);self.emit(ctx,Op::Pop,line,col);
+                }}
                 self.emit(ctx,Op::Store(alias.clone().unwrap_or_else(||name.split('.').next().unwrap().to_owned())),line,col);
             }
             DStmtKind::ImportFrom(module,names,level) => {

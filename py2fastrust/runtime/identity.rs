@@ -163,6 +163,7 @@ enum LiteralKey {
     Complex(u64,u64),
     Str(String),
     Bytes(Vec<u8>),
+    ImportNames(Vec<String>),
 }
 impl Const {
     fn literal_key(&self) -> LiteralKey {

@@ -87,7 +87,7 @@ enum Op {
         pos: usize,
         keywords: Vec<String>,
     },
-    CaptureBuiltins,
+    PrepareClass(usize),
     MakeFunction {
         code: usize,
         defaults: usize,
@@ -1384,6 +1384,7 @@ impl Runtime {
             "_py2fastrust_nullable_slot",
             "_py2fastrust_namedtuple_module",
             "_py2fastrust_ordered",
+            "__build_class__",
         ] {
             rt.ns_set(rt.builtins, name.into(), Value::Builtin(name.into()));
         }
@@ -2243,41 +2244,16 @@ impl Runtime {
                     Ok(())
                 })?;
             }
-            Op::CaptureBuiltins => {
-                // Class bodies are functions created before evaluating bases.
-                // Looking up their module can itself run a string-key callback.
-                let module=self.global_name_get(f.globals,"__name__")?.unwrap_or(Value::None);
-                let (module,builtins)=self.view_rooted(vec![module],|runtime,root|{
-                    let builtins=runtime.capture_builtins(f.globals,f.builtins.clone())?;
-                    Ok((runtime.roots[root][0].clone(),builtins))
-                })?;
-                // Keep both hidden body-function fields alive until class exit.
-                f.stack.push(module);f.stack.push(builtins);
+            Op::PrepareClass(code) => {
+                let builder=self.builtin_lookup(f.builtins.clone(),"__build_class__")?.ok_or_else(||pyerr("NameError","__build_class__ not found"))?;
+                let function=self.view_rooted(vec![builder.clone()],|runtime,_|runtime.make_function_value(f,code,Vec::new(),Vec::new(),Vec::new()))?;
+                f.stack.push(builder);f.stack.push(function);
             }
-            Op::MakeFunction { code, defaults, kwdefaults } => {
+            Op::MakeFunction {code,defaults,kwdefaults} => {
                 let kwvals=Self::pop_many(f,kwdefaults.len())?;
                 let defs=Self::pop_many(f,defaults)?;
-                let closure=if let Some(scope)=f.comprehensions.last(){Some(scope.namespace)}else if matches!(self.codes[code].kind,ScopeKind::Annotation|ScopeKind::TypeParameters){Some(f.locals)}else{
-                    match self.codes[f.code].kind {ScopeKind::Class=>f.closure,ScopeKind::Module=>None,_=>Some(f.locals)}
-                };
-                let attrs=self.alloc(Object::Dict(Vec::new()));
-                let annotations=self.obj_value(Object::Dict(Vec::new()));
-                let type_params=self.obj_value(Object::Tuple(Vec::new()));
-                let name=match self.code_constant(code,Const::Str(self.codes[code].name.clone()))?{Value::Str(name)=>name,_=>unreachable!()};
-                let doc=match self.codes[code].docstring.clone(){Some(value)=>self.code_constant(code,Const::Str(value))?,_=>Value::None};
-                let mut roots=defs.clone();roots.extend(kwvals.iter().cloned());
-                roots.extend([Value::Obj(attrs),annotations.clone(),type_params.clone(),doc.clone(),Value::Obj(f.globals),f.builtins.clone()]);
-                roots.extend(closure.map(Value::Obj));
-                let fun=self.view_rooted(roots,|runtime,root|{
-                    let module=runtime.global_name_get(f.globals,"__name__")?.unwrap_or(Value::None);
-                    runtime.roots[root].push(module.clone());
-                    let builtins=runtime.capture_builtins(f.globals,f.builtins.clone())?;
-                    Ok(runtime.obj_value(Object::Function(Function{
-                        annotate:None,annotations_evaluated:false,attrs,name:name.clone(),qualname:name,module,doc,annotations,type_params,
-                        code,globals:f.globals,builtins,closure,defaults:defs,defaults_set:defaults>0,kwdefaults:kwdefaults.into_iter().zip(kwvals).collect(),
-                    })))
-                })?;
-                f.stack.push(fun);
+                let function=self.make_function_value(f,code,defs,kwdefaults,kwvals)?;
+                f.stack.push(function);
             }
             Op::MakeTypeParam { name, kind } => {
                 let default = Self::pop(f)?;
@@ -2476,20 +2452,22 @@ impl Runtime {
                 let kv = Self::pop_many(f, keywords.len())?;
                 let bases = Self::pop_many(f, bases)?;
                 let mut kw=Vec::new();for(name,value)in keywords.into_iter().zip(kv){kw.push((self.static_keyword(name),value));}
-                let builtins=Self::pop(f)?;let body_module=Self::pop(f)?;
-                let cls = self.make_class(f, name, code, bases, kw, builtins,body_module)?;
+                let function=Self::pop(f)?;let builder=Self::pop(f)?;
+                let mut args=vec![function,Value::Str(name.into())];args.extend(bases);
+                let cls=self.call(builder,args,kw,Some(f))?;
                 f.stack.push(cls)
             }
             Op::MakeClassEx { name, code } => {
                 let keywords=Self::pop(f)?;
                 let bases=Self::pop(f)?;
-                let builtins=Self::pop(f)?;let body_module=Self::pop(f)?;
+                let function=Self::pop(f)?;let builder=Self::pop(f)?;
                 let root=self.roots.len();
-                self.roots.push(vec![bases.clone(),keywords.clone(),builtins.clone(),body_module.clone()]);
+                self.roots.push(vec![bases.clone(),keywords.clone(),function.clone(),builder.clone()]);
                 let result=(||{
                     let bases=self.to_vec(bases)?;
                     let keywords=self.keyword_items(keywords)?;
-                    self.make_class(f,name,code,bases,keywords,builtins,body_module)
+                    let mut args=vec![function,Value::Str(name.into())];args.extend(bases);
+                    self.call(builder,args,keywords,Some(f))
                 })();
                 self.roots.truncate(root);
                 f.stack.push(result?);
@@ -2556,44 +2534,13 @@ impl Runtime {
                         .ok_or_else(|| pyerr("RuntimeError", "missing dict"))?;
                 self.setitem(obj, k, v)?
             }
-            Op::Import {
-                module,
-                names,
-                level,
-            } => {
-                let name = if level > 0 {
-                    self.resolve_relative(f, &module, level)?
-                } else {
-                    module
-                };
-                let v = self.import_module(&name)?;
-                if names.is_empty() && name.contains('.') {
-                    let top = name.split('.').next().unwrap();
-                    f.stack.push(self.import_module(top)?)
-                } else {
-                    f.stack.push(v)
-                }
+            Op::Import {module,names,level} => {
+                f.stack.push(self.import_statement(f,&module,&names,level)?);
             }
-            Op::ImportFrom(n) => {
-                let m = f
-                    .stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| pyerr("RuntimeError", "missing module"))?;
-                if n == "*" {
-                    let names = self.attribute_items(&m)?;
-                    for (name, v) in names {
-                        if !name.starts_with('_') {
-                            self.store(f, name, v)?
-                        }
-                    }
-                } else {
-                    let v=match self.getattr(m.clone(), &n) {
-                        Err(error) if error.kind=="AttributeError" && n=="templatelib" && matches!(&m,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Module{name,..})if name=="string"))=>self.import_module("string.templatelib")?,
-                        result=>result?,
-                    };
-                    f.stack.push(v)
-                }
+            Op::ImportFrom(name) => {
+                let module=f.stack.last().cloned().ok_or_else(||pyerr("RuntimeError","missing module"))?;
+                if name=="*" {self.import_star(f,module)?;}
+                else {f.stack.push(self.import_from(module,&name)?);}
             }
             Op::FormatValue { conversion, spec } => {
                 let specification = if spec { Some(Self::pop(f)?) } else { None };
@@ -2637,30 +2584,6 @@ impl Runtime {
 }
 
 impl Runtime {
-    fn resolve_relative(&mut self, f: &Frame, module: &str, level: usize) -> PyResult<String> {
-        let package = match self.ns_get(f.globals, "__package__") {
-            Some(Value::Str(s)) => s,
-            _ => String::new().into(),
-        };
-        let mut parts: Vec<_> = package.split('.').filter(|s| !s.is_empty()).collect();
-        if parts.len() < level {
-            return Err(pyerr(
-                "ImportError",
-                "attempted relative import beyond top-level package",
-            ));
-        }
-        for _ in 1..level {
-            parts.pop();
-        }
-        let mut name = parts.join(".");
-        if !module.is_empty() {
-            if !name.is_empty() {
-                name.push('.')
-            }
-            name.push_str(module)
-        }
-        Ok(name)
-    }
     fn import_module(&mut self, name: &str) -> PyResult<Value> {
         if let Some(v) = self.modules.get(name) {
             return Ok(v.clone());
@@ -2668,6 +2591,8 @@ impl Runtime {
         if name.contains('.') {
             let parent = name.rsplit_once('.').unwrap().0;
             self.import_module(parent)?;
+            // Initializing the package can import this child before we resume.
+            if let Some(module)=self.modules.get(name){return Ok(module.clone());}
         }
         let attrs = self.alloc(Object::Dict(Vec::new()));
         let module = self.obj_value(Object::Module {
@@ -2676,11 +2601,9 @@ impl Runtime {
         });
         self.ns_set(attrs, "__name__".into(), Value::Str(name.into()));
         self.ns_set(attrs, "__builtins__".into(), Value::Obj(self.builtins));
-        self.ns_set(
-            attrs,
-            "__package__".into(),
-            Value::Str(name.rsplit_once('.').map(|p| p.0).unwrap_or("").into()),
-        );
+        let package=self.module_codes.get(name).is_some_and(|index|std::path::Path::new(&self.codes[*index].filename).file_name().is_some_and(|name|name=="__init__.py")) || name=="string";
+        self.ns_set(attrs,"__package__".into(),Value::Str(if package{name}else{name.rsplit_once('.').map(|p|p.0).unwrap_or("")}.into()));
+        if package {let path=self.obj_value(Object::List(Vec::new()));self.ns_set(attrs,"__path__".into(),path);}
         let functions: &[&str] = if self.module_codes.contains_key(name) {
             &[]
         } else {
@@ -3355,6 +3278,7 @@ impl Runtime {
         let mut marked = vec![false; self.heap.len()];
         let mut pending = vec![Value::Obj(self.builtins), Value::Obj(self.globals)];
         pending.push(self.active_builtins.clone());
+        pending.extend(self.literal_pools.values().flat_map(|pool|pool.values().cloned()));
         pending.extend(self.modules.values().cloned());
         pending.extend(self.template_metadata.values().cloned());
         for entry in &self.typing_alias_cache {pending.extend([entry.owner.clone(),entry.key.clone(),entry.value.clone()]);}
@@ -4469,6 +4393,19 @@ impl Runtime {
         kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if name.starts_with("native_attr:") {return self.native_attribute_call(Value::Builtin(name.into()),args,kwargs);}
+        if name=="native_attr_bind" {
+            if !(2..=3).contains(&args.len())||!kwargs.is_empty(){return Err(pyerr("TypeError","descriptor __get__ takes one or two arguments"));}
+            let descriptor=args[0].clone();let instance=args[1].clone();
+            let class=args.get(2).cloned().filter(|value|!matches!(value,Value::None)).unwrap_or_else(||self.native_receiver_class(&instance));
+            return self.bind_native_attribute(descriptor,if matches!(instance,Value::None){None}else{Some(instance)},class).unwrap();
+        }
+        if name=="native_attr_readonly" {
+            if args.len()<2||!kwargs.is_empty(){return Err(pyerr("TypeError","missing descriptor instance"));}
+            let (_,owner,_)=native_attribute_parts(&args[0]).ok_or_else(||pyerr("TypeError","expected native descriptor"))?;
+            self.native_validate_receiver(owner,&args[1])?;
+            return Err(pyerr("AttributeError","readonly native attribute"));
+        }
         if name=="_py2fastrust_nullable_slot" {
             if args.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","invalid internal slot arguments"));}
             if let Value::Obj(index)=&args[0] {if matches!(self.object(*index)?,Object::Slot{..}) {self.collection_nullable_slots.insert(*index);return Ok(Value::None);}}
@@ -5474,10 +5411,8 @@ impl Runtime {
                 self.roots.truncate(root);
                 result
             }
-            "__import__" => {
-                let n = self.str_value(&arg(0)?)?;
-                self.import_module(&n)
-            }
+            "__build_class__" => self.builtin_build_class(args,kwargs,caller),
+            "__import__" => self.builtin_import(args,kwargs),
             "slice" => {
                 let (a, b, c) = if args.len() == 1 {
                     (None, Some(self.as_int(&args[0])?), None)
@@ -5703,61 +5638,23 @@ impl Runtime {
                 }
                 Object::Class(class) => {
                     if self.is_subclass(&fun,&Value::Type("BaseException".into()))? {return self.exception_subclass_call(fun,args,kwargs,caller);}
-                    let is_meta = self.is_subclass(&fun, &Value::Builtin("type".into()))?;
-                    if is_meta {
-                        if let Some(new) = self.class_lookup(&fun, "__new__", 0) {
-                            let mut a = vec![fun.clone()];
-                            a.extend(args.clone());
-                            let obj = self.call(new, a, kwargs.clone(), caller)?;
-                            if let Some(init) = self.class_lookup(&fun, "__init__", 0) {
-                                let bound = self.obj_value(Object::Bound(init, obj.clone()));
-                                self.call(bound, args, kwargs, caller)?;
-                            }
-                            return Ok(obj);
-                        }
-                        if args.len() >= 3 {
-                            return self.construct_class(fun, args, kwargs);
-                        }
-                    }
-                    let mut native_type = None;
-                    for name in ["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"] {
-                        if self.is_subclass(&fun, &Value::Builtin(name.into()))? {
-                            native_type = Some(name);
-                            break;
-                        }
-                    }
-                    let obj = if let Some(new) = self.class_lookup(&fun, "__new__", 0) {
-                        let mut a = vec![fun.clone()];
-                        a.extend(args.clone());
-                        self.call(new, a, kwargs.clone(), caller)?
-                    } else if let Some(name) = native_type {
-                        self.builtin_instance_new(name, fun.clone(), args.clone(), kwargs.clone())?
-                    } else {
-                        let attrs = self.alloc(Object::Namespace(OrderedNamespace::new(), None));
-                        self.obj_value(Object::Instance {
-                            class: fun.clone(),
-                            attrs,
-                        })
+                    let obj=if let Some(new)=self.class_attribute_lookup(&fun,"__new__") {
+                        let new=self.bind_descriptor(new,None,fun.clone())?;
+                        let mut incoming=vec![fun.clone()];incoming.extend(args.clone());
+                        self.call(new,incoming,kwargs.clone(),caller)?
+                    }else {
+                        let attrs=self.alloc(Object::Dict(Vec::new()));
+                        self.obj_value(Object::Instance{class:fun.clone(),attrs})
                     };
-                    if let Ok(init) = self.special_method(obj.clone(), "__init__") {
-                        let v = self.call(init, args, kwargs, caller)?;
-                        if !matches!(v, Value::None) {
-                            return Err(pyerr("TypeError", "__init__() should return None"));
+                    // type.__call__ only initializes a result of the requested
+                    // type (or a subtype); an unrelated return value is final.
+                    let actual=self.native_receiver_class(&obj);
+                    if self.is_subclass(&actual,&fun)? {
+                        if let Some(init)=self.class_attribute_lookup(&actual,"__init__") {
+                            let init=self.bind_descriptor(init,Some(obj.clone()),actual)?;
+                            let result=self.call(init,args,kwargs,caller)?;
+                            if !matches!(result,Value::None){return Err(pyerr("TypeError","__init__() should return None"));}
                         }
-                    } else if matches!(native_type, Some("list" | "dict" | "set")) {
-                        self.builtin_instance_init(
-                            native_type.unwrap(),
-                            obj.clone(),
-                            args,
-                            kwargs,
-                        )?;
-                    } else if (!args.is_empty() || !kwargs.is_empty())
-                        && !matches!(&obj,Value::Obj(i)if matches!(self.heap.get(*i).and_then(|o|o.as_ref()),Some(Object::BuiltinInstance{..})))
-                    {
-                        return Err(pyerr(
-                            "TypeError",
-                            format!("{}() takes no arguments", class.name),
-                        ));
                     }
                     Ok(obj)
                 }
@@ -5830,6 +5727,9 @@ impl Runtime {
         };
         let mut items = self.dict_items(Value::Obj(ns))?;
         for (key,value) in &mut items {
+            if matches!(key,Value::Str(name)if name=="__new__")&&matches!(value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Function(_)))) {
+                *value=self.obj_value(Object::Static(value.clone()));
+            }
             if matches!(key,Value::Str(name)if name=="__class_getitem__"||name=="__init_subclass__") && matches!(value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Function(_)))) {
                 *value=self.obj_value(Object::ClassMethod(value.clone()));
             }
@@ -5983,13 +5883,21 @@ impl Runtime {
                     "Cannot create a consistent method resolution order (MRO)",
                 ));
             }
-            if let Ok(items) = self.attribute_items(&Value::Obj(ns)) {
-                for (n, v) in items {
-                    if let Ok(setname) = self.getattr(v, "__set_name__") {
-                        self.call(setname, vec![out.clone(), Value::Str(n.into())], Vec::new(), None)?;
+            let named_items=self.dict_items(Value::Obj(ns))?;
+            let named_roots=named_items.iter().flat_map(|(name,value)|[name.clone(),value.clone()]).collect();
+            self.view_rooted(named_roots,|runtime,_|{
+                for (name,value) in named_items {
+                    // __set_name__ is looked up on the descriptor's type;
+                    // instance __getattr__ and instance attributes are ignored.
+                    if let Some(class)=runtime.object_class(&value) {
+                        if let Some(method)=runtime.class_lookup(&class,"__set_name__",0) {
+                            let setname=runtime.bind_descriptor(method,Some(value),class)?;
+                            runtime.call(setname,vec![out.clone(),name],Vec::new(),None)?;
+                        }
                     }
                 }
-            }
+                Ok(())
+            })?;
             let mro=self.class_mro(&out,0).ok_or_else(||pyerr("TypeError","invalid class MRO"))?;
             let mut hook=None;
             for base in mro.into_iter().skip(1){
@@ -6051,17 +5959,11 @@ impl Runtime {
             Ok(Value::Obj(owner))
         })
     }
-    fn make_class(
-        &mut self,
-        f: &Frame,
-        name: String,
-        code: usize,
-        bases: Vec<Value>,
-        mut kw: KeywordArgs,
-        builtins: Value,
-        body_module: Value,
-    ) -> PyResult<Value> {
-        let root=self.roots.len();let mut roots=bases.clone();roots.extend([builtins.clone(),body_module]);roots.extend(kw.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));Self::frame_roots(f,&mut roots);self.roots.push(roots);
+    fn make_class(&mut self,owner:Value,name:Value,bases:Vec<Value>,mut kw:KeywordArgs,caller:Option<&Frame>)->PyResult<Value> {
+        let root=self.roots.len();let mut roots=bases.clone();roots.extend([owner.clone(),name.clone()]);
+        roots.extend(kw.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
+        if let Some(frame)=caller {Self::frame_roots(frame,&mut roots);}
+        self.roots.push(roots);
         let result=(||{
         let original_bases=self.obj_value(Object::Tuple(bases.clone()));
         self.roots[root].push(original_bases.clone());
@@ -6074,7 +5976,7 @@ impl Runtime {
                 Err(error) if self.exception_has_native_class(&error,"AttributeError")=>{resolved_bases.push(base);continue;},
                 Err(error)=>return Err(error),
             };
-            let entries=self.call(entries,vec![original_bases.clone()],Vec::new(),Some(f))?;
+            let entries=self.call(entries,vec![original_bases.clone()],Vec::new(),caller)?;
             let payload=self.native_payload(&entries).unwrap_or(entries);
             if let Value::Obj(index)=payload {if let Object::Tuple(values)=self.object(index)? {self.roots[root].extend(values.iter().cloned());resolved_bases.extend(values);bases_changed=true;continue;}}
             return Err(pyerr("TypeError","__mro_entries__ must return a tuple"));
@@ -6107,9 +6009,9 @@ impl Runtime {
         let namespace = if let Some(prepare) = prepare {
             let v = self.call(
                 prepare,
-                vec![Value::Str(name.clone().into()), basesvalue.clone()],
+                vec![name.clone(), basesvalue.clone()],
                 keywords.clone(),
-                Some(f),
+                caller,
             )?;
             match v {
                 Value::Obj(i) => i,
@@ -6119,28 +6021,28 @@ impl Runtime {
             self.alloc(Object::Dict(Vec::new()))
         };
         self.roots[root].push(Value::Obj(namespace));
-        let module=if let Some(value)=self.mapping_get(namespace,"__name__")? {value}
-        else if let Some(value)=self.global_name_get(f.globals,"__name__")? {value}
-        else {self.builtin_lookup(builtins.clone(),"__name__")?.ok_or_else(||pyerr("NameError","name '__name__' is not defined"))?};
-        self.mapping_set(namespace,"__module__".into(),module)?;
-        self.mapping_set(namespace, "__qualname__".into(), Value::Str(name.clone().into()))?;
-        let parent = if self.codes[f.code].kind == ScopeKind::Class {
-            f.closure
-        } else {
-            Some(f.locals)
-        };
+        // __mro_entries__ and __prepare__ can replace the body function's code
+        // or defaults. Read its current state immediately before execution.
+        let function=match owner {Value::Obj(index)=>match self.object(index)? {Object::Function(function)=>function,_=>unreachable!()},_=>unreachable!()};
+        let code=function.code;
+        let parent=function.closure;
         let env = self.alloc(Object::Namespace(OrderedNamespace::new(), parent));
         self.scope_parents.insert(namespace, env);
         self.scope_bindings
             .insert(namespace, self.codes[code].locals.clone());
+        if self.codes[code].kind!=ScopeKind::Class {
+            // Public __build_class__ accepts any function. Ordinary calls retain
+            // binding, defaults, and unstarted-generator semantics.
+            self.call(owner,Vec::new(),Vec::new(),caller)?;
+        }else{
         let frame = Frame {
-            function: None,
+            function: Some(owner),
             code,
             pc: 0,
             locals: namespace,
             temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
-            globals: f.globals,
-            builtins,
+            globals: function.globals,
+            builtins: function.builtins.clone(),
             closure: Some(env),
             stack: Vec::new(),
             handlers: Vec::new(),
@@ -6157,6 +6059,7 @@ impl Runtime {
             finally_regions: Vec::new(),
         };
         self.execute(frame)?;
+        }
         let methods = self.codes[code]
             .ops
             .iter()
@@ -6171,11 +6074,11 @@ impl Runtime {
         let has_method = methods.iter().any(|i| {
             self.codes[*i].kind == ScopeKind::Function && !self.codes[*i].name.starts_with('<')
         });
-        if self.code_needs_class_dict(code,0) || (has_method && self.codes[code].future_flags & 0x1000000 == 0) {
+        if self.codes[code].kind==ScopeKind::Class && (self.code_needs_class_dict(code,0) || (has_method && self.codes[code].future_flags & 0x1000000 == 0)) {
             let cell = self.obj_value(Object::Cell(Some(Value::Obj(namespace))));
             self.mapping_set(namespace, "__classdictcell__".into(), cell)?;
         }
-        let needs_cell = methods.iter().any(|i| self.code_needs_class_cell(*i, 0));
+        let needs_cell = self.codes[code].kind==ScopeKind::Class && methods.iter().any(|i| self.code_needs_class_cell(*i, 0));
         let classcell = if needs_cell {
             let cell = self.alloc(Object::Cell(None));
             self.mapping_set(namespace, "__classcell__".into(), Value::Obj(cell))?;
@@ -6186,9 +6089,9 @@ impl Runtime {
         if bases_changed {self.mapping_set(namespace,"__orig_bases__".into(),original_bases)?;}
         let cls = self.call(
             metaclass,
-            vec![Value::Str(name.into()), basesvalue, Value::Obj(namespace)],
+            vec![name, basesvalue, Value::Obj(namespace)],
             keywords,
-            Some(f),
+            caller,
         )?;
         if let Some(cell) = classcell.filter(|_|matches!(&cls,Value::Type(_))||matches!(&cls,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))||matches!(&cls,Value::Builtin(name)if ["type","object","int","bool","float","str","bytes","list","tuple","dict","set","frozenset","complex","typing.Generic","string.templatelib.Template","string.templatelib.Interpolation"].contains(&name.as_str()))) {
             match self.object(cell)?{
@@ -8369,6 +8272,10 @@ impl Runtime {
         instance: Option<Value>,
         class: Value,
     ) -> PyResult<Value> {
+        if let Some(result)=self.bind_native_attribute(v.clone(),instance.clone(),class.clone()){return result;}
+        if matches!(&v,Value::Builtin(name)if name.starts_with("exception_type:")&&!name.ends_with(":__new__")) {
+            return Ok(if let Some(instance)=instance{self.obj_value(Object::Bound(v,instance))}else{v});
+        }
         if matches!(&v,Value::Builtin(name)if name.starts_with("unbound:str:")){
             if let Some(instance)=instance{return Ok(self.obj_value(Object::Bound(v,instance)));}
             return Ok(v);
@@ -8409,6 +8316,11 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if let Some(result)=self.native_attribute_meta(v.clone(),name){return result;}
+        if matches!(&v,Value::Builtin(owner)if ["dict","list","tuple","set","frozenset","str","int","complex","object","type"].contains(&owner.as_str())) && !["__class__","__dict__","__name__","__qualname__","__mro__","__bases__","__module__","__annotations__","__annotate__","__type_params__"].contains(&name) {
+            if let Some(value)=self.class_attribute_lookup(&v,name){return self.bind_descriptor(value,None,v);}
+            return Err(pyerr("AttributeError",format!("type has no attribute '{name}'")));
+        }
         if matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::FrozenSet{..}))) || matches!(&v,Value::Builtin(class)if class=="frozenset"){if let Some(result)=self.frozen_attr(v.clone(),name){return result;}}
         if name=="from_number" || matches!(&v,Value::Complex(_)) || matches!(&v,Value::Builtin(class)if class=="complex"){if let Some(result)=self.complex_attr(v.clone(),name){return result;}}
         if self.is_exception_value(&v) || matches!(&v,Value::Type(_)){if let Some(result)=self.exception_group_attr(v.clone(),name){return result;}}
@@ -8601,6 +8513,16 @@ impl Runtime {
                     }
                 }
                 Object::Bound(function, receiver) => {
+                    if let Some((kind,owner,method))=native_attribute_parts(&function) {
+                        let (kind,owner,method)=(kind.to_owned(),owner.to_owned(),method.to_owned());
+                        if name=="__func__" {return Err(pyerr("AttributeError","built-in method has no __func__"));}
+                        if name=="__objclass__"&&kind=="wrapper" {return Ok(Value::Builtin(owner));}
+                        if name=="__qualname__"&&["method","class"].contains(&kind.as_str()) {
+                            let class=if kind=="class"{receiver.clone()}else{self.native_receiver_class(&receiver)};
+                            let qualname=self.getattr_default(class,"__qualname__")?;
+                            return Ok(Value::Str(format!("{}.{}",self.str_value(&qualname)?,method).into()));
+                        }
+                    }
                     if name == "__self__" {
                         return Ok(receiver);
                     }
@@ -8695,7 +8617,7 @@ impl Runtime {
                                 Object::Instance { class, .. }
                                 | Object::BuiltinInstance { class, .. } => class,
                                 Object::Exception(error) => error.class.clone().unwrap_or_else(||Value::Type(error.kind.clone())),
-                                Object::Class(_) => recv.clone(),
+                                Object::Class(_) => if self.is_subclass(&recv,&c)?{recv.clone()}else{self.native_receiver_class(&recv)},
                                 _ => recv.clone(),
                             },
                             _ => recv.clone(),
@@ -8705,23 +8627,8 @@ impl Runtime {
                             .ok_or_else(|| pyerr("TypeError", "invalid super object"))?;
                         if let Some(pos) = mro.iter().position(|v| Self::same_type(v, &c)) {
                             for base in mro.into_iter().skip(pos + 1) {
-                                if matches!(&base, Value::Builtin(_) | Value::Type(_)) {
-                                    if let Ok(value) = self.getattr_default(base, name) {
-                                        return Ok(if name == "__new__" {
-                                            value
-                                        } else {
-                                            let function=if let Value::Obj(index)=&value{if let Object::Bound(function,_)=self.object(*index)?{function}else{value}}else{value};
-                                            self.obj_value(Object::Bound(function, recv))
-                                        });
-                                    }
-                                    continue;
-                                }
-                                if let Value::Obj(bi) = base {
-                                    if let Object::Class(bc) = self.object(bi)? {
-                                        if let Some(value) = self.ns_get(bc.attrs, name) {
-                                            return self.bind_descriptor(value, Some(recv), actual);
-                                        }
-                                    }
+                                if let Some(value)=self.class_own_attribute(&base,name) {
+                                    return self.bind_descriptor(value,Some(recv),actual);
                                 }
                             }
                         }
@@ -8733,27 +8640,12 @@ impl Runtime {
                         }
                         return Ok(Value::Obj(attrs));
                     }
-                    if let Some(d) = self.class_lookup(&class, name, 0) {
-                        if let Value::Obj(di) = &d {
-                            if matches!(
-                                self.object(*di)?,
-                                Object::Property { .. } | Object::Slot { .. }
-                            ) {
-                                return self.bind_descriptor(d, Some(v), class);
-                            }
-                            if let Object::Instance { class: dc, .. } = self.object(*di)? {
-                                if self.class_lookup(&dc, "__set__", 0).is_some() {
-                                    return self.bind_descriptor(d, Some(v), class);
-                                }
-                            }
-                        }
+                    let descriptor=self.class_attribute_lookup(&class,name);
+                    if let Some(value)=descriptor.as_ref().filter(|value|self.attribute_is_data(value)) {
+                        return self.bind_descriptor(value.clone(),Some(v),class);
                     }
-                    if let Some(x) = self.ns_get(attrs, name) {
-                        return Ok(x);
-                    }
-                    if let Some(x) = self.class_lookup(&class, name, 0) {
-                        return self.bind_descriptor(x, Some(v), class);
-                    }
+                    if let Some(value)=self.ns_get(attrs,name){return Ok(value);}
+                    if let Some(value)=descriptor{return self.bind_descriptor(value,Some(v),class);}
                     if name == "__init__" {
                         if let Some(payload) = self.native_payload(&v) {
                             let owner = self.typename(&payload);
@@ -8782,6 +8674,10 @@ impl Runtime {
                     }
                 }
                 Object::Class(c) => {
+                    let meta_attribute=self.class_attribute_lookup(&c.metaclass,name);
+                    if let Some(value)=meta_attribute.as_ref().filter(|value|self.attribute_is_data(value)&&!matches!(native_attribute_parts(value),Some((_,"type",_)))) {
+                        return self.bind_descriptor(value.clone(),Some(v),c.metaclass);
+                    }
                     if name=="__annotate__" {
                         return Ok(self.ns_get(c.attrs,"__annotate_func__").or_else(||self.ns_get(c.attrs,name)).unwrap_or(Value::None));
                     }
@@ -8812,12 +8708,8 @@ impl Runtime {
                     if name == "__bases__" {
                         return Ok(self.obj_value(Object::Tuple(c.bases)));
                     }
-                    if let Some(x) = self.class_lookup(&v, name, 0) {
-                        return self.bind_descriptor(x, None, v);
-                    }
-                    if let Some(x) = self.class_lookup(&c.metaclass, name, 0) {
-                        return self.bind_descriptor(x, Some(v.clone()), c.metaclass);
-                    }
+                    if let Some(value)=self.class_attribute_lookup(&v,name){return self.bind_descriptor(value,None,v);}
+                    if let Some(value)=meta_attribute{return self.bind_descriptor(value,Some(v.clone()),c.metaclass);}
                     if name=="__annotate__" {return Ok(Value::None);}
                 }
                 Object::Function(fun) => match name {
@@ -9179,6 +9071,14 @@ impl Runtime {
         ))
     }
     fn setattr_default(&mut self, obj: Value, name: &str, value: Value) -> PyResult<()> {
+        if matches!(&obj,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) {
+            if let Some(meta)=self.object_class(&obj) {if let Some(descriptor)=self.class_attribute_lookup(&meta,name) {
+                if self.attribute_is_data(&descriptor)&&!matches!(native_attribute_parts(&descriptor),Some((_,"type",_))) {
+                    let setter=self.getattr(descriptor,"__set__")?;
+                    self.call(setter,vec![obj,value],Vec::new(),None)?;return Ok(());
+                }
+            }}
+        }
         if self.is_exception_value(&obj) {
             if let Some(class)=self.object_class(&obj) {
                 if let Some(descriptor)=self.class_lookup(&class,name,0) {
@@ -9415,7 +9315,7 @@ impl Runtime {
                 }
                 Object::Instance { class, attrs }
                 | Object::BuiltinInstance { class, attrs, .. } => {
-                    if let Some(d) = self.class_lookup(&class, name, 0) {
+                    if let Some(d) = self.class_attribute_lookup(&class,name) {
                         if let Value::Obj(di) = d.clone() {
                             if let Object::Property { set, .. } = self.object(di)? {
                                 let setter = set.ok_or_else(|| {
@@ -9503,7 +9403,8 @@ impl Runtime {
     }
     fn delattr_default(&mut self, obj: Value, name: &str) -> PyResult<()> {
         if let Some(class) = self.object_class(&obj) {
-            if let Some(descriptor) = self.class_lookup(&class, name, 0) {
+            let descriptor=if matches!(&obj,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Instance{..}|Object::BuiltinInstance{..}))){self.class_attribute_lookup(&class,name)}else{self.class_lookup(&class,name,0)};
+            if let Some(descriptor) = descriptor {
                 if let Value::Obj(index) = &descriptor {
                     if let Object::Property { del, .. } = self.object(*index)? {
                         let delete =
@@ -9583,10 +9484,13 @@ impl Runtime {
         self.view_rooted(roots,|runtime,root|{
             let code=&runtime.codes[function.code];
             let comp_locals=code.comp_locals.clone();let code_name=code.name.clone();let code_locals=code.locals.iter().filter(|name|!code.globals.contains(name) && !code.frees.contains(name) && !code.nonlocals.contains(name)).cloned().collect();let params=code.params.clone();
-            let ns=runtime.alloc(Object::Namespace(OrderedNamespace::new(),function.closure));
+            let class_body=code.kind==ScopeKind::Class;
+            let ns=if class_body {function.globals}else{runtime.alloc(Object::Namespace(OrderedNamespace::new(),function.closure))};
             runtime.roots[root].push(Value::Obj(ns));
+            if !class_body {
             runtime.scope_bindings.insert(ns,code_locals);
             runtime.scope_comprehension_bindings.insert(ns,comp_locals);
+            }
             let count=params.positional.len();
             for(name,value)in params.positional.iter().zip(&args){runtime.ns_set(ns,name.clone(),value.clone());}
             if let Some(name)=&params.vararg{

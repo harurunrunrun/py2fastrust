@@ -344,6 +344,7 @@ impl Runtime {
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
         let object = if let Some(new) = self.class_lookup(&class, "__new__", 0) {
+            let new=self.bind_descriptor(new,None,class.clone())?;
             let mut positional = vec![class.clone()];
             positional.extend(args.clone());
             self.call(new, positional, kwargs.clone(), caller)?

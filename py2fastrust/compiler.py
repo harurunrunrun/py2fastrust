@@ -1046,7 +1046,7 @@ class Emitter:
             return
         for decorator in (() if type_scope else node.decorator_list):
             self.visit(decorator)
-        self.emit("CaptureBuiltins", node=node)
+        prepare=self.emit("PrepareClass", 0, node=node)
         expanded = any(isinstance(base, ast.Starred) for base in node.bases) or any(
             keyword.arg is None for keyword in node.keywords
         )
@@ -1066,6 +1066,11 @@ class Emitter:
             for keyword in node.keywords:
                 self.visit(keyword.value)
         emitter = self.child(node, node.name, "Class")
+        self.code.ops[prepare].args=(emitter.code_id,)
+        emitter.emit("Load", "__name__", node=node)
+        emitter.emit("Store", "__module__", node=node)
+        emitter.emit("Const", node.name, node=node)
+        emitter.emit("Store", "__qualname__", node=node)
         first_line = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
         emitter.emit("Const", first_line, node=node)
         emitter.emit("Store", "__firstlineno__", node=node)
@@ -1480,18 +1485,25 @@ class Emitter:
 
     def visit_Import(self, node):
         for alias in node.names:
-            module = self.mangle(alias.name)
+            module = alias.name if "." in alias.name else self.mangle(alias.name)
             self.compiler.load_module(module, node, self.code.filename)
-            self.emit("Import", module, ["*"] if alias.asname else [], 0, node=node)
+            self.emit("Import", module, [], 0, node=node)
+            if alias.asname:
+                for part in alias.name.split(".")[1:]:
+                    self.emit("ImportFrom", part, node=node)
+                    self.emit("Swap", node=node)
+                    self.emit("Pop", node=node)
             self.emit("Store", alias.asname or alias.name.split(".")[0], node=node)
 
     def visit_ImportFrom(self, node):
-        module = self.absolute_import(self.mangle(node.module or ""), node.level)
+        original_module=node.module or ""
+        import_module=original_module if "." in original_module else self.mangle(original_module)
+        module = self.absolute_import(import_module, node.level)
         self.compiler.load_module(module, node, self.code.filename)
         for alias in node.names:
             if self.compiler.find_module(f"{module}.{alias.name}"):
                 self.compiler.load_module(f"{module}.{alias.name}", node, self.code.filename)
-        self.emit("Import", module, [a.name for a in node.names], 0, node=node)
+        self.emit("Import", import_module, [a.name for a in node.names], node.level, node=node)
         for alias in node.names:
             if alias.name == "*":
                 self.emit("ImportFrom", "*", node=node)
