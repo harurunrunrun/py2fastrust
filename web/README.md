@@ -71,6 +71,7 @@ jsDelivr; the converter wheel and bridge come from the site's own directory.
 ```sh
 python -m unittest discover -s tests/web -p 'test_*.py' -v
 node tests/web/ui.test.mjs
+node tests/web/worker.test.mjs
 npm install --no-save --ignore-scripts playwright@1.62.1
 npx playwright install chromium
 node tests/web/browser.mjs --site dist/web --source .
