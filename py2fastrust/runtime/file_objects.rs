@@ -92,6 +92,24 @@ impl Runtime {
     fn file_index(&mut self,value:&Value)->PyResult<i64> {
         self.as_int(value)?.to_i128().and_then(|value|i64::try_from(value).ok()).ok_or_else(||pyerr("OverflowError","Python int too large to convert to C ssize_t"))
     }
+    fn file_cookie_int(&mut self,value:&Value)->PyResult<Int> {
+        match value {
+            Value::Int(number)=>return Ok(number.inner().clone()),
+            Value::Bool(value)=>return Ok(Int::exact_small(if *value{1}else{0})),
+            Value::Float(value)=>return Int::exact_from_f64(**value).map_err(|_|pyerr(if value.is_nan(){"ValueError"}else{"OverflowError"},"cannot convert float to integer")),
+            _=>(),
+        }
+        for method in ["__int__","__index__"] {
+            match self.special_method(value.clone(),method) {
+                Ok(function)=>{
+                    let result=self.call(function,Vec::new(),Vec::new(),None)?;
+                    return match self.native_payload(&result).unwrap_or(result){Value::Int(number)=>Ok(number.into_inner()),Value::Bool(value)=>Ok(Int::exact_small(if value{1}else{0})),_=>Err(pyerr("TypeError",format!("{method} returned non-int")))};
+                },
+                Err(error) if self.missing_special_method(value,method,&error)=>(),Err(error)=>return Err(error),
+            }
+        }
+        Err(pyerr("TypeError","an integer is required"))
+    }
     fn file_path(&mut self,value:Value)->PyResult<(std::path::PathBuf,Value)> {
         let payload=self.native_payload(&value).unwrap_or_else(||value.clone());
         let path=match payload {
@@ -431,18 +449,38 @@ impl Runtime {
                 },
                 "tell"=>{
                     if !args.is_empty(){return Err(pyerr("TypeError","tell() takes no arguments"));}
-                    let position=match &file.payload{FilePayload::Raw(raw)=>raw.borrow_mut().seek(0,1)?,FilePayload::Buffer(buffer)=>buffer.borrow_mut().tell()?,FilePayload::Text(text)=>text.borrow_mut().tell()?};
+                    if let FilePayload::Text(text)=&file.payload{return Ok(Value::Int(text.borrow_mut().tell()?.into()));}
+                    let position=match &file.payload{FilePayload::Raw(raw)=>raw.borrow_mut().seek(0,1)?,FilePayload::Buffer(buffer)=>buffer.borrow_mut().tell()?,FilePayload::Text(_)=>unreachable!()};
                     return Ok(file_position(position));
                 },
                 "seek"=>{
                     if args.is_empty()||args.len()>2{return Err(pyerr("TypeError","seek() takes one or two arguments"));}
-                    let offset=self.file_index(&args[0])?;let whence=if args.len()==2{self.file_index(&args[1])?}else{0};
+                    let whence=if args.len()==2{self.file_index(&args[1])?}else{0};
                     let whence=i32::try_from(whence).map_err(|_|pyerr("OverflowError","whence is too large"))?;
-                    let position=match &file.payload{FilePayload::Raw(raw)=>raw.borrow_mut().seek(offset,whence)?,FilePayload::Buffer(buffer)=>buffer.borrow_mut().seek(offset,whence)?,FilePayload::Text(text)=>text.borrow_mut().seek(offset,whence)?};
+                    if let FilePayload::Text(text)=&file.payload{
+                        file.check()?;
+                        let zero=Value::Int(Int::exact_small(0).into());
+                        match whence {
+                            0=>{
+                                if self.compare("<",&args[0],&zero)?{return Err(pyerr("ValueError","negative seek position"));}
+                                let offset=self.file_cookie_int(&args[0])?;
+                                if offset.is_negative(){return Err(pyerr("OverflowError","can't convert negative int to unsigned"));}
+                                text.borrow_mut().seek(offset,0)?;return Ok(args[0].clone());
+                            },
+                            1|2=>{
+                                if !self.compare("==",&args[0],&zero)?{return Err(file_unsupported(if whence==1{"can't do nonzero cur-relative seeks"}else{"can't do nonzero end-relative seeks"}));}
+                                return Ok(Value::Int(text.borrow_mut().seek(Int::exact_small(0),whence)?.into()));
+                            },
+                            _=>return Err(pyerr("ValueError","invalid whence")),
+                        }
+                    }
+                    let offset=self.file_index(&args[0])?;
+                    let position=match &file.payload{FilePayload::Raw(raw)=>raw.borrow_mut().seek(offset,whence)?,FilePayload::Buffer(buffer)=>buffer.borrow_mut().seek(offset,whence)?,FilePayload::Text(_)=>unreachable!()};
                     return Ok(file_position(position));
                 },
                 "truncate"=>{
                     if args.len()>1{return Err(pyerr("TypeError","truncate() takes at most one argument"));}
+                    file.flush()?;
                     let raw=file.raw()?;
                     let size=match args.first().filter(|value|!matches!(value,Value::None)){
                         Some(value)=>{let size=self.file_index(value)?;if size<0{return Err(file_os_error(std::io::Error::from_raw_os_error(22)));}size as u64},

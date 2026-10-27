@@ -69,7 +69,8 @@ seek/truncate, and directional buffering. Files accept path-like objects;
 `write`, `readinto`, and `readinto1` use contiguous buffer exports, including
 Python exporters, typed views, and writable multidimensional views. Export
 leases remain live through the I/O operation and release callbacks. Text
-files support UTF-8, ASCII, Latin-1, newline translation, and `reconfigure`.
+files support UTF-8, ASCII, Latin-1, newline translation, `reconfigure`, and
+opaque seek cookies that restore pending decoder and newline state.
 Descriptor/opener behavior is currently verified on 64-bit Linux.
 
 Binary `%` formatting supports bytes, bytearray, mapping keys, flags, dynamic
@@ -113,7 +114,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 
 - `async`/`await` are unsupported.
 - Some basic-value behavior, including unpaired Unicode surrogates, remains unsupported.
-- File I/O still lacks Python-defined raw/buffer adapters, in-memory `io` streams, nonblocking descriptor semantics, and complete native I/O subclass/descriptor APIs. Text cookies currently use physical byte positions; expanded error-handler output and pending decoder state require the separate cookie implementation.
+- File I/O still lacks Python-defined raw/buffer adapters, in-memory `io` streams, nonblocking descriptor semantics, and complete native I/O subclass/descriptor APIs.
 - Encoding conversion covers UTF-8, ASCII, and Latin-1, with limitations on supported `errors` modes. String subclasses use the same decoding and buffer rules as `str`, including explicit `str.__new__` calls.
 - Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, remains unsupported.
 - Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.
@@ -121,6 +122,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - Imports whose names are determined at runtime, external C extensions, networking, threads, `asyncio`, and CPython-specific internal APIs are out of scope.
 - Unlisted standard-module APIs, including `inspect`, `pickle`, and `weakref`, are not provided.
 - In one CPython 3.14.4 bug case, a captured comprehension iteration variable shadows a free variable of the enclosing function and the interpreter retains the new cell. Generated code instead restores the original enclosing cell as [PEP 709](https://peps.python.org/pep-0709/) specifies. AST and dynamic compilation agree on that restoration.
+- Invalid stale text-decoder snapshots raise `OSError` before changing the stream. CPython 3.14.4 can access beyond an empty snapshot after a seek/iteration/flush sequence; its unstable release-build results are not reproduced.
 - A traceback's `tb_frame` is a snapshot containing source information. It does not expose live-frame manipulation or CPython bytecode offsets.
 - Native specialization of code containing dynamic functions and classes is limited; such code may use the general runtime.
 - Superseded container storage in native code can remain until the enclosing Rust scope ends. Peak memory may exceed that of the equivalent Python program.
@@ -138,6 +140,8 @@ BigInt mode uses arbitrary-precision integers.
 Negative `//` and `%`, modular powers with negative exponents, negative bitwise operations,
 large shifts, and comparisons between integers and floats have dedicated handling.
 Lengths, indices, allocation sizes, and range progression are checked separately from user integer arithmetic.
+Opaque text seek cookies preserve their complete structural decoder state in every integer mode.
+Arithmetic or explicit integer conversion applied to a cookie still follows the selected integer normalization policy.
 
 Integers provide `to_bytes`, `from_bytes`, `as_integer_ratio`, and `is_integer`.
 Floating-point values provide `hex`, `fromhex`, `from_number`, `as_integer_ratio`, and `is_integer`.

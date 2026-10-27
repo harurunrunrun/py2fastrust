@@ -1,6 +1,7 @@
 """CPython 3.14 oracle for native file layers, ownership and text decoding."""
 from pathlib import Path
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -377,6 +378,124 @@ class FileObjectTests(unittest.TestCase):
                     except Exception as error:print(type(error).__name__)
                 f.close()
         ''')
+
+    def test_opaque_cookies_restore_expanded_errors_crlf_and_eof_decoder_state(self):
+        self.compare('''
+            for encoding,errors in [('ascii','backslashreplace'),('utf-8','replace'),('utf-8','ignore'),('latin-1','strict')]:
+                for newline in [None,'']:
+                    f=open('cookies','r',encoding=encoding,errors=errors,newline=newline)
+                    print(encoding,errors,repr(newline))
+                    while True:
+                        char=f.read(1)
+                        if not char:break
+                        cookie=f.tell()
+                        print(repr(char),cookie)
+                        rest=f.read()
+                        print(f.seek(cookie)==cookie,f.read()==rest)
+                        f.seek(cookie)
+                    f.close()
+            f=open('cookies','r',encoding='latin-1')
+            print(repr(next(f)));f.flush();print(f.tell());f.close()
+            f=open('truncate','w+',encoding='utf-8')
+            f.write('abc');print(f.truncate());f.seek(0);print(f.read());f.close()
+        ''',{'cookies':b'A\xffB\r\nC\rD\nZ\xc3'})
+
+
+    def test_random_text_reads_and_cookie_restore_traces(self):
+        randomizer=random.Random(314159)
+        cases=[];files={}
+        for case in range(12):
+            data=b''.join(randomizer.choice([b'a',b'\r',b'\n',b'\r\n','é'.encode(),'日'.encode(),b'\xff',b'\xc3'])for _ in range(25))
+            files['trace'+str(case)]=data
+            encoding,errors=randomizer.choice([('ascii','backslashreplace'),('utf-8','replace'),('utf-8','ignore'),('latin-1','strict')])
+            newline=randomizer.choice([None,'','\n','\r','\r\n'])
+            operations=[(randomizer.choice(['read','readline','save','restore','flush','current']),randomizer.choice([0,1,2,5,-1]))for _ in range(35)]
+            cases.append((encoding,errors,newline,operations))
+        source='cases='+repr(cases)+'\n'+textwrap.dedent('''
+            for index,(encoding,errors,newline,operations) in enumerate(cases):
+                f=open('trace'+str(index),encoding=encoding,errors=errors,newline=newline)
+                saved=[0]
+                for operation,size in operations:
+                    try:
+                        if operation=='read':value=f.read(size)
+                        elif operation=='readline':value=f.readline(size)
+                        elif operation=='save':value=f.tell();saved.append(value)
+                        elif operation=='restore':value=f.seek(saved[size%len(saved)])
+                        elif operation=='next':value=next(f)
+                        elif operation=='flush':value=f.flush()
+                        else:value=f.seek(0,1)
+                        print(index,operation,repr(value))
+                    except Exception as error:print(index,operation,type(error).__name__)
+                f.close()
+        ''')
+        self.compare(source,files)
+
+    def test_stale_iteration_snapshot_is_validated_before_stream_changes(self):
+        # CPython 3.14.4 release builds can read beyond an empty stale
+        # decoder snapshot after seek/iteration/flush. Validate our structural
+        # snapshot instead; CPython's unstable result is not an oracle here.
+        source='''
+f=open('stale',encoding='utf-8')
+f.seek(0)
+next(f)
+f.flush()
+try:f.tell()
+except OSError:print('safe error')
+print(f.buffer.tell())
+print(repr(f.read()))
+f.close()
+'''
+        for profile,binary in self.binaries:
+            with self.subTest(profile=profile),tempfile.TemporaryDirectory(prefix='pytors-stale-cookie-')as directory:
+                directory=Path(directory);(directory/'stale').write_bytes(b'a\nb\n')
+                result=subprocess.run([str(binary),source],cwd=directory,capture_output=True,env=self.environment,timeout=20)
+                self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+                self.assertEqual(result.stdout,b"safe error\n4\n'b\\n'\n")
+
+    def test_cookie_return_identity_and_structural_conversion_protocols(self):
+        self.compare('''
+            events=[]
+            class I(int):
+                def __int__(self):events.append('int');return 2
+            class Index:
+                def __index__(self):events.append('index');return 1
+            class Number:
+                def __lt__(self,other):events.append('lt');return False
+                def __int__(self):events.append('int');return 1
+            for value in [False,True,I(1),1.5,float('nan'),float('inf'),Index(),Number()]:
+                events.clear();f=open('types')
+                try:
+                    result=f.seek(value);print(type(result).__name__,result is value,repr(f.read()),events)
+                except Exception as error:print(type(error).__name__,events)
+                f.close()
+            f=open('types');cookie=f.tell();print(f.seek(cookie) is cookie);f.close()
+            class Zero:
+                def __eq__(self,other):events.append('eq');return True
+                def __int__(self):raise AssertionError('must not convert')
+            for whence in [1,2]:
+                f=open('types');events.clear();result=f.seek(Zero(),whence)
+                print(type(result).__name__,repr(f.read()),events);f.close()
+            events.clear()
+            try:f.seek(Number())
+            except Exception as error:print(type(error).__name__,events)
+        ''',{'types':b'abc'})
+
+    def test_eof_decoder_state_retries_after_file_growth(self):
+        self.compare('''
+            f=open('grow','r',encoding='utf-8',errors='replace')
+            print(repr(f.read(1)),f.tell())
+            print(repr(f.read(1)),f.tell())
+            print(repr(f.read(1)),f.tell())
+            with open('grow','ab')as writer:writer.write('日\\n'.encode())
+            print(repr(f.read()),f.tell())
+            with open('grow','ab')as writer:writer.write(b'\\xc3')
+            print(repr(f.read(1)),f.tell())
+            print(repr(f.read(1)),f.tell())
+            with open('grow','ab')as writer:writer.write(b'\\xa9')
+            print(repr(f.read()),f.tell())
+            f.close()
+        ''',{'grow':'é\r'.encode()})
+
 
 
 if __name__=='__main__':unittest.main()

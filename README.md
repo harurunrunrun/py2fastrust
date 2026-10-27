@@ -42,6 +42,7 @@ In `i64` and `i128` modes, integer literals, conversions, and arithmetic results
 Use `--int bigint` when you need Python's arbitrary-precision integer behavior.
 The generated file includes the BigInt runtime, so Cargo and additional crates are unnecessary.
 Range termination, indices, and allocation sizes use separate checked calculations.
+Opaque text seek cookies preserve the complete decoder state; arithmetic on their integer representation still follows the selected width.
 
 ## Options in source comments
 

@@ -25,3 +25,9 @@ https://github.com/python/cpython/blob/v3.14.4/Objects/dictobject.c
 These portions retain the Python Software Foundation license in
 py2fastrust/stdlib/PYTHON_LICENSE.txt. Generated general-runtime Rust also
 contains that complete license.
+
+Text stream cookie packing and safe decoder replay in file_text.rs adapt
+CPython 3.14.4, Modules/_io/textio.c:
+https://github.com/python/cpython/blob/v3.14.4/Modules/_io/textio.c
+These portions retain the Python Software Foundation license in
+py2fastrust/stdlib/PYTHON_LICENSE.txt, also included in generated Rust.
