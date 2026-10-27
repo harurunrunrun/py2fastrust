@@ -10,12 +10,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable
 
-from .native import _Binding, _Expression, _Unsupported, _string
+from .native import _Binding, _DequeInfo, _Expression, _MaybeInfo, _Unsupported, _string
 
 
 _REDUCTIONS = {"sum", "any", "all", "min", "max"}
 _TYPES = {"int": "NativeInt", "bool": "bool", "int_bool": "NativeScalar",
-          "float": "f64", "str": "String", "list_int": "Vec<NativeInt>"}
+          "float": "f64", "str": "String", "bytes": "Vec<u8>", "list_int": "Vec<NativeInt>"}
 
 
 @contextmanager
@@ -72,24 +72,29 @@ class Stream:
     begin: str
     values: tuple[_Expression, ...]
     owners: frozenset[str]
-    emit_body: Callable[[str, str, int], str]
+    emit_body: Callable[..., str]
     eager: bool = False
     tupled: bool = False
     iterator: str | None = None
     fields: tuple | None = None
+    length: int | None = None
+    nonempty: bool = False
+    reversible: bool = True
 
     def construct(self):
         return self.setup + "\n" + self.begin
 
-    def emit(self, action, caller_scope, line):
-        return self.emit_body(action, caller_scope, line)
+    def emit(self, action, caller_scope, line, continue_label=None):
+        return self.emit_body(action, caller_scope, line, continue_label)
 
 
 class Planner:
-    def __init__(self, generator):
+    def __init__(self, generator, snapshot_strings=()):
         self.g = generator
+        self.snapshot_strings = frozenset(snapshot_strings)
 
-    def leaf(self, setup, begin, iterator, fields, owners=(), eager=False, tupled=False):
+    def leaf(self, setup, begin, iterator, fields, owners=(), eager=False, tupled=False,
+             length=None, nonempty=False):
         """Build one loop; fields describe borrowed or owning iterator items."""
         g = self.g
         item = g.temporary()
@@ -104,10 +109,12 @@ class Planner:
             assignments.append(f"let {name} = {code};")
         prefix = "\n".join(assignments)
 
-        def emit(action, _scope, _line):
-            return f"for {item} in {iterator} {{\n{prefix}\n{action}\n}}"
+        def emit(action, _scope, _line, continue_label=None):
+            label = f"'{continue_label}: " if continue_label else ""
+            return f"{label}for {item} in {iterator} {{\n{prefix}\n{action}\n}}"
 
-        return Stream(setup, begin, values, frozenset(owners), emit, eager, tupled, iterator, tuple(fields))
+        return Stream(setup, begin, values, frozenset(owners), emit, eager, tupled,
+                      iterator, tuple(fields), length, nonempty or length is not None and length > 0)
 
     def stream(self, node, environment, *, allow_set=False):
         g = self.g
@@ -115,13 +122,22 @@ class Planner:
             return self.generator(node, environment)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id == "range":
-                setup, iterator, _ = g.range_iterator(node, environment)
+                setup, iterator, arguments = g.range_iterator(node, environment)
+                length = None
+                if all(argument.constant is not None for argument in arguments):
+                    start, stop, step = (int(argument.constant) for argument in arguments)
+                    if step > 0:
+                        length = max(0, (stop-start+step-1)//step)
+                    elif step < 0:
+                        length = max(0, (start-stop-step-1)//-step)
                 owner, cursor = g.temporary(), g.temporary()
                 # NativeRange::new validates zero steps here, before later
                 # reduction arguments, just as constructing range() does.
                 setup += f"\nlet {owner} = {iterator};"
-                return self.leaf(setup, f"let {cursor} = {owner};", cursor,
-                                 (("int", "@", True),))
+                result = self.leaf(setup, f"let {cursor} = {owner};", cursor,
+                                   (("int", "@", True),), length=length)
+                result.reversible = g.bits != 0 and arguments[2].constant in {1, -1}
+                return result
             if node.func.id == "map":
                 return self.map_stream(node, environment)
             if node.func.id == "filter":
@@ -130,6 +146,8 @@ class Planner:
                 return self.enumerate_stream(node, environment)
             if node.func.id == "zip":
                 return self.zip_stream(node, environment)
+            if node.func.id == "reversed":
+                return self.reverse_stream(node, environment)
         if g.input_words(node,environment):
             g.has_input = g.needs_integer_runtime = True
             text, cursor = g.temporary(), g.temporary()
@@ -144,9 +162,24 @@ class Planner:
             code = ", ".join(_owned(g, value, kind) for value in values)
             setup = f"let {owner}: [{_TYPES[kind]}; {len(values)}] = [{code}];"
             return self.leaf(setup, f"let {cursor} = {owner}.into_iter();", cursor,
-                             ((kind, "@", True),))
+                             ((kind, "@", True),), length=len(values))
         view = g.dict_view(node, environment)
         value = view[0] if view else g.expression(node, environment)
+        if value.kind == "str":
+            owner, cursor = g.temporary(), g.temporary()
+            named = (isinstance(node, ast.Name) and isinstance(environment.get(node.id), _Binding)
+                     and environment[node.id].kind == "str")
+            if named and node.id not in self.snapshot_strings:
+                owner, setup = environment[node.id].slot, ""
+            elif named:
+                setup = f"let {owner} = {environment[node.id].slot}.clone();"
+            else:
+                value = g.read_expression(node, environment) if hasattr(g, "read_expression") else value
+                setup = f"let {owner} = {value.code};"
+            length = len(node.value) if isinstance(node, ast.Constant) and type(node.value) is str else None
+            begin = f"let {cursor} = {owner}.chars();"
+            return self.leaf(setup, begin, cursor, (("str", "@.to_string()", True),),
+                             {node.id} if named and node.id not in self.snapshot_strings else (), length=length)
         if value.kind not in {"list_int", "matrix_int", "dict_int", "deque_int", "set_int"}:
             raise _Unsupported
         if value.kind == "set_int" and not allow_set:
@@ -175,7 +208,9 @@ class Planner:
         else:
             begin = f"let {cursor} = {owner}.iter();"
             fields = (("list_int", "@", False),) if value.kind == "matrix_int" else (("int", "*@", False),)
-        return self.leaf(setup, begin, cursor, fields, owners, tupled=bool(view and view[1] == "items"))
+        return self.leaf(setup, begin, cursor, fields, owners,
+                         tupled=bool(view and view[1] == "items"), length=value.length,
+                         nonempty=value.nonempty)
 
     def bind_target(self, target, stream, environment):
         values = stream.values
@@ -202,12 +237,12 @@ class Planner:
         if not node.generators or any(clause.is_async for clause in node.generators):
             raise _Unsupported
         clauses = []
-        inside = environment.copy()
         owners = set()
         # Only the first iterable is evaluated in the containing scope.
-        first = self.stream(node.generators[0].iter, inside)
-        inside = self.bind_target(node.generators[0].target, first, inside)
+        first = self.stream(node.generators[0].iter, environment)
+        inside = self.bind_target(node.generators[0].target, first, environment)
         owners.update(first.owners)
+        mutation_start = len(g.expression_mutations)
         with _scope(g, "<genexpr>", trace_id):
             guard_depth = len(g.iterating_lists)
             g.iterating_lists.extend(first.owners)
@@ -226,20 +261,29 @@ class Planner:
             finally:
                 # Preserve guards installed by enclosing iterator plans.
                 del g.iterating_lists[guard_depth:]
+        if first.length != 0:
+            # Deferred expressions may mutate a separately named deque. Their
+            # execution is conditional, so invalidate cardinality instead of
+            # pretending every syntactic pop necessarily executes.
+            changed = {id(binding) for binding in g.expression_mutations[mutation_start:]}
+            for name, binding in list(environment.items()):
+                if id(binding) in changed and isinstance(binding.info, _DequeInfo):
+                    g.update_info(environment, name, _DequeInfo(None))
         names = [g.temporary() for _ in values]
         output = tuple(_Expression(name, value.kind, owned=value.owned,
                                    length=value.length, nonempty=value.nonempty)
                        for name, value in zip(names, values))
         yielded = "\n".join(f"let {name} = {value.code};" for name, value in zip(names, values))
 
-        def emit(action, caller_scope, line):
+        def emit(action, caller_scope, line, continue_label=None):
             caller = _context(caller_scope)
             body = yielded + "\n" + action
             for index in reversed(range(len(clauses))):
                 stream, filters = clauses[index]
                 for test in reversed(filters):
                     body = f"if {g.truth(test)} {{\n{body}\n}}"
-                body = stream.emit(body, TraceContext("<genexpr>", trace_id), node.elt.lineno)
+                body = stream.emit(body, TraceContext("<genexpr>", trace_id), node.elt.lineno,
+                                   continue_label if index == len(clauses)-1 else None)
                 if index:
                     body = stream.construct() + "\n" + body
             # Only producer operations use this context. A consumer callback
@@ -249,7 +293,14 @@ class Planner:
                       f"error.frames.push(({line}, {_scope_code(caller.name)})); {parent} }};\n")
             return prefix + body
 
-        return Stream(first.construct(), "", output, frozenset(owners), emit, True, isinstance(node.elt, ast.Tuple))
+        length = 1
+        for stream, filters in clauses:
+            if filters or stream.length is None:
+                length = None
+                break
+            length *= stream.length
+        return Stream(first.construct(), "", output, frozenset(owners), emit, True,
+                      isinstance(node.elt, ast.Tuple), length=length)
 
     def map_stream(self, node, environment):
         if len(node.args) != 2 or node.keywords or not isinstance(node.args[0], ast.Name):
@@ -274,11 +325,12 @@ class Planner:
                 del g.iterating_lists[-len(source.owners):]
         item = g.temporary()
 
-        def emit(action, caller_scope, line):
+        def emit(action, caller_scope, line, continue_label=None):
             prefix = _deferred_prefix(scope, trace_id, caller_scope, line)
-            return prefix + source.emit(f"let {item} = {value.code};\n{action}", caller_scope, line)
+            return prefix + source.emit(f"let {item} = {value.code};\n{action}", caller_scope, line, continue_label)
 
-        return Stream(source.construct(), "", (_Expression(item, value.kind),), source.owners, emit, True)
+        return Stream(source.construct(), "", (_Expression(item, value.kind),), source.owners, emit,
+                      True, length=source.length, nonempty=source.nonempty)
 
     def filter_stream(self, node, environment):
         if len(node.args) != 2 or node.keywords:
@@ -309,22 +361,28 @@ class Planner:
         else:
             raise _Unsupported
 
-        def emit(action, caller_scope, line):
+        def emit(action, caller_scope, line, continue_label=None):
             prefix = _deferred_prefix(scope, trace_id, caller_scope, line)
-            return prefix + source.emit(f"if {test} {{\n{action}\n}}", caller_scope, line)
+            return prefix + source.emit(f"if {test} {{\n{action}\n}}", caller_scope, line, continue_label)
 
-        return Stream(source.construct(), "", source.values, source.owners, emit, True, source.tupled)
+        return Stream(source.construct(), "", source.values, source.owners, emit,
+                      True, source.tupled, length=0 if source.length == 0 else None)
 
     def enumerate_stream(self, node, environment):
-        if not 1 <= len(node.args) <= 2 or node.keywords:
+        if not 1 <= len(node.args) <= 2:
             raise _Unsupported
+        start_node = node.args[1] if len(node.args) == 2 else None
+        for keyword in node.keywords:
+            if keyword.arg != "start" or start_node is not None:
+                raise _Unsupported
+            start_node = keyword.value
         g = self.g
         source = self.stream(node.args[0], environment)
         if source.tupled or len(source.values) != 1:
             raise _Unsupported
         g.iterating_lists.extend(source.owners)
         try:
-            start = g.expression(node.args[1], environment) if len(node.args) == 2 else _Expression(g.literal(0), "int", 0)
+            start = g.expression(start_node, environment) if start_node is not None else _Expression(g.literal(0), "int", 0)
         finally:
             if source.owners:
                 del g.iterating_lists[-len(source.owners):]
@@ -332,11 +390,24 @@ class Planner:
         setup = source.construct() + f"\nlet mut {counter} = {g.number(start)};"
         increment = g.binary(ast.Add(), _Expression(counter, "int"), _Expression(g.literal(1), "int", 1), node)
 
-        def emit(action, caller_scope, line):
+        def emit(action, caller_scope, line, continue_label=None):
             value = g.coerce(_Expression(counter, "int"), "int")
-            return source.emit(f"let {item} = {value};\n{counter} = {increment.code};\n{action}", caller_scope, line)
+            return source.emit(f"let {item} = {value};\n{counter} = {increment.code};\n{action}", caller_scope, line, continue_label)
 
-        return Stream(setup, "", (_Expression(item, "int"), *source.values), source.owners, emit, True, True)
+        return Stream(setup, "", (_Expression(item, "int"), *source.values), source.owners,
+                      emit, True, True, length=source.length, nonempty=source.nonempty)
+
+    def reverse_stream(self, node, environment):
+        if len(node.args) != 1 or node.keywords:
+            raise _Unsupported
+        source = self.stream(node.args[0], environment)
+        if source.eager or source.iterator is None or not source.reversible:
+            raise _Unsupported
+        cursor = self.g.temporary()
+        setup = source.construct() + f"\nlet {cursor} = ({source.iterator}).rev();"
+        return self.leaf(setup, "", cursor, source.fields, source.owners,
+                         eager=True, tupled=source.tupled,
+                         length=source.length, nonempty=source.nonempty)
 
     def zip_stream(self, node, environment):
         if not node.args or node.keywords:
@@ -365,7 +436,15 @@ class Planner:
             fields.append((kind, raw.replace("@", path), owned))
         setup += f"\nlet {cursor} = {iterator};"
         owners = set().union(*(child.owners for child in children))
-        return self.leaf(setup, "", cursor, fields, owners, eager=True, tupled=True)
+        mutates = any(isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                      and isinstance(child.func.value, ast.Name) and child.func.value.id in owners
+                      and child.func.attr in {"pop", "popleft"}
+                      for argument in node.args for child in ast.walk(argument))
+        length = (min(child.length for child in children) if all(child.length is not None for child in children)
+                  else 0 if any(child.length == 0 for child in children) else None)
+        return self.leaf(setup, "", cursor, fields, owners, eager=True, tupled=True,
+                         length=None if mutates else length,
+                         nonempty=not mutates and all(child.nonempty for child in children))
 
 
 def try_reduction(generator, node, environment):
@@ -453,3 +532,76 @@ def try_reduction(generator, node, environment):
     body = stream.emit(action, TraceContext(g.scope_name(), g.expression_trace_id), g.line_code(node))
     code = f"{{\n{setup}\n(|| -> Result<bool, NativeError> {{\n{body}\nOk(false)\n}})()?;\n{final}\n}}"
     return _Expression(code, kind)
+
+
+def try_for_loop(generator, node, environment):
+    """Lower a typed stream with the common binding and loop-edge proofs."""
+    if not isinstance(node, ast.For):
+        return None
+    g = generator
+    written = {target.id for statement in node.body for target in ast.walk(statement)
+               if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store)}
+    written.update(target.id for target in ast.walk(node.target) if isinstance(target, ast.Name))
+    planner = Planner(g, snapshot_strings=written)
+    stream = planner.stream(node.iter, environment)
+    # Validate tuple shape independently of the function/module bindings.
+    planner.bind_target(node.target, stream, environment)
+    targets = [node.target] if isinstance(node.target, ast.Name) else node.target.elts
+    if any(target.id in g.iterating_lists for target in targets):
+        raise _Unsupported
+    if any(value.kind == "list_int" and not value.owned for value in stream.values):
+        # A Python row binding may survive mutation/replacement of its owner.
+        # Those persistent shared rows need the shared-container backend.
+        raise _Unsupported
+    nonempty = stream.nonempty or stream.length is not None and stream.length > 0
+    zero = stream.length == 0
+    optional_initializers = []
+    if not nonempty:
+        environment = environment.copy()
+        for target, value in zip(targets, stream.values):
+            if target.id not in environment:
+                if value.kind not in {"int", "bool", "int_bool", "str", "float", "bytes"}:
+                    raise _Unsupported
+                slot = g.slot("maybe_" + value.kind)
+                owner = g.function.node.name if g.function else g.entry_scope
+                environment[target.id] = _Binding(slot, _MaybeInfo(value.kind, owner))
+                optional_initializers.append(f"{slot} = None;")
+    header_initializers, widened = g.loop_header(node, environment)
+    inside = widened.copy()
+    target_slots = [g.bind(target.id, value, inside) for target, value in zip(targets, stream.values)]
+    break_label, continue_label = g.temporary(), g.temporary()
+    context = {"label": continue_label, "break_label": break_label,
+               "continue_label": continue_label, "edges": []}
+    broken = g.temporary() if node.orelse else None
+    if broken:
+        context["break_flag"] = broken
+    guard_depth = len(g.iterating_lists)
+    target_names = {target.id for target in targets}
+    g.iterating_lists.extend(stream.owners - target_names)
+    g.loops.append(context)
+    try:
+        body, remaining = g.statements(node.body, inside)
+    finally:
+        g.loops.pop()
+        del g.iterating_lists[guard_depth:]
+    initialization, body, joined = g.finish_loop(
+        node, environment, inside, context, body, remaining,
+        nonempty, stream.length is None or stream.length > 1, zero)
+    assignments = "\n".join(f"{slot} = {_owned(g, value, value.kind)};"
+                             for slot, value in zip(target_slots, stream.values))
+    loop = stream.emit(assignments + "\n" + body,
+                       TraceContext(g.scope_name(), g.expression_trace_id), g.line_code(node),
+                       continue_label)
+    code = (stream.construct() + "\n" + "\n".join(optional_initializers) + "\n" + header_initializers + "\n" + initialization
+            + (f"\nlet mut {broken} = false;" if broken else "")
+            + f"\n'{break_label}: {{\n{loop}\n}}")
+    if not node.orelse:
+        return code, joined
+    otherwise, otherwise_environment = g.statements(node.orelse, joined)
+    can_break = not zero and any(kind == "break" for _, kind, _ in context["edges"])
+    if not can_break:
+        return code + "\n" + otherwise, otherwise_environment
+    final, moves = g.join([otherwise_environment, joined])
+    yes = otherwise + "\n" + "\n".join(moves[0])
+    no = "\n".join(moves[1])
+    return code + f"\nif !{broken} {{\n{yes}\n}} else {{\n{no}\n}}", final

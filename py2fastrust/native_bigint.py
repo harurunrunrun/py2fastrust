@@ -120,7 +120,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             slot = f"native_var_{len(self.bindings)}"
             self.bindings[slot] = kind
             return slot
-        if kind not in {"int", "bool", "int_bool", "list_int", "bytes"}:
+        if kind.removeprefix("maybe_") not in {"int", "bool", "int_bool", "list_int", "str", "bytes"}:
             raise _Unsupported
         return super().slot(kind)
 
@@ -137,7 +137,11 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
     @staticmethod
     def coerce(expression, kind):
         if expression.kind == kind:
-            return f"({expression.code}).clone()" if kind in {"int", "int_bool", "str", "bytes"} else expression.code
+            return f"({expression.code}).clone()" if kind in {"int", "int_bool", "str", "bytes"} or kind.startswith("maybe_") else expression.code
+        if kind.startswith("maybe_"):
+            if expression.kind.startswith("maybe_"):
+                return _Generator.coerce(expression, kind)
+            return f"Some({BigIntGenerator.coerce(expression, kind.removeprefix('maybe_'))})"
         if kind == "int_bool" and expression.kind in {"int", "bool"}:
             variant = "Int" if expression.kind == "int" else "Bool"
             value = f"({expression.code}).clone()" if expression.kind == "int" else expression.code
@@ -199,6 +203,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and isinstance(binding.info, _ListInfo):
                 return _Expression(binding.slot,"list_int",owned=False,length=binding.info.length)
+            if isinstance(binding, _Binding) and binding.kind.startswith("maybe_"):
+                return super().expression(node, environment)
             if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool"}:
                 raise _Unsupported
             return _Expression(self.coerce(_Expression(binding.slot,binding.kind),binding.kind),binding.kind)
@@ -380,9 +386,11 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         entry_slots = {binding.slot for binding in entry.values() if isinstance(binding,_Binding)}
         for name,binding in joined.items():
             if isinstance(binding,_Binding) and binding.slot not in entry_slots:
-                default = {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))","list_int":"Vec::<Int>::new()","str":"String::new()","bytes":"Vec::<u8>::new()"}[binding.kind]
+                default = None if binding.kind.startswith("maybe_") else {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))","list_int":"Vec::<Int>::new()","str":"String::new()","bytes":"Vec::<u8>::new()"}[binding.kind]
                 old = entry.get(name)
-                if isinstance(old,_Binding) and binding.kind == "int_bool":
+                if default is None:
+                    default = self.coerce(_Expression(old.slot,old.kind),binding.kind) if isinstance(old,_Binding) else "None"
+                elif isinstance(old,_Binding) and binding.kind == "int_bool":
                     default = self.coerce(_Expression(old.slot,old.kind),binding.kind)
                 initializers.append(f"{binding.slot}={default};")
         live = self.read_before_write(node.body)
@@ -400,8 +408,13 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                         if name in live and environment.get(name) is not previous:
                             raise _Unsupported
                         continue
+                    if not isinstance(previous,_Binding):
+                        continue
                     current = environment.get(name)
-                    compatible = isinstance(current,_Binding) and (current.kind==previous.kind or previous.kind=="int_bool" and current.kind in {"int","bool"})
+                    previous_inner = previous.kind.removeprefix("maybe_")
+                    current_inner = current.kind.removeprefix("maybe_") if isinstance(current,_Binding) else None
+                    compatible = isinstance(current,_Binding) and (current.kind==previous.kind or previous.kind=="int_bool" and current.kind in {"int","bool"}
+                                 or previous.kind.startswith("maybe_") and (current_inner==previous_inner or previous_inner=="int_bool" and current_inner in {"int","bool"}))
                     if not compatible:
                         if name in live:
                             raise _Unsupported
@@ -421,6 +434,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         alias = self.function_alias_assignment(node,environment)
         if alias is not None:
             return alias
+        if isinstance(node, ast.For):
+            from .native_iterators import try_for_loop
+            return try_for_loop(self, node, environment)
         result = self.list_statement(node,environment)
         if result is not None:
             return result

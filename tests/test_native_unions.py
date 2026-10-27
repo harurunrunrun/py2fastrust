@@ -112,12 +112,10 @@ print(a&b,a|b,a^b,a&1,1|a,a^3)
 print((a&b)^True,not a,a<b,a==b)
 ''', ("0\n", "1\n", "2\n", "3\n", "6\n"))
 
-    def test_unbound_and_unsupported_container_unions_keep_general_backend(self):
+    def test_unsupported_container_unions_keep_general_backend(self):
         for source in (
-            "if int(input()):x=True\nprint(x)",
             "if int(input()):x=[1]\nelse:x=True\nprint(x)",
             "n=int(input())\nx=True if n else 2\na=[x]\nprint(a)",
-            "for x in range(int(input())):pass\nprint(x)",
         ):
             with self.subTest(source=source):
                 result = transpile(source)

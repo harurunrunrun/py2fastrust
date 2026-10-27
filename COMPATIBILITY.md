@@ -22,6 +22,11 @@ typed Rust loops, including proved nested clauses, filters, and
 different evaluation times, and short-circuit consumers stop without evaluating
 later elements. Escaping generators and unproved mutation still need direct
 implementation. Floating-point compensated `sum` is not implemented here.
+Ordinary `for` loops share these typed adapters, including string character
+iteration, `reversed`, destructuring `enumerate`/`zip`, and generator producers.
+They preserve `break`, `continue`, `return`, and loop `else`. A possibly unset
+scalar target uses `Option<T>` with a positioned Python unbound-name error on
+read, including zero-iteration and filtered-generator paths.
 
 All integer modes support uniquely owned flat integer lists, indexed reads and
 updates, copied lists, ordinary list operations, `sorted` without a custom key,

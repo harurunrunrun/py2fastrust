@@ -196,13 +196,13 @@ print(len(s),sum(s),sum(s,a),a in s)
             "set=list; s=set([1]); print(len(s))",
             "if int(input()): s={1}\nprint(len(s))",
             "for i in range(0): s=set()\nprint(len(s))",
-            "s={1}\nfor i in range(1): s.clear()\nfor x in range(len(s)): pass\nprint(x)",
             "class I(int): pass\ns={I(1)}; print(len(s))",
         ]
         for source in programs:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
         self.differential("s={1}; s='changed'; print(s)")
+        self.differential("s={1}\nfor i in range(1): s.clear()\nfor x in range(len(s)): pass\nprint(x)")
         result = transpile("s={1}; t=s; t.add(2); print(len(s))", TranspileOptions())
         self.assertTrue(result.success)
         self.assertEqual(result.backend, "aot")

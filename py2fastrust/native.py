@@ -88,12 +88,21 @@ class _SetInfo:
 
 
 @dataclass(frozen=True)
+class _MaybeInfo:
+    """A scalar that may still be unbound on a control-flow path."""
+    kind: str
+    owner: str | None
+
+
+@dataclass(frozen=True)
 class _Binding:
     slot: str
     info: object
 
     @property
     def kind(self):
+        if isinstance(self.info, _MaybeInfo):
+            return "maybe_" + self.info.kind
         if isinstance(self.info, _ListInfo):
             return "list_int"
         if isinstance(self.info, _MatrixInfo):
@@ -435,7 +444,7 @@ impl std::fmt::Display for NativeScalar {
 
 
 class _Generator:
-    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "any", "all", "min", "max", "list", "map", "filter", "enumerate", "zip", "dict", "set", "sorted"}
+    BUILTINS = {"int", "input", "print", "range", "reversed", "abs", "pow", "len", "sum", "any", "all", "min", "max", "list", "map", "filter", "enumerate", "zip", "dict", "set", "sorted"}
 
     def __init__(self, bits, functions=None, function=None, function_input=False, constructors=None, specializations=None):
         self.bits = bits
@@ -460,6 +469,7 @@ class _Generator:
         self.return_kinds = set()
         self.expression_scopes = []
         self.expression_trace_id = None
+        self.expression_mutations = []
         self.has_iterator_frames = False
         self.has_slices = False
         self.has_text_methods = False
@@ -484,6 +494,16 @@ class _Generator:
         return f"({value}_i128 as NativeInt)"
 
     def slot(self, kind):
+        if kind.startswith("maybe_"):
+            inner = kind.removeprefix("maybe_")
+            if inner not in {"int", "bool", "int_bool", "float", "str", "bytes"}:
+                raise _Unsupported
+            # Register scalar helper requirements through the ordinary slot
+            # factory without retaining an extra user-value binding.
+            probe = self.slot(inner)
+            del self.bindings[probe]
+            self.bindings[probe] = kind
+            return probe
         if kind not in {"int", "bool", "int_bool", "list_int", "dict_int", "set_int", "matrix_int", "deque_int", "bytes"}:
             raise _Unsupported
         if kind == "int_bool":
@@ -538,7 +558,16 @@ class _Generator:
     @staticmethod
     def coerce(expression, kind):
         if expression.kind == kind:
-            return expression.code
+            return f"({expression.code}).clone()" if kind.startswith("maybe_") else expression.code
+        if kind.startswith("maybe_"):
+            inner = kind.removeprefix("maybe_")
+            if expression.kind.startswith("maybe_"):
+                source = expression.kind.removeprefix("maybe_")
+                if inner == "int_bool" and source in {"int", "bool"}:
+                    variant = "Int" if source == "int" else "Bool"
+                    return f"({expression.code}).as_ref().map(|native_optional| NativeScalar::{variant}(native_optional.clone()))"
+                raise _Unsupported
+            return f"Some({_Generator.coerce(expression, inner)})"
         if kind == "int_bool" and expression.kind in {"int", "bool"}:
             variant = "Int" if expression.kind == "int" else "Bool"
             return f"NativeScalar::{variant}({expression.code})"
@@ -901,6 +930,15 @@ class _Generator:
             if not isinstance(information, _Binding):
                 raise _Unsupported
             info = information.info
+            if isinstance(info, _MaybeInfo):
+                if info.owner is None:
+                    message = f"NameError: name '{node.id}' is not defined"
+                elif self.scope_name() != info.owner:
+                    message = f"NameError: cannot access free variable '{node.id}' where it is not associated with a value in enclosing scope"
+                else:
+                    message = f"UnboundLocalError: cannot access local variable '{node.id}' where it is not associated with a value"
+                read = f"{information.slot}.as_ref().cloned().ok_or_else(|| String::from({_string(message)}))"
+                return _Expression(self.at(read, node), info.kind)
             if isinstance(info, _ListInfo):
                 return _Expression(information.slot, "list_int", owned=False, length=info.length)
             if isinstance(info, _MatrixInfo):
@@ -1154,6 +1192,8 @@ class _Generator:
             values = self.expression(target, environment)
             if values.kind != "deque_int" or target.id in self.iterating_lists:
                 raise _Unsupported
+            self.expression_mutations.append(environment[target.id])
+            self.update_info(environment, target.id, _DequeInfo(None))
             function = "native_deque_popleft" if node.func.attr == "popleft" else None
             code = (f"{function}(&mut {values.code})" if function else
                     f'{values.code}.pop_back().ok_or_else(|| "IndexError: pop from an empty deque".to_string())')
@@ -1273,32 +1313,47 @@ class _Generator:
     def join(self, environments, preferred=None):
         """Merge normal paths, emitting moves into a typed phi slot per name.
 
-        An incompatible or possibly unbound name is deliberately absent. A
-        later independent assignment can restore its proof; a read cannot.
+        Scalar names that are absent on a path use Option<T>. Reads retain a
+        source-located unbound-name check; established paths stay native T.
         """
         live = [environment for environment in environments if environment is not None]
         moves = [[] for _ in environments]
         if not live:
             return None, moves
         result = {}
-        for name, first in live[0].items():
+        names = dict.fromkeys(name for environment in live for name in environment)
+        for name in names:
             values = [environment.get(name) for environment in live]
+            first = next(value for value in values if value is not None)
             if _static_reference(first):
                 if all(value is first for value in values):
                     result[name] = first
                 continue
             if not isinstance(first, _Binding):
                 continue
+            optional = any(value is None or isinstance(value, _Binding) and isinstance(value.info, _MaybeInfo)
+                           for value in values)
             types = TypeSet()
             for value in values:
-                types = types.join(TypeSet.from_kind(value.kind) if isinstance(value, _Binding) else TypeSet(maybe_unbound=True))
+                if isinstance(value, _Binding):
+                    current = value.info.kind if isinstance(value.info, _MaybeInfo) else value.kind
+                    types = types.join(TypeSet.from_kind(current))
+                elif value is not None:
+                    types = types.join(TypeSet(unknown=True))
             kind = types.native_kind
             if kind is None:
                 continue
+            if optional and kind not in {"int", "bool", "int_bool", "float", "str", "bytes"}:
+                continue
             if kind == "int_bool":
                 self.has_scalar_union = True
-            infos = [value.info for value in values]
-            info = kind if kind == "int_bool" else infos[0]
+            infos = [value.info for value in values if isinstance(value, _Binding)]
+            if optional:
+                owner = self.function.node.name if self.function else self.entry_scope
+                info = _MaybeInfo(kind, owner)
+                kind = "maybe_" + kind
+            else:
+                info = kind if kind == "int_bool" else infos[0]
             if isinstance(info, _ListInfo) and any(value != info for value in infos):
                 info = _ListInfo(None)
             elif isinstance(info, _MatrixInfo) and any(value != info for value in infos):
@@ -1312,15 +1367,18 @@ class _Generator:
             candidate = (preferred or {}).get(name)
             if isinstance(candidate, _Binding) and candidate.kind == kind:
                 slot = candidate.slot
-            elif all(value.slot == first.slot for value in values):
+            elif all(isinstance(value, _Binding) and value.kind == kind and value.slot == first.slot for value in values):
                 slot = first.slot
             else:
                 slot = self.slot(kind)
             result[name] = _Binding(slot, info)
             for index, environment in enumerate(environments):
-                if environment is not None and environment[name].slot != slot:
-                    source = environment[name]
-                    moves[index].append(f"{slot} = {self.coerce(_Expression(source.slot, source.kind), kind)};")
+                if environment is not None:
+                    source = environment.get(name)
+                    if source is None:
+                        moves[index].append(f"{slot} = None;")
+                    elif source.slot != slot:
+                        moves[index].append(f"{slot} = {self.coerce(_Expression(source.slot, source.kind), kind)};")
         return result, moves
 
     @staticmethod
@@ -1527,11 +1585,13 @@ class _Generator:
         entry_slots = {value.slot for value in entry.values() if isinstance(value, _Binding)}
         for name, binding in joined.items():
             if isinstance(binding, _Binding) and binding.slot not in entry_slots:
-                default = {"int": "0", "bool": "false", "int_bool": "NativeScalar::Int(0)", "list_int": "Vec::new()",
+                default = None if binding.kind.startswith("maybe_") else {"int": "0", "bool": "false", "int_bool": "NativeScalar::Int(0)", "list_int": "Vec::new()",
                            "dict_int": "NativeDict::new()", "set_int": "NativeSet::new()",
                            "matrix_int": "Vec::new()", "deque_int": "std::collections::VecDeque::new()",
                            "float": "0.0_f64", "str": "String::new()", "bytes":"Vec::<u8>::new()"}[binding.kind]
-                if isinstance(entry.get(name), _Binding) and entry[name].kind in {"int", "bool", "int_bool"} and binding.kind == "int_bool":
+                if default is None:
+                    default = self.coerce(_Expression(entry[name].slot, entry[name].kind), binding.kind) if isinstance(entry.get(name), _Binding) else "None"
+                elif isinstance(entry.get(name), _Binding) and entry[name].kind in {"int", "bool", "int_bool"} and binding.kind == "int_bool":
                     default = self.coerce(_Expression(entry[name].slot, entry[name].kind), binding.kind)
                 initializers.append(f"{binding.slot} = {default};")
         live = self.read_before_write(node.body)
@@ -1552,7 +1612,10 @@ class _Generator:
                     if not isinstance(previous, _Binding):
                         continue
                     current = environment.get(name)
-                    compatible = isinstance(current, _Binding) and (current.kind == previous.kind or previous.kind == "int_bool" and current.kind in {"int", "bool"})
+                    previous_inner = previous.kind.removeprefix("maybe_")
+                    current_inner = current.kind.removeprefix("maybe_") if isinstance(current, _Binding) else None
+                    compatible = isinstance(current, _Binding) and (current.kind == previous.kind or previous.kind == "int_bool" and current.kind in {"int", "bool"}
+                                 or previous.kind.startswith("maybe_") and (current_inner == previous_inner or previous_inner == "int_bool" and current_inner in {"int", "bool"}))
                     if not compatible:
                         if name in live:
                             raise _Unsupported
@@ -1576,6 +1639,9 @@ class _Generator:
         alias = self.function_alias_assignment(node, environment)
         if alias is not None:
             return alias
+        if isinstance(node, ast.For):
+            from .native_iterators import try_for_loop
+            return try_for_loop(self, node, environment)
         if isinstance(node, ast.ImportFrom):
             if self.function is not None or node.module != "collections" or node.level:
                 raise _Unsupported
@@ -1838,7 +1904,9 @@ class _Generator:
             kind = "break" if isinstance(node, ast.Break) else "continue"
             marker = "// " + self.temporary() + "_edge"
             context["edges"].append((marker, kind, environment.copy()))
-            return f"{marker}\n{kind} '{context['label']};", None
+            destination = context.get(kind + "_label", context["label"])
+            prefix = f"{context['break_flag']} = true;\n" if kind == "break" and context.get("break_flag") else ""
+            return f"{marker}\n{prefix}{kind} '{destination};", None
         if isinstance(node, ast.Expr):
             call = node.value
             if isinstance(call, ast.Constant) and type(call.value) is str:
@@ -2235,7 +2303,9 @@ class _Specializations:
 def _declarations(generator):
     types = {"int": "NativeInt", "bool": "bool", "int_bool": "NativeScalar", "list_int": "Vec<NativeInt>",
              "dict_int": "NativeDict", "set_int": "NativeSet",
-             "matrix_int": "Vec<Vec<NativeInt>>", "deque_int": "std::collections::VecDeque<NativeInt>","bytes":"Vec<u8>"}
+             "matrix_int": "Vec<Vec<NativeInt>>", "deque_int": "std::collections::VecDeque<NativeInt>",
+             "float": "f64", "str": "String", "bytes":"Vec<u8>"}
+    types.update({"maybe_" + kind: "Option<" + types[kind] + ">" for kind in ("int", "bool", "int_bool", "float", "str", "bytes")})
     return "\n".join(f"let mut {slot};" if kind in {"float", "str"} else f"let mut {slot}: {types[kind]};"
                      for slot, kind in generator.bindings.items())
 

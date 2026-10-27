@@ -34,7 +34,8 @@ class NativeRebindingTests(unittest.TestCase):
         self.assertTrue(declarations)
         # Every generated slot has one type within its Rust function. Names
         # can reuse a slot or move to a different typed slot on assignment.
-        self.assertTrue(all(kind in {"NativeInt", "bool", "NativeScalar", "Vec<NativeInt>", "NativeDict", "NativeSet"}
+        self.assertTrue(all(kind in {"NativeInt", "bool", "NativeScalar", "Vec<NativeInt>", "NativeDict", "NativeSet",
+                                    "Option<NativeInt>", "Option<bool>", "Option<NativeScalar>"}
                             for _, kind in declarations))
         type(self).counter += 1
         path = Path(self.tmp.name) / f"rebindings{self.counter}.rs"
@@ -297,13 +298,13 @@ print(value)
         ]
         for source in scalar_unions:
             self.differential(source, ("0\n", "1\n", "5\n"))
+        self.differential("value=[1,2]\nfor value in value: pass\nprint(value)")
         programs = [
             "value=1\ni=0\nwhile True:\n if i==1: break\n value=[2]\n i+=1\nprint(value)",
             "value=[1]\nold=value\nvalue=3\nold.append(2)\nprint(old,value)",
             "value={1:2}\nold=value\nvalue=True\nold[3]=4\nprint(old,value)",
             "value={1}\nold=value\nvalue=[3]\nold.add(2)\nprint(old,value)",
             "value=[1,2]\nfor x in value:\n value=3\nprint(value)",
-            "value=[1,2]\nfor value in value: pass\nprint(value)",
             "value=1\nif input(): value='text'\nprint(value)",
         ]
         for source in programs:
