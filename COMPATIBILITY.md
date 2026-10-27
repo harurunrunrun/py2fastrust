@@ -60,7 +60,11 @@ and unknown syntax retain those components. `--no-optimize` disables this prunin
 mixed operations with `set`, subclasses, and GenericAlias.
 Member hashes and the final frozenset hash are retained; operations that copy a set's contents reuse stored member hashes.
 
-Standard input is read on demand. `input()` flushes its prompt and pending standard output;
+Standard input is read on demand. `input()` captures the current `sys.stdin`,
+`sys.stdout`, and `sys.stderr` before callbacks; redirected prompt, flush, and
+readline operations run through the caller's heap continuation. It preserves
+nonterminal string/bytes results and strips one trailing LF. Terminal input
+uses the native reader with encoding metadata and trailing CR/LF handling.
 `print(..., flush=True)` and explicit standard-stream flushes are observable before input EOF.
 Text and binary input share a buffered raw reader, with decoded look-ahead retained for text reads.
 Standard input uses the existing strict UTF-8 policy and preserves CR bytes in LF-terminated lines.

@@ -165,7 +165,7 @@ The special functions in `math` do not always match CPython's `libm` results bit
 
 | API | Status |
 |---|---|
-| `stdin`, `stdout`, `stderr` | Text and binary-buffer I/O |
+| `stdin`, `stdout`, `stderr` | Mutable standard streams; text/binary-buffer I/O, `fileno`, `isatty`, text `encoding`/`errors` |
 | `argv` | Arguments passed to the executable |
 | `exit` | Raises `SystemExit` |
 | `setrecursionlimit`, `getrecursionlimit` | Set and retrieve the recursion limit |

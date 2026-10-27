@@ -985,7 +985,11 @@ impl Runtime {
             return Err(pyerr("TypeError",format!("invalid arguments for {method}()")));
         }
         match method {
-            "isatty" => return Ok(Value::Bool(false)),
+            "fileno" => return Ok(Value::Int(Int::from_i128(match target {"stdin"=>0,"stdout"=>1,_=>2}).into())),
+            "isatty" => {
+                use std::io::IsTerminal;
+                return Ok(Value::Bool(match target {"stdin"=>std::io::stdin().is_terminal(),"stdout"=>std::io::stdout().is_terminal(),_=>std::io::stderr().is_terminal()}));
+            },
             "readable" => return Ok(Value::Bool(target == "stdin")),
             "writable" => return Ok(Value::Bool(target != "stdin")),
             "flush" => {
@@ -9268,6 +9272,7 @@ impl Runtime {
                         "write",
                         "flush",
                         "isatty",
+                        "fileno",
                         "readable",
                         "writable",
                     ]
@@ -9284,6 +9289,9 @@ impl Runtime {
                 }
                 if name == "encoding" && n.starts_with("stream:") {
                     return Ok(Value::Str("utf-8".into()));
+                }
+                if name == "errors" && n.starts_with("stream:") {
+                    return Ok(Value::Str("strict".into()));
                 }
                 if name == "__name__" || name=="__qualname__" {
                     return Ok(Value::Str(n.rsplit(':').next().unwrap_or(n).to_owned().into()));

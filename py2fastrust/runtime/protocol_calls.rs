@@ -24,6 +24,7 @@ enum ProtocolAction {
     NeFromEq,
     InvertBoolean,
     Stream(Box<ProtocolStream>),
+    Input(Box<ProtocolInput>),
     Representation(Box<ProtocolRepresentation>),
     Collection(Box<ProtocolCollection>),
     Consumer(Box<ProtocolConsumer>),
@@ -64,6 +65,7 @@ impl ProtocolAction {
             Self::Sequence(_)=>std::mem::size_of::<ProtocolSequence>(),
             Self::Operand(_)=>std::mem::size_of::<ProtocolOperand>(),
             Self::Stream(_)=>std::mem::size_of::<ProtocolStream>(),
+            Self::Input(_)=>std::mem::size_of::<ProtocolInput>(),
             Self::Representation(_)=>std::mem::size_of::<ProtocolRepresentation>(),
             Self::Collection(_)=>std::mem::size_of::<ProtocolCollection>(),
             Self::Consumer(_)=>std::mem::size_of::<ProtocolConsumer>(),
@@ -111,6 +113,7 @@ impl ProtocolState {
             ProtocolAction::Operand(operation)=>operation.roots(out),
             ProtocolAction::Sequence(sequence)=>sequence.roots(out),
             ProtocolAction::Stream(record)=>record.roots(out),
+            ProtocolAction::Input(record)=>record.roots(out),
             ProtocolAction::Representation(record)=>record.roots(out),
             ProtocolAction::Collection(record)=>record.roots(out),
             ProtocolAction::Consumer(record)=>record.roots(out),
@@ -130,7 +133,7 @@ impl Runtime {
     fn protocol_builtin_target(&self,mut value:Value)->bool {
         let mut visited=std::collections::HashSet::new();
         loop {match value {
-            Value::Builtin(name)=>return ["len","bool","int","hash","str","repr","iter","print","next","ascii","format","list","tuple","any","all","sorted","min","max","module:functools:reduce","map","filter","zip","enumerate","reversed","getattr","setattr","delattr"].contains(&name.as_str()) || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"cell",method))if cell_comparison_op(method).is_some()) || Self::protocol_collection_target(&name) || name.starts_with("module:itertools:") || name.starts_with("itertools.") || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"object","__getattribute__"|"__setattr__"|"__delattr__"|"__str__"))|Some((_,"dict","__getitem__"))) || name=="type_method:object:__getattribute__" || name=="unbound:dict:__getitem__",
+            Value::Builtin(name)=>return ["len","bool","int","hash","str","repr","iter","print","input","next","ascii","format","list","tuple","any","all","sorted","min","max","module:functools:reduce","map","filter","zip","enumerate","reversed","getattr","setattr","delattr"].contains(&name.as_str()) || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"cell",method))if cell_comparison_op(method).is_some()) || Self::protocol_collection_target(&name) || name.starts_with("module:itertools:") || name.starts_with("itertools.") || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"object","__getattribute__"|"__setattr__"|"__delattr__"|"__str__"))|Some((_,"dict","__getitem__"))) || name=="type_method:object:__getattribute__" || name=="unbound:dict:__getitem__",
             Value::Obj(index)=>{if !visited.insert(index){return false;}match self.heap.get(index).and_then(Option::as_ref) {
                 Some(Object::Bound(function,_)|Object::Partial{function,..})=>value=function.clone(),
                 Some(Object::Cached(cache))=>value=cache.function.clone(),
@@ -221,6 +224,7 @@ impl Runtime {
                 self.native_validate_receiver(owner,receiver)?;
             }
         }
+        if self.protocol_input_builtin(state,plan)? {return Ok(true);}
         if self.protocol_stream_builtin(state,plan)? {return Ok(true);}
         if self.protocol_set_bulk_builtin(state,plan)? {return Ok(true);}
         if self.protocol_collection_builtin(state,plan)? {return Ok(true);}
@@ -303,6 +307,7 @@ impl Runtime {
             ProtocolAction::Operand(operation)=>self.protocol_operand_result(state,*operation,value)?,
             ProtocolAction::Sequence(sequence)=>self.protocol_sequence_result(state,*sequence,value)?,
             ProtocolAction::Stream(record)=>self.protocol_stream_result(state,*record,value)?,
+            ProtocolAction::Input(record)=>self.protocol_input_result(state,*record,value)?,
             ProtocolAction::Representation(record)=>self.protocol_representation_result(state,*record,value)?,
             ProtocolAction::Collection(record)=>self.protocol_collection_result(state,*record,value)?,
             ProtocolAction::Consumer(record)=>self.protocol_consumer_result(state,*record,value)?,
@@ -346,9 +351,10 @@ impl Runtime {
     fn protocol_binding_failure(&mut self,frame:&mut Frame,error:&PyException)->PyResult<bool> {
         let Some(mut state)=frame.protocol.take() else{return Ok(false)};
         let recovered=(||{
+            if self.protocol_input_recover_before(&mut state,error)? {return Ok(true);}
             if self.protocol_consumer_failure(&mut state,error)?{self.protocol_sync_repr_guards(&mut state);return Ok(true);}
             if self.protocol_stream_failure(&mut state,error)? {self.protocol_sync_repr_guards(&mut state);return Ok(true);}
-            if !self.exception_has_native_class(error,"AttributeError"){return Ok(false);}
+            if !self.exception_has_native_class(error,"AttributeError"){return self.protocol_input_failure(&mut state,error);}
             if let Some(recovery)=state.binding_recovery.take() {
                 state.plan=None;state.value=None;
                 let end=state.actions.iter().position(|action|match (&recovery,action) {
@@ -366,7 +372,8 @@ impl Runtime {
                     recovery=>return self.protocol_recover_builtin_binding(&mut state,recovery),
                 }
             }
-            self.protocol_attribute_failure(&mut state)
+            if self.protocol_attribute_failure(&mut state)? {return Ok(true);}
+            self.protocol_input_failure(&mut state,error)
         })();
         frame.protocol=Some(state);
         recovered

@@ -31,3 +31,9 @@ CPython 3.14.4, Modules/_io/textio.c:
 https://github.com/python/cpython/blob/v3.14.4/Modules/_io/textio.c
 These portions retain the Python Software Foundation license in
 py2fastrust/stdlib/PYTHON_LICENSE.txt, also included in generated Rust.
+
+The input callback coordinator in protocol_input.rs follows the observable
+input() control order in CPython 3.14.4, Python/bltinmodule.c:
+https://github.com/python/cpython/blob/v3.14.4/Python/bltinmodule.c
+This portion retains the Python Software Foundation license in
+py2fastrust/stdlib/PYTHON_LICENSE.txt, also included in generated Rust.

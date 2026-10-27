@@ -46,15 +46,32 @@ impl Runtime {
         Ok(Value::None)
     }
     fn input_value(&mut self,args:Vec<Value>,kwargs:KeywordArgs)->PyResult<Value> {
-        if !kwargs.is_empty(){return Err(pyerr("TypeError","input() takes no keyword arguments"));}
-        if args.len()>1{return Err(pyerr("TypeError",format!("input expected at most 1 argument, got {}",args.len())));}
-        if let Some(prompt)=args.first(){let text=self.str_value(prompt)?;self.output.push_str(&text);}
-        self.flush_stdout()?;
-        let line=self.stream_call("stdin:readline",Vec::new(),Vec::new(),false)?;
-        match line {
-            Value::Str(line) if line.is_empty()=>Err(pyerr("EOFError","EOF when reading a line")),
-            Value::Str(line)=>Ok(Value::Str(line.strip_suffix('\n').unwrap_or(&line).into())),
-            _=>unreachable!(),
+        // Calls from Python bytecode use the initiating frame's coordinator.
+        // Internal native consumers have no such frame: keep the same state
+        // machine and root each suspended operation while execute drives any
+        // callback through its ordinary heap-frame trampoline.
+        let mut state=Self::protocol_empty(ProtocolSink::Stack);
+        self.protocol_input_builtin(&mut state,&ProtocolPlan{function:Value::Builtin("input".into()),args,kwargs})?;
+        loop {
+            state.actions.check_budget()?;
+            let mut roots=Vec::new();state.roots(&mut roots);
+            let turn=self.view_rooted(roots,|runtime,_|runtime.protocol_turn(None,&mut state));
+            let outcome=match turn {
+                Ok(ProtocolTurn::Continue)=>continue,
+                Ok(ProtocolTurn::Done(value))=>{self.protocol_release_repr_guards(&mut state);return Ok(value);},
+                Ok(ProtocolTurn::Schedule(child))=>{
+                    let mut roots=Vec::new();state.roots(&mut roots);
+                    self.view_rooted(roots,|runtime,_|runtime.execute(child)).map(|(value,_)|match value{FrameExit::Return(value)|FrameExit::Yield(value)=>value})
+                },
+                Err(error)=>Err(error),
+            };
+            match outcome {
+                Ok(value)=>state.value=Some(value),
+                Err(error)=>{
+                    if self.exception_has_native_class(&error,"AttributeError") && self.protocol_attribute_failure(&mut state)? {continue;}
+                    if !self.protocol_input_failure(&mut state,&error)? {self.protocol_release_repr_guards(&mut state);return Err(error);}
+                },
+            }
         }
     }
     fn stream_size(&mut self,value:&Value)->PyResult<Option<usize>> {
