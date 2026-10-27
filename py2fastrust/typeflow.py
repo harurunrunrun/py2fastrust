@@ -1,11 +1,12 @@
 """Finite type sets shared by control-flow proofs and native lowering."""
 
 from dataclasses import dataclass
+from .native_types import TupleType,ListType,join_types
 
 
 @dataclass(frozen=True)
 class TypeSet:
-    kinds: frozenset[str] = frozenset()
+    kinds: frozenset[object] = frozenset()
     maybe_unbound: bool = False
     unknown: bool = False
 
@@ -23,4 +24,10 @@ class TypeSet:
             return None
         if self.kinds == {"int", "bool"}:
             return "int_bool"
+        if self.kinds and all(isinstance(kind,(TupleType,ListType)) for kind in self.kinds):
+            result=None
+            for kind in self.kinds:
+                result=kind if result is None else join_types(result,kind)
+                if result is None:return None
+            return result
         return next(iter(self.kinds)) if len(self.kinds) == 1 else None

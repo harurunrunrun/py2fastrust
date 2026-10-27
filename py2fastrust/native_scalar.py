@@ -7,6 +7,8 @@ their Python evaluation order even when Rust needs a temporary or a clone.
 """
 
 import ast
+from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
+                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value)
 import math
 
 from .native import _Binding, _Expression, _Generator, _Unsupported, _string
@@ -330,6 +332,9 @@ class ScalarGenerator(_Generator):
         return f"let {name}{kind} = {value.code};"
 
     def expression(self, node, environment):
+        from .native_tuples import try_expression
+        structural=try_expression(self,node,environment)
+        if structural is not None:return structural
         from .native_stdio import try_expression
         stdio=try_expression(self,node,environment)
         if stdio is not None:
@@ -486,6 +491,9 @@ class ScalarGenerator(_Generator):
         return _Expression(f"{{ {self.read_binding(names[0], values[0])} {tail} }}", "bool")
 
     def statement(self, node, environment):
+        from .native_tuples import try_statement
+        structural=try_statement(self,node,environment)
+        if structural is not None:return structural
         from .native_stdio import try_statement
         stdio=try_statement(self,node,environment)
         if stdio is not None:

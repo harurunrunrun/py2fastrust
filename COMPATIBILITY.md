@@ -44,6 +44,14 @@ BigInt-mode strings are ordinary Rust `String` values, with borrowing for
 immediate reads, value-preserving assignments, comparisons, concatenation,
 repetition, indexing, integer conversion, and typed function specialization.
 
+Structural type descriptors are shared by binding joins, declarations,
+function signatures, and tuple operations. Fixed tuples of immutable scalar
+values use ordinary Rust tuples and support aliases, unpacking, indexing,
+comparisons, Python-style printing, and typed function arguments/results.
+Possibly unbound tuple bindings use `Option<TupleType>` storage. Mutable tuple
+elements, arbitrary shape unions, and general tuple iteration still require
+shared container/iteration lowering.
+
 Trusted `sys.stdin`/`.buffer` imports and their `read`/`readline` aliases generate
 direct reads through the same buffered input object. Ordinary entry functions
 and function-local imports retain scope analysis. Text readers retain newlines

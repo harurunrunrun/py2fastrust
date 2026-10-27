@@ -8,6 +8,8 @@ the public API; it never selects a general execution backend.
 """
 
 import ast
+from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
+                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value)
 from dataclasses import dataclass, field, replace
 from importlib.resources import files
 import symtable
@@ -49,7 +51,7 @@ def _direct_diagnostic(source, filename, error=None, node=None):
 @dataclass(frozen=True)
 class _Expression:
     code: str
-    kind: str
+    kind: object
     constant: int | bool | None = None
     owned: bool = True
     length: int | None = None
@@ -90,7 +92,7 @@ class _SetInfo:
 @dataclass(frozen=True)
 class _MaybeInfo:
     """A scalar that may still be unbound on a control-flow path."""
-    kind: str
+    kind: object
     owner: str | None
 
 
@@ -102,7 +104,9 @@ class _Binding:
     @property
     def kind(self):
         if isinstance(self.info, _MaybeInfo):
-            return "maybe_" + self.info.kind
+            return maybe_type(self.info.kind)
+        if isinstance(self.info,TypedListInfo):
+            return self.info.kind
         if isinstance(self.info, _ListInfo):
             return "list_int"
         if isinstance(self.info, _MatrixInfo):
@@ -125,7 +129,7 @@ class _Function:
     kwonly: list[str]
     defaults: dict[str, _Expression]
     local_names: set[str]
-    return_kind: str
+    return_kind: object
     dependencies: set[ast.FunctionDef]
     required: set[str]
     imports: set[str]
@@ -474,6 +478,8 @@ class _Generator:
         self.has_slices = False
         self.has_text_methods = False
         self.has_big_text = False
+        self.has_tuples = False
+        self.has_typed_lists = False
         self.has_stdio = False
         self.trusted_imports = frozenset()
         self.entry_local_names = set()
@@ -494,8 +500,15 @@ class _Generator:
         return f"({value}_i128 as NativeInt)"
 
     def slot(self, kind):
-        if kind.startswith("maybe_"):
-            inner = kind.removeprefix("maybe_")
+        inner=unmaybe(kind)
+        if isinstance(inner,(TupleType,ListType)):
+            self.register_type(inner)
+            if is_maybe(kind) and not immutable(inner):raise _Unsupported
+            slot=f"native_var_{len(self.bindings)}"
+            self.bindings[slot]=kind
+            return slot
+        if is_maybe(kind):
+            inner = unmaybe(kind)
             if inner not in {"int", "bool", "int_bool", "float", "str", "bytes"}:
                 raise _Unsupported
             # Register scalar helper requirements through the ordinary slot
@@ -511,6 +524,16 @@ class _Generator:
         slot = f"native_var_{len(self.bindings)}"
         self.bindings[slot] = kind
         return slot
+
+    def register_type(self,kind):
+        kind=unmaybe(kind)
+        if kind=="int_bool":self.has_scalar_union=True
+        elif isinstance(kind,TupleType):
+            self.has_tuples=True
+            for field in kind.fields:self.register_type(field)
+        elif isinstance(kind,ListType):
+            self.has_typed_lists=True
+            self.register_type(kind.element)
 
     def bind(self, name, value, environment):
         if name in self.BUILTINS:
@@ -557,23 +580,32 @@ class _Generator:
 
     @staticmethod
     def coerce(expression, kind):
+        from .native_tuples import coerce_structural
+        if is_maybe(kind):
+            if expression.kind==kind:return f"({expression.code}).clone()"
+            if is_maybe(expression.kind):
+                item=_Expression("native_optional.clone()",unmaybe(expression.kind))
+                return f"({expression.code}).as_ref().map(|native_optional|{_Generator.coerce(item,unmaybe(kind))})"
+            return f"Some({_Generator.coerce(expression,unmaybe(kind))})"
+        structural=coerce_structural(expression,kind,_Generator.coerce)
+        if structural is not None:return structural
         if expression.kind == kind:
-            return f"({expression.code}).clone()" if kind.startswith("maybe_") else expression.code
-        if kind.startswith("maybe_"):
-            inner = kind.removeprefix("maybe_")
-            if expression.kind.startswith("maybe_"):
-                source = expression.kind.removeprefix("maybe_")
-                if inner == "int_bool" and source in {"int", "bool"}:
-                    variant = "Int" if source == "int" else "Bool"
-                    return f"({expression.code}).as_ref().map(|native_optional| NativeScalar::{variant}(native_optional.clone()))"
-                raise _Unsupported
-            return f"Some({_Generator.coerce(expression, inner)})"
+            return expression.code
         if kind == "int_bool" and expression.kind in {"int", "bool"}:
             variant = "Int" if expression.kind == "int" else "Bool"
             return f"NativeScalar::{variant}({expression.code})"
         raise _Unsupported
 
     def scalar_kind(self, expressions):
+        if expressions and any(isinstance(value.kind,(TupleType,ListType)) for value in expressions):
+            from .native_types import join_types
+            kind=expressions[0].kind
+            for value in expressions[1:]:
+                kind=join_types(kind,value.kind)
+                if kind is None:raise _Unsupported
+            if not immutable(kind):raise _Unsupported
+            self.register_type(kind)
+            return kind
         types = TypeSet()
         for value in expressions:
             if value.kind not in {"int", "bool", "int_bool"}:
@@ -585,6 +617,9 @@ class _Generator:
 
     @staticmethod
     def truth(expression):
+        if isinstance(expression.kind,TupleType):
+            return f"{{let _=&({expression.code}); {str(bool(expression.kind.fields)).lower()}}}"
+        if isinstance(expression.kind,ListType):return f"!({expression.code}).is_empty()"
         if expression.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int", "bytes"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind == "int_bool":
@@ -595,6 +630,7 @@ class _Generator:
 
     @staticmethod
     def binding(expression):
+        if isinstance(expression.kind,ListType):return TypedListInfo(expression.kind,expression.length)
         if expression.kind == "list_int":
             return _ListInfo(expression.length)
         if expression.kind == "matrix_int":
@@ -779,9 +815,9 @@ class _Generator:
         # into Rust's fixed signature. Defaults are proved pure constants.
         def argument_value(argument):
             value = self.expression(argument, environment)
-            if value.kind not in {"int", "bool", "list_int", "float", "str", "bytes"}:
+            if value.kind not in {"int", "bool", "list_int", "float", "str", "bytes"} and not isinstance(value.kind,(TupleType,ListType)):
                 raise _Unsupported
-            if value.kind == "list_int" and not value.owned:
+            if list_type(value.kind) and not value.owned:
                 # Reading an ordinary binding has no side effect. Delay the
                 # Rust borrow until all later arguments are evaluated, so a
                 # later argument can still mutate this uniquely owned list.
@@ -791,7 +827,8 @@ class _Generator:
                     raise _Unsupported
                 return value
             name = self.temporary()
-            lines.append(f"let {name} = {value.code};")
+            code=self.coerce(value,value.kind) if isinstance(value.kind,TupleType) and not value.owned else value.code
+            lines.append(f"let {name} = {code};")
             return _Expression(name, value.kind, owned=value.owned)
 
         for parameter, argument in zip(function.positional, node.args):
@@ -808,7 +845,7 @@ class _Generator:
             if value is None:
                 raise _Unsupported
             kinds.append(value.kind)
-            arguments.append(f"&({value.code})" if value.kind == "list_int" else value.code)
+            arguments.append(f"&({value.code})" if list_type(value.kind) else value.code)
         globals_at_call = environment if self.function is None else self.global_environment
         variant = self.specializations.get(function, tuple(kinds), globals_at_call)
         if self.function is None:
@@ -897,6 +934,9 @@ class _Generator:
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        from .native_tuples import try_expression
+        structural=try_expression(self,node,environment)
+        if structural is not None:return structural
         from .native_stdio import try_expression
         stdio = try_expression(self,node,environment)
         if stdio is not None:
@@ -930,6 +970,8 @@ class _Generator:
             if not isinstance(information, _Binding):
                 raise _Unsupported
             info = information.info
+            if isinstance(info,TypedListInfo):
+                return _Expression(information.slot,info.kind,owned=False,length=info.length)
             if isinstance(info, _MaybeInfo):
                 if info.owner is None:
                     message = f"NameError: name '{node.id}' is not defined"
@@ -1343,7 +1385,7 @@ class _Generator:
             kind = types.native_kind
             if kind is None:
                 continue
-            if optional and kind not in {"int", "bool", "int_bool", "float", "str", "bytes"}:
+            if optional and not immutable(kind):
                 continue
             if kind == "int_bool":
                 self.has_scalar_union = True
@@ -1351,9 +1393,12 @@ class _Generator:
             if optional:
                 owner = self.function.node.name if self.function else self.entry_scope
                 info = _MaybeInfo(kind, owner)
-                kind = "maybe_" + kind
+                kind = maybe_type(kind)
             else:
-                info = kind if kind == "int_bool" else infos[0]
+                info = kind if kind == "int_bool" or isinstance(kind,TupleType) else infos[0]
+                if isinstance(kind,ListType):
+                    lengths=[info.length for info in infos if isinstance(info,TypedListInfo)]
+                    info=TypedListInfo(kind,lengths[0] if lengths and all(length==lengths[0] for length in lengths) else None)
             if isinstance(info, _ListInfo) and any(value != info for value in infos):
                 info = _ListInfo(None)
             elif isinstance(info, _MatrixInfo) and any(value != info for value in infos):
@@ -1389,7 +1434,7 @@ class _Generator:
         for name, binding in environment.items():
             if isinstance(binding, _Binding):
                 info = binding.info
-                widened = (_ListInfo(None) if isinstance(info, _ListInfo)
+                widened = (TypedListInfo(info.kind,None) if isinstance(info,TypedListInfo) else _ListInfo(None) if isinstance(info, _ListInfo)
                            else _MatrixInfo(None) if isinstance(info, _MatrixInfo)
                            else _DequeInfo(None) if isinstance(info, _DequeInfo)
                            else _DictInfo(None) if isinstance(info, _DictInfo)
@@ -1585,10 +1630,7 @@ class _Generator:
         entry_slots = {value.slot for value in entry.values() if isinstance(value, _Binding)}
         for name, binding in joined.items():
             if isinstance(binding, _Binding) and binding.slot not in entry_slots:
-                default = None if binding.kind.startswith("maybe_") else {"int": "0", "bool": "false", "int_bool": "NativeScalar::Int(0)", "list_int": "Vec::new()",
-                           "dict_int": "NativeDict::new()", "set_int": "NativeSet::new()",
-                           "matrix_int": "Vec::new()", "deque_int": "std::collections::VecDeque::new()",
-                           "float": "0.0_f64", "str": "String::new()", "bytes":"Vec::<u8>::new()"}[binding.kind]
+                default = None if is_maybe(binding.kind) else default_value(binding.kind,self.literal(0))
                 if default is None:
                     default = self.coerce(_Expression(entry[name].slot, entry[name].kind), binding.kind) if isinstance(entry.get(name), _Binding) else "None"
                 elif isinstance(entry.get(name), _Binding) and entry[name].kind in {"int", "bool", "int_bool"} and binding.kind == "int_bool":
@@ -1612,10 +1654,10 @@ class _Generator:
                     if not isinstance(previous, _Binding):
                         continue
                     current = environment.get(name)
-                    previous_inner = previous.kind.removeprefix("maybe_")
-                    current_inner = current.kind.removeprefix("maybe_") if isinstance(current, _Binding) else None
+                    previous_inner = unmaybe(previous.kind)
+                    current_inner = unmaybe(current.kind) if isinstance(current, _Binding) else None
                     compatible = isinstance(current, _Binding) and (current.kind == previous.kind or previous.kind == "int_bool" and current.kind in {"int", "bool"}
-                                 or previous.kind.startswith("maybe_") and (current_inner == previous_inner or previous_inner == "int_bool" and current_inner in {"int", "bool"}))
+                                 or is_maybe(previous.kind) and (current_inner == previous_inner or previous_inner == "int_bool" and current_inner in {"int", "bool"}))
                     if not compatible:
                         if name in live:
                             raise _Unsupported
@@ -1632,6 +1674,9 @@ class _Generator:
         return "\n".join(initializers), body, self.after_loop(joined)
 
     def statement(self, node, environment):
+        from .native_tuples import try_statement
+        structural=try_statement(self,node,environment)
+        if structural is not None:return structural
         from .native_stdio import try_statement
         stdio = try_statement(self,node,environment)
         if stdio is not None:
@@ -1666,7 +1711,7 @@ class _Generator:
             if node.value is None:
                 raise _Unsupported
             value = self.expression(node.value, environment)
-            if value.kind not in {"int", "bool", "float", "str", "bytes"}:
+            if value.kind not in {"int", "bool", "float", "str", "bytes"} and not isinstance(value.kind,TupleType):
                 raise _Unsupported
             self.return_kinds.add(value.kind)
             return f"return Ok({value.code});", None
@@ -1743,7 +1788,7 @@ class _Generator:
                 return f"let {result} = {value.code};\nlet {offset} = {self.number(index)};\n{setter};", environment
             if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
-            if value.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"} and (not value.owned or len(node.targets) != 1):
+            if (value.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"} or isinstance(value.kind,ListType)) and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported
             name = self.temporary()
             lines = [f"let {name} = {value.code};"]
@@ -2075,7 +2120,7 @@ class _Generator:
                 if flush: lines.append(self.at("native_flush_output(&mut native_output)", node) + ";")
                 return "\n".join(lines), environment
             expression = self.expression(call, environment)
-            return f"let _ = {'&(' + expression.code + ')' if expression.kind in {'list_int', 'dict_int', 'set_int', 'matrix_int', 'deque_int'} and not expression.owned else expression.code};", environment
+            return f"let _ = {'&(' + expression.code + ')' if (expression.kind in {'list_int', 'dict_int', 'set_int', 'matrix_int', 'deque_int'} or isinstance(expression.kind,ListType)) and not expression.owned else expression.code};", environment
         raise _Unsupported
 
 
@@ -2163,6 +2208,16 @@ def _function_plans(tree, table, bits, generator_type=_Generator):
         default_nodes += [(argument.arg, value) for argument, value in zip(parameters.kwonlyargs, parameters.kw_defaults)
                           if value is not None]
         for name, value in default_nodes:
+            if isinstance(value,ast.Tuple):
+                if any(not isinstance(item,(ast.Tuple,ast.Load,ast.Constant,ast.BinOp,ast.UnaryOp,ast.operator,ast.unaryop))
+                       or isinstance(item,ast.Constant) and type(item.value) not in {int,bool,str} for item in ast.walk(value)):
+                    raise _Unsupported
+                fields=[default_generator.expression(item,{}) for item in value.elts]
+                if any(field.kind not in {"int","bool","str"} or field.kind!="str" and field.constant is None for field in fields):
+                    raise _Unsupported
+                from .native_types import tuple_code
+                defaults[name]=_Expression(tuple_code(field.code for field in fields),TupleType(tuple(field.kind for field in fields)))
+                continue
             literal = value.operand if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)) else value
             if isinstance(literal, ast.Constant) and type(literal.value) in {str, float}:
                 if literal is not value and type(literal.value) is not float:
@@ -2251,10 +2306,10 @@ class _Specializations:
         # Further specialization growth needs a direct-generation implementation.
         if len(self.variants) + len(self.active) >= 128:
             raise _Unsupported
-        if any(kind not in {"int", "bool", "list_int", "float", "str", "bytes"} for kind in kinds):
+        if any(kind not in {"int", "bool", "list_int", "float", "str", "bytes"} and not isinstance(kind,(TupleType,ListType)) for kind in kinds):
             raise _Unsupported
         self.active.add(id(function.node))
-        rust_name = function.rust_name + "_" + ("_".join(kinds) or "void")
+        rust_name = function.rust_name + "_" + ("_".join(kind_tag(kind) for kind in kinds) or "void")
         if rust_name in self.names:
             rust_name += f"_context_{len(self.names)}"
         self.names.add(rust_name)
@@ -2268,16 +2323,18 @@ class _Specializations:
                        if name not in function.local_names}
         initializers, signature = [], []
         parameters = function.positional + function.kwonly
-        arrays = {name for name, kind in zip(parameters, kinds) if kind == "list_int"}
+        arrays = {name for name, kind in zip(parameters, kinds) if list_type(kind)}
         self.readonly_arrays(function.node, arrays)
         for index, (name, kind) in enumerate(zip(parameters, kinds)):
             argument = f"native_argument_{index}"
-            if kind == "list_int":
-                signature.append(f"{argument}: &[NativeInt]")
-                environment[name] = _Binding(argument, _ListInfo(None))
-                local.has_lists = True
+            if list_type(kind):
+                element="int" if kind=="list_int" else kind.element
+                signature.append(f"{argument}: &[{rust_type(element)}]")
+                environment[name]=_Binding(argument,_ListInfo(None) if kind=="list_int" else TypedListInfo(kind,None))
+                local.has_lists |= kind=="list_int"
+                local.has_typed_lists |= isinstance(kind,ListType)
             else:
-                signature.append(f"{argument}: " + {"bool": "bool", "int": "NativeInt", "float": "f64", "str": "String", "bytes":"Vec<u8>"}[kind])
+                signature.append(f"{argument}: {rust_type(kind)}")
                 initializers.append(f"{local.bind(name, kind, environment)} = {argument};")
         if self.function_input:
             signature.append("mut native_input: &mut NativeInput")
@@ -2289,7 +2346,7 @@ class _Specializations:
             variant.return_kind = next(iter(local.return_kinds))
         tail = "\nOk(())" if variant.return_kind == "none" and remaining is not None else ""
         variant.required.update(variant.imports)
-        return_type = {"int": "NativeInt", "bool": "bool", "float": "f64", "str": "String", "bytes":"Vec<u8>", "none": "()"}[variant.return_kind]
+        return_type = rust_type(variant.return_kind)
         source = (f"#[inline]\nfn {variant.rust_name}({', '.join(signature)}) -> Result<{return_type}, NativeError> {{\n"
                   "use std::fmt::Write as _;\n" + _declarations(local) + "\n"
                   + "\n".join(initializers) + "\n" + body + tail + "\n}")
@@ -2301,13 +2358,7 @@ class _Specializations:
 
 
 def _declarations(generator):
-    types = {"int": "NativeInt", "bool": "bool", "int_bool": "NativeScalar", "list_int": "Vec<NativeInt>",
-             "dict_int": "NativeDict", "set_int": "NativeSet",
-             "matrix_int": "Vec<Vec<NativeInt>>", "deque_int": "std::collections::VecDeque<NativeInt>",
-             "float": "f64", "str": "String", "bytes":"Vec<u8>"}
-    types.update({"maybe_" + kind: "Option<" + types[kind] + ">" for kind in ("int", "bool", "int_bool", "float", "str", "bytes")})
-    return "\n".join(f"let mut {slot};" if kind in {"float", "str"} else f"let mut {slot}: {types[kind]};"
-                     for slot, kind in generator.bindings.items())
+    return "\n".join(f"let mut {slot}: {rust_type(kind)};" for slot,kind in generator.bindings.items())
 
 
 def try_generate_native(source: str, filename: str, integer: str, *, trusted_imports=frozenset(),
@@ -2373,7 +2424,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2398,6 +2449,12 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_input:
         result.append(runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"))
         result.append(_INPUT_HELPERS if generator.needs_integer_runtime else TEXT_INPUT_HELPERS)
+    if generator.has_tuples:
+        from .native_tuples import render_helpers
+        result.append(render_helpers())
+    if generator.has_typed_lists:
+        from .native_typed_lists import HELPERS as TYPED_LIST_HELPERS
+        result.append(TYPED_LIST_HELPERS)
     if generator.has_stdio:
         from .native_stdio import render_helpers
         result.append(render_helpers(generator.bits))

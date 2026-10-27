@@ -177,7 +177,7 @@ print(pow(a,b,c))
             self.differential(f"print(9)\nprint({expression})\n",data)
 
     def test_unproved_types_effects_and_rebinding_use_general_aot(self):
-        sources=["print(2**-1)\n","print(2**int(input()))\n","print(1/2)\n","x=[]\nprint(x)\n","bool=lambda x:3\nprint(bool(1))\n","max=lambda *x:7\nprint(max(1,2))\n","for i in range(int(input())):\n pass\nprint(i)\n"]
+        sources=["print(2**-1)\n","print(2**int(input()))\n","print(1/2)\n","x=[]\nprint(x)\n","bool=lambda x:3\nprint(bool(1))\n","max=lambda *x:7\nprint(max(1,2))\n"]
         for source in sources:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source,"main.py","bigint"))

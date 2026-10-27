@@ -7,6 +7,8 @@ Missing direct lowering produces a positioned diagnostic in the public API.
 """
 
 import ast
+from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
+                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value)
 from importlib.resources import files
 import symtable
 
@@ -115,12 +117,13 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return f"Int::parse({_string(str(value))},10).unwrap()"
 
     def slot(self, kind):
+        if isinstance(unmaybe(kind),(TupleType,ListType)):return super().slot(kind)
         if kind == "str":
             self.has_big_text = True
             slot = f"native_var_{len(self.bindings)}"
             self.bindings[slot] = kind
             return slot
-        if kind.removeprefix("maybe_") not in {"int", "bool", "int_bool", "list_int", "str", "bytes"}:
+        if unmaybe(kind) not in {"int", "bool", "int_bool", "list_int", "str", "bytes"}:
             raise _Unsupported
         return super().slot(kind)
 
@@ -136,12 +139,17 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def coerce(expression, kind):
+        from .native_tuples import coerce_structural
+        if is_maybe(kind):
+            if expression.kind==kind:return f"({expression.code}).clone()"
+            if is_maybe(expression.kind):
+                item=_Expression("native_optional.clone()",unmaybe(expression.kind))
+                return f"({expression.code}).as_ref().map(|native_optional|{BigIntGenerator.coerce(item,unmaybe(kind))})"
+            return f"Some({BigIntGenerator.coerce(expression,unmaybe(kind))})"
+        structural=coerce_structural(expression,kind,BigIntGenerator.coerce)
+        if structural is not None:return structural
         if expression.kind == kind:
-            return f"({expression.code}).clone()" if kind in {"int", "int_bool", "str", "bytes"} or kind.startswith("maybe_") else expression.code
-        if kind.startswith("maybe_"):
-            if expression.kind.startswith("maybe_"):
-                return _Generator.coerce(expression, kind)
-            return f"Some({BigIntGenerator.coerce(expression, kind.removeprefix('maybe_'))})"
+            return f"({expression.code}).clone()" if kind in {"int","int_bool","str","bytes"} else expression.code
         if kind == "int_bool" and expression.kind in {"int", "bool"}:
             variant = "Int" if expression.kind == "int" else "Bool"
             value = f"({expression.code}).clone()" if expression.kind == "int" else expression.code
@@ -150,6 +158,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def truth(expression):
+        if isinstance(expression.kind,(TupleType,ListType)):return _Generator.truth(expression)
         if expression.kind in {"str","bytes"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind == "list_int":
@@ -175,6 +184,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        from .native_tuples import try_expression
+        structural=try_expression(self,node,environment)
+        if structural is not None:return structural
         from .native_stdio import try_expression
         stdio=try_expression(self,node,environment)
         if stdio is not None:
@@ -203,7 +215,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and isinstance(binding.info, _ListInfo):
                 return _Expression(binding.slot,"list_int",owned=False,length=binding.info.length)
-            if isinstance(binding, _Binding) and binding.kind.startswith("maybe_"):
+            if isinstance(binding, _Binding) and is_maybe(binding.kind):
                 return super().expression(node, environment)
             if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool"}:
                 raise _Unsupported
@@ -386,7 +398,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         entry_slots = {binding.slot for binding in entry.values() if isinstance(binding,_Binding)}
         for name,binding in joined.items():
             if isinstance(binding,_Binding) and binding.slot not in entry_slots:
-                default = None if binding.kind.startswith("maybe_") else {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))","list_int":"Vec::<Int>::new()","str":"String::new()","bytes":"Vec::<u8>::new()"}[binding.kind]
+                default = None if is_maybe(binding.kind) else default_value(binding.kind,self.literal(0))
                 old = entry.get(name)
                 if default is None:
                     default = self.coerce(_Expression(old.slot,old.kind),binding.kind) if isinstance(old,_Binding) else "None"
@@ -411,10 +423,10 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                     if not isinstance(previous,_Binding):
                         continue
                     current = environment.get(name)
-                    previous_inner = previous.kind.removeprefix("maybe_")
-                    current_inner = current.kind.removeprefix("maybe_") if isinstance(current,_Binding) else None
+                    previous_inner = unmaybe(previous.kind)
+                    current_inner = unmaybe(current.kind) if isinstance(current,_Binding) else None
                     compatible = isinstance(current,_Binding) and (current.kind==previous.kind or previous.kind=="int_bool" and current.kind in {"int","bool"}
-                                 or previous.kind.startswith("maybe_") and (current_inner==previous_inner or previous_inner=="int_bool" and current_inner in {"int","bool"}))
+                                 or is_maybe(previous.kind) and (current_inner==previous_inner or previous_inner=="int_bool" and current_inner in {"int","bool"}))
                     if not compatible:
                         if name in live:
                             raise _Unsupported
@@ -427,6 +439,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return "\n".join(initializers),body,self.after_loop(joined)
 
     def statement(self, node, environment):
+        from .native_tuples import try_statement
+        structural=try_statement(self,node,environment)
+        if structural is not None:return structural
         from .native_stdio import try_statement
         stdio=try_statement(self,node,environment)
         if stdio is not None:
@@ -514,6 +529,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_big_text |= any(local.has_big_text for local in specializations.generators)
         generator.has_text_methods |= any(local.has_text_methods for local in specializations.generators)
         generator.has_stdio |= any(local.has_stdio for local in specializations.generators)
+        generator.has_tuples |= any(local.has_tuples for local in specializations.generators)
+        generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source,filename,error))
@@ -538,6 +555,12 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         result.append(TEXT_METHOD_HELPERS)
     if generator.has_input:
         result += [runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),_INPUT_HELPERS]
+    if generator.has_tuples:
+        from .native_tuples import render_helpers
+        result.append(render_helpers())
+    if generator.has_typed_lists:
+        from .native_typed_lists import HELPERS as TYPED_LIST_HELPERS
+        result.append(TYPED_LIST_HELPERS)
     if generator.has_stdio:
         from .native_stdio import render_helpers
         result.append(render_helpers(0))
