@@ -98,6 +98,7 @@ class Stream:
     reversible: bool = True
     words: object = None
     integer_words: object = None
+    range_capture: object = None
 
     def construct(self):
         return self.setup + "\n" + self.begin
@@ -156,7 +157,8 @@ class Planner:
                 result.eager = True
                 return result
             if plan.kind is ProducerKind.RANGE:
-                setup, iterator, arguments = g.range_iterator(plan, environment)
+                range_code=g.range_iterator(plan, environment)
+                setup, iterator, arguments = range_code
                 length = None
                 if all(argument.constant is not None for argument in arguments):
                     start, stop, step = (int(argument.constant) for argument in arguments)
@@ -170,6 +172,7 @@ class Planner:
                 setup += f"\nlet {owner} = {iterator};"
                 result = self.leaf(setup, f"let {cursor} = {owner};", cursor,
                                    (("int", "@", True),), length=length)
+                result.range_capture=range_code.captures
                 result.reversible = g.bits != 0 and arguments[2].constant in {1, -1}
                 return result
             if plan.kind is ProducerKind.MAP:
@@ -324,7 +327,7 @@ class Planner:
         owners.update(first.owners)
         mutation_start = len(g.expression_mutations)
         from .native_regions import scope,site
-        region=scope(g,(site(g,node),0),inside)
+        region=scope(g,(site(g,node),0),inside,first)
         with _scope(g, producer_scope, trace_id),region:
             guard_depth = len(g.iterating_lists)
             g.iterating_lists.extend(first.owners)
@@ -364,8 +367,9 @@ class Planner:
                 stream, filters = clauses[index]
                 for test in reversed(filters):
                     body = f"if {g.truth(test)} {{\n{body}\n}}"
-                body = stream.emit(body, TraceContext(producer_scope, trace_id), node.elt.lineno,
-                                   continue_label if index == len(clauses)-1 else None)
+                emit=region.emit if index==0 else stream.emit
+                body = (emit(stream,body,TraceContext(producer_scope,trace_id),node.elt.lineno,continue_label if index==len(clauses)-1 else None)
+                        if index==0 else emit(body,TraceContext(producer_scope,trace_id),node.elt.lineno,continue_label if index==len(clauses)-1 else None))
                 if index:
                     body = stream.construct() + "\n" + body
             # Only producer operations use this context. A consumer callback
@@ -374,7 +378,7 @@ class Planner:
             prefix = ((f"let {trace_id} = |mut error: NativeError| {{ "
                        f"error.frames.push(({line}, {_scope_code(caller.name)})); {parent} }};\n")
                       if plan.frame is not None else "")
-            return prefix + region.capture()+"\n"+body
+            return prefix + body
 
         length = 0 if any(stream.length == 0 for stream,_ in clauses) else 1
         if length:
@@ -676,7 +680,7 @@ def try_for_loop(generator, node, environment):
     g.iterating_lists.extend(stream.owners - target_names)
     g.loops.append(context)
     from .native_regions import scope,site
-    region=scope(g,site(g,node),inside)
+    region=scope(g,site(g,node),inside,stream)
     try:
         with region:
             body, remaining = g.statements(node.body, inside)
@@ -688,12 +692,12 @@ def try_for_loop(generator, node, environment):
         nonempty, stream.length is None or stream.length > 1, zero)
     assignments = "\n".join(f"{slot} = {_owned(g, value, value.kind)};"
                              for slot, value in zip(target_slots, values))
-    loop = stream.emit(assignments + "\n" + body,
+    loop = region.emit(stream,assignments + "\n" + body,
                        TraceContext(g.scope_name(), g.expression_trace_id), g.line_code(node),
                        continue_label)
     code = (stream.construct() + "\n" + refinement + "\n" + "\n".join(optional_initializers) + "\n" + header_initializers + "\n" + initialization
             + (f"\nlet mut {broken} = false;" if broken else "")
-            + "\n"+region.capture()+f"\n'{break_label}: {{\n{loop}\n}}")
+            + f"\n'{break_label}: {{\n{loop}\n}}")
     if not node.orelse:
         return code, joined
     otherwise, otherwise_environment = g.statements(node.orelse, joined)

@@ -3,6 +3,24 @@
 from .native import _Expression, _Unsupported
 from .native_stream_plans import Normalizer, ProducerKind, ProducerPlan
 from .call_semantics import CallBindingError
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RangeCapture:
+    lower:str
+    upper:str
+    step:str
+    call_site:int|None
+
+@dataclass(frozen=True)
+class RangeCode:
+    setup:str
+    iterator:str
+    arguments:object
+    captures:RangeCapture
+    def __iter__(self):
+        yield self.setup;yield self.iterator;yield self.arguments
 
 
 def integer_range(g,node,environment):
@@ -28,4 +46,7 @@ def integer_range(g,node,environment):
         iterator=f"({names[1]}..{names[0]}).rev().map(|native_descending_value:NativeInt|native_descending_value.wrapping_add(1))"
     else:
         iterator=g.at(f"NativeRange::new({','.join(names)})",plan.node)
-    return setup,iterator,arguments
+    unit=getattr(g,"source_unit",None)
+    try:call_site=unit.ordinal(plan.node)if unit is not None else None
+    except KeyError:call_site=None
+    return RangeCode(setup,iterator,arguments,RangeCapture(*names,call_site))

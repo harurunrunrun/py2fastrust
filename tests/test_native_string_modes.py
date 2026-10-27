@@ -88,6 +88,11 @@ class NativeStringModeTests(unittest.TestCase):
                         candidates = [_ASCII_HELPERS[helper].strip()]
                         if not class_backend:
                             candidates.append(_BORROW_HELPERS[helper+"_ref"].strip())
+                            # A nonescaping character may use its scalar value
+                            # directly, without building a one-character str.
+                            codepoint = ("native_big_ascii_codepoint" if integer == "bigint"
+                                         else "native_ascii_codepoint")
+                            candidates.append(_BORROW_HELPERS[codepoint].strip())
                         self.assertTrue(any(body in result.rust_source for body in candidates))
                     if expected.returncode:
                         self.assertEqual(actual.stderr.splitlines()[-1].split(":")[0],
@@ -143,7 +148,14 @@ print(answer)
                 self.assertNotIn(f"({owner}).clone()",main)
             self.assertNotIn(".chars()",main)
             self.assertNotIn(".is_ascii()",main)
-            self.assertIn("_item_ref(",main)
+            getter = ("native_big_ascii_codepoint" if integer == "bigint"
+                      else "native_ascii_codepoint")
+            self.assertIn(getter + "(", main)
+            self.assertRegex(result.rust_source,
+                             rf"fn {getter}\([^{{]+Result<u32,String>")
+            if integer != "bigint":
+                self.assertIn("native_region_guard_", main)
+                self.assertIn(".iter()).enumerate()", main)
 
     def test_class_string_index_and_length_use_the_selected_mode(self):
         source = '''class Text:

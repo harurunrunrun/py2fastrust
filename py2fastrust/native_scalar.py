@@ -339,8 +339,10 @@ class ScalarGenerator(_Generator):
                 first, second = self.temporary(), self.temporary()
                 self.has_extended_scalars = True
                 call = self.at(f"native_string_item_ref({first},{second})", node)
-                code = f"{{ {self.read_binding(first,owner)} let {second}={self.number(index)}; {call} }}"
-                return _Expression(code,"str",owned=False,stable_borrow=True,char_code=char_projection(self,node,code))
+                prefix=f"{{ {self.read_binding(first,owner)} let {second}={self.number(index)}; "
+                code=prefix+call+" }"
+                projected=prefix+self.at(f"native_ascii_codepoint({first},({second}) as i128)",node)+" }"
+                return _Expression(code,"str",owned=False,stable_borrow=True,char_code=char_projection(self,node,code,projected))
         value = self.expression(node, environment)
         if value.kind == "str":
             return _Expression(f"&({value.code})", "str", owned=False,char_code=value.char_code)
@@ -409,9 +411,11 @@ class ScalarGenerator(_Generator):
                 index = self.expression(node.slice, environment)
                 first, second = self.temporary(), self.temporary()
                 call = self.at(f"native_string_item({first}, {second})", node)
-                code=f"{{ {self.read_binding(first, value)} let {second} = {self.number(index)}; {call} }}"
+                prefix=f"{{ {self.read_binding(first,value)} let {second}={self.number(index)}; "
+                code=prefix+call+" }"
                 from .native_regions import char_projection
-                return _Expression(code, "str",char_code=char_projection(self,node,code))
+                projected=(prefix+self.at(f"native_ascii_codepoint({first},({second}) as i128)",node)+" }" if self.string_mode=="ascii" else None)
+                return _Expression(code,"str",char_code=char_projection(self,node,code,projected))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
             if (name == "int" and len(node.args) == 1 and isinstance(node.args[0], ast.Call)

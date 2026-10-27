@@ -118,8 +118,13 @@ Stable, definitely bound string owners can be borrowed once at a loop or
 generator entry. Indexed characters carry a code-point projection for direct
 comparison, while escaping characters retain the configured string semantics.
 The proof excludes owner rebinding and unknown attribute/callback effects and
-preserves the indexed read's checks and evaluation order. Numeric bounds guards
-and native loop versioning still require implementation.
+preserves the indexed read's checks and evaluation order. In fixed-width ASCII
+mode, proved unit-stride affine reads can use guarded byte spans and ordinary
+Rust iterator loops. Guards use captured range arguments, actual owner lengths,
+and checked arithmetic for every intermediate index expression. If a guard does
+not hold, the original checked Rust loop preserves Python error and side-effect
+order. This does not select an interpreter or a different execution backend.
+BigInt and Unicode reads retain their selected checked operations.
 
 Immutable string/tuple list elements share `ListType(element)` metadata with
 literal, comprehension, stream materialization, indexing, append, copies,

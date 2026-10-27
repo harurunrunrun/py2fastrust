@@ -79,3 +79,58 @@ print(letters,s[1]+s[0])
             values=["abc","ab","z"]
             print(values[0]>values[1],values[1]=="a",values[2]=="z")
         ''',modes=('i64','i128','bigint'))
+
+    def test_guarded_break_continue_else_and_placeholder_hygiene(self):
+        source='''s=input()
+p=input()
+answer=0
+for i in range(len(s)):
+ if i==1:
+  continue
+ answer+=s[i]!=p[i]
+ if i==3:
+  break
+else:
+ print("all")
+print(answer,"native_region_char_100\\0")
+'''
+        for mode in ('i64','i128'):
+            compiled=self.compile(source,mode)
+            from py2fastrust.aot import rust_mask
+            self.assertRegex(rust_mask(compiled[2]),r'let\s+native_region_guard_\d+\s*=')
+            for data in ('abbdx\naccdx\n','abc\nab\n','\n\n'):
+                self.compare(compiled,data,trace=True)
+
+    def test_return_value_inside_loop_keeps_original_typed_path(self):
+        source='''def first(s,p,n):
+ for i in range(n):
+  return s[i]==p[i]
+ return False
+print(first(input(),input(),int(input())))
+'''
+        for mode in ('i64','i128','bigint'):
+            compiled=self.compile(source,mode)
+            from py2fastrust.aot import rust_mask
+            self.assertNotRegex(rust_mask(compiled[2]),r'let\s+native_region_guard_\d+\s*=')
+            self.assertNotIn('\0',compiled[2])
+            for data in ('ax\nab\n2\n','\n\n0\n','a\n\n1\n'):
+                self.compare(compiled,data,trace=True)
+
+    def test_nested_loop_versioning_has_a_single_growth_budget(self):
+        source='''n=int(input())
+s=input()
+p=input()
+answer=0
+for i in range(n):
+ answer+=s[i]!=p[i]
+ for j in range(n):
+  answer+=s[j]!=p[j]
+print(answer)
+'''
+        for mode in ('i64','i128'):
+            compiled=self.compile(source,mode)
+            from py2fastrust.aot import rust_mask
+            guards=re.findall(r'let\s+native_region_guard_\d+\s*=',rust_mask(compiled[2]))
+            self.assertEqual(len(guards),1)
+            for data in ('3\nabc\naxc\n','0\n\n\n','3\nabc\na\n'):
+                self.compare(compiled,data,trace=True)

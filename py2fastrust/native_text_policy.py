@@ -87,6 +87,21 @@ fn native_big_text_item_ref<'a>(value:&'a str,index:&Int)->Result<&'a str,String
 }
 
 
+def _codepoint_helper(name,index_type,conversion):
+    return f'''
+fn {name}(value:&str,index:{index_type})->Result<u32,String> {{
+    let error=||"IndexError: string index out of range".to_owned();
+    let index={conversion};
+    let index=if index<0 {{index.saturating_add(value.len() as i128)}}else{{index}};
+    let index=usize::try_from(index).map_err(|_|error())?;
+    value.as_bytes().get(index).map(|byte|u32::from(*byte)).ok_or_else(error)
+}}
+'''
+
+_BORROW_HELPERS["native_ascii_codepoint"]=_codepoint_helper("native_ascii_codepoint","i128","index")
+_BORROW_HELPERS["native_big_ascii_codepoint"]=_codepoint_helper("native_big_ascii_codepoint","&Int","index.to_i128().ok_or_else(error)?")
+
+
 def apply_text_policy(source: str, string_mode: str = "ascii") -> str:
     """Specialize internal helper definitions before Rust reachability pruning."""
     if string_mode == "unicode":

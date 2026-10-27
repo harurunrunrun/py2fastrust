@@ -56,8 +56,10 @@ class BigIntText:
                 first,second=self.temporary(),self.temporary()
                 self.has_big_text=True
                 call=self.at(f"native_big_text_item_ref({first},&{second})",node)
-                code=f"{{ let {first}:&str={owner.code}; let {second}={self.number(index)}; {call} }}"
-                return _Expression(code,"str",owned=False,stable_borrow=True,char_code=char_projection(self,node,code))
+                prefix=f"{{ let {first}:&str={owner.code}; let {second}={self.number(index)}; "
+                code=prefix+call+" }"
+                projected=prefix+self.at(f"native_big_ascii_codepoint({first},&{second})",node)+" }"
+                return _Expression(code,"str",owned=False,stable_borrow=True,char_code=char_projection(self,node,code,projected))
         value = self.expression(node, environment)
         return (_Expression(f"&({value.code})", "str", owned=False,char_code=value.char_code) if value.kind == "str" else value)
 
@@ -82,9 +84,13 @@ class BigIntText:
                 index = self.expression(node.slice, environment)
                 owner, offset = self.temporary(), self.temporary()
                 result = self.at(f"native_big_text_item({owner},&{offset})", node)
-                code=f"{{let {owner}:&str={text.code};let {offset}={self.number(index)};{result}}}"
+                prefix=f"{{let {owner}:&str={text.code};let {offset}={self.number(index)};"
+                code=prefix+result+"}"
                 from .native_regions import char_projection
-                return _Expression(code, "str",char_code=char_projection(self,node,code))
+                projected=None
+                if self.string_mode=="ascii":
+                    projected=prefix+self.at(f"native_big_ascii_codepoint({owner},&{offset})",node)+"}"
+                return _Expression(code,"str",char_code=char_projection(self,node,code,projected))
         if isinstance(node, ast.Compare):
             values = [self.read_expression(value, environment) for value in [node.left,*node.comparators]]
             if any(value.kind == "str" for value in values):
