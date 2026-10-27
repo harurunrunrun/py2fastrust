@@ -768,7 +768,23 @@ class _Generator:
         setup = f"let {offset} = {self.at(check, node)};"
         return setup, f"{matrix.code}[{offset}]"
 
+    def integer_bit_query(self, node, environment):
+        """Lower exact integer/bool methods without attribute dispatch."""
+        value = self.expression(node.func.value, environment)
+        number = self.number(value)
+        method = node.func.attr
+        if method == "bit_length":
+            code = f"((NativeInt::BITS - ({number}).unsigned_abs().leading_zeros()) as NativeInt)"
+        else:
+            code = f"(({number}).unsigned_abs().count_ones() as NativeInt)"
+        constant = None if value.constant is None else getattr(int(value.constant), method)()
+        return _Expression(code, "int", constant)
+
     def expression(self, node, environment):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"bit_length", "bit_count"}
+                and not node.args and not node.keywords):
+            return self.integer_bit_query(node, environment)
         if isinstance(node, ast.Constant):
             if type(node.value) is bool:
                 return _Expression(str(node.value).lower(), "bool", node.value)

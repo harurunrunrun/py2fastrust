@@ -138,7 +138,18 @@ class BigIntGenerator(_Generator):
             return expression.code
         raise _Unsupported
 
+    def integer_bit_query(self, node, environment):
+        value = self.expression(node.func.value, environment)
+        method = node.func.attr
+        code = f"Int::from_i128(({self.number(value)}).{method}() as i128)"
+        constant = None if value.constant is None else getattr(int(value.constant), method)()
+        return _Expression(code, "int", constant)
+
     def expression(self, node, environment):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"bit_length", "bit_count"}
+                and not node.args and not node.keywords):
+            return self.integer_bit_query(node, environment)
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)
             if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool"}:
@@ -372,8 +383,13 @@ class BigIntGenerator(_Generator):
             value = self.expression(node.value,environment)
             name = self.temporary()
             lines = [f"let {name}={value.code};"]
-            for target in node.targets:
-                lines.append(f"{self.bind(target.id,value,environment)}={self.coerce(_Expression(name,value.kind),value.kind)};")
+            for index,target in enumerate(node.targets):
+                # Expressions already produce an owned immutable scalar. The
+                # final target can take that temporary; earlier chained targets
+                # retain their own values and therefore still need a clone.
+                assigned = (name if index == len(node.targets)-1 else
+                            self.coerce(_Expression(name,value.kind),value.kind))
+                lines.append(f"{self.bind(target.id,value,environment)}={assigned};")
             return "\n".join(lines),environment
         if isinstance(node,ast.For):
             if not isinstance(node.iter,ast.Call) or not isinstance(node.iter.func,ast.Name) or node.iter.func.id != "range":
