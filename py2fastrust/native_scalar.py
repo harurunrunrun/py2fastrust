@@ -295,6 +295,40 @@ class ScalarGenerator(_Generator):
             return value.code
         return f"({ScalarGenerator.number(value)}) as f64"
 
+    def read_expression(self, node, environment):
+        """Read a scalar without making an owned copy of an immutable string.
+
+        Only immediate consumers use these references: they never enter a
+        Python binding or cross a generated function's by-value signature.
+        The native proof excludes namespace writes and callbacks that could
+        rebind these caller locals during a later operand's evaluation.
+        A borrowed fresh String is bound directly in a let initializer so
+        Rust extends that temporary's lifetime through the consuming block.
+        """
+        if isinstance(node, ast.Name):
+            binding = environment.get(node.id)
+            if isinstance(binding, _Binding) and binding.kind == "str":
+                return _Expression(f"&{binding.slot}", "str", owned=False)
+        if isinstance(node, ast.Constant) and type(node.value) is str:
+            if any(0xD800 <= ord(c) <= 0xDFFF for c in node.value):
+                raise _Unsupported
+            self.has_extended_scalars = True
+            return _Expression(_string(node.value), "str", owned=False)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "str" and len(node.args) == 1 and not node.keywords):
+            value = self.read_expression(node.args[0], environment)
+            if value.kind == "str":
+                return value
+        value = self.expression(node, environment)
+        if value.kind == "str":
+            return _Expression(f"&({value.code})", "str", owned=False)
+        return value
+
+    @staticmethod
+    def read_binding(name, value):
+        kind = ": &str" if value.kind == "str" else ""
+        return f"let {name}{kind} = {value.code};"
+
     def expression(self, node, environment):
         if isinstance(node, ast.Constant) and type(node.value) in {str, float}:
             self.has_extended_scalars = True
@@ -317,16 +351,16 @@ class ScalarGenerator(_Generator):
                     return _Expression(value.code if isinstance(node.op, ast.UAdd) else f"(-({value.code}))", "float")
                 raise _Unsupported
         if isinstance(node, ast.Compare):
-            values = [self.expression(n, environment) for n in [node.left, *node.comparators]]
+            values = [self.read_expression(n, environment) for n in [node.left, *node.comparators]]
             if any(value.kind in {"str", "float"} for value in values):
                 return self.compare(node, values)
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
-            value = self.expression(node.value, environment)
+            value = self.read_expression(node.value, environment)
             if value.kind == "str":
                 index = self.expression(node.slice, environment)
                 first, second = self.temporary(), self.temporary()
-                call = self.at(f"native_string_item(&{first}, {second})", node)
-                return _Expression(f"{{ let {first} = {value.code}; let {second} = {self.number(index)}; {call} }}", "str")
+                call = self.at(f"native_string_item({first}, {second})", node)
+                return _Expression(f"{{ {self.read_binding(first, value)} let {second} = {self.number(index)}; {call} }}", "str")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
             if (name == "int" and len(node.args) == 1 and isinstance(node.args[0], ast.Call)
@@ -343,7 +377,9 @@ class ScalarGenerator(_Generator):
                 return _Expression({"str": "String::new()", "float": "0.0_f64", "bool": "false"}[name], name)
             if name in {"str", "float", "bool", "int", "len", "abs"} and len(node.args) == 1:
                 try:
-                    value = self.expression(node.args[0], environment)
+                    value = (self.read_expression(node.args[0], environment)
+                             if name in {"len", "bool", "float", "int"}
+                             else self.expression(node.args[0], environment))
                 except _Unsupported:
                     # Some existing consumers prove an immediate iterable
                     # without materializing it as an expression, such as
@@ -415,7 +451,7 @@ class ScalarGenerator(_Generator):
             a, b, op = values[i], values[i+1], node.ops[i]
             x, y = names[i], names[i+1]
             if isinstance(op, (ast.In, ast.NotIn)) and a.kind == b.kind == "str":
-                test = f"{y}.contains(&{x})"
+                test = f"{y}.contains({x})"
                 if isinstance(op, ast.NotIn): test = f"!{test}"
             elif type(op) not in symbols:
                 raise _Unsupported
@@ -438,8 +474,8 @@ class ScalarGenerator(_Generator):
                 test = f"{'!' if isinstance(op, ast.NotEq) else ''}matches!({order}, {variant})"
             else:
                 test = f"{self.number(_Expression(x, a.kind))} {symbols[type(op)]} {self.number(_Expression(y, b.kind))}"
-            tail = f"{{ let {y} = {b.code}; ({test}) && ({tail}) }}"
-        return _Expression(f"{{ let {names[0]} = {values[0].code}; {tail} }}", "bool")
+            tail = f"{{ {self.read_binding(y, b)} ({test}) && ({tail}) }}"
+        return _Expression(f"{{ {self.read_binding(names[0], values[0])} {tail} }}", "bool")
 
     def statement(self, node, environment):
         if isinstance(node, ast.Assign) and all(isinstance(target, ast.Name) for target in node.targets):
@@ -464,7 +500,7 @@ class ScalarGenerator(_Generator):
             call = node.value
             # Preserve the established starred-container path unchanged.
             if not any(isinstance(arg, ast.Starred) for arg in call.args):
-                values = [self.expression(arg, environment) for arg in call.args]
+                values = [self.read_expression(arg, environment) for arg in call.args]
                 if any(value.kind in {"str", "float"} for value in values):
                     if any(value.kind not in {"int", "bool", "int_bool", "float", "str"} for value in values): raise _Unsupported
                     sep, end, flush = " ", "\n", False
@@ -482,7 +518,7 @@ class ScalarGenerator(_Generator):
                             if key.arg == "sep": sep = value
                             else: end = value
                     names = [self.temporary() for _ in values]
-                    lines = [f"let {name} = {value.code};" for name, value in zip(names, values)]
+                    lines = [self.read_binding(name, value) for name, value in zip(names, values)]
                     for index, (name, value) in enumerate(zip(names, values)):
                         if index: lines.append(f"native_output.push_str({_string(sep)});")
                         text = (f"native_float_text({name})" if value.kind == "float" else
