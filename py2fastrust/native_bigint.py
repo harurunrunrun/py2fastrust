@@ -13,6 +13,7 @@ import symtable
 from .native import (_Binding, _Expression, _Function, _Generator, _ListInfo, _Specializations,
                      _Unsupported, _OUTPUT_HELPERS, _declarations,
                      _function_plans, _string, _direct_diagnostic)
+from .native import _static_reference
 from .native_bigint_lists import BigIntLists, HELPERS as LIST_HELPERS
 from .native_bigint_text import BigIntText, HELPERS as BIG_TEXT_HELPERS
 
@@ -119,7 +120,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             slot = f"native_var_{len(self.bindings)}"
             self.bindings[slot] = kind
             return slot
-        if kind not in {"int", "bool", "int_bool", "list_int"}:
+        if kind not in {"int", "bool", "int_bool", "list_int", "bytes"}:
             raise _Unsupported
         return super().slot(kind)
 
@@ -136,7 +137,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
     @staticmethod
     def coerce(expression, kind):
         if expression.kind == kind:
-            return f"({expression.code}).clone()" if kind in {"int", "int_bool", "str"} else expression.code
+            return f"({expression.code}).clone()" if kind in {"int", "int_bool", "str", "bytes"} else expression.code
         if kind == "int_bool" and expression.kind in {"int", "bool"}:
             variant = "Int" if expression.kind == "int" else "Bool"
             value = f"({expression.code}).clone()" if expression.kind == "int" else expression.code
@@ -145,7 +146,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def truth(expression):
-        if expression.kind == "str":
+        if expression.kind in {"str","bytes"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind == "list_int":
             return f"!({expression.code}).is_empty()"
@@ -170,6 +171,10 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        from .native_stdio import try_expression
+        stdio=try_expression(self,node,environment)
+        if stdio is not None:
+            return stdio
         text = self.text_expression(node, environment)
         if text is not None:
             return text
@@ -375,7 +380,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         entry_slots = {binding.slot for binding in entry.values() if isinstance(binding,_Binding)}
         for name,binding in joined.items():
             if isinstance(binding,_Binding) and binding.slot not in entry_slots:
-                default = {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))","list_int":"Vec::<Int>::new()","str":"String::new()"}[binding.kind]
+                default = {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))","list_int":"Vec::<Int>::new()","str":"String::new()","bytes":"Vec::<u8>::new()"}[binding.kind]
                 old = entry.get(name)
                 if isinstance(old,_Binding) and binding.kind == "int_bool":
                     default = self.coerce(_Expression(old.slot,old.kind),binding.kind)
@@ -391,7 +396,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             copies = []
             if kind != "break" and may_repeat and not zero:
                 for name,previous in header.items():
-                    if isinstance(previous,_Function):
+                    if _static_reference(previous):
                         if name in live and environment.get(name) is not previous:
                             raise _Unsupported
                         continue
@@ -409,6 +414,10 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return "\n".join(initializers),body,self.after_loop(joined)
 
     def statement(self, node, environment):
+        from .native_stdio import try_statement
+        stdio=try_statement(self,node,environment)
+        if stdio is not None:
+            return stdio
         alias = self.function_alias_assignment(node,environment)
         if alias is not None:
             return alias
@@ -421,7 +430,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 if not all(isinstance(target,ast.Name) and target.id not in self.iterating_lists for target in targets):
                     raise _Unsupported
                 name = self.temporary()
-                if self.input_map(node.value):
+                if self.input_map(node.value,environment):
                     self.has_input = True
                     value = self.at(f"native_input.unpack_integers({len(targets)},&mut native_output)",node)
                     lines = [f"let {name}={value};"]
@@ -469,23 +478,26 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         raise _Unsupported
 
 
-def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None):
+def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None,trusted_imports=frozenset()):
     """Return a complete direct-Rust program only after a full scalar proof."""
     try:
         tree = ast.parse(source,filename=filename)
         table = symtable.symtable(source,filename,"exec")
         for node in ast.walk(tree):
-            if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS:
+            if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS-{"input"}:
                 raise _Unsupported
         functions = _function_plans(tree,table,0,BigIntGenerator)
-        function_input = bool(functions) and any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree))
+        function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree)))
         specializations = _Specializations(0,functions,{},function_input,BigIntGenerator)
+        specializations.trusted_imports=trusted_imports
         generator = BigIntGenerator(functions=functions,function_input=function_input,specializations=specializations)
+        generator.trusted_imports=trusted_imports
         body,_ = generator.statements(tree.body,{})
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
         generator.has_slices |= any(local.has_slices for local in specializations.generators)
         generator.has_big_text |= any(local.has_big_text for local in specializations.generators)
         generator.has_text_methods |= any(local.has_text_methods for local in specializations.generators)
+        generator.has_stdio |= any(local.has_stdio for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source,filename,error))
@@ -510,6 +522,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         result.append(TEXT_METHOD_HELPERS)
     if generator.has_input:
         result += [runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),_INPUT_HELPERS]
+    if generator.has_stdio:
+        from .native_stdio import render_helpers
+        result.append(render_helpers(0))
     result.extend(specializations.sources)
     result.append("fn main(){\nuse std::fmt::Write as _;\nuse std::io::Write as _;\nlet mut native_output=String::new();\nlet native_result=(||->Result<(),NativeError>{")
     if generator.has_input:

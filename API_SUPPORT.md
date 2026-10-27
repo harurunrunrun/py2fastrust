@@ -10,6 +10,11 @@ work. The implementations and their acceptance tests are retained; this
 inventory and strict diagnostics do not establish completed compatibility or a
 green full suite. See [COMPATIBILITY.md](COMPATIBILITY.md) for the public boundary.
 
+Current direct module coverage includes proved `collections.deque` imports and
+`sys.stdin`/`sys.stdin.buffer` `read`/`readline`, including statically captured
+reader aliases and local imports. This does not establish direct coverage of
+the other `sys` APIs listed in the retained inventory below.
+
 ## math
 
 | API | Status |

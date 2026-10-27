@@ -78,6 +78,10 @@ even when those options appear in the source.
 The direct path recognizes proved `collections.deque` imports using the
 compiler's actual module resolution. A user module with the same name is not
 silently replaced by that specialization.
+It also recognizes trusted `sys.stdin` and `sys.stdin.buffer` readers, including
+captured `read`/`readline` aliases and local imports inside ordinary functions.
+Text and byte reads retain their different newline, EOF, whitespace, and
+integer-parsing rules. Both use the same buffered input stream.
 
 General fixed-name imports, pure-Python packages, and `--include-module` remain
 required work for direct Rust generation. Their existing internal runtime code

@@ -130,7 +130,7 @@ class Planner:
                 return self.enumerate_stream(node, environment)
             if node.func.id == "zip":
                 return self.zip_stream(node, environment)
-        if g.input_words(node):
+        if g.input_words(node,environment):
             g.has_input = g.needs_integer_runtime = True
             text, cursor = g.temporary(), g.temporary()
             setup = f"let {text} = {g.at('native_input.line(&mut native_output)', node)}.to_owned();"

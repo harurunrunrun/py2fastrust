@@ -20,6 +20,10 @@ class _Unsupported(Exception):
     pass
 
 
+def _static_reference(value):
+    return isinstance(value, (_Function, _DequeConstructor)) or getattr(value, "_native_reference", False)
+
+
 def _direct_diagnostic(source, filename, error=None, node=None):
     """Locate the innermost AST operation whose direct lowering failed."""
     traceback = getattr(error, "__traceback__", None)
@@ -460,6 +464,9 @@ class _Generator:
         self.has_slices = False
         self.has_text_methods = False
         self.has_big_text = False
+        self.has_stdio = False
+        self.trusted_imports = frozenset()
+        self.entry_local_names = set()
         self.entry_scope = None
 
     def temporary(self):
@@ -477,7 +484,7 @@ class _Generator:
         return f"({value}_i128 as NativeInt)"
 
     def slot(self, kind):
-        if kind not in {"int", "bool", "int_bool", "list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
+        if kind not in {"int", "bool", "int_bool", "list_int", "dict_int", "set_int", "matrix_int", "deque_int", "bytes"}:
             raise _Unsupported
         if kind == "int_bool":
             self.has_scalar_union = True
@@ -549,7 +556,7 @@ class _Generator:
 
     @staticmethod
     def truth(expression):
-        if expression.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
+        if expression.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int", "bytes"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind == "int_bool":
             return f"({expression.code}).truth()"
@@ -595,20 +602,24 @@ class _Generator:
         scope = self.scope_name()
         return scope.line_code if hasattr(scope, "line_code") else node.lineno
 
-    @staticmethod
-    def input_words(node):
+    def input_words(self,node, environment=None):
         if not (isinstance(node, ast.Call) and not node.args and not node.keywords
                 and isinstance(node.func, ast.Attribute) and node.func.attr == "split"):
             return False
         source = node.func.value
+        local_names=self.function.local_names if self.function is not None else self.entry_local_names
+        if (environment is not None and "input" in local_names and "input" not in environment
+                and isinstance(source,ast.Call) and isinstance(source.func,ast.Name) and source.func.id=="input"):
+            raise _Unsupported
         return (isinstance(source, ast.Call) and isinstance(source.func, ast.Name)
-                and source.func.id == "input" and not source.args and not source.keywords)
+                and source.func.id == "input" and not source.args and not source.keywords
+                and (environment is None or "input" not in environment))
 
-    def input_map(self, node):
+    def input_map(self, node, environment=None):
         return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "map" and len(node.args) == 2 and not node.keywords
                 and isinstance(node.args[0], ast.Name) and node.args[0].id == "int"
-                and self.input_words(node.args[1]))
+                and self.input_words(node.args[1],environment))
 
     def integer_input_list(self, node):
         self.needs_integer_runtime = self.has_input = self.has_lists = True
@@ -700,7 +711,7 @@ class _Generator:
                 iterator = local
             else:
                 view = self.dict_view(source, environment)
-                value = self.integer_input_list(source) if self.input_map(source) else (view[0] if view else self.expression(source, environment))
+                value = self.integer_input_list(source) if self.input_map(source,environment) else (view[0] if view else self.expression(source, environment))
                 if value.kind not in {"list_int", "set_int", "dict_int", "deque_int"} or view and view[1] == "items":
                     raise _Unsupported
                 local = self.temporary()
@@ -739,7 +750,7 @@ class _Generator:
         # into Rust's fixed signature. Defaults are proved pure constants.
         def argument_value(argument):
             value = self.expression(argument, environment)
-            if value.kind not in {"int", "bool", "list_int", "float", "str"}:
+            if value.kind not in {"int", "bool", "list_int", "float", "str", "bytes"}:
                 raise _Unsupported
             if value.kind == "list_int" and not value.owned:
                 # Reading an ordinary binding has no side effect. Delay the
@@ -857,6 +868,10 @@ class _Generator:
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        from .native_stdio import try_expression
+        stdio = try_expression(self,node,environment)
+        if stdio is not None:
+            return stdio
         if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
             from .native_slices import try_slice
             return try_slice(self, node, environment)
@@ -964,7 +979,7 @@ class _Generator:
             if len(node.generators) == 1:
                 gen = node.generators[0]
                 if (not gen.is_async and not gen.ifs and isinstance(gen.target, ast.Name)
-                        and self.input_words(gen.iter) and isinstance(node.elt, ast.Call)
+                        and self.input_words(gen.iter,environment) and isinstance(node.elt, ast.Call)
                         and isinstance(node.elt.func, ast.Name) and node.elt.func.id == "int"
                         and not node.elt.keywords and len(node.elt.args) == 1
                         and isinstance(node.elt.args[0], ast.Name)
@@ -1072,7 +1087,7 @@ class _Generator:
             if name == "list" and not node.args:
                 self.has_lists = True
                 return _Expression("Vec::<NativeInt>::new()", "list_int", length=0)
-            if name == "list" and len(node.args) == 1 and self.input_map(node.args[0]):
+            if name == "list" and len(node.args) == 1 and self.input_map(node.args[0],environment):
                 return self.integer_input_list(node)
             if name == "int" and not node.args:
                 return _Expression(self.literal(0), "int", 0)
@@ -1268,7 +1283,7 @@ class _Generator:
         result = {}
         for name, first in live[0].items():
             values = [environment.get(name) for environment in live]
-            if isinstance(first, (_Function, _DequeConstructor)):
+            if _static_reference(first):
                 if all(value is first for value in values):
                     result[name] = first
                 continue
@@ -1515,7 +1530,7 @@ class _Generator:
                 default = {"int": "0", "bool": "false", "int_bool": "NativeScalar::Int(0)", "list_int": "Vec::new()",
                            "dict_int": "NativeDict::new()", "set_int": "NativeSet::new()",
                            "matrix_int": "Vec::new()", "deque_int": "std::collections::VecDeque::new()",
-                           "float": "0.0_f64", "str": "String::new()"}[binding.kind]
+                           "float": "0.0_f64", "str": "String::new()", "bytes":"Vec::<u8>::new()"}[binding.kind]
                 if isinstance(entry.get(name), _Binding) and entry[name].kind in {"int", "bool", "int_bool"} and binding.kind == "int_bool":
                     default = self.coerce(_Expression(entry[name].slot, entry[name].kind), binding.kind)
                 initializers.append(f"{binding.slot} = {default};")
@@ -1530,7 +1545,7 @@ class _Generator:
             copies = []
             if kind != "break" and may_repeat and not zero:
                 for name, previous in header.items():
-                    if isinstance(previous, (_Function, _DequeConstructor)):
+                    if _static_reference(previous):
                         if name in live and environment.get(name) is not previous:
                             raise _Unsupported
                         continue
@@ -1554,6 +1569,10 @@ class _Generator:
         return "\n".join(initializers), body, self.after_loop(joined)
 
     def statement(self, node, environment):
+        from .native_stdio import try_statement
+        stdio = try_statement(self,node,environment)
+        if stdio is not None:
+            return stdio
         alias = self.function_alias_assignment(node, environment)
         if alias is not None:
             return alias
@@ -1581,7 +1600,7 @@ class _Generator:
             if node.value is None:
                 raise _Unsupported
             value = self.expression(node.value, environment)
-            if value.kind not in {"int", "bool", "float", "str"}:
+            if value.kind not in {"int", "bool", "float", "str", "bytes"}:
                 raise _Unsupported
             self.return_kinds.add(value.kind)
             return f"return Ok({value.code});", None
@@ -1602,7 +1621,7 @@ class _Generator:
                     raise _Unsupported
                 count = len(targets)
                 name = self.temporary()
-                if self.input_map(node.value):
+                if self.input_map(node.value,environment):
                     self.needs_integer_runtime = self.has_input = True
                     # Keep unusually large unpackings off the Rust stack.
                     unpack = (f"native_input.unpack_integers::<{count}>(&mut native_output)" if count <= 32 else
@@ -2127,6 +2146,7 @@ class _Specializations:
         self.sources = []
         self.generators = []
         self.names = set()
+        self.trusted_imports = frozenset()
 
     @staticmethod
     def readonly_arrays(node, names):
@@ -2151,7 +2171,7 @@ class _Specializations:
         # identities are part of the cache key so later rebindings cannot reuse
         # an earlier helper specialization.
         globals_at_call = {name: value for name, value in global_environment.items()
-                           if isinstance(value, (_Function, _DequeConstructor))}
+                           if _static_reference(value)}
         context = tuple((name, id(value)) for name, value in sorted(globals_at_call.items()))
         key = (id(function.node), kinds, context)
         if key in self.variants:
@@ -2163,7 +2183,7 @@ class _Specializations:
         # Further specialization growth needs a direct-generation implementation.
         if len(self.variants) + len(self.active) >= 128:
             raise _Unsupported
-        if any(kind not in {"int", "bool", "list_int", "float", "str"} for kind in kinds):
+        if any(kind not in {"int", "bool", "list_int", "float", "str", "bytes"} for kind in kinds):
             raise _Unsupported
         self.active.add(id(function.node))
         rust_name = function.rust_name + "_" + ("_".join(kinds) or "void")
@@ -2175,6 +2195,7 @@ class _Specializations:
         local = self.generator_type(self.bits, self.functions, variant, self.function_input,
                            self.constructors, self)
         local.global_environment = globals_at_call
+        local.trusted_imports = self.trusted_imports
         environment = {name: value for name, value in globals_at_call.items()
                        if name not in function.local_names}
         initializers, signature = [], []
@@ -2188,7 +2209,7 @@ class _Specializations:
                 environment[name] = _Binding(argument, _ListInfo(None))
                 local.has_lists = True
             else:
-                signature.append(f"{argument}: " + {"bool": "bool", "int": "NativeInt", "float": "f64", "str": "String"}[kind])
+                signature.append(f"{argument}: " + {"bool": "bool", "int": "NativeInt", "float": "f64", "str": "String", "bytes":"Vec<u8>"}[kind])
                 initializers.append(f"{local.bind(name, kind, environment)} = {argument};")
         if self.function_input:
             signature.append("mut native_input: &mut NativeInput")
@@ -2200,7 +2221,7 @@ class _Specializations:
             variant.return_kind = next(iter(local.return_kinds))
         tail = "\nOk(())" if variant.return_kind == "none" and remaining is not None else ""
         variant.required.update(variant.imports)
-        return_type = {"int": "NativeInt", "bool": "bool", "float": "f64", "str": "String", "none": "()"}[variant.return_kind]
+        return_type = {"int": "NativeInt", "bool": "bool", "float": "f64", "str": "String", "bytes":"Vec<u8>", "none": "()"}[variant.return_kind]
         source = (f"#[inline]\nfn {variant.rust_name}({', '.join(signature)}) -> Result<{return_type}, NativeError> {{\n"
                   "use std::fmt::Write as _;\n" + _declarations(local) + "\n"
                   + "\n".join(initializers) + "\n" + body + tail + "\n}")
@@ -2214,7 +2235,7 @@ class _Specializations:
 def _declarations(generator):
     types = {"int": "NativeInt", "bool": "bool", "int_bool": "NativeScalar", "list_int": "Vec<NativeInt>",
              "dict_int": "NativeDict", "set_int": "NativeSet",
-             "matrix_int": "Vec<Vec<NativeInt>>", "deque_int": "std::collections::VecDeque<NativeInt>"}
+             "matrix_int": "Vec<Vec<NativeInt>>", "deque_int": "std::collections::VecDeque<NativeInt>","bytes":"Vec<u8>"}
     return "\n".join(f"let mut {slot};" if kind in {"float", "str"} else f"let mut {slot}: {types[kind]};"
                      for slot, kind in generator.bindings.items())
 
@@ -2225,13 +2246,13 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
 
     Fixed-width modes use native Rust integers; BigInt selects the owned
     arbitrary-precision scalar backend. An unimplemented direct path fails.
-    trusted_imports must come from Compiler's actual vendored-module resolution;
+    trusted_imports must come from Compiler's actual standard-module resolution;
     a spelling such as "collections" in user source is insufficient evidence.
     """
     if integer == "bigint":
         from .native_bigint import try_generate_bigint
         return try_generate_bigint(source, filename, prune_output=prune_output,
-                                   diagnostic_out=diagnostic_out)
+                                   diagnostic_out=diagnostic_out,trusted_imports=trusted_imports)
     if integer not in {"i64", "i128"}:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source, filename))
@@ -2242,7 +2263,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         table = symtable.symtable(source, filename, "exec")
         # Builtins cannot be rebound even on a path that seems unreachable.
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in ScalarGenerator.BUILTINS:
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in ScalarGenerator.BUILTINS-{"input"}:
                 raise _Unsupported
         bits = 64 if integer == "i64" else 128
         constructors = {}
@@ -2255,19 +2276,24 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
                             constructors.setdefault(name, _DequeConstructor(name))
         statements, wrapper = _main_wrapper(tree)
         functions = {} if wrapper else _function_plans(tree, table, bits, ScalarGenerator)
-        function_input = bool(functions) and any(isinstance(node, ast.Name) and node.id == "input" for node in ast.walk(tree))
+        function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node, ast.Name) and node.id == "input" for node in ast.walk(tree)))
         specializations = _Specializations(bits, functions, constructors, function_input, ScalarGenerator)
+        specializations.trusted_imports = trusted_imports
         generator = ScalarGenerator(bits, functions, function_input=function_input, constructors=constructors,
                                specializations=specializations)
+        generator.trusted_imports = trusted_imports
         if function_input:
             generator.has_input = generator.needs_integer_runtime = True
         if wrapper:
             generator.return_label = "native_entrypoint"
             generator.entry_scope = wrapper[0]
+            generator.entry_local_names = {symbol.get_name() for child in table.get_children()
+                                           if child.get_name()==wrapper[0] for symbol in child.get_symbols()
+                                           if symbol.is_local() or symbol.is_parameter()}
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2292,6 +2318,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_input:
         result.append(runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"))
         result.append(_INPUT_HELPERS if generator.needs_integer_runtime else TEXT_INPUT_HELPERS)
+    if generator.has_stdio:
+        from .native_stdio import render_helpers
+        result.append(render_helpers(generator.bits))
     if generator.has_extended_scalars:
         result.append(SCALAR_HELPERS)
         for license_name in ("PYTHON_LICENSE.txt", "UNICODE_LICENSE.txt"):

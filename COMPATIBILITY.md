@@ -38,6 +38,15 @@ BigInt-mode strings are ordinary Rust `String` values, with borrowing for
 immediate reads, value-preserving assignments, comparisons, concatenation,
 repetition, indexing, integer conversion, and typed function specialization.
 
+Trusted `sys.stdin`/`.buffer` imports and their `read`/`readline` aliases generate
+direct reads through the same buffered input object. Ordinary entry functions
+and function-local imports retain scope analysis. Text readers retain newlines
+and return an empty string at EOF; binary readers return immutable `Vec<u8>`
+values and use ASCII rules for integer splitting/parsing. Builtin `input()`
+keeps its distinct EOF and newline behavior. The current text input profile is
+strict UTF-8; custom/reconfigured streams and surrogate escapes need further
+direct implementation.
+
 ## Retained internal runtime implementation
 
 The following inventory describes code and regression coverage retained for

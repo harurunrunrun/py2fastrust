@@ -84,7 +84,7 @@ class BigIntLists:
                 raise _Unsupported
             generator = node.generators[0]
             target = generator.target.id
-            if (not generator.ifs and self.input_words(generator.iter) and isinstance(node.elt, ast.Call)
+            if (not generator.ifs and self.input_words(generator.iter,environment) and isinstance(node.elt, ast.Call)
                     and isinstance(node.elt.func, ast.Name) and node.elt.func.id == "int"
                     and len(node.elt.args) == 1 and not node.elt.keywords
                     and isinstance(node.elt.args[0],ast.Name) and node.elt.args[0].id == target):
@@ -137,7 +137,7 @@ class BigIntLists:
             if len(node.args) != 1:
                 raise _Unsupported
             source = node.args[0]
-            if self.input_map(source):
+            if self.input_map(source,environment):
                 return self.integer_input_list(node)
             if (isinstance(source,ast.Call) and isinstance(source.func,ast.Name) and source.func.id == "range"):
                 setup, iterator, _ = self.range_iterator(source, environment)

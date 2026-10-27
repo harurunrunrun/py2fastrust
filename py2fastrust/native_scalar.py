@@ -330,6 +330,10 @@ class ScalarGenerator(_Generator):
         return f"let {name}{kind} = {value.code};"
 
     def expression(self, node, environment):
+        from .native_stdio import try_expression
+        stdio=try_expression(self,node,environment)
+        if stdio is not None:
+            return stdio
         from .native_text_methods import try_text_method
         text = try_text_method(self, node, environment)
         if text is not None:
@@ -482,6 +486,10 @@ class ScalarGenerator(_Generator):
         return _Expression(f"{{ {self.read_binding(names[0], values[0])} {tail} }}", "bool")
 
     def statement(self, node, environment):
+        from .native_stdio import try_statement
+        stdio=try_statement(self,node,environment)
+        if stdio is not None:
+            return stdio
         alias = self.function_alias_assignment(node, environment)
         if alias is not None:
             return alias
