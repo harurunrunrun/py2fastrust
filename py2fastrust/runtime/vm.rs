@@ -677,7 +677,7 @@ impl Runtime {
             Value::Obj(index) => {
                 matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Class(class)) if class.dict_allowed)
             }
-            Value::Builtin(name) if name == "super" => true,
+            Value::Builtin(name) if name == "super" || name == "type" => true,
             Value::Type(_) => true,
             _ => false,
         }
@@ -687,7 +687,7 @@ impl Runtime {
             Value::Obj(index) => {
                 matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Class(class)) if class.weakref_allowed)
             }
-            Value::Builtin(name) if name == "set" => true,
+            Value::Builtin(name) if name == "set" || name == "type" => true,
             _ => false,
         }
     }

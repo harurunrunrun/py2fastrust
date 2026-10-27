@@ -698,6 +698,12 @@ impl Runtime {
         }
         if owner == "object" {
             if let Some(result)=self.operand_attribute(&value,&receiver,&rest,&kwargs){return result;}
+            if name=="__reduce_ex__"&&self.frozen_owner(&receiver).is_some_and(|(_,frozen)|frozen) {
+                if rest.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","__reduce_ex__ takes one positional argument"));}
+                self.as_int(&rest[0])?;
+                let reduce=self.getattr(receiver,"__reduce__")?;
+                return self.call(reduce,Vec::new(),Vec::new(),None);
+            }
             match name.as_str() {
                 "__getattribute__" | "__setattr__" | "__delattr__" => {
                     return self.builtin(&format!("type_method:object:{name}"), args, kwargs, None)
@@ -740,6 +746,10 @@ impl Runtime {
             };
             return self.keyword_str_protocol(payload, &name, rest, kwargs).unwrap();
         }
+        if owner=="complex"&&["__pow__","__rpow__"].contains(&name.as_str())&&rest.len()==2 {
+            let payload=self.native_payload(&receiver).unwrap_or(receiver);
+            return self.complex_method(payload,&name,rest,kwargs).unwrap();
+        }
         if let Some(result)=self.operand_attribute(&value,&receiver,&rest,&kwargs){return result;}
         if owner == "dict" && name == "__getitem__" {
             if rest.len() != 1 || !kwargs.is_empty() {
@@ -752,6 +762,9 @@ impl Runtime {
                 return Err(pyerr("TypeError", "copy takes no arguments"));
             }
             return self.dictionary_copy(receiver);
+        }
+        if owner=="frozenset"&&name=="__reduce__" {
+            return self.frozen_method(receiver,&name,rest,kwargs).unwrap();
         }
         if !native_method_implemented(&owner, &name) {
             return Err(pyerr(
@@ -786,9 +799,9 @@ impl Runtime {
         let payload = self
             .native_payload(&receiver)
             .unwrap_or_else(|| receiver.clone());
-        let payload = if owner == "int"
-            && self.native_payload(&receiver).is_some()
-            && ["__int__", "__index__", "conjugate"].contains(&name.as_str())
+        let payload = if self.native_payload(&receiver).is_some()
+            && ((owner=="int"&&["__int__", "__index__", "conjugate"].contains(&name.as_str()))
+                || (owner=="complex"&&["__complex__","__pos__"].contains(&name.as_str())))
         {
             payload.fresh_primitive()
         } else {
