@@ -223,11 +223,16 @@ impl Runtime {
                 }
             };
             self.roots[root].push(sequence.clone());
+            // The canonical exceptions are rendered before the format operation
+            // observes the type name and calls the message's repr protocol.
+            let sequence = self.repr_inner(&sequence, seen)?;
+            let kind = self.exception_type_name(error);
+            let message = self.repr_inner(&group.message, seen)?;
             Ok(format!(
                 "{}({}, {})",
-                self.exception_type_name(error),
-                self.repr_inner(&group.message, seen)?,
-                self.repr_inner(&sequence, seen)?
+                kind,
+                message,
+                sequence
             ))
         })();
         self.roots.truncate(root);

@@ -42,6 +42,58 @@ class ExceptionGroupReprProfileTests(unittest.TestCase):
                 self.assertEqual(actual.returncode,0,actual.stderr)
                 self.assertEqual(actual.stdout,expected(flag))
 
+    def test_exception_sequence_precedes_message_and_type_name_observation(self):
+        source='''
+            import gc
+            events=[]
+            class Group(ExceptionGroup):pass
+            class Message(str):
+                def __repr__(self):
+                    events.append(('message',Group.__name__))
+                    Group.__name__='AfterMessage'
+                    gc.collect()
+                    return 'MESSAGE'
+            class Leaf(Exception):
+                def __repr__(self):
+                    events.append(('leaf',Group.__name__))
+                    Group.__name__='AfterLeaf'
+                    group.args=()
+                    gc.collect()
+                    return 'LEAF'
+            group=Group(Message('m'),[Leaf()])
+            print(repr(group),events,Group.__name__,group.args)
+            events.clear()
+            class Sequence:
+                def __len__(self):return 1
+                def __getitem__(self,index):
+                    if index==0:return Leaf()
+                    raise IndexError
+                def __repr__(self):
+                    events.append('cached sequence')
+                    return 'SEQUENCE'
+            Group.__name__='Cached'
+            group=Group(Message('m'),Sequence())
+            print(events)
+            events.clear()
+            print(repr(group),events,Group.__name__)
+        '''
+        expected=("AfterLeaf(MESSAGE, [LEAF]) [('leaf', 'Group'), ('message', 'AfterLeaf')] AfterMessage ()\n"
+                  "['cached sequence']\n"
+                  "Cached(MESSAGE, SEQUENCE) [('message', 'Cached')] AfterMessage\n")
+        self.check_profiles(source,lambda _:expected)
+
+    def test_failed_leaf_repr_does_not_render_message(self):
+        source='''
+            events=[]
+            class Message(str):
+                def __repr__(self):events.append('message');return 'MESSAGE'
+            class Leaf(Exception):
+                def __repr__(self):events.append('leaf');raise RuntimeError('stop')
+            try:repr(ExceptionGroup(Message('m'),[Leaf()]))
+            except RuntimeError as error:print(str(error),events)
+        '''
+        self.check_profiles(source,lambda _:"stop ['leaf']\n")
+
     def test_extra_constructor_arguments_only_change_native_group_repr(self):
         source='''
             class Group(ExceptionGroup):
