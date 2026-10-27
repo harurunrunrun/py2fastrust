@@ -1,4 +1,4 @@
-"""Python slot callbacks and their caller-owned return conversions use VM frames."""
+"""Python slot callbacks and their caller-owned return conversions use heap frames."""
 import shutil
 import unittest
 

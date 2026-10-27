@@ -99,40 +99,48 @@ else:
 ```
 
 `source_map` maps code units and instruction positions to the original file, line, and column.
-`backend` is either `native` or `vm`. Select the general runtime with
-`TranspileOptions(optimize=False)` or the CLI's `--no-optimize` option.
+`backend` is either `native` for proved typed specializations or `aot` for general
+ahead-of-time Rust generation. `TranspileOptions(optimize=False)` and the CLI's
+`--no-optimize` option select general AOT without optional native specializations.
+Ordinary source still becomes Rust code when optimization is disabled.
 `--check` checks whether conversion succeeds without writing a Rust file.
 
 ## Execution and performance
 
 Ordinary input is parsed with Python's official `ast` and `symtable` APIs to analyze scopes and evaluation order.
+Every statically compiled code body becomes a Rust function. Consecutive operations become Rust statements
+inside control-flow blocks; calls, generators, and exceptions preserve their continuation positions in frames.
+When types remain dynamic, these Rust statements use tagged `Value` objects and shared object/protocol helpers.
+Static code retains source and scope metadata without executable instruction arrays.
+The general `aot` backend handles those dynamic values while still executing generated Rust functions.
 When types and bindings can be established, `i64`/`i128` integers, integer arrays and independent rows,
 integer dictionaries, sets, deques, and loops become native Rust integers, `Vec<T>`, `HashMap`, `HashSet`, `VecDeque`, and control flow.
 Supported patterns include `list(map(int, input().split()))`, unpacked integer input,
 integer-list `append`, `extend`, and `sort`, dictionary aggregation, and dictionary iteration in insertion order.
 Native integer sets support construction, insertion, deletion, membership, and `sum`.
-Programs that observe set iteration order or sharing use the general runtime.
+Programs that observe set iteration order or sharing use general AOT.
 Owned adjacency lists and unbounded integer deques support native BFS loops.
 Deque specialization uses the compiler's resolved bundled `collections` module; a user module of the same name is respected.
-Shared rows, container aliases, and mutation during active iteration use the general runtime.
-Programs that cannot be specialized also use the shared dynamic runtime.
+Shared rows, container aliases, and mutation during active iteration use general AOT.
+Programs without a proved typed specialization use general AOT with shared value and object helpers.
 The optimizer follows proved type changes and combines compatible branch and loop states.
 Finite unions of `bool` and integer values also stay native across branches and loop back edges.
 A stack value preserves their distinct result types and formatting without object allocation.
-Unproved combinations use the general runtime.
+Unproved combinations use general AOT.
 Ordinary user functions get separate Rust versions for proved integer, boolean, and read-only integer-list arguments.
 Scalar results retain their integer or boolean type; positional and keyword arguments, constant defaults, and calls between functions are supported.
-Integer lists are borrowed without copying; functions that mutate or expose those argument lists use the general runtime.
-Recursion and functions with dynamic global or closure state use the general runtime.
-Within a general-runtime program, selected pure arithmetic function bodies can also use native code.
+Integer lists are borrowed without copying; functions that mutate or expose those argument lists use general AOT.
+Recursion and functions with dynamic global or closure state use general AOT.
+Within a general-AOT program, selected pure arithmetic function bodies can also use native code.
 Entry guards check the actual code object and bound integer arguments before any body operation;
-other argument types execute the original instructions. `--no-optimize` disables these entry paths.
-For simple module-level code, the optimizer also proves whether dynamic compilation is unreachable.
+other argument types execute the general AOT Rust body. `--no-optimize` disables these native entry paths.
+For simple module-level code, a separate analysis proves whether dynamic compilation is unreachable.
 The proof checks both the AST and the lowered control flow, including reaching assignments,
 possible types, call targets, and unknown effects. Uncertain paths retain the runtime parser.
-When that proof succeeds, the general backend omits the runtime parser and its Unicode name tables.
-Imports, reflection, indirect calls, user-defined functions or classes, and unknown syntax retain the full runtime.
-`--no-optimize` retains all runtime components.
+When that proof succeeds, the general backend omits the runtime parser, instruction interpreter,
+and Unicode name tables. Imports, reflection, indirect calls, user-defined functions or classes,
+and unknown syntax currently retain these components conservatively. The reachability analysis also
+runs with `--no-optimize`; disabling optimization never changes static code into interpreted code.
 
 The runtime handles shared objects, GC, function frames, exceptions, classes, and closures.
 List, set, and dict comprehensions run in their enclosing frame with isolated iteration bindings
@@ -141,8 +149,11 @@ Module and builtin namespaces are ordinary dictionaries. Functions and frames re
 Calls retain original expanded keyword key objects and their stored hashes across functions, partials, caches, and metaclasses.
 Ordinary cached-function recursion uses explicit execution frames, including cache misses and exceptional returns.
 Exception groups and `except*` support subgroup handling, reraising, and merging unhandled exceptions.
-Runtime `eval` and `exec` use a Rust tokenizer and PEG rules generated from CPython 3.14.4's official grammar,
-then lower the resulting syntax tree directly to the shared instructions.
+Runtime `compile`, `eval`, and `exec` use a Rust tokenizer and PEG rules generated from CPython 3.14.4's official grammar.
+New code compiled from runtime source strings executes through the runtime instruction interpreter.
+Calls into statically compiled functions, including calls from dynamic code and functions created from
+static code objects, keep their Rust AOT entries. The interpreter is included only when the analysis
+cannot prove runtime compilation unreachable.
 Syntax without runtime support produces a diagnostic.
 The runtime also supports `__future__` declarations and flag inheritance, Unicode NFKC identifiers,
 type parameters, lazy type aliases, and GenericAlias parameter substitution in both static and dynamic code.

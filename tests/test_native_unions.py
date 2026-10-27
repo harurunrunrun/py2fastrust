@@ -122,7 +122,7 @@ print((a&b)^True,not a,a<b,a==b)
             with self.subTest(source=source):
                 result = transpile(source)
                 self.assertTrue(result.success, result.diagnostics)
-                self.assertEqual(result.backend, "vm")
+                self.assertEqual(result.backend, "aot")
 
     def test_union_numeric_operations_preserve_fixed_width_normalization(self):
         self.compare('''

@@ -10,6 +10,7 @@ from .ir import SourceLocation
 from .native import try_generate_native
 from .provenance import add_header
 from .reachability import dynamic_compilation_unreachable
+from .rust_pruning import prune_rust_source
 from .settings import apply_source_options, license_name, source_directives
 
 
@@ -28,7 +29,7 @@ class TranspileResult:
     rust_source: str | None
     diagnostics: tuple[Diagnostic, ...] = ()
     source_map: tuple[SourceLocation, ...] = ()
-    backend: str = "vm"
+    backend: str = "aot"
 
     @property
     def success(self):
@@ -54,10 +55,12 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
                                    for code_id, code in enumerate(program.codes)
                                    for index, op in enumerate(code.ops))
                 return TranspileResult(add_header(native, source, options, "native"), source_map=source_map, backend="native")
-        include_dynamic = not (options.optimize and dynamic_compilation_unreachable(source, program))
+        include_dynamic = not dynamic_compilation_unreachable(source, program)
         rust_source, source_map = generate(program, options.integer, include_dynamic=include_dynamic,
                                           native_leaves=options.optimize)
-        return TranspileResult(add_header(rust_source, source, options, "vm"), source_map=source_map)
+        if options.optimize:
+            rust_source = prune_rust_source(rust_source)
+        return TranspileResult(add_header(rust_source, source, options, "aot"), source_map=source_map)
     except CompilationError as exc:
         return TranspileResult(None, (exc.diagnostic,))
     except (OSError, UnicodeError) as exc:

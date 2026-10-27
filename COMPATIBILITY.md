@@ -52,9 +52,17 @@ Callback-free native comparison cycles can be detected earlier. Stateful callbac
 and may terminate a cycle normally. The exact callback count at a recursion error need not match
 CPython's adaptive opcode specialization or platform-specific C-stack guard.
 
-The general backend can omit dynamic-compilation components for simple module-level programs
-whose calls are proved to target unmodified leaf built-ins. Indirect calls, reflection, imports,
-and unknown syntax retain those components. `--no-optimize` disables this pruning.
+All ordinary source bodies execute generated Rust functions, including bodies whose values
+require dynamic `Value` and object helpers. The general backend is reported as `aot`;
+proved typed specializations are reported as `native`. Static code objects retain their AOT
+entry when called through dynamic code or used to construct another function.
+
+New Python source compiled at runtime by `compile`/`eval`/`exec` uses a runtime instruction
+interpreter. The converter omits that interpreter, parser, and dynamic syntax tables for
+simple module-level programs whose calls are proved to target unmodified leaf built-ins.
+Indirect calls, reflection, imports, and unknown syntax retain those components conservatively.
+This reachability check also runs with `--no-optimize`; that option disables native
+specializations while preserving direct Rust generation for ordinary source.
 
 `frozenset` supports construction, hashing, iteration, membership, comparisons, read-only set methods,
 mixed operations with `set`, subclasses, and GenericAlias.
@@ -139,7 +147,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - In one CPython 3.14.4 bug case, a captured comprehension iteration variable shadows a free variable of the enclosing function and the interpreter retains the new cell. Generated code instead restores the original enclosing cell as [PEP 709](https://peps.python.org/pep-0709/) specifies. AST and dynamic compilation agree on that restoration.
 - Invalid stale text-decoder snapshots raise `OSError` before changing the stream. CPython 3.14.4 can access beyond an empty snapshot after a seek/iteration/flush sequence; its unstable release-build results are not reproduced.
 - A traceback's `tb_frame` is a snapshot containing source information. It does not expose live-frame manipulation or CPython bytecode offsets.
-- Native specialization of code containing dynamic functions and classes is limited; such code may use the general runtime.
+- Native specialization of code containing dynamic functions and classes is limited; such code uses general AOT with shared value and object helpers.
 - Superseded container storage in native code can remain until the enclosing Rust scope ends. Peak memory may exceed that of the equivalent Python program.
 
 Unsupported syntax and modules produce transpilation diagnostics.

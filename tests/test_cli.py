@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 
 from py2fastrust import TranspileOptions, transpile
+from py2fastrust.aot import rust_mask
+from py2fastrust.compiler import Compiler
 
 
 class APITests(unittest.TestCase):
@@ -17,8 +19,26 @@ class APITests(unittest.TestCase):
         self.assertTrue(result.source_map)
         self.assertNotIn("enum Value", result.rust_source)
         result = transpile(source, TranspileOptions(optimize=False))
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
         self.assertIn("enum Value", result.rust_source)
+        self.assertIn("// Integer mode: i64; backend: aot.",result.rust_source)
+        self.assertNotRegex(rust_mask(result.rust_source),r"\bOp\b|\bInstr\b|\.ops\b|\bfn\s+step\b")
+        self.assertEqual(result.rust_source.count("compiled:Some(Runtime::generated_aot_code_"),
+                         len(Compiler().compile(source).codes))
+
+    def test_cli_no_optimize_emits_direct_aot_and_reports_it_in_header(self):
+        with tempfile.TemporaryDirectory(prefix="pytors-cli-aot-") as directory:
+            root=Path(directory)
+            source=root/"main.py"
+            output=root/"main.rs"
+            source.write_text("value=[1,2]\nprint(value)\n")
+            result=subprocess.run([sys.executable,"-m","py2fastrust",str(source),
+                                   "--no-optimize","-o",str(output)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            rust=output.read_text()
+            self.assertIn("// Integer mode: i64; backend: aot.",rust)
+            self.assertNotRegex(rust_mask(rust),r"\bOp\b|\bInstr\b|\.ops\b|\bfn\s+step\b")
+            self.assertIn("compiled:Some(Runtime::generated_aot_code_0)",rust)
 
     def test_bad_integer_option_and_syntax_diagnostics(self):
         result = transpile("x=1", TranspileOptions(integer="i32", filename="bad.py"))

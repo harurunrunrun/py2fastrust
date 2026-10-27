@@ -214,14 +214,14 @@ print(accumulate(int(input()),int(input()),int(input())))
         source = "def f(x): return x\ng=f\nprint(g(1))"
         result = transpile(source, TranspileOptions())
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
 
     def test_bigint_still_uses_the_general_backend(self):
         source = "def f(x): return x*x\nprint(f(1<<256))"
         self.assertIsNone(try_generate_native(source, "big.py", "bigint"))
         result = transpile(source, TranspileOptions(integer="bigint"))
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
 
 
 if __name__ == "__main__":

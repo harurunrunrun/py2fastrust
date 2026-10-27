@@ -204,14 +204,14 @@ print(len(s),sum(s),sum(s,a),a in s)
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
         result = transpile("s={1}; t=s; t.add(2); print(len(s))", TranspileOptions())
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
 
-    def test_bigint_keeps_the_vm_backend(self):
+    def test_bigint_keeps_the_general_aot_backend(self):
         source = "s={1,1<<128};s.add(1<<256);print(len(s),sum(s),1<<256 in s)"
         self.assertIsNone(try_generate_native(source, "big.py", "bigint"))
         result = transpile(source, TranspileOptions(integer="bigint"))
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
         path = Path(self.tmp.name) / "big.rs"
         path.write_text(result.rust_source, encoding="utf-8")
         binary = path.with_suffix("")

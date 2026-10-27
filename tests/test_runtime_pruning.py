@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from py2fastrust import TranspileOptions, transpile
+from py2fastrust.aot import rust_mask
 from py2fastrust.codegen import generate
 from py2fastrust.compiler import Compiler
 from py2fastrust.reachability import dynamic_compilation_unreachable
@@ -50,34 +51,56 @@ class ReachabilityTests(unittest.TestCase):
                 self.assertFalse(self.proof(source))
                 result = transpile(source)
                 self.assertTrue(result.success, result.diagnostics)
-                if result.backend == "vm":
+                if result.backend == "aot":
                     self.assertTrue("struct PegParser" in result.rust_source, "dynamic parser was incorrectly omitted")
 
-    def test_simple_vm_proof_and_no_optimize_override(self):
+    def assert_closed_aot(self,result,source):
+        self.assertTrue(result.success,result.diagnostics)
+        self.assertEqual(result.backend,"aot")
+        masked=rust_mask(result.rust_source)
+        self.assertNotRegex(masked,r"\bOp\b|\bInstr\b|\.ops\b|\bfn\s+step\b")
+        self.assertNotIn("struct PegParser",result.rust_source)
+        self.assertNotIn("enum DExpr",result.rust_source)
+        program=Compiler().compile(source)
+        self.assertEqual(result.rust_source.count("compiled:Some(Runtime::generated_aot_code_"),len(program.codes))
+
+    def test_simple_aot_proof_is_independent_of_optimization(self):
         self.assertTrue(self.proof(SIMPLE))
-        optimized = transpile(SIMPLE)
-        complete = transpile(SIMPLE, TranspileOptions(optimize=False))
-        self.assertEqual(optimized.backend, "vm")
-        self.assertTrue(optimized.success, optimized.diagnostics)
-        self.assertTrue(complete.success, complete.diagnostics)
-        self.assertFalse("struct PegParser" in optimized.rust_source, "unreachable parser was retained")
-        self.assertFalse("enum DExpr" in optimized.rust_source, "unreachable dynamic AST was retained")
-        self.assertTrue("struct PegParser" in complete.rust_source, "--no-optimize must retain the parser")
-        self.assertLess(len(optimized.rust_source), len(complete.rust_source) * 0.7)
-        self.assertEqual(optimized.source_map, complete.source_map)
+        optimized=transpile(SIMPLE)
+        plain=transpile(SIMPLE,TranspileOptions(optimize=False))
+        self.assert_closed_aot(optimized,SIMPLE)
+        self.assert_closed_aot(plain,SIMPLE)
+        self.assertEqual(optimized.source_map,plain.source_map)
 
     def test_internal_codegen_defaults_to_full_runtime(self):
-        source, _ = generate(Compiler("empty.py").compile(""))
-        self.assertTrue("struct PegParser" in source)
-        # An optional full-runtime generation must not leak between calls.
-        self.assertTrue("struct PegParser" in transpile(SIMPLE, TranspileOptions(optimize=False)).rust_source)
-        self.assertFalse("struct PegParser" in transpile(SIMPLE).rust_source)
+        source,_=generate(Compiler("empty.py").compile(""))
+        self.assertIn("struct PegParser",source)
+        self.assertIn("fn step(",source)
+        self.assertIn("compiled:Some(Runtime::generated_aot_code_0)",source)
+        self.assertNotIn("Instr { op:",source)
+        # The explicit open-runtime request must not leak into later API calls.
+        self.assert_closed_aot(transpile(SIMPLE,TranspileOptions(optimize=False)),SIMPLE)
+        self.assert_closed_aot(transpile(SIMPLE),SIMPLE)
 
-    def test_source_option_can_disable_pruning(self):
-        source = "# pytors: --no-optimize\n" + SIMPLE
-        result = transpile(source, TranspileOptions(optimize=True))
-        self.assertTrue(result.success, result.diagnostics)
-        self.assertTrue("struct PegParser" in result.rust_source)
+    def test_source_option_disables_specialization_but_preserves_static_aot(self):
+        source="# pytors: --no-optimize\n"+SIMPLE
+        result=transpile(source,TranspileOptions(optimize=True))
+        self.assert_closed_aot(result,source)
+        self.assertNotIn("PY2FASTRUST_NATIVE_LEAF_HIT",result.rust_source)
+
+    def test_no_optimize_keeps_required_runtime_compilation(self):
+        source="print(eval('3+4'))\n"
+        for optimize in (False,True):
+            with self.subTest(optimize=optimize):
+                result=transpile(source,TranspileOptions(optimize=optimize))
+                self.assertTrue(result.success,result.diagnostics)
+                self.assertEqual(result.backend,"aot")
+                self.assertIn("struct PegParser",result.rust_source)
+                self.assertIn("fn step(",result.rust_source)
+                program=Compiler().compile(source)
+                self.assertEqual(result.rust_source.count("compiled:Some(Runtime::generated_aot_code_"),len(program.codes))
+                self.assertEqual(result.rust_source.count("ops:vec![]"),len(program.codes))
+                self.assertNotIn("Instr { op:",result.rust_source)
 
     def test_explicit_bundled_modules_are_kept_conservatively(self):
         with tempfile.TemporaryDirectory(prefix="py2fastrust-pruning-module-") as directory:
@@ -119,17 +142,17 @@ class PrunedExecutionTests(unittest.TestCase):
                 self.assertIn('File "pruning_fixture.py", line 3', actual.stderr)
         return result
 
-    def test_pruned_vm_all_integer_modes_and_build_profiles(self):
+    def test_pruned_aot_all_integer_modes_and_build_profiles(self):
         for integer in ("i64", "i128", "bigint"):
             for release in (False, True):
                 with self.subTest(integer=integer, release=release):
                     result = self.compare(SIMPLE, integer=integer, release=release, data="12\n\n")
-                    self.assertEqual(result.backend, "vm")
+                    self.assertEqual(result.backend, "aot")
                     self.assertFalse("struct PegParser" in result.rust_source)
 
     def test_pruned_exception_keeps_prior_output_and_source_location(self):
         result = self.compare('state = "ready"\nprint(state)\nvalue = [1][3]\n')
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
         self.assertFalse("struct PegParser" in result.rust_source)
 
     def test_indirect_dynamic_calls_retain_working_compiler(self):
@@ -148,5 +171,5 @@ code = callback("print('dynamic')", "indirect.py", "exec")
 exec(code)
 '''
         result = self.compare(source)
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
         self.assertTrue("struct PegParser" in result.rust_source)

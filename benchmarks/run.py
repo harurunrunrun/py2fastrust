@@ -112,7 +112,7 @@ def inspect_source(rust, backend):
             "contains_value_enum": "enum Value" in rust, "contains_runtime_struct": "struct Runtime" in rust,
             "dynamic_reference_lines_in_main": sum(bool(dynamic.search(line)) for line in lines),
             "native_loop_regions": loops,
-            "vm_note": None if backend == "native" else "VM hot loops reside in interpreter helpers"}
+            "aot_note": None if backend == "native" else "General AOT bodies use Value and runtime helpers; this main-only scan does not inspect their basic blocks"}
 
 def environment(args):
     cpu = {}

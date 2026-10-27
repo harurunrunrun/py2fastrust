@@ -10,7 +10,7 @@ impl Runtime {
         if frame.pc==usize::MAX{return Err(self.iterator_stop(&Value::Obj(index))?);}
         if self.running_generators.contains(&index){return Err(pyerr("ValueError","generator already executing"));}
         if self.recursion>=self.recursion_limit{return Err(pyerr("RecursionError","maximum recursion depth exceeded"));}
-        if frame.pc>0&&matches!(self.codes[frame.code].ops.get(frame.pc-1).map(|instruction|&instruction.op),Some(Op::Yield)) {
+        if frame.pc>0&&self.codes[frame.code].is_yield(frame.pc-1) {
             frame.stack.push(frame.resume_value.take().unwrap_or(Value::None));
         }
         frame.protocol_generator=Some(index);Ok(*frame)

@@ -541,7 +541,7 @@ solve()
         result = transpile(source)
         self.assertTrue(result.success, result.diagnostics)
         self.assertEqual(result.backend, "native")
-        self.assertEqual(transpile(source, TranspileOptions(optimize=False)).backend, "vm")
+        self.assertEqual(transpile(source, TranspileOptions(optimize=False)).backend, "aot")
 
     def test_guarded_entry_wrapper_with_docstrings_and_arrays(self):
         source = '''

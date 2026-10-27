@@ -752,7 +752,7 @@ impl DCompiler {
         let index = self.codes.len();
         let docstring=if self.optimize<2 && kind==ScopeKind::Function{body.first().and_then(d_docstring).map(|value|d_clean_doc(value))}else{None};
         let (qualname,lexical_prefix,definition_prefix)=self.qualify_child(enclosing,name,&kind);
-        self.codes.push(Code { name:name.to_owned(),qualname:qualname.clone(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator,future_flags:self.future_flags,docstring });
+        self.codes.push(Code { name:name.to_owned(),qualname:qualname.clone(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),compiled:None,compiled_meta:None,is_generator:symbols.generator,future_flags:self.future_flags,docstring });
         let is_class = kind == ScopeKind::Class;
         let mut scopes = enclosing.scopes.clone(); scopes.push((kind,symbols.locals,symbols.globals));
         let mut comp_scopes=enclosing.comp_locals.clone();comp_scopes.push(comp_locals);
@@ -1355,7 +1355,7 @@ impl DCompiler {
         let name=if kind=="generator"{"<genexpr>".to_owned()}else{format!("<{kind}comp>")};
         let qualname=format!("{}{name}",outer.lexical_prefix);
         let lexical_prefix=if kind=="generator"{format!("{qualname}.")}else{outer.lexical_prefix.clone()};
-        self.codes.push(Code { name,qualname,filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator",future_flags:self.future_flags,docstring:None });
+        self.codes.push(Code { name,qualname,filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),compiled:None,compiled_meta:None,is_generator:kind=="generator",future_flags:self.future_flags,docstring:None });
         let mut scopes = outer.scopes.clone(); scopes.push((ScopeKind::Comprehension,symbols.locals,globals)); let mut comp_scopes=outer.comp_locals.clone();comp_scopes.push(comp_locals); let mut ctx = DCtx { index,loops:Vec::new(),scopes,comp_locals:comp_scopes,private:outer.private.clone(),lexical_prefix,definition_prefix:outer.lexical_prefix.clone() };
         let result = if kind == "generator" { None } else { let tmp = self.temporary(&ctx); self.emit(&ctx,match kind { "list"=>Op::BuildList(0),"set"=>Op::BuildSet(0),_=>Op::BuildDict(0) },line,col); self.emit(&ctx,Op::Store(tmp.clone()),line,col); Some(tmp) };
         self.comprehension_loop(&mut ctx,kind,element,value,generators,0,result.as_deref(),inline,line,col)?;
@@ -1407,7 +1407,7 @@ fn compile_dynamic_optimized(source: &str, filename: &str, mode: &str, code_offs
     let comp_locals=symbols.finish_comprehensions();
     if let Some(error) = symbols.error { return Err(error); }
     if !symbols.nonlocals.is_empty() { return Err(format!("SyntaxError: nonlocal declaration not allowed at module level ({filename}:1)")); }
-    let code = Code { name:"<module>".to_owned(),qualname:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags,docstring:None };
+    let code = Code { name:"<module>".to_owned(),qualname:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),compiled:None,compiled_meta:None,is_generator:false,future_flags,docstring:None };
     let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single",future_flags,scope_annotations:HashMap::new(),stringized_annotation:false,optimize };
     let mut ctx = DCtx { index:0,loops:Vec::new(),scopes:vec![(ScopeKind::Module,symbols.locals,symbols.globals)],comp_locals:vec![comp_locals],private:None,lexical_prefix:String::new(),definition_prefix:String::new() };
     if mode == "eval" {

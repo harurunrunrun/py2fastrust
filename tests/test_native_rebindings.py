@@ -328,7 +328,7 @@ print(sorted(old),value)
 '''
         result = transpile(alias, TranspileOptions())
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
         path = Path(self.tmp.name) / "alias.rs"
         path.write_text(result.rust_source, encoding="utf-8")
         binary = path.with_suffix("")

@@ -18,7 +18,7 @@ class SourceOptionsTests(unittest.TestCase):
         source = '#!/usr/bin/env python3\n# coding: utf-8\n\n# py2fastrust: --int i128 --license Unlicense --no-optimize\nprint(2**70)\n'
         result = transpile(source, TranspileOptions(integer="i64", license="MIT", filename="solution.py"))
         self.assertTrue(result.success, result.diagnostics)
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
         self.assertTrue(result.rust_source.startswith("// LICENSE: Unlicense\n//\n"))
         self.assertIn("const INT_BITS: u32 = 128;", result.rust_source)
         self.assertTrue(any(location.line == 5 and location.filename == "solution.py" for location in result.source_map))

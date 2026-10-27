@@ -29,6 +29,8 @@ struct Code {
     frees: Vec<String>,
     params: Params,
     ops: Vec<Instr>,
+    compiled: Option<CompiledEntry>,
+    compiled_meta: Option<CompiledMetadata>,
     is_generator: bool,
     future_flags: u32,
     docstring: Option<String>,
@@ -1061,23 +1063,7 @@ impl Runtime {
         };
         Ok(value)
     }
-    fn find_finally_end(&self, code: usize, start: usize) -> usize {
-        let mut depth = 0;
-        for (i, ins) in self.codes[code].ops.iter().enumerate().skip(start) {
-            match ins.op {
-                Op::SetupFinally(_) => depth += 1,
-                Op::EndFinally => {
-                    if depth == 0 {
-                        return i;
-                    } else {
-                        depth -= 1
-                    }
-                }
-                _ => {}
-            }
-        }
-        usize::MAX
-    }
+
     fn discard_finalizers(f: &mut Frame, keep: usize) {
         while f.finally_regions.len() > keep {
             if let Some((_, _, raised)) = f.finally_regions.pop() {
@@ -1100,15 +1086,11 @@ impl Runtime {
         {
             return true;
         }
-        self.codes[code].ops.iter().any(|ins| match &ins.op {
-            Op::Load(n) if n == "__class__" || n == "super" => true,
-            Op::MakeFunction { code, .. } => self.code_needs_class_cell(*code, depth + 1),
-            _ => false,
-        })
+        self.codes[code].loads_class_cell() || self.codes[code].function_codes().iter().any(|child|self.code_needs_class_cell(*child,depth+1))
     }
     fn code_needs_class_dict(&self,code:usize,depth:usize)->bool {
         if depth>100{return false;}
-        self.codes[code].frees.iter().any(|name|name=="__classdict__") || self.codes[code].ops.iter().any(|instruction|matches!(&instruction.op,Op::MakeFunction{code,..} if self.code_needs_class_dict(*code,depth+1)))
+        self.codes[code].frees.iter().any(|name|name=="__classdict__") || self.codes[code].function_codes().iter().any(|child|self.code_needs_class_dict(*child,depth+1))
     }
     fn cache_key_check(&mut self, v: &Value) -> PyResult<()> {
         if let Value::Obj(i) = v {
@@ -1872,19 +1854,15 @@ impl Runtime {
                 self.collect();
                 self.allocations = 0;
             }
-            let delegated = matches!(
-                self.codes[f.code]
-                    .ops
-                    .get(f.pc)
-                    .map(|instruction| &instruction.op),
-                Some(Op::YieldFrom)
-            );
+            let delegated = self.codes[f.code].is_yield_from(f.pc);
             let result = if let Some(error)=protocol_error.take(){Err(error)}else if f.protocol.as_ref().is_some_and(|state|state.value.is_some() || state.plan.is_some()) {
                 self.resume_protocol(&mut f).map(|_|None)
             } else if f.injected_exception.is_some() && !delegated {
                 Err(f.injected_exception.take().unwrap())
-            } else if f.pc >= self.codes[f.code].ops.len() {
+            } else if f.pc >= self.codes[f.code].instruction_count() {
                 Ok(Some(FrameExit::Return(Value::None)))
+            } else if let Some(entry)=self.codes[f.code].compiled {
+                entry(self,&mut f,current)
             } else {
                 let ins = self.codes[f.code].ops[f.pc].clone();
                 f.pc += 1;
@@ -1985,11 +1963,7 @@ impl Runtime {
                     self.exception_value(&mut e);
                     self.sync_exception(&e);
                     if !e.skip_trace {
-                        let line = self.codes[f.code]
-                            .ops
-                            .get(f.pc.saturating_sub(1))
-                            .map(|instruction| instruction.line)
-                            .unwrap_or(1);
+                        let line = self.codes[f.code].line_at(f.pc.saturating_sub(1));
                         let name = if self.codes[f.code].kind == ScopeKind::Module {
                             "<module>".into()
                         } else {
@@ -6255,17 +6229,7 @@ impl Runtime {
         };
         self.execute(frame)?;
         }
-        let methods = self.codes[code]
-            .ops
-            .iter()
-            .filter_map(|ins| {
-                if let Op::MakeFunction { code, .. } = &ins.op {
-                    Some(*code)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+        let methods = self.codes[code].function_codes();
         let has_method = methods.iter().any(|i| {
             self.codes[*i].kind == ScopeKind::Function && !self.codes[*i].name.starts_with('<')
         });
@@ -8368,11 +8332,7 @@ impl Runtime {
                     if frame.pc == usize::MAX {
                         return Ok(None);
                     }
-                    if frame.pc > 0
-                        && matches!(
-                            self.codes[frame.code].ops.get(frame.pc - 1).map(|x| &x.op),
-                            Some(Op::Yield)
-                        )
+                    if frame.pc > 0 && self.codes[frame.code].is_yield(frame.pc - 1)
                     {
                         frame
                             .stack

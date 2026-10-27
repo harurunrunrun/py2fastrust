@@ -1,4 +1,4 @@
-"""Access and operator callbacks suspend on VM frames, including their fallbacks."""
+"""Access and operator callbacks suspend on heap frames, including their fallbacks."""
 import shutil
 import unittest
 

@@ -99,7 +99,7 @@ class StdlibRelocationTests(unittest.TestCase):
                          for path in self.placements]
         self.assertEqual(first, second)
         self.assertFalse(first["diagnostics"], first["diagnostics"])
-        self.assertEqual(first["backend"], "vm")
+        self.assertEqual(first["backend"], "aot")
         self.assertNotIn("collections", first["native_imports"])
         self.assertIn(str(shadow), first["code_filenames"])
         self.assertTrue(any(item["filename"] == str(shadow) for item in first["source_map"]))

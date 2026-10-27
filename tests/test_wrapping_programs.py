@@ -1,6 +1,6 @@
 """Whole programs checked against a per-operation wrapping reference.
 
-Each integer mode shares one VM driver for static and runtime-compiled source.
+Each integer mode shares one AOT driver for static and runtime-compiled source.
 The proved scalar/list subset shares one native driver per fixed-width mode.
 Every generated Rust source is compiled both with rustc defaults and with -O.
 """
@@ -96,7 +96,7 @@ def random_programs():
 
 
 NATIVE_PROGRAMS += random_programs()
-VM_PROGRAMS = NATIVE_PROGRAMS + [
+AOT_PROGRAMS = NATIVE_PROGRAMS + [
     source('''
         a=int(input())
         b=int(input())
@@ -222,13 +222,13 @@ def native_driver():
     return "".join(branches)
 
 
-def vm_driver():
-    lines = ["programs=" + repr(VM_PROGRAMS) + "\n"]
-    for index, program in enumerate(VM_PROGRAMS):
+def aot_driver():
+    lines = ["programs=" + repr(AOT_PROGRAMS) + "\n"]
+    for index, program in enumerate(AOT_PROGRAMS):
         lines += [f"def case_{index}():\n", textwrap.indent(program, "    ")]
     lines += ["selector=int(input())\n", "dynamic=int(input())\n",
               "if dynamic:\n    exec(programs[selector],{})\n", "else:\n"]
-    for index in range(len(VM_PROGRAMS)):
+    for index in range(len(AOT_PROGRAMS)):
         lines.append("    " + ("if" if index == 0 else "elif") + f" selector=={index}: case_{index}()\n")
     return "".join(lines)
 
@@ -331,12 +331,12 @@ class WrappingProgramTests(unittest.TestCase):
         cls.binaries = {}
         root = Path(cls.directory.name)
         for integer in ("i64", "i128", "bigint"):
-            result = transpile(vm_driver(), TranspileOptions(integer=integer, optimize=False))
+            result = transpile(aot_driver(), TranspileOptions(integer=integer, optimize=False))
             if not result.success:
                 raise AssertionError("\n".join(map(str, result.diagnostics)))
-            if result.backend != "vm":
-                raise AssertionError("shared VM driver must use the general runtime")
-            sources = {"vm": result.rust_source}
+            if result.backend != "aot":
+                raise AssertionError("shared AOT driver must use the general AOT backend")
+            sources = {"aot": result.rust_source}
             if integer != "bigint":
                 sources["native"] = try_generate_native(native_driver(), "wrapping_native.py", integer)
                 if sources["native"] is None:
@@ -356,10 +356,10 @@ class WrappingProgramTests(unittest.TestCase):
 
     def test_program_corpus_in_static_dynamic_native_and_debug_release(self):
         for integer in ("i64", "i128", "bigint"):
-            for index, program in enumerate(VM_PROGRAMS):
+            for index, program in enumerate(AOT_PROGRAMS):
                 for data in input_cases(integer):
                     expected = execute(program, integer, data)
-                    modes = [("vm", 0), ("vm", 1)]
+                    modes = [("aot", 0), ("aot", 1)]
                     if integer != "bigint" and index < len(NATIVE_PROGRAMS):
                         modes.append(("native", None))
                     for backend, dynamic in modes:

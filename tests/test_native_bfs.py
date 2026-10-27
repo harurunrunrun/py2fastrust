@@ -255,19 +255,19 @@ print(len(rows))
             with self.subTest(source=source):
                 result = transpile(source)
                 self.assertTrue(result.success, result.diagnostics)
-                self.assertEqual(result.backend, "vm")
+                self.assertEqual(result.backend, "aot")
         # Direct native entry without actual module-resolution evidence cannot
         # silently assume that this import denotes our standard implementation.
         self.assertIsNone(try_generate_native(BFS, "bfs.py", "i64"))
         self.assertIsNone(try_generate_native(BFS, "bfs.py", "bigint", trusted_imports={"collections"}))
 
-    def test_local_collections_and_module_path_shadowing_use_vm(self):
+    def test_local_collections_and_module_path_shadowing_use_general_aot(self):
         root = Path(self.tmp.name) / "shadow"
         root.mkdir()
         (root / "collections.py").write_text('def deque(value):\n print("custom module", value)\n return [99]\n')
         source = "from collections import deque\nq=deque([7])\nprint(q)\n"
         for paths, filename in (((), str(root / "main.py")), ((root,), "somewhere/main.py")):
-            binary, _ = self.compile(source, backend="vm", module_paths=paths, filename=filename)
+            binary, _ = self.compile(source, backend="aot", module_paths=paths, filename=filename)
             actual = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
             self.assertEqual(actual.returncode, 0, actual.stderr)
             self.assertEqual(actual.stdout, "custom module [7]\n[99]\n")

@@ -1,4 +1,4 @@
-"""Differential tests for the std-only integer runtime, independent of the VM."""
+"""Differential tests for the std-only integer runtime, independent of the execution backend."""
 import math
 from pathlib import Path
 import random

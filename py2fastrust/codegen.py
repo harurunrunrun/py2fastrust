@@ -145,27 +145,40 @@ def generate(program: Program, integer="i64", *, include_dynamic=True, native_le
         "dynamic.rs", "cst_lower.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs",
         "unicode_names.rs", "unicode_names_tables.rs",
     }
-    for name in ("stdio.rs", "streaming_io.rs", "file_io.rs", "file_text.rs", "file_objects.rs", "integer.rs", "complex.rs", "frozenset.rs", "vm.rs", "identity.rs", "keywords.rs", "protocol_calls.rs", "protocol_access.rs", "protocol_operators.rs", "protocol_sequences.rs", "protocol_builtins.rs", "protocol_stream_calls.rs", "protocol_input.rs", "protocol_generators.rs", "protocol_representations.rs", "protocol_collections.rs", "protocol_consumers.rs", "protocol_cells.rs", "protocol_sorting.rs", "protocol_extrema.rs", "protocol_set_operations.rs", "comprehensions.rs", "dynamic.rs", "cst_lower.rs", "patterns.rs", "math.rs", "itertools.rs", "stdlib_types.rs", "builtin_instances.rs", "native_attributes.rs", "numeric_methods.rs", "scalar_subclasses.rs", "float_arithmetic.rs", "buffers.rs", "bytes_format.rs", "implicit_slots.rs", "operand_slots.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "execution.rs", "closure_cells.rs", "cell_native.rs", "builtin_hooks.rs", "namespace.rs", "globals.rs", "dict_views.rs", "collections.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "unicode_names.rs", "unicode_names_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
+    for name in ("stdio.rs", "streaming_io.rs", "file_io.rs", "file_text.rs", "file_objects.rs", "integer.rs", "complex.rs", "frozenset.rs", "vm.rs", "code_metadata.rs", "identity.rs", "keywords.rs", "protocol_calls.rs", "protocol_access.rs", "protocol_operators.rs", "protocol_sequences.rs", "protocol_builtins.rs", "protocol_stream_calls.rs", "protocol_input.rs", "protocol_generators.rs", "protocol_representations.rs", "protocol_collections.rs", "protocol_consumers.rs", "protocol_cells.rs", "protocol_sorting.rs", "protocol_extrema.rs", "protocol_set_operations.rs", "comprehensions.rs", "dynamic.rs", "cst_lower.rs", "patterns.rs", "math.rs", "itertools.rs", "stdlib_types.rs", "builtin_instances.rs", "native_attributes.rs", "numeric_methods.rs", "scalar_subclasses.rs", "float_arithmetic.rs", "buffers.rs", "bytes_format.rs", "implicit_slots.rs", "operand_slots.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "execution.rs", "closure_cells.rs", "cell_native.rs", "builtin_hooks.rs", "namespace.rs", "globals.rs", "dict_views.rs", "collections.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "unicode_names.rs", "unicode_names_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
         if not include_dynamic and name in dynamic_components:
             continue
-        parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
+        source = files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8")
+        if name == "vm.rs":
+            from .aot import runtime_source
+            source = runtime_source(source, include_dynamic)
+        elif name == "comprehensions.rs" and not include_dynamic:
+            from .aot import _remove_definition
+            source = _remove_definition(source, "fn comprehension_rebase(")
+        elif name == "code_metadata.rs":
+            from .aot_metadata import metadata_runtime_source
+            source = metadata_runtime_source(include_dynamic)
+        parts.append(source)
     if not include_dynamic:
         parts.append(files("py2fastrust").joinpath("runtime", "dynamic_unreachable.rs").read_text(encoding="utf-8"))
     from .native_leaf import generate_native_leaves
     parts.append(generate_native_leaves(program, integer, enabled=native_leaves))
+    from .aot import generate as generate_aot
+    parts.append(generate_aot(program))
     parts.append("\nfn main() {\nlet codes = vec![\n")
     source_map = []
     for code_id, code in enumerate(program.codes):
         p = code.params
+        from .aot_metadata import metadata_expression
+        compiled_metadata = metadata_expression(program, code_id)
         parts.append(f"Code {{ name:{string(code.name)},qualname:{string(code.qualname if code.qualname is not None else code.name)},filename:{string(code.filename)},kind:ScopeKind::{code.kind},"
                      f"locals:{strings(code.locals)},comp_locals:{strings(code.comp_locals)},globals:{strings(code.globals)},nonlocals:{strings(code.nonlocals)},frees:{strings(code.frees)},"
                      f"params:Params {{ posonly:{p.posonly},positional:{strings(p.positional)},kwonly:{strings(p.kwonly)},"
                      f"vararg:{optional(p.vararg)},kwarg:{optional(p.kwarg)} }},"
-                     f"is_generator:{str(code.is_generator).lower()},future_flags:{code.future_flags},docstring:{optional(code.docstring)},ops:vec![\n")
+                     f"is_generator:{str(code.is_generator).lower()},future_flags:{code.future_flags},docstring:{optional(code.docstring)},compiled:Some(Runtime::generated_aot_code_{code_id}),compiled_meta:Some({compiled_metadata}),"
+                     + ("ops:vec![]," if include_dynamic else "") + "},\n")
         for index, instruction in enumerate(code.ops):
-            parts.append(f"Instr {{ op:{operation(instruction)},line:{instruction.line},column:{instruction.column} }},\n")
             source_map.append(SourceLocation(code_id, index, code.filename, instruction.line, instruction.column))
-        parts.append("] },\n")
     parts.append("];\nlet modules = vec![" + ",".join(f"({string(name)},{index})" for name, index in program.modules) + "];\n")
     parts.append("let mut runtime = Runtime::new(codes, modules);\n"
                  "if let Err(error) = runtime.run() { runtime.finish(); "

@@ -1,10 +1,11 @@
 """Template-string AST lowering and CPython 3.14 differential execution."""
 
 import ast
+from importlib.resources import files
 import shutil
 import unittest
 
-from py2fastrust.codegen import operation
+from py2fastrust.aot import statement, templates
 from py2fastrust.compiler import Compiler
 from py2fastrust.diagnostics import CompilationError
 from py2fastrust.ir import Instruction
@@ -28,10 +29,15 @@ class TemplateFrontendTests(unittest.TestCase):
         self.assertEqual([(op.line, op.column) for op in interpolations], [(1, 10), (1, 17)])
 
     def test_codegen_represents_absent_expression_and_imports_public_types(self):
-        self.assertEqual(operation(Instruction("MakeInterpolation", (None, -1, False))),
-                         "Op::MakeInterpolation { expression:None,conversion:-1,spec:false }")
-        self.assertIn('expression:Some(" x"',
-                      operation(Instruction("MakeInterpolation", (" x", 115, True))))
+        runtime=files("py2fastrust").joinpath("runtime","vm.rs").read_text()
+        template=templates(runtime)["MakeInterpolation"]
+        absent=statement(Instruction("MakeInterpolation",(None,-1,False)),template)
+        present=statement(Instruction("MakeInterpolation",(" x",115,True)),template)
+        self.assertIn("let expression: Option<String> = None;",absent)
+        self.assertIn("let conversion: i32 = -1;",absent)
+        self.assertIn('let expression: Option<String> = Some(" x"',present)
+        self.assertIn("self.make_interpolation(",absent)
+        self.assertNotIn("Op::",absent+present)
         program = Compiler().compile("import string.templatelib\nfrom string.templatelib import Template, Interpolation\n")
         self.assertTrue(any(op.op == "Import" and op.args[0] == "string.templatelib"
                             for op in program.codes[0].ops))

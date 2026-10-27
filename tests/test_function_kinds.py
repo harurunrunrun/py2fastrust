@@ -154,7 +154,7 @@ values=[2**64-1,2**127-1,-2**128]
 print(calculate(values,True,2**127),calculate(values,False,2**64))
 ''', wrapping=True)
 
-    def test_mutation_escaping_aliases_recursion_and_unknown_kinds_use_vm(self):
+    def test_mutation_escaping_aliases_recursion_and_unknown_kinds_use_general_aot(self):
         programs = [
             "def f(xs):\n xs[0]=7\n return sum(xs)\na=[1]\nprint(f(a),a)",
             "def f(xs):\n xs[0]+=7\n return sum(xs)\na=[1]\nprint(f(a),a)",
@@ -176,7 +176,7 @@ print(calculate(values,True,2**127),calculate(values,False,2**64))
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
         result = transpile(programs[0], TranspileOptions())
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "vm")
+        self.assertEqual(result.backend, "aot")
 
     def test_constant_default_metadata_cannot_hide_definition_effects_or_errors(self):
         cases = [
@@ -189,7 +189,7 @@ print(calculate(values,True,2**127),calculate(values,False,2**64))
                 self.assertIsNone(try_generate_native(source, "default_effect.py", "i64"))
                 result = transpile(source, TranspileOptions())
                 self.assertTrue(result.success)
-                self.assertEqual(result.backend, "vm")
+                self.assertEqual(result.backend, "aot")
                 self.run_source(source, stdin=stdin)
 
 

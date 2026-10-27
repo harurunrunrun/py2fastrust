@@ -219,12 +219,7 @@ impl Runtime {
         while let Some(code)=pending.pop() {
             if !seen.insert(code){continue;}
             if let Some(index)=self.code_objects.get(&code){roots.push(Value::Obj(*index));}
-            for instruction in &self.codes[code].ops {
-                match &instruction.op {
-                    Op::MakeFunction{code,..}|Op::PrepareClass(code)|Op::MakeClass{code,..}|Op::MakeClassEx{code,..}=>pending.push(*code),
-                    _=>{},
-                }
-            }
+            pending.extend(self.codes[code].child_codes());
         }
     }
 

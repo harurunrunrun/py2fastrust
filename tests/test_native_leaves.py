@@ -1,4 +1,4 @@
-"""Guarded leaf entries coexist with the full VM and original Code objects."""
+"""Guarded leaf entries coexist with general AOT bodies and original Code objects."""
 
 from collections import Counter
 import os
@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 from py2fastrust import TranspileOptions, transpile
+from py2fastrust.aot import closing, rust_mask
 from py2fastrust.compiler import Compiler
 from py2fastrust.codegen import generate
 from wrapping_reference import execute as wrapping_execute
@@ -71,6 +72,13 @@ print(scalar.__doc__,scalar.__code__.co_name)
 '''
 
 
+def leaf_body(source):
+    masked=rust_mask(source)
+    start=masked.index("fn try_native_leaf(")
+    opening=masked.index("{",start)
+    return source[opening+1:closing(masked,opening)]
+
+
 def boundary_source(integer):
     bits = {'i64':64, 'i128':128, 'bigint':160}[integer]
     high = (1 << (bits-1))-1
@@ -128,8 +136,8 @@ def no_parameter():return 1+2
     def test_native_body_uses_only_fixed_scalars_and_wraps_each_operation(self):
         source='def leaf(a,b):return -((a*b)+(a-b))^(~a|b)\nexec("pass")\n'
         result=transpile(source,TranspileOptions())
-        self.assertEqual(result.backend,'vm')
-        body=result.rust_source.split('fn try_native_leaf(',1)[1].split('\nfn main()',1)[0]
+        self.assertEqual(result.backend,'aot')
+        body=leaf_body(result.rust_source)
         self.assertIn('Object::Namespace',body)
         self.assertIn('Value::Int(value)',body)
         self.assertIn('wrapping_mul',body)
@@ -139,7 +147,7 @@ def no_parameter():return 1+2
         for forbidden in ['self.binary','self.unary','self.call','Object::List','Vec::','Value::Float']:
             self.assertNotIn(forbidden,body)
         boolean=transpile('def leaf(a):return (not a)&True\nexec("pass")\n',TranspileOptions())
-        body=boolean.rust_source.split('fn try_native_leaf(',1)[1].split('\nfn main()',1)[0]
+        body=leaf_body(boolean.rust_source)
         self.assertIn('Some(Value::Bool(',body)
 
 
@@ -148,7 +156,7 @@ class NativeLeafRuntimeTests(unittest.TestCase):
     def compile_run(self,source,integer,optimized,release,root,instrument=True):
         result=transpile(source,TranspileOptions(integer=integer,optimize=optimized,filename='leaf.py'))
         self.assertTrue(result.success,result.diagnostics)
-        self.assertEqual(result.backend,'vm')
+        self.assertEqual(result.backend,'aot')
         generated=result.rust_source
         hits=re.findall(r'// PY2FASTRUST_NATIVE_LEAF_HIT code=(\d+)',generated)
         if instrument:

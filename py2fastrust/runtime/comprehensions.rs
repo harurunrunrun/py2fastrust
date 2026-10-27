@@ -7,41 +7,7 @@ struct InlineComprehension {
 }
 
 impl Runtime {
-    fn comprehension_local_names(&self, code:usize)->Vec<String> {
-        let owner=&self.codes[code];
-        let mut inline=Vec::new();
-        for instruction in &owner.ops {
-            if let Op::BeginComprehension(child)=instruction.op {
-                for name in &self.codes[child].locals {
-                    if name!=".0" && !name.starts_with(['$', '\0']) && !inline.contains(name) {inline.push(name.clone());}
-                }
-            }
-        }
-        if inline.is_empty(){return owner.locals.clone();}
-        let mut cells=Vec::new();
-        let parameters=&owner.params;
-        for instruction in &owner.ops {
-            if let Op::MakeFunction{code:child,..}=instruction.op {
-                for name in &self.codes[child].frees {
-                    if owner.locals.contains(name) && !inline.contains(name) && !parameters.positional.contains(name) && !parameters.kwonly.contains(name) && parameters.vararg.as_ref()!=Some(name) && parameters.kwarg.as_ref()!=Some(name) && !cells.contains(name){cells.push(name.clone());}
-                }
-            }
-        }
-        cells.sort();
-        let mut names=Vec::new();
-        for instruction in &owner.ops {
-            let candidates=match &instruction.op {
-                Op::BeginComprehension(child)=>self.codes[*child].locals.clone(),
-                Op::Load(name)|Op::Store(name)|Op::Delete(name)=>vec![name.clone()],
-                _=>Vec::new(),
-            };
-            for name in candidates {
-                if (owner.locals.contains(&name) || inline.contains(&name)) && !cells.contains(&name) && !names.contains(&name){names.push(name);}
-            }
-        }
-        for name in &owner.locals {if !cells.contains(name) && !names.contains(name){names.push(name.clone());}}
-        names.extend(cells);names
-    }
+
     fn begin_comprehension(&mut self, frame: &mut Frame, code: usize) {
         let parent = frame.comprehensions.last().map(|scope|scope.namespace)
             .or_else(||match self.codes[frame.code].kind {
