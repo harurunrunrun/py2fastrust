@@ -8,7 +8,7 @@ the public API; it never selects a general execution backend.
 """
 
 import ast
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from importlib.resources import files
 import symtable
 
@@ -113,9 +113,18 @@ class _Function:
     defaults: dict[str, _Expression]
     local_names: set[str]
     return_kind: str
-    dependencies: set[str]
+    dependencies: set[ast.FunctionDef]
     required: set[str]
     imports: set[str]
+    global_bindings: dict[str, object] = field(default_factory=dict)
+
+
+class _FunctionPlans(dict):
+    """Keep each definition's identity, including sequential redefinitions."""
+
+    def __init__(self):
+        super().__init__()
+        self.definitions = {}
 
 
 def _string(value):
@@ -439,6 +448,7 @@ class _Generator:
         self.iterating_lists = []
         self.return_label = None
         self.functions = functions or {}
+        self.global_environment = None
         self.function = function
         self.function_input = function_input
         self.constructors = constructors or {}
@@ -482,6 +492,22 @@ class _Generator:
         info = self.binding(value) if isinstance(value, _Expression) else value
         environment[name] = _Binding(slot, info)
         return slot
+
+    def function_alias_assignment(self, node, environment):
+        """Copy a proved function identity without constructing runtime values."""
+        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Name)):
+            return None
+        function = environment.get(node.value.id)
+        if not isinstance(function, _Function):
+            return None
+        if not all(isinstance(target, ast.Name) and target.id not in self.BUILTINS
+                   and target.id not in self.iterating_lists for target in node.targets):
+            raise _Unsupported
+        if self.function is not None and node.value.id not in self.function.local_names:
+            self.function.required.add(node.value.id)
+        for target in node.targets:
+            environment[target.id] = function
+        return "", environment
 
     @staticmethod
     def update_info(environment, name, info):
@@ -741,15 +767,18 @@ class _Generator:
                 raise _Unsupported
             kinds.append(value.kind)
             arguments.append(f"&({value.code})" if value.kind == "list_int" else value.code)
-        variant = self.specializations.get(function, tuple(kinds))
+        globals_at_call = environment if self.function is None else self.global_environment
+        variant = self.specializations.get(function, tuple(kinds), globals_at_call)
         if self.function is None:
             # A callee's globals are looked up at call time, including indirect
             # callees whose definitions may follow the caller definition.
-            if any(environment.get(name) is not self.functions.get(name, self.constructors.get(name)) for name in variant.required):
+            if any(environment.get(name) is not variant.global_bindings.get(name) for name in variant.required):
                 raise _Unsupported
         else:
-            self.function.dependencies.add(function.node.name)
+            self.function.dependencies.add(function.node)
             self.function.required.update(variant.required)
+            if node.func.id not in self.function.local_names:
+                self.function.required.add(node.func.id)
         if self.function_input:
             arguments.append("&mut native_input")
         arguments.append("&mut native_output")
@@ -1499,6 +1528,10 @@ class _Generator:
             copies = []
             if kind != "break" and may_repeat and not zero:
                 for name, previous in header.items():
+                    if isinstance(previous, (_Function, _DequeConstructor)):
+                        if name in live and environment.get(name) is not previous:
+                            raise _Unsupported
+                        continue
                     if not isinstance(previous, _Binding):
                         continue
                     current = environment.get(name)
@@ -1519,6 +1552,9 @@ class _Generator:
         return "\n".join(initializers), body, self.after_loop(joined)
 
     def statement(self, node, environment):
+        alias = self.function_alias_assignment(node, environment)
+        if alias is not None:
+            return alias
         if isinstance(node, ast.ImportFrom):
             if self.function is not None or node.module != "collections" or node.level:
                 raise _Unsupported
@@ -1530,7 +1566,7 @@ class _Generator:
                 environment[name] = self.constructors[name]
             return "", environment
         if isinstance(node, ast.FunctionDef):
-            function = self.functions.get(node.name)
+            function = getattr(self.functions, "definitions", {}).get(node)
             if self.function is not None or function is None or function.node is not node:
                 raise _Unsupported
             environment[node.name] = function
@@ -2012,13 +2048,13 @@ def _main_wrapper(tree):
 
 
 def _function_plans(tree, table, bits, generator_type=_Generator):
-    functions = {}
+    functions = _FunctionPlans()
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef):
             continue
         parameters = node.args
         arguments = parameters.posonlyargs + parameters.args + parameters.kwonlyargs
-        if (node.name in functions or node.name in generator_type.BUILTINS | {"__builtins__", "__name__"}
+        if (node.name in generator_type.BUILTINS | {"__builtins__", "__name__"}
                 or node.decorator_list or node.returns is not None or node.type_params
                 or parameters.vararg or parameters.kwarg
                 or any(argument.annotation is not None for argument in arguments)
@@ -2063,12 +2099,14 @@ def _function_plans(tree, table, bits, generator_type=_Generator):
         value_returns = [statement for statement in ast.walk(node) if isinstance(statement, ast.Return)
                          and statement.value is not None
                          and not (isinstance(statement.value, ast.Constant) and statement.value.value is None)]
-        functions[node.name] = _Function(node, f"native_function_{len(functions)}", positional,
+        function = _Function(node, f"native_function_{len(functions.definitions)}", positional,
                                         {argument.arg for argument in parameters.posonlyargs},
                                         [argument.arg for argument in parameters.kwonlyargs], defaults,
                                         local_names, "int" if value_returns else "none", set(), set(), set())
+        functions[node.name] = function
+        functions.definitions[node] = function
     if functions and any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-                         and node.id in functions.keys() | {"__builtins__", "__name__"} for node in ast.walk(tree)):
+                         and node.id in {"__builtins__", "__name__"} for node in ast.walk(tree)):
         raise _Unsupported
     return functions
 
@@ -2086,6 +2124,7 @@ class _Specializations:
         self.active = set()
         self.sources = []
         self.generators = []
+        self.names = set()
 
     @staticmethod
     def readonly_arrays(node, names):
@@ -2104,25 +2143,37 @@ class _Specializations:
                 if rooted(value.func.value) and value.func.attr not in {"count", "index", "copy"}:
                     raise _Unsupported
 
-    def get(self, function, kinds):
-        key = (function.node.name, kinds)
+    def get(self, function, kinds, global_environment):
+        # Function bodies can only read proved callable globals. Numeric or
+        # mutable globals still require another direct representation. Snapshot
+        # identities are part of the cache key so later rebindings cannot reuse
+        # an earlier helper specialization.
+        globals_at_call = {name: value for name, value in global_environment.items()
+                           if isinstance(value, (_Function, _DequeConstructor))}
+        context = tuple((name, id(value)) for name, value in sorted(globals_at_call.items()))
+        key = (id(function.node), kinds, context)
         if key in self.variants:
             return self.variants[key]
         # Type-changing recursion is still recursion. Keep Python's frame and
         # RecursionError behavior instead of relying on Rust's host stack.
-        if function.node.name in self.active or len(self.active) >= 128:
+        if id(function.node) in self.active or len(self.active) >= 128:
             raise _Unsupported
         # Further specialization growth needs a direct-generation implementation.
         if len(self.variants) + len(self.active) >= 128:
             raise _Unsupported
         if any(kind not in {"int", "bool", "list_int", "float", "str"} for kind in kinds):
             raise _Unsupported
-        self.active.add(function.node.name)
-        variant = replace(function, rust_name=function.rust_name + "_" + ("_".join(kinds) or "void"),
-                          dependencies=set(), required=set(), imports=set())
+        self.active.add(id(function.node))
+        rust_name = function.rust_name + "_" + ("_".join(kinds) or "void")
+        if rust_name in self.names:
+            rust_name += f"_context_{len(self.names)}"
+        self.names.add(rust_name)
+        variant = replace(function, rust_name=rust_name, dependencies=set(), required=set(), imports=set(),
+                          global_bindings=globals_at_call)
         local = self.generator_type(self.bits, self.functions, variant, self.function_input,
                            self.constructors, self)
-        environment = {name: value for name, value in {**self.constructors, **self.functions}.items()
+        local.global_environment = globals_at_call
+        environment = {name: value for name, value in globals_at_call.items()
                        if name not in function.local_names}
         initializers, signature = [], []
         parameters = function.positional + function.kwonly
@@ -2146,7 +2197,7 @@ class _Specializations:
                 raise _Unsupported
             variant.return_kind = next(iter(local.return_kinds))
         tail = "\nOk(())" if variant.return_kind == "none" and remaining is not None else ""
-        variant.required.update({function.node.name} | variant.imports)
+        variant.required.update(variant.imports)
         return_type = {"int": "NativeInt", "bool": "bool", "float": "f64", "str": "String", "none": "()"}[variant.return_kind]
         source = (f"#[inline]\nfn {variant.rust_name}({', '.join(signature)}) -> Result<{return_type}, NativeError> {{\n"
                   "use std::fmt::Write as _;\n" + _declarations(local) + "\n"
@@ -2154,7 +2205,7 @@ class _Specializations:
         self.variants[key] = variant
         self.sources.append(source)
         self.generators.append(local)
-        self.active.remove(function.node.name)
+        self.active.remove(id(function.node))
         return variant
 
 

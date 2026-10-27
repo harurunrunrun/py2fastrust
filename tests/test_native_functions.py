@@ -178,9 +178,6 @@ print(accumulate(int(input()),int(input()),int(input())))
             "def outer(x):\n def inner(y): return x+y\n return inner(2)\nprint(outer(3))",
             "def f(x=int(input())): return x\nprint(f())",
             "def f(x=[]): return len(x)\nprint(f())",
-            "def f(x): return x\ng=f\nprint(g(1))",
-            "def f(x): return x\nf=3\nprint(f)",
-            "def f(x): return x\ndef f(x): return x+1\nprint(f(1))",
             "def f(x): return x\nprint(f.__defaults__)",
             "def f(x): return x\nprint(f([1]))",
             "def f(x): return [x]\nprint(f(1))",
@@ -214,7 +211,7 @@ print(accumulate(int(input()),int(input()),int(input())))
         source = "def f(x): return x\ng=f\nprint(g(1))"
         result = transpile(source, TranspileOptions())
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "aot")
+        self.assertEqual(result.backend, "native")
 
     def test_bigint_scalar_functions_use_native_rust(self):
         source = "def f(x): return x*x\nprint(f(1<<256))"

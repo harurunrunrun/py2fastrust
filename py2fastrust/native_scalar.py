@@ -1,8 +1,8 @@
 """Proved, ordinary Rust strings and binary64 scalars.
 
 This layer extends the integer/container proof without introducing a boxed
-object representation. Unknown types, observable identity, and user callbacks
-remain the responsibility of the general direct AOT backend. Expressions keep
+object representation. Unknown types, observable identity, and unproved callbacks
+require further direct lowering. Expressions keep
 their Python evaluation order even when Rust needs a temporary or a clone.
 """
 
@@ -478,6 +478,9 @@ class ScalarGenerator(_Generator):
         return _Expression(f"{{ {self.read_binding(names[0], values[0])} {tail} }}", "bool")
 
     def statement(self, node, environment):
+        alias = self.function_alias_assignment(node, environment)
+        if alias is not None:
+            return alias
         if isinstance(node, ast.Assign) and all(isinstance(target, ast.Name) for target in node.targets):
             value = self.expression(node.value, environment)
             if value.kind == "str":

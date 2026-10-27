@@ -372,6 +372,10 @@ class BigIntGenerator(BigIntLists, _Generator):
             copies = []
             if kind != "break" and may_repeat and not zero:
                 for name,previous in header.items():
+                    if isinstance(previous,_Function):
+                        if name in live and environment.get(name) is not previous:
+                            raise _Unsupported
+                        continue
                     current = environment.get(name)
                     compatible = isinstance(current,_Binding) and (current.kind==previous.kind or previous.kind=="int_bool" and current.kind in {"int","bool"})
                     if not compatible:
@@ -386,6 +390,9 @@ class BigIntGenerator(BigIntLists, _Generator):
         return "\n".join(initializers),body,self.after_loop(joined)
 
     def statement(self, node, environment):
+        alias = self.function_alias_assignment(node,environment)
+        if alias is not None:
+            return alias
         result = self.list_statement(node,environment)
         if result is not None:
             return result

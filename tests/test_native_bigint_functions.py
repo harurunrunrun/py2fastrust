@@ -164,7 +164,6 @@ print(read(int(input()),int(input())),int(input()))
     def test_unproved_recursion_aliases_mutable_defaults_and_global_effects(self):
         for source in ['def f(n):\n return 1 if n<=0 else n*f(n-1)\nprint(f(7))\n',
                        'def a(x):return b(x)\ndef b(x):return a(x)\nprint(a(1))\n',
-                       'def f(x):return x\ng=f\nprint(g(1))\n',
                        'def f(x=[]):return x\nprint(f())\n',
                        'x=7\ndef f():return x\nprint(f())\n',
                        'def f(x):\n global value\n value=x\nf(1)\n',
