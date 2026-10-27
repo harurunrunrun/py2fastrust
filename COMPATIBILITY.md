@@ -31,6 +31,9 @@ Acyclic captured buffer exports can be released with automatic cyclic GC disable
 recursive cell cycles remain exported until collection. Class annotation dictionary
 and conditional annotation cells share the public closure-cell storage.
 
+Heap classes retain stable `__mro__` and `__bases__` tuple identities, including
+their MRO ownership cycles. Creation hooks observe this metadata before they run.
+
 `sys.setrecursionlimit` controls Python frame depth. Finite native list/tuple comparison nesting does not
 consume that budget. Pending native protocol actions have a separate 64 MiB storage bound, counting
 inline action records and boxed native operation records; exhaustion raises `RecursionError` in the caller.

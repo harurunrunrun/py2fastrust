@@ -287,6 +287,8 @@ struct Class {
     name: Ident<String>,
     name_value: Value,
     bases: Vec<Value>,
+    bases_value: Value,
+    mro_value: Option<usize>,
     attrs: usize,
     metaclass: Value,
     dict_allowed: bool,
@@ -3393,6 +3395,8 @@ impl Runtime {
             }
             Object::Class(c) => {
                 pending.push(c.name_value.clone());
+                pending.push(c.bases_value.clone());
+                pending.extend(c.mro_value.iter().map(|owner|Value::Obj(*owner)));
                 pending.push(Value::Obj(c.attrs));
                 pending.extend(c.bases.iter().cloned());
                 pending.push(c.metaclass.clone())
@@ -5777,7 +5781,12 @@ impl Runtime {
             _ => return Err(pyerr("TypeError", "type() argument 1 must be str")),
         };
         if name.contains('\0'){return Err(pyerr("ValueError","type name must not contain null characters"));}
-        let mut bases = self.to_vec(args[1].clone())?;
+        let original_bases=self.native_payload(&args[1]).unwrap_or_else(||args[1].clone());
+        let mut bases=match original_bases {
+            Value::Obj(index)=>match self.object(index)? {Object::Tuple(bases)=>bases,_=>return Err(pyerr("TypeError","type() argument 2 must be tuple"))},
+            _=>return Err(pyerr("TypeError","type() argument 2 must be tuple")),
+        };
+        let implicit_base=bases.is_empty();
         if bases.iter().any(|base|!matches!(base,Value::Builtin(_)|Value::Type(_)) && !matches!(base,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))){return Err(pyerr("TypeError","bases must be types"));}
         for base in &bases {if matches!(base,Value::Builtin(name)if template_type_name(name)){return Err(pyerr("TypeError",format!("type '{}' is not an acceptable base type",self.class_name(base))));}}
         if bases.is_empty() {
@@ -5938,10 +5947,13 @@ impl Runtime {
             items.push((Value::Str("__doc__".into()),Value::None));
         }
         let ns = self.alloc(Object::Dict(items));
+        let bases_value=if implicit_base {self.obj_value(Object::Tuple(bases.clone()))}else{args[1].clone()};
         let out = self.obj_value(Object::Class(Class {
             name,
             name_value,
             bases,
+            bases_value,
+            mro_value:None,
             attrs: ns,
             metaclass,
             dict_allowed,
@@ -5950,6 +5962,9 @@ impl Runtime {
         let root = self.roots.len();
         self.roots.push(vec![out.clone()]);
         let result = (|| {
+            let mro=self.class_mro(&out,0).ok_or_else(||pyerr("TypeError","Cannot create a consistent method resolution order (MRO)"))?;
+            let mro=self.alloc(Object::Tuple(mro));
+            if let Value::Obj(owner)=&out {if let Some(Object::Class(class))=self.heap[*owner].as_mut(){class.mro_value=Some(mro);}}
             self.initialize_generic_class(&out)?;
             for name in slot_names {
                 let slot = self.next_slot;
@@ -8834,8 +8849,8 @@ impl Runtime {
                         self.ns_set(c.attrs,name.into(),annotations.clone());return Ok(annotations);
                     }
                     if name == "__mro__" {
-                        let mro = self
-                            .class_mro(&v, 0)
+                        if let Some(mro)=c.mro_value {return Ok(Value::Obj(mro));}
+                        let mro = self.class_mro(&v, 0)
                             .ok_or_else(|| pyerr("TypeError", "invalid method resolution order"))?;
                         return Ok(self.obj_value(Object::Tuple(mro)));
                     }
@@ -8851,7 +8866,7 @@ impl Runtime {
                         return Ok(self.obj_value(Object::MappingProxy { owner: c.attrs }));
                     }
                     if name == "__bases__" {
-                        return Ok(self.obj_value(Object::Tuple(c.bases)));
+                        return Ok(c.bases_value);
                     }
                     if let Some(value)=self.class_attribute_lookup(&v,name){return self.bind_descriptor(value,None,v);}
                     if let Some(value)=meta_attribute{return self.bind_descriptor(value,Some(v.clone()),c.metaclass);}
