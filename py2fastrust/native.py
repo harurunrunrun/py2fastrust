@@ -2183,4 +2183,5 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         result.append("if let Err(error) = native_result {\n"
                       f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {{}}, in <module>\\n{{}}", {_string(filename)}, error.line, error.message);\n'
                       "std::process::exit(1);\n}\n}\n")
-    return "\n".join(result)
+    from .rust_pruning import prune_rust_source
+    return prune_rust_source("\n".join(result))

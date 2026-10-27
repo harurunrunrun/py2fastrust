@@ -42,6 +42,8 @@ class NativeExtremaTests(unittest.TestCase):
             self.assertLess(len(result.rust_source.encode("utf-8")), 512 * 1024)
             for forbidden in ["enum Op", "enum Value", "struct Runtime", "fn step(", "struct PegParser"]:
                 self.assertNotIn(forbidden, result.rust_source)
+            for unused in ["fn native_pow(", "fn native_shl(", "fn native_shr("]:
+                self.assertNotIn(unused, result.rust_source)
             source = Path(self.tmp.name, f"example_{integer}.rs")
             source.write_text(result.rust_source, encoding="utf-8")
             inputs = ["1 2 10\n", "10 3 1\n", "-5 -3 7\n", "7 0 9\n",
