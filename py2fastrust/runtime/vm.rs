@@ -1960,6 +1960,9 @@ impl Runtime {
         }
     }
     fn step(&mut self, f: &mut Frame, op: Op) -> PyResult<Option<FrameExit>> {
+        if f.pc==1 {
+            if let Some(value)=self.try_native_leaf(f){return Ok(Some(FrameExit::Return(value)));}
+        }
         match op {
             Op::SetupAnnotations => {
                 if self.mapping_get(f.locals, "__annotations__")?.is_none() {

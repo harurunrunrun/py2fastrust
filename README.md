@@ -117,6 +117,9 @@ Ordinary user functions get separate Rust versions for proved integer, boolean, 
 Scalar results retain their integer or boolean type; positional and keyword arguments, constant defaults, and calls between functions are supported.
 Integer lists are borrowed without copying; functions that mutate or expose those argument lists use the general runtime.
 Recursion and functions with dynamic global or closure state use the general runtime.
+Within a general-runtime program, selected pure arithmetic function bodies can also use native code.
+Entry guards check the actual code object and bound integer arguments before any body operation;
+other argument types execute the original instructions. `--no-optimize` disables these entry paths.
 For simple module-level code, the optimizer also proves whether dynamic compilation is unreachable.
 The proof checks both the AST and the lowered control flow, including reaching assignments,
 possible types, call targets, and unknown effects. Uncertain paths retain the runtime parser.

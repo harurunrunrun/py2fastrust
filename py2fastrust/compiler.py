@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .diagnostics import CompilationError, Diagnostic
 from .ir import Code, Instruction, Parameters, Pattern, Program
+from .native_leaf import prove_native_leaf
 
 
 BUILTIN_MODULES = {
@@ -886,6 +887,9 @@ class Emitter:
         else:
             emitter.statements(body)
         emitter.finish()
+        proof = prove_native_leaf(node, emitter.code, emitter.mangle)
+        if proof is not None:
+            self.compiler.program.native_leaves[emitter.code_id] = proof
         self.emit("MakeFunction", emitter.code_id, len(node.args.defaults), kwdefaults, node=node)
         self.function_annotations(node)
         for decorator in reversed(decorators):

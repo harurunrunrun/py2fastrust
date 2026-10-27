@@ -53,6 +53,8 @@ class Program:
     modules: list[tuple[str, int]] = field(default_factory=list)
     # Python-only proof metadata; never changes the generated Rust ABI.
     flow: object | None = field(default=None, repr=False, compare=False)
+    # Python-only proofs keyed by the actual allocated AOT Code identity.
+    native_leaves: dict[int, tuple] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

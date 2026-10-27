@@ -55,7 +55,8 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
                                    for index, op in enumerate(code.ops))
                 return TranspileResult(add_header(native, source, options, "native"), source_map=source_map, backend="native")
         include_dynamic = not (options.optimize and dynamic_compilation_unreachable(source, program))
-        rust_source, source_map = generate(program, options.integer, include_dynamic=include_dynamic)
+        rust_source, source_map = generate(program, options.integer, include_dynamic=include_dynamic,
+                                          native_leaves=options.optimize)
         return TranspileResult(add_header(rust_source, source, options, "vm"), source_map=source_map)
     except CompilationError as exc:
         return TranspileResult(None, (exc.diagnostic,))
