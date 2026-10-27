@@ -263,6 +263,7 @@ class ScopeFacts:
     constructors: frozenset=frozenset()
     resets: object=field(default_factory=dict)
     calls: object=field(default_factory=dict)
+    values: object=field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -708,9 +709,11 @@ class Solver:
             self.propagate()
             if self.variables==before:break
         else:raise ConstraintFailure(self.graph.unit.tree.body[0] if self.graph.unit.tree.body else self.graph.unit.tree)
-        allocations={};headers={};expressions={}
+        allocations={};headers={};expressions={};values={}
         def key(context):return self.contexts.get(context,root)
         for (context,site),item in self.records.items():
+            abstract=values.setdefault(key(context),{})
+            abstract[site]=abstract[site].join(item) if site in abstract else item
             target=expressions.setdefault(key(context),{})
             kind=self.kind(item)
             if site not in target:target[site]=kind
@@ -735,7 +738,7 @@ class Solver:
             target=calls.setdefault(key(context),{})
             target[site]=target[site].join(fact) if site in target else fact
         keys=set(allocations)|set(headers)|set(expressions)|set(resets)|set(calls)
-        scopes={scope:ScopeFacts(MappingProxyType(allocations.get(scope,{})),MappingProxyType({site:MappingProxyType(state) for site,state in headers.get(scope,{}).items()}),MappingProxyType(expressions.get(scope,{})),frozenset(site for context,site in self.constructors if key(context)==scope),MappingProxyType(resets.get(scope,{})),MappingProxyType(calls.get(scope,{}))) for scope in keys}
+        scopes={scope:ScopeFacts(MappingProxyType(allocations.get(scope,{})),MappingProxyType({site:MappingProxyType(state) for site,state in headers.get(scope,{}).items()}),MappingProxyType(expressions.get(scope,{})),frozenset(site for context,site in self.constructors if key(context)==scope),MappingProxyType(resets.get(scope,{})),MappingProxyType(calls.get(scope,{})),MappingProxyType(values.get(scope,{}))) for scope in keys}
         return Analysis(self.graph,MappingProxyType(scopes),iteration+1)
 
 

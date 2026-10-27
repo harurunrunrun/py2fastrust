@@ -75,6 +75,8 @@ class _Expression:
     length: int | None = None
     nonempty: bool = False
     stable_borrow: bool = False
+    char_code: str | None = None
+    text_view: str | None = None
 
 
 @dataclass(frozen=True)
@@ -454,6 +456,7 @@ class _Generator:
         self.union_types = set()
         self.type_analysis=None
         self.constraint_facts=None
+        self.range_facts={}
         self.constraint_header_slots={}
         self.has_empty_type=False
         self.expression_scopes = []
@@ -2121,6 +2124,10 @@ class _Specializations:
         local.source_unit = self.source_unit
         local.type_analysis=self.type_analysis
         local.constraint_facts=self.type_analysis.scope(function.node,kinds) if self.type_analysis is not None else None
+        if self.type_analysis is not None:
+            from .native_range_facts import derive_regions
+            local.range_facts=derive_regions(self.type_analysis,local.constraint_facts,self.bits,
+                                            body=self.type_analysis.graph.functions[self.source_unit.ordinal(function.node)].body)
         local.trusted_imports = self.trusted_imports
         environment = {name: value for name, value in globals_at_call.items()
                        if name not in function.local_names}
@@ -2254,6 +2261,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             generator.entry_local_names={symbol.name for symbol in unit.scope_for(entry).symbols
                                          if symbol.has("local")or symbol.has("parameter")}
             generator.global_names=frozenset({wrapper[0]})
+        from .native_range_facts import derive_regions
+        range_body=(generator.type_analysis.graph.functions[unit.ordinal(entry)].body if wrapper else generator.type_analysis.graph.body)
+        generator.range_facts=derive_regions(generator.type_analysis,generator.constraint_facts,bits,body=range_body)
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:generator.union_types.update(local.union_types)

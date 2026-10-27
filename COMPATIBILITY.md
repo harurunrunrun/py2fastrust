@@ -114,6 +114,13 @@ loop exits without a proven shared carrier, recursive mutable object graphs,
 and the class allocation/field adapter still require implementation and produce
 `E006`; no alternate execution backend is selected.
 
+Stable, definitely bound string owners can be borrowed once at a loop or
+generator entry. Indexed characters carry a code-point projection for direct
+comparison, while escaping characters retain the configured string semantics.
+The proof excludes owner rebinding and unknown attribute/callback effects and
+preserves the indexed read's checks and evaluation order. Numeric bounds guards
+and native loop versioning still require implementation.
+
 Immutable string/tuple list elements share `ListType(element)` metadata with
 literal, comprehension, stream materialization, indexing, append, copies,
 slices, and Python-style output. Proved owned list results can cross function

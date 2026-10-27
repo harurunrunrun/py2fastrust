@@ -44,19 +44,22 @@ class BigIntText:
             literal=Literal.from_ast(node)
             if literal is None:raise _Unsupported
             self.has_big_text = True
-            return _Expression(_string(literal.value),literal.kind,owned=False,stable_borrow=True)
+            from .native_regions import literal_char
+            return _Expression(_string(literal.value),literal.kind,owned=False,stable_borrow=True,char_code=literal_char(literal.value))
         if (self.string_mode == "ascii" and isinstance(node,ast.Subscript)
                 and not isinstance(node.slice,ast.Slice)):
-            owner=self.read_expression(node.value,environment)
+            from .native_regions import owner_view,char_projection
+            view=owner_view(self,node)
+            owner=_Expression(view,"str",owned=False,stable_borrow=True)if view else self.read_expression(node.value,environment)
             if owner.kind=="str" and owner.stable_borrow:
                 index=self.expression(node.slice,environment)
                 first,second=self.temporary(),self.temporary()
                 self.has_big_text=True
                 call=self.at(f"native_big_text_item_ref({first},&{second})",node)
                 code=f"{{ let {first}:&str={owner.code}; let {second}={self.number(index)}; {call} }}"
-                return _Expression(code,"str",owned=False,stable_borrow=True)
+                return _Expression(code,"str",owned=False,stable_borrow=True,char_code=char_projection(self,node,code))
         value = self.expression(node, environment)
-        return (_Expression(f"&({value.code})", "str", owned=False) if value.kind == "str" else value)
+        return (_Expression(f"&({value.code})", "str", owned=False,char_code=value.char_code) if value.kind == "str" else value)
 
     def text_expression(self, node, environment):
         if isinstance(node, ast.Constant) and type(node.value) is str:
@@ -64,7 +67,8 @@ class BigIntText:
             literal=Literal.from_ast(node)
             if literal is None:raise _Unsupported
             self.has_big_text = True
-            return _Expression(literal.rust_atom(self.literal,_string),literal.kind)
+            from .native_regions import literal_char
+            return _Expression(literal.rust_atom(self.literal,_string),literal.kind,char_code=literal_char(literal.value))
         if isinstance(node, ast.Name):
             value = environment.get(node.id)
             if isinstance(value, _Binding) and value.kind == "str":
@@ -78,7 +82,9 @@ class BigIntText:
                 index = self.expression(node.slice, environment)
                 owner, offset = self.temporary(), self.temporary()
                 result = self.at(f"native_big_text_item({owner},&{offset})", node)
-                return _Expression(f"{{let {owner}:&str={text.code};let {offset}={self.number(index)};{result}}}", "str")
+                code=f"{{let {owner}:&str={text.code};let {offset}={self.number(index)};{result}}}"
+                from .native_regions import char_projection
+                return _Expression(code, "str",char_code=char_projection(self,node,code))
         if isinstance(node, ast.Compare):
             values = [self.read_expression(value, environment) for value in [node.left,*node.comparators]]
             if any(value.kind == "str" for value in values):
@@ -130,6 +136,9 @@ class BigIntText:
         return None
 
     def text_compare(self, node, values):
+        from .native_regions import compare_characters
+        projected=compare_characters(self,node,values)
+        if projected is not None:return projected
         from .native_unions import compare
         finite=compare(self,node,values)
         if finite is not None:return finite

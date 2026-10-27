@@ -322,7 +322,8 @@ class ScalarGenerator(_Generator):
             literal=Literal.from_ast(node)
             if literal is None:raise _Unsupported
             self.has_extended_scalars = True
-            return _Expression(_string(literal.value),literal.kind,owned=False,stable_borrow=True)
+            from .native_regions import literal_char
+            return _Expression(_string(literal.value),literal.kind,owned=False,stable_borrow=True,char_code=literal_char(literal.value))
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "str" and len(node.args) == 1 and not node.keywords):
             value = self.read_expression(node.args[0], environment)
@@ -330,17 +331,19 @@ class ScalarGenerator(_Generator):
                 return value
         if (self.string_mode == "ascii" and isinstance(node, ast.Subscript)
                 and not isinstance(node.slice, ast.Slice)):
-            owner = self.read_expression(node.value, environment)
+            from .native_regions import owner_view,char_projection
+            view=owner_view(self,node)
+            owner = _Expression(view,"str",owned=False,stable_borrow=True) if view else self.read_expression(node.value, environment)
             if owner.kind == "str" and owner.stable_borrow:
                 index = self.expression(node.slice, environment)
                 first, second = self.temporary(), self.temporary()
                 self.has_extended_scalars = True
                 call = self.at(f"native_string_item_ref({first},{second})", node)
                 code = f"{{ {self.read_binding(first,owner)} let {second}={self.number(index)}; {call} }}"
-                return _Expression(code,"str",owned=False,stable_borrow=True)
+                return _Expression(code,"str",owned=False,stable_borrow=True,char_code=char_projection(self,node,code))
         value = self.expression(node, environment)
         if value.kind == "str":
-            return _Expression(f"&({value.code})", "str", owned=False)
+            return _Expression(f"&({value.code})", "str", owned=False,char_code=value.char_code)
         return value
 
     @staticmethod
@@ -381,7 +384,8 @@ class ScalarGenerator(_Generator):
             literal=Literal.from_ast(node)
             if literal is None:raise _Unsupported
             self.has_extended_scalars = True
-            return _Expression(literal.rust_atom(self.literal,_string),literal.kind)
+            from .native_regions import literal_char
+            return _Expression(literal.rust_atom(self.literal,_string),literal.kind,char_code=literal_char(literal.value))
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and binding.kind == "str":
@@ -405,7 +409,9 @@ class ScalarGenerator(_Generator):
                 index = self.expression(node.slice, environment)
                 first, second = self.temporary(), self.temporary()
                 call = self.at(f"native_string_item({first}, {second})", node)
-                return _Expression(f"{{ {self.read_binding(first, value)} let {second} = {self.number(index)}; {call} }}", "str")
+                code=f"{{ {self.read_binding(first, value)} let {second} = {self.number(index)}; {call} }}"
+                from .native_regions import char_projection
+                return _Expression(code, "str",char_code=char_projection(self,node,code))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
             if (name == "int" and len(node.args) == 1 and isinstance(node.args[0], ast.Call)
@@ -490,6 +496,9 @@ class ScalarGenerator(_Generator):
         return super().binary(operator, left, right, node)
 
     def compare(self, node, values):
+        from .native_regions import compare_characters
+        projected=compare_characters(self,node,values)
+        if projected is not None:return projected
         symbols = {ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
         names = [self.temporary() for _ in values]
         tail = "true"

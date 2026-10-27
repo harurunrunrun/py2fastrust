@@ -323,7 +323,9 @@ class Planner:
                         return integer_map(g,first,self,element,frame=plan.frame,inline=plan.frame is None)
         owners.update(first.owners)
         mutation_start = len(g.expression_mutations)
-        with _scope(g, producer_scope, trace_id):
+        from .native_regions import scope,site
+        region=scope(g,(site(g,node),0),inside)
+        with _scope(g, producer_scope, trace_id),region:
             guard_depth = len(g.iterating_lists)
             g.iterating_lists.extend(first.owners)
             try:
@@ -372,7 +374,7 @@ class Planner:
             prefix = ((f"let {trace_id} = |mut error: NativeError| {{ "
                        f"error.frames.push(({line}, {_scope_code(caller.name)})); {parent} }};\n")
                       if plan.frame is not None else "")
-            return prefix + body
+            return prefix + region.capture()+"\n"+body
 
         length = 0 if any(stream.length == 0 for stream,_ in clauses) else 1
         if length:
@@ -673,8 +675,11 @@ def try_for_loop(generator, node, environment):
     target_names = {target.id for target in targets}
     g.iterating_lists.extend(stream.owners - target_names)
     g.loops.append(context)
+    from .native_regions import scope,site
+    region=scope(g,site(g,node),inside)
     try:
-        body, remaining = g.statements(node.body, inside)
+        with region:
+            body, remaining = g.statements(node.body, inside)
     finally:
         g.loops.pop()
         del g.iterating_lists[guard_depth:]
@@ -688,7 +693,7 @@ def try_for_loop(generator, node, environment):
                        continue_label)
     code = (stream.construct() + "\n" + refinement + "\n" + "\n".join(optional_initializers) + "\n" + header_initializers + "\n" + initialization
             + (f"\nlet mut {broken} = false;" if broken else "")
-            + f"\n'{break_label}: {{\n{loop}\n}}")
+            + "\n"+region.capture()+f"\n'{break_label}: {{\n{loop}\n}}")
     if not node.orelse:
         return code, joined
     otherwise, otherwise_environment = g.statements(node.orelse, joined)

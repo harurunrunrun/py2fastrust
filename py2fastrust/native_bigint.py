@@ -482,6 +482,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         from .native_constraints import analyze
         generator.type_analysis=specializations.type_analysis=analyze(unit)
         generator.constraint_facts=generator.type_analysis.scope()
+        from .native_range_facts import derive_regions
+        generator.range_facts=derive_regions(generator.type_analysis,generator.constraint_facts,0)
         body,_ = generator.statements(tree.body,{})
         for local in specializations.generators:generator.union_types.update(local.union_types)
         generator.has_scalar_union |= any(local.has_scalar_union for local in specializations.generators)
