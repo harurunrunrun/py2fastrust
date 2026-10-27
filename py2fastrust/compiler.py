@@ -8,6 +8,7 @@ import types
 from importlib.resources import files
 from pathlib import Path
 
+from . import python_profile
 from .diagnostics import CompilationError, Diagnostic
 from .ir import Code, Instruction, Parameters, Pattern, Program
 from .native_leaf import prove_native_leaf
@@ -891,7 +892,7 @@ class Emitter:
         if proof is not None:
             self.compiler.program.native_leaves[emitter.code_id] = proof
         self.emit("MakeFunction", emitter.code_id, len(node.args.defaults), kwdefaults, node=node)
-        self.function_annotations(node)
+        self.function_annotations(node, emitter.code.qualname)
         for decorator in reversed(decorators):
             self.emit("Call", 1, [], node=decorator)
 
@@ -991,7 +992,7 @@ class Emitter:
             self.emit("MakeTypeAlias", name, node=node)
         self.emit("Store", name, node=node)
 
-    def function_annotations(self, node):
+    def function_annotations(self, node, owner_qualname):
         arguments = node.args.posonlyargs + node.args.args
         if node.args.vararg:
             arguments += [node.args.vararg]
@@ -1015,6 +1016,10 @@ class Emitter:
             self.qualify_child(annotate, "__annotate__", "Annotation")
         else:
             annotate = self.child(node, "__annotate__", "Annotation")
+        if python_profile.ANN_QUALNAME_USES_OWNER:
+            # Only the helper's own metadata changes. Expressions inside the
+            # annotation retain their original lexical compilation scope.
+            annotate.code.qualname = owner_qualname + ".__annotate__"
         annotate.code.params = Parameters(posonly=1, positional=[".format"])
         annotate.emit("Load", ".format", node=node)
         annotate.emit("Const", 2, node=node)

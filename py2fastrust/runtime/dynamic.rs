@@ -809,7 +809,7 @@ impl DCompiler {
                         for value in params.defaults.iter().chain(params.kwdefaults.iter().map(|(_,value)|value)){self.expr(ctx,value)?;}
                         let code=self.code(name,ScopeKind::Function,params,body,ctx,line)?;
                         self.emit(ctx,Op::MakeFunction{code:self.offset+code,defaults:params.defaults.len(),kwdefaults:params.kwdefaults.iter().map(|(name,_)|name.clone()).collect()},line,col);
-                        self.annotations(ctx,params,line,col)?;
+                        self.annotations(ctx,params,code,line,col)?;
                         self.emit(ctx,Op::Dup,line,col);self.emit(ctx,Op::Load(".type_params".to_owned()),line,col);self.emit(ctx,Op::Swap,line,col);self.emit(ctx,Op::SetAttr("__type_params__".to_owned()),line,col);
                     },
                     DStmtKind::Class(name,bases,keywords,body,_)=>{
@@ -907,7 +907,7 @@ impl DCompiler {
                 for default in &params.defaults { self.expr(ctx,default)?; } for (_,default) in &params.kwdefaults { self.expr(ctx,default)?; }
                 let code = self.code(name,ScopeKind::Function,params,body,ctx,line)?;
                 self.emit(ctx,Op::MakeFunction { code:self.offset+code,defaults:params.defaults.len(),kwdefaults:params.kwdefaults.iter().map(|(name,_)|name.clone()).collect() },line,col);
-                self.annotations(ctx,params,line,col)?;
+                self.annotations(ctx,params,code,line,col)?;
                 for _ in decorators { self.emit(ctx,Op::Call { pos:1,keywords:Vec::new() },line,col); }
                 self.emit(ctx,Op::Store(name.clone()),line,col);
             }
@@ -1116,7 +1116,7 @@ impl DCompiler {
         for _ in &decorators{self.emit(ctx,Op::Call{pos:1,keywords:Vec::new()},line,column);}
         self.emit(ctx,Op::Store(name),line,column);Ok(())
     }
-    fn annotations(&mut self, ctx: &mut DCtx, params: &DParams, line: usize, column: usize) -> Result<(),String> {
+    fn annotations(&mut self, ctx: &mut DCtx, params: &DParams, owner_code:usize, line: usize, column: usize) -> Result<(),String> {
         if params.annotations.is_empty() { return Ok(()); }
         let make = |kind| DExpr { kind,line,column };
         let condition=make(DExprKind::Compare(Box::new(make(DExprKind::Name(".format".to_owned()))),vec![(">".to_owned(),make(DExprKind::Constant(Const::Int("2".to_owned()))))]));
@@ -1138,6 +1138,7 @@ impl DCompiler {
         let compiled=self.code("__annotate__",ScopeKind::Annotation,&parameters,&[check,returned],ctx,line);
         self.stringized_annotation=previous;
         let code=compiled?;
+        if ANN_QUALNAME_USES_OWNER {self.codes[code].qualname=format!("{}.__annotate__",self.codes[owner_code].qualname);}
         self.emit(ctx,Op::Dup,line,column); self.emit(ctx,Op::MakeFunction { code:self.offset+code,defaults:0,kwdefaults:Vec::new() },line,column);self.emit(ctx,Op::Swap,line,column);self.emit(ctx,Op::SetAttr("__annotate__".to_owned()),line,column);
         Ok(())
     }

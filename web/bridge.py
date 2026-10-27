@@ -11,6 +11,7 @@ from importlib.resources import files
 
 from py2fastrust import TranspileOptions, __version__, transpile
 from py2fastrust.settings import LICENSES
+from py2fastrust.python_profile import profile
 
 
 WORK_DIRECTORY = Path("/work")
@@ -57,6 +58,7 @@ def initialize(manifest_json):
         "licenses": list(LICENSES),
         "defaults": {"integer": "i64", "license": "CC0-1.0", "optimize": True},
         "python_version": sys.version.split()[0],
+        "python_profile": profile(),
         "package_version": __version__,
         "resource_count": len(resources),
         "smoke_checks": smoke_checks,

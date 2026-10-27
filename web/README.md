@@ -67,6 +67,11 @@ For a local preview of edits, supply `--preview-source . --source-commit HASH`;
 the resulting manifest explicitly records `preview: true` and source hashes.
 The runtime is pinned to Pyodide 314.0.7 (Python 3.14). Its files load from
 jsDelivr; the converter wheel and bridge come from the site's own directory.
+The browser parity workflow uses Python 3.14.2 to match this Pyodide release.
+The core test workflow separately covers Python 3.14.4 and the latest 3.14
+release. Generated runtime metadata follows the converter host's observed patch
+behavior; the browser test checks that both sides use the same profile before
+comparing source bytes.
 
 ```sh
 python -m unittest discover -s tests/web -p 'test_*.py' -v

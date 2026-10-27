@@ -4,6 +4,8 @@
 struct ExceptionGroupData {
     message: Value,
     exceptions: Value,
+    // None selects canonical exceptions; Str preserves a custom sequence's
+    // construction-time representation without retaining its mutable owner.
     original: Value,
 }
 #[derive(Clone, Debug)]
@@ -203,22 +205,22 @@ impl Runtime {
         Self::exception_roots(error, &mut roots);
         self.roots.push(roots);
         let result = (|| {
-            let original = self
-                .native_payload(&group.original)
-                .unwrap_or_else(|| group.original.clone());
-            let sequence = if matches!(&original,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_)|Object::Tuple(_))))
-            {
+            if let Value::Str(saved)=&group.original {
+                return Ok(format!("{}({}, {})",self.exception_type_name(error),self.repr_inner(&group.message,seen)?,saved));
+            }
+            let sequence = {
                 let argument = error.args.get(1).cloned().unwrap_or(Value::None);
                 let argument = self.native_payload(&argument).unwrap_or(argument);
-                if matches!(&argument,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_))))
+                // CPython v3.14.8 Objects/exceptions.c, BaseExceptionGroup_repr:
+                // list-shaped compatibility formatting requires two args.
+                if (!EG_REPR_USES_EXCEPTIONS_TUPLE || error.args.len()==2)
+                    && matches!(&argument,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_))))
                 {
                     let items = self.to_vec(group.exceptions.clone())?;
                     self.obj_value(Object::List(items))
                 } else {
                     group.exceptions.clone()
                 }
-            } else {
-                group.original.clone()
             };
             self.roots[root].push(sequence.clone());
             Ok(format!(
@@ -323,6 +325,11 @@ impl Runtime {
             } else {
                 self.obj_value(Object::Tuple(items))
             };
+            self.roots[root].push(exceptions.clone());
+            let original=self.native_payload(&args[1]).unwrap_or_else(||args[1].clone());
+            let original=if matches!(&original,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_)|Object::Tuple(_)))) {
+                Value::None
+            }else{Value::Str(self.repr(&args[1])?.into())};
             let mut error = pyerr(&self.class_name(&class), "");
             if matches!(class, Value::Obj(_)) {
                 error.class = Some(class);
@@ -331,7 +338,7 @@ impl Runtime {
             error.group = Some(Box::new(ExceptionGroupData {
                 message: args[0].clone(),
                 exceptions,
-                original: args[1].clone(),
+                original,
             }));
             error.message = self.exception_cached_message(&error)?;
             Ok(self.exception_value(&mut error))
@@ -832,7 +839,7 @@ impl Runtime {
             wrapped.group = Some(Box::new(ExceptionGroupData {
                 message,
                 exceptions: items.clone(),
-                original: items,
+                original: Value::None,
             }));
             wrapped.message = self.exception_cached_message(&wrapped)?;
             self.exception_value(&mut wrapped)

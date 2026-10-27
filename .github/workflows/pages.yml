@@ -20,7 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          # Match the Python patch release in pinned Pyodide 314.0.7 for parity.
+          python-version: '3.14.2'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

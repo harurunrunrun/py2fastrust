@@ -79,6 +79,12 @@ changes affect later directives, and an attempted resize raises `BufferError`.
 
 Set iteration order is not guaranteed to match CPython's internal hash-table order.
 
+Python 3.14 patch releases differ in a few observable metadata details. Fixed,
+trusted probes select the converter host's t-string expression whitespace,
+annotation-function qualified names, and ExceptionGroup representation behavior.
+The generated runtime embeds that profile and uses it for dynamic compilation
+as well as ordinary source. Input programs are not executed by these probes.
+
 Non-raw string literals, f-strings, and t-strings support Unicode 16.0 character names
 and all 477 formal name aliases in `\N{name}` escapes, including Hangul and algorithmic names.
 Named character sequences are not accepted in literal escapes, matching Python.

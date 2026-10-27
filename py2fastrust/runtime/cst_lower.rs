@@ -207,7 +207,8 @@ impl CstLower {
             if depth>2{return Err(self.error(n,"formatted-string expressions nested too deeply"));}
             let debug=self.optional(n,"debug_expr");let conversion=self.optional(n,"conversion");let format=self.optional(n,"format");let close=self.required(n,"rbrace")?;
             let start=self.offset(self.tree.nodes[n].start)+1;let end=self.offset(self.tree.nodes[debug.or(conversion).or(format).unwrap_or(close)].start);
-            let expression=self.source_text(start,end).trim_end().to_owned();
+            let expression=self.source_text(start,end);
+            let expression=if templated&&TSTRING_PRESERVES_TRAILING_WHITESPACE{expression}else{expression.trim_end().to_owned()};
             if debug.is_some(){let stop=self.offset(self.tree.nodes[conversion.or(format).unwrap_or(close)].start);values.push(self.expr_at(n,DExprKind::Constant(Const::Str(self.source_text(start,stop)))));}
             let value=self.expr(self.required(n,"a")?)?;let value=if templated{self.expr_at(n,DExprKind::RawInterpolation(expression,Box::new(value)))}else{value};
             let conversion=if let Some(conversion)=conversion{

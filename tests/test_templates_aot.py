@@ -1,5 +1,6 @@
 """Template-string AST lowering and CPython 3.14 differential execution."""
 
+import ast
 import shutil
 import unittest
 
@@ -12,10 +13,15 @@ import test_runtime
 
 class TemplateFrontendTests(unittest.TestCase):
     def test_official_interpolation_metadata_and_source_order(self):
-        program = Compiler("templates.py").compile('value=t"a{ x = }{x!a:>{width}}"\n')
+        source = 'value=t"a{ x = }{x!a:>{width}}"\n'
+        program = Compiler("templates.py").compile(source)
         operations = program.codes[0].ops
         interpolations = [op for op in operations if op.op == "MakeInterpolation"]
-        self.assertEqual([op.args for op in interpolations], [(" x", 114, False), ("x", 97, True)])
+        official = [node for node in ast.parse(source).body[0].value.values
+                    if isinstance(node, ast.Interpolation)]
+        self.assertEqual([op.args for op in interpolations],
+                         [(node.str, node.conversion, node.format_spec is not None)
+                          for node in official])
         self.assertEqual([op.args for op in operations if op.op == "BuildTemplate"], [(3,)])
         self.assertLess(next(i for i, op in enumerate(operations) if op.op == "FormatValue"),
                         next(i for i, op in enumerate(operations) if op is interpolations[1]))

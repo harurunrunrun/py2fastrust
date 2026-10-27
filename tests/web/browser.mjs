@@ -89,6 +89,12 @@ try {
   assert.equal(ready.metadata.resource_count, manifest.resources.length);
   assert.deepEqual(ready.metadata.smoke_checks,
     { ast: true, symtable: true, compile: true, sha256: true, resources: true });
+  const cliProfile = JSON.parse(run(values.python, ['-c',
+    'import json; from py2fastrust.python_profile import profile; print(json.dumps(profile()))'], {
+    env: { ...process.env, PYTHONPATH: source },
+  }));
+  assert.deepEqual(ready.metadata.python_profile, cliProfile,
+    'Byte-for-byte parity requires the CLI and Pyodide to use the same Python patch compatibility profile.');
   report.runtime = ready.metadata;
   // All conversions below must finish with new network requests blocked.
   await context.route('**/*', route => route.abort('internetdisconnected'));
