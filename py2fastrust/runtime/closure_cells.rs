@@ -10,6 +10,22 @@ impl Runtime {
     }
 
     fn closure_cell(&mut self, namespace: Option<usize>, name: &str) -> PyResult<usize> {
+        if name=="__classdict__" {
+            let mut current=namespace;
+            while let Some(owner)=current {
+                if let Some(cell)=self.closure_bindings.get(&owner).and_then(|cells|cells.get(name)) {return Ok(*cell);}
+                if self.scope_parents.contains_key(&owner) {
+                    // The compiler's cell is independent of arbitrary keys in
+                    // __prepare__'s mapping; observing it must not call user
+                    // __getitem__ or read a user-supplied __classdictcell__.
+                    let dictionary=self.annotation_namespaces.get(&owner).copied().unwrap_or(owner);
+                    let cell=self.alloc(Object::Cell(Some(Value::Obj(dictionary))));
+                    self.closure_bindings.entry(owner).or_default().insert(name.to_owned(),cell);
+                    return Ok(cell);
+                }
+                current=self.ns_parent(owner);
+            }
+        }
         let owner = self.find_nonlocal(namespace, name).or_else(|| {
             if name == "__class__" { namespace } else { None }
         }).ok_or_else(|| pyerr("NameError", format!("no binding for free variable '{name}'")))?;
@@ -85,6 +101,13 @@ impl Runtime {
         }
         function.code = code;
         Ok(())
+    }
+
+    fn annotation_cell_lookup(&mut self, namespace: Option<usize>, name: &str) -> PyResult<Option<Option<Value>>> {
+        let Some(owner)=self.find_nonlocal(namespace,"__classdict__") else{return Ok(None)};
+        let dictionary=self.ns_get(owner,"__classdict__").ok_or_else(||pyerr("NameError","cannot access free variable '__classdict__' where it is not associated with a value"))?;
+        let Value::Obj(index)=dictionary else{return Err(pyerr("TypeError","class annotation namespace must be a mapping"))};
+        self.mapping_get(index,name).map(Some)
     }
 
     fn cell_constructor(&mut self, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {

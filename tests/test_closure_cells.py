@@ -196,6 +196,82 @@ class ClosureCellTests(unittest.TestCase):
             gc.collect();print([f() for f in functions])
         ''')
 
+    def test_annotation_class_dictionary_cell_tracks_real_dictionary_and_rebinding(self):
+        self.compare('''
+            saved=[]
+            class Meta(type):
+                def __new__(m,name,bases,space):
+                    saved.append(space['__classdictcell__'])
+                    return super().__new__(m,name,bases,space)
+            x=101
+            class C(metaclass=Meta):
+                x=7
+                def f(self,value:x)->x:pass
+            annotate=C.f.__annotate__;cells=annotate.__closure__;cell=cells[0]
+            print(annotate.__code__.co_freevars,cell is saved[0])
+            print(annotate(1))
+            cell.cell_contents['x']=11
+            print(C.x,annotate(1))
+            C.x=12;print(cell.cell_contents['x'])
+            cell.cell_contents={'x':19};print(C.x,annotate(1))
+            cell.cell_contents={};print(annotate(1))
+            cell.cell_contents=7
+            try:annotate(1)
+            except Exception as error:print(type(error).__name__)
+            del cell.cell_contents
+            try:annotate(1)
+            except Exception as error:print(type(error).__name__)
+        ''')
+
+    def test_annotation_code_accepts_explicit_shared_custom_mapping_cells(self):
+        self.compare('''
+            import types
+            events=[]
+            class C:
+                x=7
+                def f(self,value:x):pass
+            annotate=C.f.__annotate__
+            class Mapping:
+                def __getitem__(self,key):
+                    events.append(key)
+                    if key=='x':return 31
+                    raise KeyError(key)
+            cell=types.CellType(Mapping())
+            f=types.FunctionType(annotate.__code__,{},closure=(cell,))
+            print(f(1),events)
+            cell.cell_contents={'x':41};print(f(1))
+            def outer():
+                v=20
+                class D:
+                    x=7
+                    def f(self,a:x,b:v):pass
+                return D
+            D=outer();annotate=D.f.__annotate__
+            print(annotate.__code__.co_freevars)
+            print([type(c.cell_contents).__name__ for c in annotate.__closure__])
+            annotate.__closure__[1].cell_contents=21
+            print(annotate(1))
+            gc=__import__('gc');gc.collect();print(annotate(1))
+        ''')
+
+    def test_private_class_cell_capture_does_not_read_prepare_mapping(self):
+        self.compare('''
+            events=[]
+            class Space(dict):
+                def __getitem__(self,key):
+                    if key=='__classdictcell__':events.append('read private cell')
+                    return super().__getitem__(key)
+            class Meta(type):
+                @classmethod
+                def __prepare__(m,name,bases):return Space()
+            class C(metaclass=Meta):
+                x=7
+                def f(self,value:x):pass
+            print(events)
+            cell=C.f.__annotate__.__closure__[0]
+            print(cell.cell_contents['x'],events)
+        ''')
+
     def test_standalone_aot_and_dynamic_closures_all_integer_build_modes(self):
         source='''\
 from types import CellType, FunctionType

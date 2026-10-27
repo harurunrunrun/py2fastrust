@@ -1582,6 +1582,9 @@ impl Runtime {
         let closure = f.closure;
         let code = &self.codes[f.code];
         if matches!(code.kind,ScopeKind::Annotation|ScopeKind::TypeParameters) && code.frees.iter().any(|free|free=="__classdict__") {
+            if let Some(value)=self.annotation_cell_lookup(closure,name)? {
+                if let Some(value)=value{return Ok(value);}
+            }else{
             let mut namespace=closure;
             while let Some(index)=namespace {
                 if self.scope_parents.contains_key(&index) {
@@ -1590,6 +1593,7 @@ impl Runtime {
                     break;
                 }
                 namespace=self.ns_parent(index);
+            }
             }
         }
         let code = &self.codes[f.code];
@@ -6143,7 +6147,7 @@ impl Runtime {
             self.codes[*i].kind == ScopeKind::Function && !self.codes[*i].name.starts_with('<')
         });
         if self.codes[code].kind==ScopeKind::Class && (self.code_needs_class_dict(code,0) || (has_method && self.codes[code].future_flags & 0x1000000 == 0)) {
-            let cell = self.obj_value(Object::Cell(Some(Value::Obj(namespace))));
+            let cell = Value::Obj(self.closure_cell(Some(namespace),"__classdict__")?);
             self.mapping_set(namespace, "__classdictcell__".into(), cell)?;
         }
         let needs_cell = self.codes[code].kind==ScopeKind::Class && methods.iter().any(|i| self.code_needs_class_cell(*i, 0));
