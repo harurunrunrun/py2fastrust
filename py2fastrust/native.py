@@ -1,10 +1,10 @@
-"""Conservative scalar/container lowering alongside the general AOT backend.
+"""Direct Rust generation for proved scalar and container operations.
 
 The analysis tracks definite bindings along control-flow paths. A Python name
 can change type by moving to a different typed Rust slot; compatible paths join
 through scalar copies or uniquely owned integer-container moves. No user
-expression is executed during analysis. Programs that fail the complete proof
-use the general backend instead of being partially lowered by this backend.
+expression is executed during analysis. Missing direct lowering is reported to
+the public API; it never selects a general execution backend.
 """
 
 import ast
@@ -13,10 +13,33 @@ from importlib.resources import files
 import symtable
 
 from .typeflow import TypeSet
+from .diagnostics import Diagnostic
 
 
 class _Unsupported(Exception):
     pass
+
+
+def _direct_diagnostic(source, filename, error=None, node=None):
+    """Locate the innermost AST operation whose direct lowering failed."""
+    traceback = getattr(error, "__traceback__", None)
+    while traceback is not None:
+        candidate = traceback.tb_frame.f_locals.get("node")
+        if isinstance(candidate, ast.AST) and hasattr(candidate, "lineno"):
+            node = candidate
+        traceback = traceback.tb_next
+    if node is None:
+        try:
+            tree = ast.parse(source, filename=filename)
+            node = tree.body[0] if tree.body else None
+        except (SyntaxError, ValueError, RecursionError):
+            pass
+    line = getattr(node, "lineno", getattr(error, "lineno", 1) or 1)
+    column = (getattr(node, "col_offset", 0) + 1 if node is not None else
+              getattr(error, "offset", 1) or 1)
+    construct = f" ({type(node).__name__})" if node is not None else ""
+    return Diagnostic("direct Rust generation is not implemented for this construct or type combination" + construct,
+                      filename, line, column, "E006")
 
 
 @dataclass(frozen=True)
@@ -715,7 +738,7 @@ class _Generator:
         return _Expression("{ " + " ".join(lines) + f" {call} }}", variant.return_kind)
 
     def deque_constructor(self, node, environment):
-        # Bounded queues and subclass/protocol iterables use general AOT. An
+        # Bounded queues and subclass/protocol iterables need direct lowering. An
         # unbounded constructor accepts the documented iterable keyword too.
         if len(node.args) > 1 or any(isinstance(value, ast.Starred) for value in node.args):
             raise _Unsupported
@@ -2057,7 +2080,7 @@ class _Specializations:
         # RecursionError behavior instead of relying on Rust's host stack.
         if function.node.name in self.active or len(self.active) >= 128:
             raise _Unsupported
-        # A conservative resource bound changes only backend selection.
+        # Further specialization growth needs a direct-generation implementation.
         if len(self.variants) + len(self.active) >= 128:
             raise _Unsupported
         if any(kind not in {"int", "bool", "list_int", "float", "str"} for kind in kinds):
@@ -2111,26 +2134,31 @@ def _declarations(generator):
                      for slot, kind in generator.bindings.items())
 
 
-def try_generate_native(source: str, filename: str, integer: str, *, trusted_imports=frozenset()) -> str | None:
-    """Return standalone scalar/container Rust, or None when proof fails.
+def try_generate_native(source: str, filename: str, integer: str, *, trusted_imports=frozenset(),
+                        prune_output=True, diagnostic_out=None) -> str | None:
+    """Return direct Rust, or None with an optional positioned diagnostic.
 
     Fixed-width modes use native Rust integers; BigInt selects the owned
-    arbitrary-precision scalar backend. Unproved programs use general AOT.
+    arbitrary-precision scalar backend. An unimplemented direct path fails.
     trusted_imports must come from Compiler's actual vendored-module resolution;
     a spelling such as "collections" in user source is insufficient evidence.
     """
     if integer == "bigint":
         from .native_bigint import try_generate_bigint
-        return try_generate_bigint(source, filename)
+        return try_generate_bigint(source, filename, prune_output=prune_output,
+                                   diagnostic_out=diagnostic_out)
     if integer not in {"i64", "i128"}:
+        if diagnostic_out is not None:
+            diagnostic_out.append(_direct_diagnostic(source, filename))
         return None
     from .native_scalar import ScalarGenerator, SCALAR_HELPERS, TEXT_INPUT_HELPERS
     try:
         tree = ast.parse(source, filename=filename)
         table = symtable.symtable(source, filename, "exec")
         # Builtins cannot be rebound even on a path that seems unreachable.
-        if any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in ScalarGenerator.BUILTINS for node in ast.walk(tree)):
-            return None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in ScalarGenerator.BUILTINS:
+                raise _Unsupported
         bits = 64 if integer == "i64" else 128
         constructors = {}
         if "collections" in trusted_imports:
@@ -2157,7 +2185,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
-    except (SyntaxError, _Unsupported, RecursionError):
+    except (SyntaxError, _Unsupported, RecursionError) as error:
+        if diagnostic_out is not None:
+            diagnostic_out.append(_direct_diagnostic(source, filename, error))
         return None
     runtime = files("py2fastrust").joinpath("runtime")
     notice = runtime.joinpath("NOTICE.txt").read_text(encoding="utf-8")
@@ -2217,5 +2247,8 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         result.append("if let Err(error) = native_result {\n"
                       f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {{}}, in <module>\\n{{}}", {_string(filename)}, error.line, error.message);\n'
                       "std::process::exit(1);\n}\n}\n")
-    from .rust_pruning import prune_rust_source
-    return prune_rust_source("\n".join(result))
+    source = "\n".join(result)
+    if prune_output:
+        from .rust_pruning import prune_rust_source
+        source = prune_rust_source(source)
+    return source

@@ -1,7 +1,14 @@
 # Standard-library API support
 
-This document lists implemented API names. It does not guarantee full CPython compatibility for every argument, type, or custom protocol.
-See [COMPATIBILITY.md](COMPATIBILITY.md) for language-wide limitations.
+This is the inventory of API implementations retained in the internal runtime.
+It is not the current public direct-Rust support list. The CLI and `transpile()`
+never select that runtime after direct lowering fails. A listed API without
+direct Rust lowering produces a positioned `E006` diagnostic.
+
+Restoring the required module APIs through direct generation remains unfinished
+work. The implementations and their acceptance tests are retained; this
+inventory and strict diagnostics do not establish completed compatibility or a
+green full suite. See [COMPATIBILITY.md](COMPATIBILITY.md) for the public boundary.
 
 ## math
 

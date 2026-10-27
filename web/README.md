@@ -23,12 +23,13 @@ Translation runs locally after the runtime and package assets have loaded.
 The single source file is named `main.py`. Imports needing additional user files
 are reported by the core converter.
 
-Ordinary source becomes Rust functions through the same AOT backend as the CLI,
-including when **Optimize** is unchecked. The checkbox enables optional typed
-native specializations; general AOT uses shared value and object helpers when
-types remain dynamic. Runtime `compile`/`eval`/`exec` can include an interpreter
-for newly compiled source strings. Static function bodies keep their Rust AOT
-entries when called from that dynamic code.
+The browser uses the same strict direct-Rust API as the CLI. **Optimize** controls
+optional Rust helper pruning; unchecking it keeps direct generation enabled.
+An unimplemented construct or type combination produces a positioned `E006`
+diagnostic and retains the previous output. The converter never switches the
+whole program to a general backend. Direct support for many language features
+and library calls is still unfinished; the retained internal runtime is not an
+alternate mode exposed by the page.
 
 An existing license in the original Python source takes precedence. The license
 selector supplies the generated file's fallback license; it does not replace

@@ -3,7 +3,7 @@
 Integers are ordinary owned Rust ``Int`` values, not Python object handles.
 The fixed-width backend's binding and control-flow proofs are shared; explicit
 clones preserve Python's immutable-value semantics without requiring ``Copy``.
-Unproved programs go through the general AOT backend.
+Missing direct lowering produces a positioned diagnostic in the public API.
 """
 
 import ast
@@ -12,7 +12,7 @@ import symtable
 
 from .native import (_Binding, _Expression, _Function, _Generator, _Specializations,
                      _Unsupported, _OUTPUT_HELPERS, _declarations,
-                     _function_plans, _string)
+                     _function_plans, _string, _direct_diagnostic)
 
 
 _HELPERS = r'''
@@ -229,7 +229,7 @@ class BigIntGenerator(_Generator):
             method = "shl" if isinstance(operator,ast.LShift) else "shr"
             result = self.at(f"{first}.{method}(&{second})",node)
         elif isinstance(operator,ast.Pow):
-            # A negative exponent has a float result and belongs to general AOT.
+            # Negative exponent results need additional direct float lowering.
             if right.constant is None or right.constant < 0:
                 raise _Unsupported
             result = self.at(f"{first}.pow(&{second})",node)
@@ -399,20 +399,23 @@ class BigIntGenerator(_Generator):
         raise _Unsupported
 
 
-def try_generate_bigint(source, filename):
+def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None):
     """Return a complete direct-Rust program only after a full scalar proof."""
     try:
         tree = ast.parse(source,filename=filename)
         table = symtable.symtable(source,filename,"exec")
-        if any(isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS for node in ast.walk(tree)):
-            return None
+        for node in ast.walk(tree):
+            if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS:
+                raise _Unsupported
         functions = _function_plans(tree,table,0,BigIntGenerator)
         function_input = bool(functions) and any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree))
         specializations = _Specializations(0,functions,{},function_input,BigIntGenerator)
         generator = BigIntGenerator(functions=functions,function_input=function_input,specializations=specializations)
         body,_ = generator.statements(tree.body,{})
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
-    except (SyntaxError,_Unsupported,RecursionError):
+    except (SyntaxError,_Unsupported,RecursionError) as error:
+        if diagnostic_out is not None:
+            diagnostic_out.append(_direct_diagnostic(source,filename,error))
         return None
     runtime = files("py2fastrust").joinpath("runtime")
     notice = runtime.joinpath("NOTICE.txt").read_text(encoding="utf-8")
@@ -439,5 +442,8 @@ def try_generate_bigint(source, filename):
                "}\n"
                f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);\n'
                "std::process::exit(1);\n}\n}\n"]
-    from .rust_pruning import prune_rust_source
-    return prune_rust_source("\n".join(result))
+    source = "\n".join(result)
+    if prune_output:
+        from .rust_pruning import prune_rust_source
+        source = prune_rust_source(source)
+    return source

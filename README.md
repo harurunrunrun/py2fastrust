@@ -3,8 +3,13 @@
 The `pytors` command transpiles Python 3.14 programs into a single Rust source file that needs no external crates.
 Type hints and changes to the input program are not required.
 
-This is an alpha release. See [COMPATIBILITY.md](COMPATIBILITY.md) for supported features and known limitations,
-and [API_SUPPORT.md](API_SUPPORT.md) for individual standard-library APIs.
+This is an incomplete alpha release undergoing a direct-code-generation rewrite.
+The public CLI and API either generate typed Rust or return a source-positioned
+`E006` diagnostic. A failed lowering never selects another execution backend.
+Required language and library coverage remains unfinished; rejecting an
+unimplemented program is not completion of that requirement.
+See [COMPATIBILITY.md](COMPATIBILITY.md) for the current public boundary and
+[API_SUPPORT.md](API_SUPPORT.md) for the retained internal library inventory.
 
 ## Usage
 
@@ -30,7 +35,7 @@ It accepts a single source file and keeps translation in the browser after the
 runtime assets load. See its documentation for local verification and GitHub
 Pages deployment.
 
-The integer mode applies to the entire generated program, including `eval` and `exec`:
+The integer mode applies to the entire directly generated program:
 
 ```bash
 pytors main.py -o main.rs                 # i64 (default)
@@ -42,7 +47,6 @@ In `i64` and `i128` modes, integer literals, conversions, and arithmetic results
 Use `--int bigint` when you need Python's arbitrary-precision integer behavior.
 The generated file includes the BigInt runtime, so Cargo and additional crates are unnecessary.
 Range termination, indices, and allocation sizes use separate checked calculations.
-Opaque text seek cookies preserve the complete decoder state; arithmetic on their integer representation still follows the selected width.
 
 ## Options in source comments
 
@@ -71,16 +75,16 @@ even when those options appear in the source.
 
 ## Modules
 
-Fixed-name imports and bundled pure-Python modules and packages are supported.
-The input file's directory is the default module search path.
+The direct path recognizes proved `collections.deque` imports using the
+compiler's actual module resolution. A user module with the same name is not
+silently replaced by that specialization.
 
-```bash
-pytors main.py --module-path ./lib -o main.rs
-pytors main.py --include-module helpers -o main.rs
-```
-
-Use `--include-module` to bundle modules that the ordinary source does not reference, such as imports inside `eval` or `exec`.
-The generated executable uses bundled code and the supported standard modules.
+General fixed-name imports, pure-Python packages, and `--include-module` remain
+required work for direct Rust generation. Their existing internal runtime code
+is retained, but the public API does not select it. `--module-path` and
+`--include-module` remain recognized options; an unimplemented direct import or
+explicit module bundle produces a diagnostic instead of being ignored.
+The input file's directory remains the default module search path.
 
 ## Python API
 
@@ -98,88 +102,49 @@ else:
         print(diagnostic)
 ```
 
-`source_map` maps code units and instruction positions to the original file, line, and column.
-`backend` is either `native` for proved typed specializations or `aot` for general
-ahead-of-time Rust generation. `TranspileOptions(optimize=False)` and the CLI's
-`--no-optimize` option select general AOT without optional native specializations.
-Ordinary source still becomes Rust code when optimization is disabled.
-`--check` checks whether conversion succeeds without writing a Rust file.
+`source_map` retains original file, line, column and intermediate-code positions.
+A successful public result has `backend="native"`. An unimplemented direct
+lowering returns `rust_source=None` and an `E006` diagnostic at the relevant
+source operation. Official Python syntax, scope and module-resolution errors
+keep their existing diagnostic categories.
 
-## Execution and performance
+`TranspileOptions(optimize=False)` and the CLI's `--no-optimize` option disable
+optional Rust helper pruning. Direct typed generation and its correctness
+proofs still run. Neither setting enables another execution path. `--check`
+checks conversion without writing a Rust file.
 
-Ordinary input is parsed with Python's official `ast` and `symtable` APIs to analyze scopes and evaluation order.
-Every statically compiled code body becomes a Rust function. Consecutive operations become Rust statements
-inside control-flow blocks; calls, generators, and exceptions preserve their continuation positions in frames.
-When types remain dynamic, these Rust statements use tagged `Value` objects and shared object/protocol helpers.
-Static code retains source and scope metadata without executable instruction arrays.
-The general `aot` backend handles those dynamic values while still executing generated Rust functions.
-When types and bindings can be established, `i64`/`i128` integers, integer arrays and independent rows,
-integer dictionaries, sets, deques, and loops become native Rust integers, `Vec<T>`, `HashMap`, `HashSet`, `VecDeque`, and control flow.
-Supported patterns include `list(map(int, input().split()))`, unpacked integer input,
-integer-list `append`, `extend`, and `sort`, dictionary aggregation, and dictionary iteration in insertion order.
-Native integer sets support construction, insertion, deletion, membership, and `sum`.
-Programs that observe set iteration order or sharing use general AOT.
-Owned adjacency lists and unbounded integer deques support native BFS loops.
-Proved strings use Rust `String`, and floating-point values use `f64`.
-Unicode indexing counts code points, with a direct ASCII path. Integer/float
-comparisons and integer true division preserve the integer operand's precision
-until the operation requires a floating-point result.
-Proved BigInt scalar arithmetic, branches, loops, input and output use owned
-Rust `Int` values with the bundled arbitrary-precision implementation.
-Deque specialization uses the compiler's resolved bundled `collections` module; a user module of the same name is respected.
-Shared rows, container aliases, and mutation during active iteration use general AOT.
-Programs without a proved typed specialization use general AOT with shared value and object helpers.
-The optimizer follows proved type changes and combines compatible branch and loop states.
-Finite unions of `bool` and integer values also stay native across branches and loop back edges.
-A stack value preserves their distinct result types and formatting without object allocation.
-Unproved combinations use general AOT.
-Ordinary user functions get separate Rust versions for proved integer, boolean,
-string, float, and read-only integer-list arguments. BigInt scalar functions
-use the same specialization rules with owned arbitrary-precision values.
-Scalar results retain their proved type; positional and keyword arguments,
-constant defaults, and calls between functions are supported.
-Integer lists are borrowed without copying; functions that mutate or expose those argument lists use general AOT.
-Recursion and functions with dynamic global or closure state use general AOT.
-Within a general-AOT program, selected pure arithmetic function bodies can also use native code.
-Entry guards check the actual code object and bound integer arguments before any body operation;
-other argument types execute the general AOT Rust body. `--no-optimize` disables these native entry paths.
-For simple module-level code and closed static functions or comprehensions,
-a separate analysis proves whether dynamic compilation is unreachable.
-Simple scopes use reaching assignments, types, call targets and effect facts.
-Static callbacks require a closed set of calls without reflective namespace or
-external capability access. Both proofs check the AST and lowered code.
-Uncertain paths retain the runtime parser.
-When that proof succeeds, the general backend omits the runtime parser, instruction interpreter,
-and Unicode name tables. Imports, reflection, unknown indirect calls, classes,
-and unknown syntax currently retain these components conservatively. The reachability analysis also
-runs with `--no-optimize`; disabling optimization never changes static code into interpreted code.
+## Direct generation and remaining work
 
-The runtime handles shared objects, GC, function frames, exceptions, classes, and closures.
-List, set, and dict comprehensions run in their enclosing frame with isolated iteration bindings
-and Python 3.14 local snapshots. Generators and class-visible annotation comprehensions retain their own frames.
-Module and builtin namespaces are ordinary dictionaries. Functions and frames retain the builtin mapping captured at creation; replacing a module's `__builtins__` affects later captures, while mutations to an already captured mapping remain visible.
-Calls retain original expanded keyword key objects and their stored hashes across functions, partials, caches, and metaclasses.
-Ordinary cached-function recursion uses explicit execution frames, including cache misses and exceptional returns.
-Exception groups and `except*` support subgroup handling, reraising, and merging unhandled exceptions.
-Runtime `compile`, `eval`, and `exec` use a Rust tokenizer and PEG rules generated from CPython 3.14.4's official grammar.
-New code compiled from runtime source strings executes through the runtime instruction interpreter.
-Calls into statically compiled functions, including calls from dynamic code and functions created from
-static code objects, keep their Rust AOT entries. The interpreter is included only when the analysis
-cannot prove runtime compilation unreachable.
-Syntax without runtime support produces a diagnostic.
-The runtime also supports `__future__` declarations and flag inheritance, Unicode NFKC identifiers,
-type parameters, lazy type aliases, and GenericAlias parameter substitution in both static and dynamic code.
-T-strings produce `Template` and `Interpolation` objects that retain expression values, conversions, and format specifications.
-Complex literals, arithmetic, and conversions, as well as runtime `compile(optimize=1/2)`, are supported.
-Dynamic execution accepts keyword `globals`/`locals` and preserves dictionary subclass identity.
-`compile()` supports path-like filenames and source encoding declarations in bytes.
-Unicode 16.0 character names and aliases in `\N{name}` escapes work in dynamically compiled strings,
-f-strings, and t-strings.
-Immutable `frozenset` values support mixed operations with `set`, cached hashing, subclasses, and generic aliases.
-Standard input is buffered and read on demand in both backends. Interactive pipe programs can
-show an `input()` prompt or `print(..., flush=True)` output before stdin reaches EOF.
-Text reads keep decoded look-ahead while sharing the underlying input with `sys.stdin.buffer`.
+The converter uses Python's official `ast` and `symtable` APIs. Supported
+bindings, operators and control flow become Rust values, expressions, loops
+and functions. The current implementation covers proved integer and boolean
+operations, `String` and `f64` scalars, owned BigInt scalar operations, integer
+lists and independent rows, dictionaries, sets and unbounded deques. It supports
+ordinary scalar functions with proved argument and return kinds, constant
+defaults, positional and keyword binding, and calls between those functions.
+Python names can change type through distinct typed Rust slots. Compatible
+branches and loops merge proved kinds; finite boolean/integer unions use a
+small stack enum. Unicode string indexing counts code points, with an ASCII
+path. Integer modes preserve their documented wrapping policy.
 
+Supported competitive-programming patterns include unpacked integer input,
+`list(map(int, input().split()))`, integer-list mutation and sorting, dictionary
+aggregation and insertion-order iteration, and owned adjacency-list BFS.
+Standard input is buffered and read on demand. Output flushes before a blocking
+input operation, including inside supported ordinary functions.
+
+If the implementation cannot establish a supported direct representation, it
+reports the missing construct or type combination. This currently includes
+many aliases and mixed-type joins, recursion, closures, exceptions, generators,
+classes and metaclasses, dynamic execution, and most standard-module calls.
+These are implementation gaps that must be restored through direct generation;
+they are not removed from the project's goals and do not require users to add
+type hints or rewrite ordinary Python as a substitute.
+
+The source tree retains earlier general-runtime, object-model, parser and
+execution code and its compatibility tests for the continuing rewrite. The
+public `transpile()` and `pytors` entry points never call that backend after a
+direct lowering fails. There is no fallback mode or switch that enables it.
 
 The benchmarks check that CPython, generated Rust, and handwritten Rust produce the same results.
 They cover arithmetic, I/O, arrays, sorting, dictionaries, sets, BFS, DP, and BigInt.
@@ -199,11 +164,10 @@ If measurement limits prevent a sufficiently long run, the report records that l
 Generated-source audit results are saved too, but text checks alone cannot prove the absence of unnecessary allocations
 or guarantee the performance of other programs.
 
-Programs using dynamic features have different performance characteristics from specialized programs.
-The general runtime currently uses linear searches for `dict` and mutable `set`.
-`frozenset` retains member hashes and uses hash buckets for membership.
-Native integer dictionaries and sets use `HashMap` and `HashSet`.
-Operations at either end of `deque` are amortized O(1); moving an `OrderedDict` entry to the front is O(n).
+Direct integer dictionaries and sets use Rust `HashMap` and `HashSet`.
+Operations at either end of a supported deque are amortized O(1).
+Unimplemented benchmark patterns produce the same positioned diagnostic as
+other input programs; they are not measured through another backend.
 
 ## Validation
 
@@ -213,13 +177,17 @@ python3 tests/test_native.py --benchmark-native
 python3 tools/check_standalone.py
 ```
 
-Tests cover execution differences against CPython 3.14, a reference model for fixed-width integers,
-randomized BigInt arithmetic, GC, and calls between dynamic and AOT code.
+Tests include CPython differential checks, an independent fixed-width reference,
+randomized BigInt arithmetic, and explicit no-fallback API/CLI checks. Existing
+class, GC, closure, generator, dynamic execution and module acceptance tests are
+retained. Many of those public acceptance cases currently expose missing direct
+lowering; the strict boundary is not a claim that the full suite or CI is green.
 CI targets Rust 1.85 and stable.
-`check_standalone.py` builds and runs debug and optimized programs in every integer mode,
-including with a PATH that cannot find Python.
-Use `--wheel path/to/package.whl` to check a distribution and `--output directory` to save generated sources,
-executables, and measurements.
+
+`check_standalone.py` retains the advanced all-integer-mode acceptance fixture,
+including execution without Python on PATH. That fixture is currently blocked
+by missing direct features and must be restored through implementation. Its
+`--wheel` and `--output` options remain available for distribution verification.
 
 ## Licenses and generated headers
 

@@ -1,11 +1,31 @@
 # Compatibility
 
-The language target is Python 3.14. The following tables describe implemented features;
-they do not imply compatibility with all CPython internals or the entire standard library.
+The language target remains Python 3.14. The public CLI and API now require
+direct typed Rust generation. If that implementation is missing, they return a
+source-positioned `E006` diagnostic and no Rust file. They never select the
+retained general backend. `--no-optimize` disables optional helper pruning and
+keeps the same direct generation path.
 
-## Language and runtime features
+## Current public direct path
 
-| Category | Supported features |
+Proved integer/boolean and String/f64 scalars, BigInt scalar arithmetic and
+functions, integer containers, compatible branches/loops, scalar functions and
+selected competitive-programming input/BFS patterns are implemented. This is
+an incomplete subset of the required Python language. Recursion, closures,
+exceptions, classes/metaclasses, generators, dynamic execution, general imports
+and many mixed-type/alias cases still require direct lowering. An `E006`
+diagnostic makes that gap explicit; it does not satisfy the missing feature.
+
+## Retained internal runtime implementation
+
+The following inventory describes code and regression coverage retained for
+the rewrite. These tables are not a claim that the strict public converter
+currently accepts every listed feature. Existing acceptance tests remain in
+place, and full-suite/CI success must be restored through direct implementation.
+
+### Language and runtime features
+
+| Category | Retained internal implementation |
 |---|---|
 | Values | `None`, `bool`, integers in the selected mode, `float`, `complex`, `str`, `bytes`, `bytearray`, `memoryview`, `list`, `tuple`, `dict`, `set`, `frozenset`, `slice`, `range`, live dictionary views and `mappingproxy`, GenericAlias, union types, Template, Interpolation |
 | Variables | Type changes, shared references, chained and unpacking assignments, `global`/`nonlocal`, unbound-name errors |
@@ -67,23 +87,11 @@ Callback-free native comparison cycles can be detected earlier. Stateful callbac
 and may terminate a cycle normally. The exact callback count at a recursion error need not match
 CPython's adaptive opcode specialization or platform-specific C-stack guard.
 
-All ordinary source bodies execute generated Rust functions, including bodies whose values
-require dynamic `Value` and object helpers. The general backend is reported as `aot`;
-proved typed specializations are reported as `native`. Static code objects retain their AOT
-entry when called through dynamic code or used to construct another function.
-Proved scalar strings and floats use Rust `String` and `f64`, including typed
-function arguments, constant defaults and return values. Proved BigInt scalar
-expressions, control flow and functions use owned arbitrary-precision `Int`
-values. Unproved kinds and effects retain general AOT semantics.
-
-New Python source compiled at runtime by `compile`/`eval`/`exec` uses a runtime instruction
-interpreter. The converter omits that interpreter, parser, and dynamic syntax tables for
-simple module-level programs whose calls are proved to target unmodified leaf built-ins,
-and closed static functions or comprehensions that cannot acquire runtime compilation
-through imports, attributes, reflective namespaces or non-leaf builtin values.
-Indirect calls, reflection, imports, and unknown syntax retain those components conservatively.
-This reachability check also runs with `--no-optimize`; that option disables native
-specializations while preserving direct Rust generation for ordinary source.
+The retained general backend generates Rust code bodies with shared value and
+object helpers. It also contains instruction execution for runtime-compiled
+source. The public converter does not call this backend on proof failure,
+regardless of optimization settings. These retained mechanisms are not a
+fallback option for unfinished direct lowering.
 
 `frozenset` supports construction, hashing, iteration, membership, comparisons, read-only set methods,
 mixed operations with `set`, subclasses, and GenericAlias.
@@ -175,7 +183,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - In one CPython 3.14.4 bug case, a captured comprehension iteration variable shadows a free variable of the enclosing function and the interpreter retains the new cell. Generated code instead restores the original enclosing cell as [PEP 709](https://peps.python.org/pep-0709/) specifies. AST and dynamic compilation agree on that restoration.
 - Invalid stale text-decoder snapshots raise `OSError` before changing the stream. CPython 3.14.4 can access beyond an empty snapshot after a seek/iteration/flush sequence; its unstable release-build results are not reproduced.
 - A traceback's `tb_frame` is a snapshot containing source information. It does not expose live-frame manipulation or CPython bytecode offsets.
-- Native specialization of code containing dynamic functions and classes is limited; such code uses general AOT with shared value and object helpers.
+- Direct generation for dynamic functions and classes is unfinished. The public API reports `E006` instead of selecting the retained runtime.
 - Superseded container storage in native code can remain until the enclosing Rust scope ends. Peak memory may exceed that of the equivalent Python program.
 
 Unsupported syntax and modules produce transpilation diagnostics.

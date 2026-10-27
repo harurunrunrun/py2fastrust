@@ -34,9 +34,9 @@ def add_conversion_arguments(parser, *, defaults=True):
     parser.add_argument("--include-module", action="append", **default)
     optimization = parser.add_mutually_exclusive_group()
     optimization.add_argument("--no-optimize", dest="optimize", action="store_false",
-                              help="disable native specialization and source-size optimization; keep direct Rust AOT", **default)
+                              help="disable optional Rust helper pruning; preserve direct Rust generation", **default)
     optimization.add_argument("--optimize", dest="optimize", action="store_true",
-                              help="enable proved native optimization", **default)
+                              help="enable optional Rust helper pruning", **default)
     if defaults:
         parser.set_defaults(optimize=True)
 
