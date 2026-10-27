@@ -315,8 +315,7 @@ print(b[0],b[1],b[-1],len(b))
             "a=[1]\na.append('mixed')", "a=[1]\nfor x in a:\n a[0]=2",
             "a=[1]\nfor x in a:\n a=[3]", "a=[1]\nfor x in a:\n a.append(x)",
             "a=[1]\nb=a if True else [2]\nprint(b[0])", "a=[1]\nb=a or [2]",
-            "a=[1]\na*=3", "a=[1]\nprint(a[:])", "a=[1]\nb=a[0:1]",
-            "a=[]\nprint(sum(a, True))",
+            "a=[1]\na*=3", "a=[1]\nprint(a[:])",
             "a=[]\nfor x in a:\n pass\nprint(x)",
             "a=[i for i in range(3)]\nprint(i)",
             "a=[i for i in range(3) for j in range(2)]", "a=[1]\nfor a in a:\n pass",
@@ -325,6 +324,8 @@ print(b[0],b[1],b[-1],len(b))
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
         self.differential("a=[1]\na=2\nprint(a)")
+        self.differential("a=[1]\nb=a[0:1]\nb.append(2)\nprint(*a)\nprint(*b)")
+        self.differential("a=[]\nprint(sum(a, True))")
 
     def test_integer_dictionary_lookup_order_and_views(self):
         source = '''

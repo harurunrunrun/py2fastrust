@@ -422,7 +422,7 @@ impl std::fmt::Display for NativeScalar {
 
 
 class _Generator:
-    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "min", "max", "list", "map", "dict", "set"}
+    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "any", "all", "min", "max", "list", "map", "filter", "enumerate", "zip", "dict", "set", "sorted"}
 
     def __init__(self, bits, functions=None, function=None, function_input=False, constructors=None, specializations=None):
         self.bits = bits
@@ -444,6 +444,11 @@ class _Generator:
         self.constructors = constructors or {}
         self.specializations = specializations
         self.return_kinds = set()
+        self.expression_scopes = []
+        self.expression_trace_id = None
+        self.has_iterator_frames = False
+        self.has_slices = False
+        self.entry_scope = None
 
     def temporary(self):
         self.counter += 1
@@ -542,9 +547,25 @@ class _Generator:
     def consume_list(expression):
         return expression.code if expression.owned else f"({expression.code}).clone()"
 
+    def scope_name(self):
+        if self.expression_scopes:
+            return self.expression_scopes[-1]
+        return self.function.node.name if self.function else self.entry_scope or "<module>"
+
     def at(self, code, node):
-        scope = self.function.node.name if self.function else "<module>"
-        return f"native_at({code}, {node.lineno}, {_string(scope)})?"
+        scope, line = self.scope_code(), self.line_code(node)
+        result = f"native_at({code}, {line}, {scope})"
+        if self.expression_trace_id is not None:
+            result += f".map_err(&{self.expression_trace_id})"
+        return result + "?"
+
+    def scope_code(self):
+        scope = self.scope_name()
+        return scope.scope_code if hasattr(scope, "scope_code") else _string(scope)
+
+    def line_code(self, node):
+        scope = self.scope_name()
+        return scope.line_code if hasattr(scope, "line_code") else node.lineno
 
     @staticmethod
     def input_words(node):
@@ -732,9 +753,10 @@ class _Generator:
         if self.function_input:
             arguments.append("&mut native_input")
         arguments.append("&mut native_output")
-        scope = self.function.node.name if self.function else "<module>"
+        scope, line = self.scope_code(), self.line_code(node)
         call = f"{variant.rust_name}({', '.join(arguments)})"
-        call += f".map_err(|mut error| {{ error.frames.push(({node.lineno}, {_string(scope)})); error }})?"
+        trace = f"{self.expression_trace_id}(error)" if self.expression_trace_id is not None else "error"
+        call += f".map_err(|mut error| {{ error.frames.push(({line}, {scope})); {trace} }})?"
         return _Expression("{ " + " ".join(lines) + f" {call} }}", variant.return_kind)
 
     def deque_constructor(self, node, environment):
@@ -804,6 +826,16 @@ class _Generator:
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+            from .native_slices import try_slice
+            return try_slice(self, node, environment)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "sorted":
+            from .native_slices import sorted_list
+            return sorted_list(self, node, environment)
+        from .native_iterators import try_reduction
+        reduction = try_reduction(self, node, environment)
+        if reduction is not None:
+            return reduction
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr in {"bit_length", "bit_count"}
                 and not node.args and not node.keywords):
@@ -2178,10 +2210,11 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             generator.has_input = generator.needs_integer_runtime = True
         if wrapper:
             generator.return_label = "native_entrypoint"
+            generator.entry_scope = wrapper[0]
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2213,6 +2246,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             result.append("\n".join("// " + line for line in license_text.splitlines()) + "\n")
     if generator.has_lists:
         result.append(_LIST_HELPERS)
+    if generator.has_slices:
+        from .native_slices import SLICE_HELPERS
+        result.append(SLICE_HELPERS)
     if generator.has_dicts:
         result.append(_DICT_HELPERS)
     if generator.has_sets:
@@ -2233,9 +2269,13 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if wrapper:
         function_name, call_line = wrapper
         result.append("if let Err(error) = native_result {\n"
-                      f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {call_line}, in <module>\\n  File {{:?}}, line {{}}, in {{}}\\n{{}}", {_string(filename)}, {_string(filename)}, error.line, {_string(function_name)}, error.message);\n'
+                      f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {call_line}, in <module>", {_string(filename)});\n'
+                      "for &(line, function) in error.frames.iter().rev() {\n"
+                      f'eprintln!("  File {{:?}}, line {{}}, in {{}}", {_string(filename)}, line, function);\n'
+                      "}\n"
+                      f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}", {_string(filename)}, error.line, error.function, error.message);\n'
                       "std::process::exit(1);\n}\n}\n")
-    elif functions:
+    elif functions or generator.has_iterator_frames:
         result.append("if let Err(error) = native_result {\n"
                       'eprintln!("Traceback (most recent call last):");\n'
                       "for &(line, function) in error.frames.iter().rev() {\n"

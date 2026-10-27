@@ -10,9 +10,10 @@ import ast
 from importlib.resources import files
 import symtable
 
-from .native import (_Binding, _Expression, _Function, _Generator, _Specializations,
+from .native import (_Binding, _Expression, _Function, _Generator, _ListInfo, _Specializations,
                      _Unsupported, _OUTPUT_HELPERS, _declarations,
                      _function_plans, _string, _direct_diagnostic)
+from .native_bigint_lists import BigIntLists, HELPERS as LIST_HELPERS
 
 
 _HELPERS = r'''
@@ -67,6 +68,14 @@ impl NativeInput {
         Ok(&self.line)
     }
     fn integer(&mut self,output:&mut String)->Result<Int,String> {Int::parse(self.line(output)?,10)}
+    fn integers(&mut self,output:&mut String)->Result<Vec<Int>,String> {
+        let mut result=Vec::new();
+        for word in self.line(output)?.split(native_space).filter(|word|!word.is_empty()) {
+            let value=Int::parse(word,10)?;
+            native_big_list_push(&mut result,value)?;
+        }
+        Ok(result)
+    }
     fn unpack_integers(&mut self,count:usize,output:&mut String)->Result<Vec<Int>,String> {
         let mut words=self.line(output)?.split(native_space).filter(|word|!word.is_empty());
         let mut result=Vec::with_capacity(count);
@@ -86,8 +95,8 @@ fn native_space(character:char)->bool {character.is_whitespace()||('\u{1c}'..='\
 '''
 
 
-class BigIntGenerator(_Generator):
-    BUILTINS = _Generator.BUILTINS | {"bool"}
+class BigIntGenerator(BigIntLists, _Generator):
+    BUILTINS = _Generator.BUILTINS | {"bool", "reversed"}
 
     def __init__(self, bits=0, functions=None, function=None, function_input=False, constructors=None, specializations=None):
         super().__init__(0, functions, function, function_input, constructors, specializations)
@@ -104,7 +113,7 @@ class BigIntGenerator(_Generator):
         return f"Int::parse({_string(str(value))},10).unwrap()"
 
     def slot(self, kind):
-        if kind not in {"int", "bool", "int_bool"}:
+        if kind not in {"int", "bool", "int_bool", "list_int"}:
             raise _Unsupported
         return super().slot(kind)
 
@@ -130,6 +139,8 @@ class BigIntGenerator(_Generator):
 
     @staticmethod
     def truth(expression):
+        if expression.kind == "list_int":
+            return f"!({expression.code}).is_empty()"
         if expression.kind == "int":
             return f"!({expression.code}).is_zero()"
         if expression.kind == "int_bool":
@@ -146,12 +157,27 @@ class BigIntGenerator(_Generator):
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+            from .native_slices import try_slice
+            return try_slice(self, node, environment)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "sorted":
+            from .native_slices import sorted_list
+            return sorted_list(self, node, environment)
+        from .native_iterators import try_reduction
+        reduction = try_reduction(self, node, environment)
+        if reduction is not None:
+            return reduction
+        result = self.list_expression(node, environment)
+        if result is not None:
+            return result
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr in {"bit_length", "bit_count"}
                 and not node.args and not node.keywords):
             return self.integer_bit_query(node, environment)
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)
+            if isinstance(binding, _Binding) and isinstance(binding.info, _ListInfo):
+                return _Expression(binding.slot,"list_int",owned=False,length=binding.info.length)
             if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool"}:
                 raise _Unsupported
             return _Expression(self.coerce(_Expression(binding.slot,binding.kind),binding.kind),binding.kind)
@@ -213,6 +239,9 @@ class BigIntGenerator(_Generator):
         raise _Unsupported
 
     def binary(self, operator, left, right, node):
+        result = self.list_binary(operator,left,right,node)
+        if result is not None:
+            return result
         if isinstance(operator,(ast.BitAnd,ast.BitOr,ast.BitXor)) and left.kind == right.kind == "bool":
             return super().binary(operator,left,right,node)
         if (isinstance(operator,(ast.BitAnd,ast.BitOr,ast.BitXor)) and "int_bool" in (left.kind,right.kind)
@@ -277,7 +306,7 @@ class BigIntGenerator(_Generator):
             return _Expression(f"{{{setup} let mut {best}={names[0]}; {updates} {best}}}",kind)
         iterable = node.args[0]
         if not isinstance(iterable,(ast.List,ast.Tuple)):
-            raise _Unsupported
+            return self.list_extremum(node,environment)
         values = [self.expression(value,environment) for value in iterable.elts]
         kind = self.scalar_kind(values+([default] if default else [])) if values or default else "int"
         names = [self.temporary() for _ in values]
@@ -327,7 +356,7 @@ class BigIntGenerator(_Generator):
         entry_slots = {binding.slot for binding in entry.values() if isinstance(binding,_Binding)}
         for name,binding in joined.items():
             if isinstance(binding,_Binding) and binding.slot not in entry_slots:
-                default = {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))"}[binding.kind]
+                default = {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))","list_int":"Vec::<Int>::new()"}[binding.kind]
                 old = entry.get(name)
                 if isinstance(old,_Binding) and binding.kind == "int_bool":
                     default = self.coerce(_Expression(old.slot,old.kind),binding.kind)
@@ -357,10 +386,13 @@ class BigIntGenerator(_Generator):
         return "\n".join(initializers),body,self.after_loop(joined)
 
     def statement(self, node, environment):
+        result = self.list_statement(node,environment)
+        if result is not None:
+            return result
         if isinstance(node,ast.Assign):
             if len(node.targets)==1 and isinstance(node.targets[0],(ast.Tuple,ast.List)):
                 targets = node.targets[0].elts
-                if not all(isinstance(target,ast.Name) for target in targets):
+                if not all(isinstance(target,ast.Name) and target.id not in self.iterating_lists for target in targets):
                     raise _Unsupported
                 name = self.temporary()
                 if self.input_map(node.value):
@@ -372,15 +404,27 @@ class BigIntGenerator(_Generator):
                     return "\n".join(lines),environment
                 if isinstance(node.value,(ast.Tuple,ast.List)) and len(node.value.elts)==len(targets):
                     values = [self.expression(value,environment) for value in node.value.elts]
+                    if any(value.kind == "list_int" for value in values):
+                        raise _Unsupported
                     names = [self.temporary() for _ in values]
                     lines = [f"let {name}={value.code};" for name,value in zip(names,values)]
                     for target,name,value in zip(targets,names,values):
                         lines.append(f"{self.bind(target.id,value,environment)}={name};")
                     return "\n".join(lines),environment
-                raise _Unsupported
-            if not all(isinstance(target,ast.Name) for target in node.targets):
+                value = self.expression(node.value,environment)
+                if value.kind != "list_int":
+                    raise _Unsupported
+                lines = [f"let {name}={value.code if value.owned else '&'+value.code};"]
+                check = f'native_big_unpack_length({name}.len(),{len(targets)})'
+                lines.append(self.at(check,node)+";")
+                for index,target in enumerate(targets):
+                    lines.append(f"{self.bind(target.id,'int',environment)}={name}[{index}].clone();")
+                return "\n".join(lines),environment
+            if not all(isinstance(target,ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
             value = self.expression(node.value,environment)
+            if value.kind == "list_int" and (not value.owned or len(node.targets) != 1):
+                raise _Unsupported
             name = self.temporary()
             lines = [f"let {name}={value.code};"]
             for index,target in enumerate(node.targets):
@@ -413,6 +457,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator = BigIntGenerator(functions=functions,function_input=function_input,specializations=specializations)
         body,_ = generator.statements(tree.body,{})
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
+        generator.has_slices |= any(local.has_slices for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source,filename,error))
@@ -426,7 +471,10 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
               "/*\n"+notice+"\n*/\n",
               "\n".join("// "+line for line in unicode_license.splitlines())+"\n",
               runtime.joinpath("integer.rs").read_text(encoding="utf-8"),
-              _HELPERS,_OUTPUT_HELPERS]
+              _HELPERS,LIST_HELPERS,_OUTPUT_HELPERS]
+    if generator.has_slices:
+        from .native_slices import SLICE_HELPERS
+        result.append(SLICE_HELPERS)
     if generator.has_input:
         result += [runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),_INPUT_HELPERS]
     result.extend(specializations.sources)

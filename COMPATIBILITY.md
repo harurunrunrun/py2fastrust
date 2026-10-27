@@ -12,9 +12,24 @@ Proved integer/boolean and String/f64 scalars, BigInt scalar arithmetic and
 functions, integer containers, compatible branches/loops, scalar functions and
 selected competitive-programming input/BFS patterns are implemented. This is
 an incomplete subset of the required Python language. Recursion, closures,
-exceptions, classes/metaclasses, generators, dynamic execution, general imports
+exceptions, classes/metaclasses, user-defined generators, dynamic execution, general imports
 and many mixed-type/alias cases still require direct lowering. An `E006`
 diagnostic makes that gap explicit; it does not satisfy the missing feature.
+
+Generator expressions consumed by `sum`, `any`, `all`, `min`, or `max` lower to
+typed Rust loops, including proved nested clauses, filters, and
+`map`/`filter`/`enumerate`/`zip` adapters. Construction and iteration keep their
+different evaluation times, and short-circuit consumers stop without evaluating
+later elements. Escaping generators and unproved mutation still need direct
+implementation. Floating-point compensated `sum` is not implemented here.
+
+All integer modes support uniquely owned flat integer lists, indexed reads and
+updates, copied lists, ordinary list operations, `sorted` without a custom key,
+and slicing with positive or negative steps. Slices make independent lists.
+Shared mutable list aliases and shallow slices of nested mutable rows are not
+yet implemented on this path. String slicing uses character indices and is
+currently available in fixed-width modes; BigInt-mode string values still need
+direct lowering.
 
 ## Retained internal runtime implementation
 
