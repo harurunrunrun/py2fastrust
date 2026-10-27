@@ -190,6 +190,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         from .native_characters import read_local
         character=read_local(self,node,environment)
         if character is not None:return character
+        from .native_text_predicates import try_expression as predicate_expression
+        predicate=predicate_expression(self,node,environment)
+        if predicate is not None:return predicate
         from .native_constraint_lowering import allocation_expression
         allocated=allocation_expression(self,node,environment)
         if allocated is not None:return allocated
@@ -451,7 +454,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         from .native_range_facts import derive_regions
         generator.range_facts=derive_regions(generator.type_analysis,generator.constraint_facts,0)
         body,_ = generator.statements(tree.body,{})
-        for local in specializations.generators:generator.union_types.update(local.union_types)
+        for local in specializations.generators:
+            generator.union_types.update(local.union_types)
+            generator.text_predicates.update(local.text_predicates)
         generator.has_scalar_union |= any(local.has_scalar_union for local in specializations.generators)
         generator.has_empty_type |= any(local.has_empty_type for local in specializations.generators)
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
@@ -512,6 +517,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.union_types:
         from .native_unions import render_types
         result.append(render_types(generator.union_types))
+    if generator.text_predicates:
+        from .native_text_predicates import render_helpers
+        result.append(render_helpers(generator.text_predicates,string_mode))
     result.extend(specializations.sources)
     result.append("fn main(){\nuse std::fmt::Write as _;\nuse std::io::Write as _;\nlet mut native_output=String::new();\nlet native_result=(||->Result<(),NativeError>{")
     if generator.has_input:

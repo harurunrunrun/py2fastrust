@@ -471,6 +471,7 @@ class _Generator:
         self.has_iterator_frames = False
         self.has_slices = False
         self.has_text_methods = False
+        self.text_predicates=set()
         self.has_big_text = False
         self.has_key_containers = False
         self.has_tuples = False
@@ -494,6 +495,11 @@ class _Generator:
     def literal(self, value):
         from .literal_semantics import integer_policy
         return integer_policy(self.bits).rust_literal(value,_string)
+
+    @staticmethod
+    def text_is_ascii(value):
+        """Physical text predicate over an already captured immutable owner."""
+        return f"({value.code}).is_ascii()"
 
     def slot(self, kind):
         inner=unmaybe(kind)
@@ -2208,7 +2214,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         generator.range_facts=derive_regions(generator.type_analysis,generator.constraint_facts,bits,body=range_body)
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
-        for local in specializations.generators:generator.union_types.update(local.union_types)
+        for local in specializations.generators:
+            generator.union_types.update(local.union_types)
+            generator.text_predicates.update(local.text_predicates)
         for local in specializations.generators:
             for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
@@ -2285,6 +2293,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.union_types:
         from .native_unions import render_types
         result.append(render_types(generator.union_types))
+    if generator.text_predicates:
+        from .native_text_predicates import render_helpers
+        result.append(render_helpers(generator.text_predicates,string_mode))
     result.extend(function_sources)
     result.append("fn main() {\nuse std::fmt::Write as _;\nuse std::io::Write as _;\n"
                   "let mut native_output = String::new();\n"

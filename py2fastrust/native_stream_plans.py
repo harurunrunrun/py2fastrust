@@ -182,28 +182,36 @@ class Normalizer:
             self._producers[key] = self._producer(node)
         return self._producers[key]
 
-    def method(self,node):
+    def method(self,node,*,names=None):
+        if names is not None and not (isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute) and node.func.attr in names):return None
         key=id(node)
         if key in self._methods:
             return self._methods[key]
         self._methods[key]=None
+        from .native_text_predicates import STR_PREDICATES,supports
         if not (isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
-                and node.func.attr in {"split","join","index","count","pop"}):
+                and node.func.attr in {"split","join","index","count","pop"}|STR_PREDICATES):
             return None
-        evaluate=getattr(self.generator,"expression",None)
+        predicate=node.func.attr in STR_PREDICATES
+        evaluate=getattr(self.generator,"read_expression" if predicate else "expression",None)
         if evaluate is None:
             return None
         receiver=evaluate(node.func.value,self.environment)
         from .native_types import list_type
         sequence_search=node.func.attr in {"index","count","pop"}
-        if sequence_search:
+        if predicate:
+            if not supports(receiver.kind,node.func.attr):return None
+        elif sequence_search:
             if not list_type(receiver.kind):return None
         elif receiver.kind not in {"str","bytes"} or receiver.kind=="bytes" and node.func.attr=="join":
             return None
         identity=BuiltinMethodIdentity(receiver.kind,node.func.attr)
         original=self.invocation(node)
         invocation=Invocation(node,identity,original.arguments)
-        if identity.name=="split":
+        if predicate:
+            signature=_signature(("self",),positional_only=("self",))
+            defaults=()
+        elif identity.name=="split":
             signature=_signature(("self","sep","maxsplit"),positional_only=("self",),defaults=("sep","maxsplit"))
             defaults=(("sep",None),("maxsplit",-1))
         elif identity.name=="join":

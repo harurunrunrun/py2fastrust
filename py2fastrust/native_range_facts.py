@@ -235,6 +235,14 @@ class RegionAnalysis:
             if safe:return EffectFact(term.site,"pure",may_raise=True)
             return EffectFact(term.site,"unknown",reason="builtin operands may invoke opaque or unsummarized protocols")
         if isinstance(identity,MethodValue):
+            from .native_text_predicates import STR_PREDICATES,supports
+            if identity.name in STR_PREDICATES:
+                callee=term.operands[0]
+                receiver=callee.operands[0] if callee.operation=="attribute" else None
+                kind=None if receiver is None else self.facts.expressions.get(receiver.site)
+                if kind is not None and supports(kind,identity.name) and not term.operands[1] and not term.operands[2]:
+                    return EffectFact(term.site,"pure")
+                return EffectFact(term.site,"unknown",reason="unproved builtin predicate receiver/signature")
             kinds=identity.receiver.alternatives
             callee=term.operands[0]
             owner=callee.operands[0] if callee.operation=="attribute" else None
@@ -335,7 +343,9 @@ class RegionAnalysis:
             trusted=(item is not None and not item.unbound and not item.unknown and bool(item.alternatives)
                      and all(getattr(value,"_native_reference",False) for value in item.alternatives))
             if self.facts.expressions.get(receiver.site) in {"str","bytes"}:
-                effects.append(EffectFact(term.site,"pure",may_raise=True,reason="primitive attribute lookup"))
+                from .native_text_predicates import STR_PREDICATES,supports
+                predicate=term.data in STR_PREDICATES and supports(self.facts.expressions[receiver.site],term.data)
+                effects.append(EffectFact(term.site,"pure",may_raise=not predicate,reason="primitive attribute lookup"))
             elif not trusted:
                 effects.append(EffectFact(term.site,"unknown",reason="unproved attribute/descriptor effect"))
         elif term.operation=="name":

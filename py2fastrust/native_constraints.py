@@ -493,6 +493,10 @@ class Solver:
             if name=="pop" and ("list" in category or any(isinstance(kind,ListType) for kind in kinds)):
                 return self.field_values(receiver,"iteration")
             if name in {"append","appendleft","extend","extendleft","clear","reverse","rotate"} and "deque_int" in kinds:return value("none")
+            from .native_text_predicates import STR_PREDICATES,supports
+            if name in STR_PREDICATES and not args and not keywords:
+                kind=self.kind(receiver)
+                if kind is not None and supports(kind,name):return value("bool")
             if name in {"count","index","bit_length","bit_count"}:return value("int")
             return UNKNOWN
         if not isinstance(identity,BuiltinIdentity):

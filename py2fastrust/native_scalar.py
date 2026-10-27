@@ -367,6 +367,9 @@ class ScalarGenerator(_Generator):
         from .native_characters import read_local
         character=read_local(self,node,environment)
         if character is not None:return character
+        from .native_text_predicates import try_expression as predicate_expression
+        predicate=predicate_expression(self,node,environment)
+        if predicate is not None:return predicate
         from .native_constraint_lowering import allocation_expression
         allocated=allocation_expression(self,node,environment)
         if allocated is not None:return allocated

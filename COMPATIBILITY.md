@@ -86,6 +86,21 @@ retain byte-based borrowed views. Mutable formatting and output builders remain
 ordinary Rust `String` values. String identity and the remaining general object
 protocols still need direct implementation.
 
+Builtin `str` predicates support `isupper`, `islower`, `isalpha`, `isalnum`,
+`isascii`, `isdecimal`, `isdigit`, `isnumeric`, `isspace`, `istitle`, and
+`isidentifier`. Builtin `bytes` supports its corresponding ASCII predicates
+(`isupper`, `islower`, `isalpha`, `isalnum`, `isascii`, `isdigit`, `isspace`, and
+`istitle`). Methods use the shared receiver-first call plan and reject arguments.
+The ASCII string profile uses direct byte classification; opt-in Unicode uses
+pinned CPython Unicode 16.0 properties, including titlecase and identifier data.
+Byte whitespace retains its distinct ASCII rules. Single-codepoint projections
+can be classified without creating a string. Whole `isascii` reads cached
+immutable-owner metadata: the default profile assumes ASCII, while Unicode mode
+verifies the classification once. Generated output includes only the selected
+predicates/property tables and retains their Unicode notice after pruning.
+Class overrides remain ordinary user methods; builtin string subclasses and
+remaining class protocol integration are still required work.
+
 Structural type descriptors are shared by binding joins, declarations,
 function signatures, and tuple operations. Fixed tuples of immutable scalar
 values use ordinary Rust tuples and support aliases, unpacking, indexing,
