@@ -103,15 +103,10 @@ fn native_insort<T:Ord>(values:&mut Vec<T>,x:T,lo:Option<&Int>,hi:Option<&Int>,r
 '''
 
 
-def reference(node, environment):
-    if isinstance(node,ast.Name):
-        value=environment.get(node.id)
-        return value if isinstance(value,(ModuleRef,BuiltinRef)) else None
-    if isinstance(node,ast.Attribute):
-        owner=reference(node.value,environment)
-        if isinstance(owner,ModuleRef):
-            return MEMBERS[owner.name].get(node.attr)
-    return None
+def reference(node,environment):
+    from .references import resolve_static_callable
+    value=resolve_static_callable(node,environment,core_builtins=())
+    return value if isinstance(value,(ModuleRef,BuiltinRef))else None
 
 
 def _read_reference(g,node,environment):

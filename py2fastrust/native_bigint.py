@@ -550,8 +550,10 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree)))
         specializations = _Specializations(0,functions,{},function_input,BigIntGenerator)
         specializations.trusted_imports=trusted_imports
+        specializations.source_unit=unit
         generator = BigIntGenerator(functions=functions,function_input=function_input,specializations=specializations)
         generator.trusted_imports=trusted_imports
+        generator.source_unit=unit
         body,_ = generator.statements(tree.body,{})
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
         generator.has_slices |= any(local.has_slices for local in specializations.generators)

@@ -75,6 +75,7 @@ class _DequeInfo:
 
 @dataclass(frozen=True)
 class _DequeConstructor:
+    _native_reference=True
     name: str
 
 
@@ -122,6 +123,7 @@ class _Binding:
 
 @dataclass
 class _Function:
+    _native_reference=True
     node: ast.FunctionDef
     rust_name: str
     positional: list[str]
@@ -134,6 +136,8 @@ class _Function:
     required: set[str]
     imports: set[str]
     global_bindings: dict[str, object] = field(default_factory=dict)
+    global_names: frozenset[str] | None = None
+    absent_globals: set[str] = field(default_factory=set)
 
 
 class _FunctionPlans(dict):
@@ -466,6 +470,8 @@ class _Generator:
         self.return_label = None
         self.functions = functions or {}
         self.global_environment = None
+        self.global_names = None
+        self.source_unit = None
         self.function = function
         self.function_input = function_input
         self.constructors = constructors or {}
@@ -850,15 +856,18 @@ class _Generator:
             kinds.append(value.kind)
             arguments.append(f"&({value.code})" if list_type(value.kind) else value.code)
         globals_at_call = environment if self.function is None else self.global_environment
-        variant = self.specializations.get(function, tuple(kinds), globals_at_call)
+        names=set(environment)if self.function is None else self.global_names
+        variant = self.specializations.get(function, tuple(kinds), globals_at_call,global_names=names)
         if self.function is None:
             # A callee's globals are looked up at call time, including indirect
             # callees whose definitions may follow the caller definition.
-            if any(environment.get(name) is not variant.global_bindings.get(name) for name in variant.required):
+            if (any(environment.get(name) is not variant.global_bindings.get(name) for name in variant.required)
+                    or any(name in environment for name in variant.absent_globals)):
                 raise _Unsupported
         else:
             self.function.dependencies.add(function.node)
             self.function.required.update(variant.required)
+            self.function.absent_globals.update(variant.absent_globals)
             if node.func.id not in self.function.local_names:
                 self.function.required.add(node.func.id)
         if self.function_input:
@@ -2299,6 +2308,7 @@ class _Specializations:
         self.generators = []
         self.names = set()
         self.trusted_imports = frozenset()
+        self.source_unit = None
 
     @staticmethod
     def readonly_arrays(node, names):
@@ -2317,14 +2327,15 @@ class _Specializations:
                 if rooted(value.func.value) and value.func.attr not in {"count", "index", "copy"}:
                     raise _Unsupported
 
-    def get(self, function, kinds, global_environment):
+    def get(self, function, kinds, global_environment, global_names=None):
         # Function bodies can only read proved callable globals. Numeric or
         # mutable globals still require another direct representation. Snapshot
         # identities are part of the cache key so later rebindings cannot reuse
         # an earlier helper specialization.
         globals_at_call = {name: value for name, value in global_environment.items()
                            if _static_reference(value)}
-        context = tuple((name, id(value)) for name, value in sorted(globals_at_call.items()))
+        names=frozenset(global_environment)if global_names is None else frozenset(global_names)
+        context=(tuple((name,id(value))for name,value in sorted(globals_at_call.items())),tuple(sorted(names)))
         key = (id(function.node), kinds, context)
         if key in self.variants:
             return self.variants[key]
@@ -2343,10 +2354,12 @@ class _Specializations:
             rust_name += f"_context_{len(self.names)}"
         self.names.add(rust_name)
         variant = replace(function, rust_name=rust_name, dependencies=set(), required=set(), imports=set(),
-                          global_bindings=globals_at_call)
+                          global_bindings=globals_at_call,global_names=names,absent_globals=set())
         local = self.generator_type(self.bits, self.functions, variant, self.function_input,
                            self.constructors, self)
         local.global_environment = globals_at_call
+        local.global_names = names
+        local.source_unit = self.source_unit
         local.trusted_imports = self.trusted_imports
         environment = {name: value for name, value in globals_at_call.items()
                        if name not in function.local_names}
@@ -2452,17 +2465,20 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node, ast.Name) and node.id == "input" for node in ast.walk(tree)))
         specializations = _Specializations(bits, functions, constructors, function_input, ScalarGenerator)
         specializations.trusted_imports = trusted_imports
+        specializations.source_unit=unit
         generator = ScalarGenerator(bits, functions, function_input=function_input, constructors=constructors,
                                specializations=specializations)
         generator.trusted_imports = trusted_imports
+        generator.source_unit=unit
         if function_input:
             generator.has_input = generator.needs_integer_runtime = True
         if wrapper:
             generator.return_label = "native_entrypoint"
             generator.entry_scope = wrapper[0]
-            generator.entry_local_names = {symbol.get_name() for child in table.get_children()
-                                           if child.get_name()==wrapper[0] for symbol in child.get_symbols()
-                                           if symbol.is_local() or symbol.is_parameter()}
+            entry=next(node for node in tree.body if isinstance(node,ast.FunctionDef)and node.name==wrapper[0])
+            generator.entry_local_names={symbol.name for symbol in unit.scope_for(entry).symbols
+                                         if symbol.has("local")or symbol.has("parameter")}
+            generator.global_names=frozenset({wrapper[0]})
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:

@@ -114,20 +114,10 @@ def render_helpers(bits):
     return HELPERS.replace("__NATIVE_NUMBER__", "value" if not bits else "value.to_i128().unwrap() as NativeInt")
 
 
-def reference(node, environment):
-    if isinstance(node,ast.Name):
-        value=environment.get(node.id)
-        return value if isinstance(value,_IOReference) else None
-    if not isinstance(node,ast.Attribute):
-        return None
-    owner=reference(node.value,environment)
-    if owner is SYS and node.attr == "stdin":
-        return TEXT
-    if owner is TEXT and node.attr == "buffer":
-        return BINARY
-    if owner in (TEXT,BINARY) and node.attr in {"read","readline"}:
-        return READERS[(owner.binary,node.attr == "readline")]
-    return None
+def reference(node,environment):
+    from .references import resolve_static_callable
+    value=resolve_static_callable(node,environment,core_builtins=())
+    return value if isinstance(value,_IOReference)else None
 
 
 def _global_reference(generator,node,environment):
