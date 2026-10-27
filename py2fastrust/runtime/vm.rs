@@ -2089,20 +2089,18 @@ impl Runtime {
             Op::Binary(op) => {
                 let b = Self::pop(f)?;
                 let a = Self::pop(f)?;
-                let v = self.binary(&op, a, b)?;
-                f.stack.push(v)
+                if !self.start_protocol_binary(f,op.clone(),a.clone(),b.clone())? {let v=self.binary(&op,a,b)?;f.stack.push(v);}
             }
             Op::Unary(op) => {
                 let a = Self::pop(f)?;
-                if op=="not" && self.start_protocol_truth(f,a.clone(),ProtocolSink::Not)? {}else{
+                if op=="not" && self.start_protocol_truth(f,a.clone(),ProtocolSink::Not)? {}else if self.start_protocol_unary(f,&op,a.clone())? {}else{
                     let v = self.unary(&op, a)?;f.stack.push(v)
                 }
             }
             Op::Compare(op) => {
                 let b = Self::pop(f)?;
                 let a = Self::pop(f)?;
-                let v = self.compare_value(&op, &a, &b)?;
-                f.stack.push(v)
+                if !self.start_protocol_compare(f,op.clone(),a.clone(),b.clone())? {let v=self.compare_value(&op,&a,&b)?;f.stack.push(v);}
             }
             Op::BeginExceptStar => {let state=self.exception_star_begin(f)?;f.stack.push(state);}
             Op::SplitExceptStar => {let condition=Self::pop(f)?;let state=Self::pop(f)?;let matched=self.exception_star_split(f,state,condition)?;f.stack.push(Value::Bool(matched));}
@@ -2166,43 +2164,39 @@ impl Runtime {
             Op::GetItem => {
                 let key = Self::pop(f)?;
                 let obj = Self::pop(f)?;
-                let v = self.getitem(obj, key)?;
-                f.stack.push(v)
+                if !self.start_protocol_getitem(f,obj.clone(),key.clone())? {let v=self.getitem(obj,key)?;f.stack.push(v);}
             }
             Op::SetItem => {
                 let key = Self::pop(f)?;
                 let obj = Self::pop(f)?;
                 let v = Self::pop(f)?;
-                self.setitem(obj, key, v)?
+                if !self.start_protocol_setitem(f,obj.clone(),key.clone(),Some(v.clone()))? {self.setitem(obj,key,v)?;}
             }
             Op::DelItem => {
                 let key = Self::pop(f)?;
                 let obj = Self::pop(f)?;
-                self.delitem(obj, key)?
+                if !self.start_protocol_setitem(f,obj.clone(),key.clone(),None)? {self.delitem(obj,key)?;}
             }
             Op::GetSpecialAttr(n) => {
                 let obj = Self::pop(f)?;
-                let value = self.special_method(obj, &n)?;
-                f.stack.push(value)
+                if !self.start_protocol_specialattr(f,obj.clone(),&n)? {let value=self.special_method(obj,&n)?;f.stack.push(value);}
             }
             Op::GetAttr(n) => {
                 let obj = Self::pop(f)?;
-                let v = self.getattr(obj, &n)?;
-                f.stack.push(v)
+                if !self.start_protocol_getattr(f,obj.clone(),n.clone())? {let v=self.getattr(obj,&n)?;f.stack.push(v);}
             }
             Op::SetAttr(n) => {
                 let obj = Self::pop(f)?;
                 let v = Self::pop(f)?;
-                self.setattr(obj, &n, v)?
+                if !self.start_protocol_setattr(f,obj.clone(),n.clone(),Some(v.clone()))? {self.setattr(obj,&n,v)?;}
             }
             Op::DelAttr(n) => {
                 let obj = Self::pop(f)?;
-                self.delattr(obj, &n)?
+                if !self.start_protocol_setattr(f,obj.clone(),n.clone(),None)? {self.delattr(obj,&n)?;}
             }
             Op::GetIter | Op::GetYieldFromIter => {
                 let v = Self::pop(f)?;
-                let it = self.iter(v)?;
-                f.stack.push(it)
+                self.start_protocol_call(f,Value::Builtin("iter".into()),vec![v],Vec::new())?;
             }
             Op::ForIter(t) => {
                 let it = f

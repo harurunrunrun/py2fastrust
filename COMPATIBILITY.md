@@ -21,7 +21,17 @@ they do not imply compatibility with all CPython internals or the entire standar
 | Memory | Object identity, cyclic references, mark-and-sweep GC rooted in frames and temporary values, `__del__` and resurrection |
 
 Ordinary function recursion, including calls through `cache` and `lru_cache`, uses heap-allocated frames.
-Some calls made through protocols and built-ins still reenter the runtime through Rust calls.
+Direct `len`, `bool`, `int`, `hash`, `str`, `repr`, and `iter` calls, selected descriptor binding,
+subscription, attribute access, unary/binary operators, and rich comparisons use caller-owned heap continuations.
+Return validation runs after the Python callback has returned, in its caller's exception scope.
+Some internal built-in callback paths still reenter through Rust calls and need further continuation adapters.
+
+`sys.setrecursionlimit` controls Python frame depth. Finite native list/tuple comparison nesting does not
+consume that budget. Pending native protocol actions have a separate 64 MiB storage bound, counting
+inline action records and boxed native operation records; exhaustion raises `RecursionError` in the caller.
+Callback-free native comparison cycles can be detected earlier. Stateful callbacks retain their effects
+and may terminate a cycle normally. The exact callback count at a recursion error need not match
+CPython's adaptive opcode specialization or platform-specific C-stack guard.
 
 The general backend can omit dynamic-compilation components for simple module-level programs
 whose calls are proved to target unmodified leaf built-ins. Indirect calls, reflection, imports,
