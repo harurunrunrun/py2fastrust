@@ -248,6 +248,7 @@ class Compiler:
             vendored = True
             self.native_imports.add(name)
         if path is None and name in BUILTIN_MODULES:
+            self.native_imports.add(name)
             return
         if path is None:
             raise CompilationError(Diagnostic(f"module {name!r} is not supported or could not be found", filename,
