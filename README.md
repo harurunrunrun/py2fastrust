@@ -24,6 +24,12 @@ You can also run the transpiler from the repository root without installing it:
 python3 -m py2fastrust examples/sum.py -o /tmp/main.rs
 ```
 
+The [browser converter](web/README.md) provides a black-and-white, two-panel
+interface for the same compiler using Python 3.14 in a Pyodide module worker.
+It accepts a single source file and keeps translation in the browser after the
+runtime assets load. See its documentation for local verification and GitHub
+Pages deployment.
+
 The integer mode applies to the entire generated program, including `eval` and `exec`:
 
 ```bash

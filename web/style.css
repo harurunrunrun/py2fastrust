@@ -1,0 +1,254 @@
+:root {
+  color-scheme: light;
+  color: #000;
+  background: #fff;
+  font-family: "Times New Roman", Times, serif;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-color: #000 #fff;
+}
+
+body {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 1rem 1.5rem;
+}
+
+header {
+  text-align: center;
+}
+
+h1 {
+  margin: 0;
+  font-size: 2.5rem;
+}
+
+header p {
+  margin: 0.25rem 0 1rem;
+  font-size: 1.2rem;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid #000;
+  margin: 0.75rem 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+}
+
+.controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+button,
+select,
+textarea {
+  color: #000;
+  background: #fff;
+  border: 1px solid #000;
+  border-radius: 0;
+  box-shadow: none;
+  font: inherit;
+}
+
+button {
+  min-height: 2rem;
+  padding: 0.25rem 0.8rem;
+  cursor: pointer;
+}
+
+select {
+  min-height: 2rem;
+  padding: 0.2rem 0.5rem;
+  appearance: none;
+}
+
+option {
+  color: #000;
+  background: #fff;
+}
+
+option:checked,
+option:hover {
+  color: #fff;
+  background: #000;
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  color: #000;
+  background: #fff;
+  border: 1px solid #000;
+  border-radius: 0;
+  display: inline-grid;
+  place-content: center;
+}
+
+input[type="checkbox"]:checked::before {
+  content: "×";
+  font: bold 1rem/1 monospace;
+}
+
+button:disabled,
+select:disabled,
+input:disabled {
+  opacity: 1;
+  border-style: dashed;
+  cursor: default;
+}
+
+button:enabled:hover,
+button:enabled:active {
+  color: #fff;
+  background: #000;
+}
+
+:focus-visible {
+  outline: 2px solid #000;
+  outline-offset: 3px;
+}
+
+::selection {
+  color: #fff;
+  background: #000;
+}
+
+a,
+a:visited,
+a:hover,
+a:active {
+  color: #000;
+  text-decoration: underline;
+}
+
+.editors {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.5rem;
+}
+
+.editor {
+  min-width: 0;
+}
+
+.editor > label {
+  display: block;
+  margin: 0.25rem 0 0.5rem;
+  font-weight: bold;
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 25rem;
+  padding: 0.6rem;
+  resize: vertical;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  tab-size: 4;
+  caret-color: #000;
+}
+
+::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+  background: #fff;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid #fff;
+  background: #000;
+}
+
+::-webkit-scrollbar-track {
+  border: 1px solid #000;
+  background: #fff;
+}
+
+::-webkit-scrollbar-corner {
+  background: #fff;
+}
+
+textarea::placeholder {
+  color: #000;
+  opacity: 1;
+}
+
+.note {
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+
+.messages {
+  overflow-wrap: anywhere;
+}
+
+#status {
+  min-height: 1.25rem;
+  margin: 0.75rem 0;
+}
+
+h2 {
+  margin: 0.75rem 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+#diagnostic-list {
+  padding-left: 1.5rem;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 0.875rem;
+}
+
+#diagnostic-list li {
+  margin: 0.4rem 0;
+  white-space: pre-wrap;
+}
+
+footer p {
+  margin: 0.75rem 0 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (max-width: 700px) {
+  body {
+    padding: 0.75rem;
+  }
+
+  .editors {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+  }
+
+  .actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  textarea {
+    min-height: 18rem;
+  }
+}
