@@ -458,6 +458,7 @@ class _Generator:
         self.expression_trace_id = None
         self.has_iterator_frames = False
         self.has_slices = False
+        self.has_text_methods = False
         self.entry_scope = None
 
     def temporary(self):
@@ -2265,7 +2266,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2300,6 +2301,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_slices:
         from .native_slices import SLICE_HELPERS
         result.append(SLICE_HELPERS)
+    if generator.has_text_methods:
+        from .native_text_methods import HELPERS as TEXT_METHOD_HELPERS
+        result.append(TEXT_METHOD_HELPERS)
     if generator.has_dicts:
         result.append(_DICT_HELPERS)
     if generator.has_sets:

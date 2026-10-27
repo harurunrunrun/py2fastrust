@@ -31,6 +31,11 @@ yet implemented on this path. String slicing uses character indices and is
 currently available in fixed-width modes; BigInt-mode string values still need
 direct lowering.
 
+Fixed-width string methods include `strip`/`lstrip`/`rstrip` with an optional
+character set, `count` with character-based bounds, and `join` over a proved
+string iterable. Joining exhausts generator inputs before constructing its
+result. Unicode whitespace includes Python's additional U+001C–U+001F range.
+
 ## Retained internal runtime implementation
 
 The following inventory describes code and regression coverage retained for

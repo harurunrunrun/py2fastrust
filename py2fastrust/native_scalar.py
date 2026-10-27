@@ -330,6 +330,10 @@ class ScalarGenerator(_Generator):
         return f"let {name}{kind} = {value.code};"
 
     def expression(self, node, environment):
+        from .native_text_methods import try_text_method
+        text = try_text_method(self, node, environment)
+        if text is not None:
+            return text
         if isinstance(node, ast.Constant) and type(node.value) in {str, float}:
             self.has_extended_scalars = True
             if type(node.value) is str:

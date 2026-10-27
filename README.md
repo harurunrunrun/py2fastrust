@@ -122,6 +122,9 @@ operations, `String` and `f64` scalars, owned BigInt scalar operations, integer
 lists and independent rows, dictionaries, sets and unbounded deques. It supports
 ordinary scalar functions with proved argument and return kinds, constant
 defaults, positional and keyword binding, and calls between those functions.
+Statically known function aliases retain their original definitions across
+rebinding, with separate specializations for the actual argument kinds and
+callable globals. Integer-list slices and `sorted` create independent lists.
 Python names can change type through distinct typed Rust slots. Compatible
 branches and loops merge proved kinds; finite boolean/integer unions use a
 small stack enum. Unicode string indexing counts code points, with an ASCII
@@ -132,10 +135,13 @@ Supported competitive-programming patterns include unpacked integer input,
 aggregation and insertion-order iteration, and owned adjacency-list BFS.
 Standard input is buffered and read on demand. Output flushes before a blocking
 input operation, including inside supported ordinary functions.
+Immediately consumed generator expressions use typed loops for reductions.
+Fixed-width modes also support character-based string slicing,
+`strip`/`lstrip`/`rstrip`, `count`, and `join` over proved string streams.
 
 If the implementation cannot establish a supported direct representation, it
 reports the missing construct or type combination. This currently includes
-many aliases and mixed-type joins, recursion, closures, exceptions, generators,
+many mutable aliases and mixed-type joins, recursion, closures, exceptions, user-defined generators,
 classes and metaclasses, dynamic execution, and most standard-module calls.
 These are implementation gaps that must be restored through direct generation;
 they are not removed from the project's goals and do not require users to add
