@@ -203,7 +203,20 @@ def specialize(expression, operation):
     return expression
 
 
-def statement(instruction, template):
+def effective_expression(instruction, template, code=None):
+    expression = specialize(template.expression, instruction.op)
+    # Class namespace callbacks can suspend only inside a class body. Scope
+    # kind is fixed by the official front end, so ordinary loads and stores
+    # need no callback guard or continuation boundary in their Rust blocks.
+    if code is not None and code.kind != "Class":
+        expression = re.sub(
+            r"\n[ \t]*if self\.start_protocol_class_name\([^;\n]*\)\?\{return Ok\(None\);\}",
+            "", expression,
+        )
+    return expression
+
+
+def statement(instruction, template, code=None):
     from .codegen import operation
     rendered = operation(instruction)
     name = instruction.op
@@ -221,7 +234,7 @@ def statement(instruction, template):
         field_types = dict((key.strip(), value.strip()) for key, value in template.types)
         bindings = [(key.strip(), field_types[key.strip()], values[key.strip()].strip()) for key in names]
     prefix = "\n".join(f"let {key}: {field_type} = {value};" for key, field_type, value in bindings if key != "_")
-    expression = specialize(template.expression, name)
+    expression = effective_expression(instruction, template, code)
     body = expression[1:-1] if expression.startswith("{") else expression + ";"
     return "{\n" + prefix + "\n" + body + "\n}"
 
@@ -238,7 +251,7 @@ def basic_blocks(code, available):
             leaders.add(index)
         if instruction.op in TARGET:
             leaders.add(instruction.args[0])
-        body = available[instruction.op].expression
+        body = effective_expression(instruction, available[instruction.op], code)
         if instruction.op in TRANSFER or "start_protocol" in body or "next_call" in body:
             leaders.add(index + 1)
     positions = sorted(leaders)
@@ -258,7 +271,7 @@ def generate(program, runtime_source=None):
             for position in range(start, end):
                 instruction = code.ops[position]
                 try:
-                    emitted = statement(instruction, available[instruction.op])
+                    emitted = statement(instruction, available[instruction.op], code)
                 except (KeyError, ValueError, StopIteration) as error:
                     raise CompilationError(Diagnostic(f"cannot generate direct Rust for {instruction.op}: {error}",
                                                       code.filename, instruction.line, instruction.column + 1, "E006")) from error

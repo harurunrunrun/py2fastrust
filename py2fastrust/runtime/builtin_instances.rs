@@ -30,26 +30,19 @@ impl Runtime {
         protected.extend(args.iter().cloned());
         protected.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         self.roots.push(protected);
-        let result = self.builtin_instance_construct(type_name, class, args, kwargs, root);
+        let result = self.builtin_instance_construct(type_name, class, args, kwargs, root, false);
         self.roots.truncate(root);
         result
     }
 
-    fn builtin_instance_construct(
-        &mut self,
-        type_name: &str,
-        class: Value,
-        args: Vec<Value>,
-        kwargs: KeywordArgs,
-        root: usize,
-    ) -> PyResult<Value> {
+    fn builtin_instance_validate(&mut self,type_name:&str,class:&Value,args:&[Value],kwargs:&KeywordArgs,trusted_allocator:bool)->PyResult<()> {
         if !["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "bytearray", "complex", "frozenset"].contains(&type_name) {
             return Err(pyerr(
                 "NotImplementedError",
                 format!("native payload for {} subclasses", type_name),
             ));
         }
-        if !self.is_subclass(&class, &Value::Builtin(type_name.into()))? {
+        if !trusted_allocator && !self.is_subclass(&class, &Value::Builtin(type_name.into()))? {
             return Err(pyerr(
                 "TypeError",
                 format!("{}.__new__ requires a {} subtype", type_name, type_name),
@@ -91,6 +84,19 @@ impl Runtime {
                 }
             }
         };
+        Ok(())
+    }
+
+    fn builtin_instance_construct(
+        &mut self,
+        type_name: &str,
+        class: Value,
+        args: Vec<Value>,
+        kwargs: KeywordArgs,
+        root: usize,
+        trusted_allocator: bool,
+    ) -> PyResult<Value> {
+        self.builtin_instance_validate(type_name,&class,&args,&kwargs,trusted_allocator)?;
         let payload = match type_name {
             "frozenset"=>{if Self::same_type(&class,&Value::Builtin("frozenset".into())){self.frozen_constructor(args,kwargs)?}else{if args.len()>1||(!kwargs.is_empty()&&self.slot_override(&class,"__init__",0).is_none()){return Err(pyerr("TypeError","frozenset expected one positional argument"));}let entries=if let Some(source)=args.first(){self.frozen_collect(source.clone())?}else{Vec::new()};self.frozen_make(entries,true)}},
             "complex"=>self.complex_constructor(args,kwargs)?,

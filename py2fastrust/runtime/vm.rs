@@ -291,6 +291,14 @@ struct Class {
     bases: Vec<Value>,
     bases_value: Value,
     mro_value: Option<usize>,
+    layout_base: Value,
+    allocator: ClassAllocator,
+    allocator_epoch: usize,
+    fast_native: Option<&'static str>,
+    own_slot_names: Vec<String>,
+    own_slots: Vec<(String,usize)>,
+    canonical_slots: Vec<usize>,
+    registered_bases: Vec<(Value,usize)>,
     attrs: usize,
     metaclass: Value,
     dict_allowed: bool,
@@ -513,6 +521,9 @@ struct Runtime {
     finalized: std::collections::HashSet<usize>,
     instance_slots: HashMap<usize, HashMap<usize, Value>>,
     next_slot: usize,
+    next_subclass_order: usize,
+    mro_native_depth: usize,
+    mro_native_stack_base: Option<usize>,
     active_future_flags: u32,
     active_builtins: Value,
     handled_exception: Option<PyException>,
@@ -671,6 +682,14 @@ impl Runtime {
             {
                 return Some(payload.clone());
             }
+            if let Some(Object::Instance{class,..})=self.heap.get(*i).and_then(Option::as_ref) {
+                let keeper=self.instance_slots.get(i)?.get(&HIDDEN_ALLOCATOR_SLOT)?;
+                if let Value::Obj(record)=keeper {
+                    if let Some(Object::Tuple(values))=self.heap.get(*record).and_then(Option::as_ref) {
+                        if values.len()==2&&self.mro_cached_subtype(class,&values[0]){return Some(values[1].clone());}
+                    }
+                }
+            }
         }
         None
     }
@@ -707,7 +726,7 @@ impl Runtime {
             Value::Obj(index) => {
                 matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Class(class)) if class.weakref_allowed)
             }
-            Value::Builtin(name) if name == "set" || name == "type" => true,
+            Value::Builtin(name) if name == "set" || name == "frozenset" || name == "type" => true,
             _ => false,
         }
     }
@@ -1302,6 +1321,9 @@ impl Runtime {
             finalized: std::collections::HashSet::new(),
             instance_slots: HashMap::new(),
             next_slot: 0,
+            next_subclass_order: 0,
+            mro_native_depth: 0,
+            mro_native_stack_base: None,
             active_future_flags: 0,
             active_builtins: Value::None,
             handled_exception: None,
@@ -1591,6 +1613,9 @@ impl Runtime {
         if let Some(v) = self.mapping_get(f.locals, name)? {
             return Ok(v);
         }
+        self.load_after_locals(f,name,islocal)
+    }
+    fn load_after_locals(&mut self,f:&Frame,name:&str,islocal:bool)->PyResult<Value> {
         if islocal {
             return Err(pyerr(
                 "UnboundLocalError",
@@ -2058,6 +2083,7 @@ impl Runtime {
         }
         match op {
             Op::SetupAnnotations => {
+                if self.start_protocol_class_name(f,"__annotations__","annotations",None)?{return Ok(None);}
                 if self.mapping_get(f.locals, "__annotations__")?.is_none() {
                     let annotations=self.obj_value(Object::Dict(Vec::new()));
                     self.mapping_set(f.locals,"__annotations__".into(),annotations)?;
@@ -2086,11 +2112,13 @@ impl Runtime {
                 f.stack.push(v)
             }
             Op::Load(n) => {
+                if self.start_protocol_class_name(f,&n,"load",None)?{return Ok(None);}
                 let v = self.load(f, &n)?;
                 f.stack.push(v)
             }
             Op::Store(n) => {
                 let v = Self::pop(f)?;
+                if self.start_protocol_class_name(f,&n,"store",Some(v.clone()))?{return Ok(None);}
                 self.store(f, n, v)?
             }
             Op::StoreCell(name) => {
@@ -2111,6 +2139,7 @@ impl Runtime {
                 f.stack.push(value.ok_or_else(||pyerr("NameError",format!("unbound annotation cell '{}'",name)))?);
             }
             Op::Delete(n) => {
+                if self.start_protocol_class_name(f,&n,"delete",None)?{return Ok(None);}
                 let ns = if n.starts_with('$') || n.starts_with('\0') {
                     f.temps
                 } else if self.codes[f.code].globals.contains(&n) {
@@ -2529,23 +2558,19 @@ impl Runtime {
                 let mut kw=Vec::new();for(name,value)in keywords.into_iter().zip(kv){kw.push((self.static_keyword(name),value));}
                 let function=Self::pop(f)?;let builder=Self::pop(f)?;
                 let mut args=vec![function,Value::Str(name.into())];args.extend(bases);
-                let cls=self.call(builder,args,kw,Some(f))?;
-                f.stack.push(cls)
+                self.start_protocol_class_call(f,builder,args,kw)?;
             }
             Op::MakeClassEx { name, code } => {
                 let keywords=Self::pop(f)?;
                 let bases=Self::pop(f)?;
                 let function=Self::pop(f)?;let builder=Self::pop(f)?;
-                let root=self.roots.len();
-                self.roots.push(vec![bases.clone(),keywords.clone(),function.clone(),builder.clone()]);
+                let root=self.roots.len();self.roots.push(vec![bases.clone(),keywords.clone(),function.clone(),builder.clone()]);
                 let result=(||{
                     let bases=self.to_vec(bases)?;
                     let keywords=self.keyword_items(keywords)?;
                     let mut args=vec![function,Value::Str(name.into())];args.extend(bases);
-                    self.call(builder,args,keywords,Some(f))
-                })();
-                self.roots.truncate(root);
-                f.stack.push(result?);
+                    self.start_protocol_class_call(f,builder,args,keywords)
+                })();self.roots.truncate(root);result?;
             }
             Op::Unpack(n) => {
                 let v = Self::pop(f)?;
@@ -3425,6 +3450,9 @@ impl Runtime {
             Object::Class(c) => {
                 pending.push(c.name_value.clone());
                 pending.push(c.bases_value.clone());
+                pending.push(c.layout_base.clone());
+                if let ClassAllocator::Native(base)=&c.allocator{pending.push(base.clone());}
+                pending.extend(c.registered_bases.iter().map(|(base,_)|base.clone()));
                 pending.extend(c.mro_value.iter().map(|owner|Value::Obj(*owner)));
                 pending.push(Value::Obj(c.attrs));
                 pending.extend(c.bases.iter().cloned());
@@ -4517,8 +4545,13 @@ impl Runtime {
         }
         if name=="native_attr_readonly" {
             if args.len()<2||!kwargs.is_empty(){return Err(pyerr("TypeError","missing descriptor instance"));}
-            let (_,owner,_)=native_attribute_parts(&args[0]).ok_or_else(||pyerr("TypeError","expected native descriptor"))?;
+            let (_,owner,name)=native_attribute_parts(&args[0]).ok_or_else(||pyerr("TypeError","expected native descriptor"))?;
             self.native_validate_receiver(owner,&args[1])?;
+            if owner=="type"&&name=="__bases__" {
+                if args.len()!=3{return Err(pyerr("TypeError","cannot delete __bases__"));}
+                if let Value::Obj(index)=&args[1]{return self.mro_set_bases(*index,args[2].clone()).map(|_|Value::None);}
+                return Err(pyerr("TypeError","cannot set __bases__ on immutable type"));
+            }
             return Err(pyerr("AttributeError","readonly native attribute"));
         }
         if name=="_py2fastrust_nullable_slot" {
@@ -4835,7 +4868,7 @@ impl Runtime {
                     Some(base as u32)
                 } else { None };
                 let mut v=arguments.first().cloned().unwrap_or(Value::Int(Int::from_i128(0).into()));
-                if base.is_some(){let payload=self.native_payload(&v).unwrap_or_else(||v.clone());if matches!(payload,Value::Str(_)|Value::Bytes(_)){v=payload;}else if self.buffer_kind(&payload)==Some("bytearray"){v=Value::Bytes(self.buffer_owner_data(&payload)?.into());}}
+                if base.is_some(){let payload=self.class_hidden_text_payload(&v).or_else(||self.native_payload(&v)).unwrap_or_else(||v.clone());if matches!(payload,Value::Str(_)|Value::Bytes(_)){v=payload;}else if self.buffer_kind(&payload)==Some("bytearray"){v=Value::Bytes(self.buffer_owner_data(&payload)?.into());}}
                 if base.is_some() && !matches!(v,Value::Str(_) | Value::Bytes(_)) { return Err(pyerr("TypeError","int() can't convert non-string with explicit base")); }
                 Ok(Value::Int(match v {
                     Value::Int(i) => i,
@@ -4865,6 +4898,7 @@ impl Runtime {
                                 Err(error)=>return Err(error),
                             }
                         }
+                        if let Some(payload)=self.class_hidden_text_payload(&v){return self.builtin("int",vec![payload],Vec::new(),None);}
                         if let Some(data)=self.buffer_read(&v,true)?{return self.builtin("int",vec![Value::Bytes(data.into())],Vec::new(),None);}
                         return Err(pyerr("TypeError","int() argument must be a string or a real number"));
                     }
@@ -5604,6 +5638,14 @@ impl Runtime {
                 return Ok(false);
             }
         }
+        if let Value::Obj(owner)=a {
+            if let Some(Object::Class(class))=self.heap.get(*owner).and_then(Option::as_ref) {
+                if let Some(mro)=class.mro_value {
+                    return match self.heap.get(mro).and_then(Option::as_ref){Some(Object::Tuple(values))=>Ok(values.iter().any(|value|Self::same_type(value,b))),_=>Ok(false)};
+                }
+                return Ok(self.mro_base_chain_subtype(a,b));
+            }
+        }
         if Self::same_type(a, b) {
             return Ok(true);
         }
@@ -5615,7 +5657,7 @@ impl Runtime {
             Value::Builtin(n) | Value::Type(n) => n.clone(),
             _ => String::new(),
         };
-        if bn == "object" || an == "bool" && bn == "int" {
+        if (bn == "object" && !matches!(a,Value::Obj(_))) || an == "bool" && bn == "int" {
             return Ok(true);
         }
         if an=="ExceptionGroup" && bn=="BaseExceptionGroup" {return Ok(true);}
@@ -5778,14 +5820,17 @@ impl Runtime {
                     } else {self.call(payload,args,kwargs,caller)}
                 }
                 Object::Class(class) => {
+                    if class.mro_value.is_none(){return Err(pyerr("TypeError","cannot instantiate an incomplete class"));}
                     if self.is_subclass(&fun,&Value::Type("BaseException".into()))? {return self.exception_subclass_call(fun,args,kwargs,caller);}
-                    let obj=if let Some(new)=self.class_attribute_lookup(&fun,"__new__") {
-                        let new=self.bind_descriptor(new,None,fun.clone())?;
-                        let mut incoming=vec![fun.clone()];incoming.extend(args.clone());
-                        self.call(new,incoming,kwargs.clone(),caller)?
-                    }else {
-                        let attrs=self.alloc(Object::Dict(Vec::new()));
-                        self.obj_value(Object::Instance{class:fun.clone(),attrs})
+                    let obj=match class.allocator {
+                        ClassAllocator::Native(base)=>self.class_native_allocate(base,fun.clone(),args.clone(),kwargs.clone())?,
+                        ClassAllocator::Dynamic=>{
+                            let new=self.class_attribute_lookup(&fun,"__new__").ok_or_else(||pyerr("TypeError","cannot create class instances"))?;
+                            let new=self.bind_descriptor(new,None,fun.clone())?;
+                            let mut incoming=vec![fun.clone()];incoming.extend(args.clone());
+                            self.call(new,incoming,kwargs.clone(),caller)?
+                        },
+                        ClassAllocator::Missing=>return Err(pyerr("TypeError","cannot create class instances")),
                     };
                     // type.__call__ only initializes a result of the requested
                     // type (or a subtype); an unrelated return value is final.
@@ -5800,8 +5845,8 @@ impl Runtime {
                     Ok(obj)
                 }
                 Object::Instance { class, .. } => {
-                    if let Some(method) = self.slot_override(&class, "__call__", 0) {
-                        let bound = self.obj_value(Object::Bound(method, fun));
+                    if let Some(method) = self.class_attribute_lookup(&class, "__call__") {
+                        let bound = self.bind_descriptor(method,Some(fun),class)?;
                         self.call(bound, args, kwargs, caller)
                     } else {
                         Err(pyerr("TypeError", "object is not callable"))
@@ -5820,12 +5865,13 @@ impl Runtime {
         self.roots.truncate(root);
         result
     }
-    fn construct_class(
+    fn construct_class_prepare(
         &mut self,
         metaclass: Value,
         args: Vec<Value>,
         kw: KeywordArgs,
-    ) -> PyResult<Value> {
+        normalized_slots:Option<Vec<Value>>,
+    ) -> PyResult<ClassConstruction> {
         if args.len() < 3 {
             return Err(pyerr("TypeError", "type() takes 1 or 3 arguments"));
         }
@@ -5861,13 +5907,6 @@ impl Runtime {
                     }
                 }
                 solid = Some(layout);
-            }
-        }
-        for i in 0..bases.len() {
-            for j in 0..i {
-                if Self::same_type(&bases[i], &bases[j]) {
-                    return Err(pyerr("TypeError", "duplicate base class"));
-                }
             }
         }
         let ns = match args[2] {
@@ -5930,7 +5969,7 @@ impl Runtime {
         if let Some(slots) = declared_slots.clone() {
             let slots = match slots {
                 Value::Str(name) => vec![Value::Str(name)],
-                value => self.to_vec(value)?,
+                value => if let Some(values)=normalized_slots.clone(){values}else{self.to_vec(value)?},
             };
             let mut dictionary_slot = inherited_dict;
             let mut weakref_slot = inherited_weakref;
@@ -5970,10 +6009,7 @@ impl Runtime {
             }
             if !slot_names.is_empty() {
                 for base in &bases {
-                    if self.is_subclass(base, &Value::Builtin("tuple".into()))?
-                        || self.is_subclass(base, &Value::Builtin("int".into()))?
-                        || self.is_subclass(base, &Value::Builtin("bytes".into()))?
-                    {
+                    if self.mro_shape(base).variable {
                         return Err(pyerr(
                             "TypeError",
                             "nonempty __slots__ not supported for this subtype",
@@ -5985,9 +6021,8 @@ impl Runtime {
         let dict_allowed = inherited_dict
             || declared_slots.is_none()
             || slot_names.iter().any(|name| name == "__dict__");
-        let bytes_layout=bases.iter().any(|base|self.class_mro(base,0).unwrap_or_default().iter().any(|base|matches!(base,Value::Builtin(name)if name=="bytes")));
-        let weakref_allowed = !bytes_layout && (inherited_weakref
-            || declared_slots.is_none()
+        let bytes_layout=bases.iter().any(|base|["bytes","tuple","int"].contains(&self.mro_shape(base).family.as_str()));
+        let weakref_allowed = !bytes_layout && (inherited_weakref || declared_slots.is_none()
             || slot_names.iter().any(|name| name == "__weakref__"));
         if declared_slots.is_none() {
             if !inherited_dict && !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__dict__")) {
@@ -5997,29 +6032,42 @@ impl Runtime {
                 slot_names.push("__weakref__".into());
             }
         }
-        if !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__doc__")){
-            items.push((Value::Str("__doc__".into()),Value::None));
-        }
         let ns = self.alloc(Object::Dict(items));
         let bases_value=if implicit_base {self.obj_value(Object::Tuple(bases.clone()))}else{args[1].clone()};
+        let layout_base=self.mro_best_base(&bases)?;
+        let mut own_slot_names:Vec<String>=slot_names.iter().filter(|name|name.as_str()!="__dict__"&&name.as_str()!="__weakref__").cloned().collect();
+        own_slot_names.sort();
+        let allocator=self.class_inherit_allocator(&layout_base);
         let out = self.obj_value(Object::Class(Class {
             name,
             name_value,
             bases,
             bases_value,
             mro_value:None,
+            layout_base,
+            allocator,
+            allocator_epoch:0,
+            fast_native:None,
+            own_slot_names,
+            own_slots:Vec::new(),
+            canonical_slots:Vec::new(),
+            registered_bases:Vec::new(),
             attrs: ns,
             metaclass,
             dict_allowed,
             weakref_allowed,
         }));
-        let root = self.roots.len();
-        self.roots.push(vec![out.clone()]);
-        let result = (|| {
-            let mro=self.class_mro(&out,0).ok_or_else(||pyerr("TypeError","Cannot create a consistent method resolution order (MRO)"))?;
-            let mro=self.alloc(Object::Tuple(mro));
-            if let Value::Obj(owner)=&out {if let Some(Object::Class(class))=self.heap[*owner].as_mut(){class.mro_value=Some(mro);}}
-            self.initialize_generic_class(&out)?;
+            for (cell,value) in [(classcell.clone(),out.clone()),(dictcell.clone(),Value::Obj(ns))] {
+                if let Some(Value::Obj(cell))=cell {
+                    if !matches!(self.object(cell)?,Object::Cell(_)){return Err(pyerr("TypeError","class cell must be a cell"));}
+                    self.heap[cell]=Some(Object::Cell(Some(value)));
+                } else if cell.is_some(){return Err(pyerr("TypeError","class cell must be a cell"));}
+            }
+        Ok(ClassConstruction{out,ns,slot_names,kw})
+    }
+    fn class_construct_materialize(&mut self, record:&ClassConstruction)->PyResult<()> {
+        let out=record.out.clone();let ns=record.ns;let slot_names=record.slot_names.clone();
+        let Value::Obj(owner)=out else{unreachable!()};
             for name in slot_names {
                 let slot = self.next_slot;
                 self.next_slot += 1;
@@ -6028,30 +6076,35 @@ impl Runtime {
                     name: name.clone(),
                     slot,
                 });
+                if name!="__dict__"&&name!="__weakref__" {
+                    if let Some(Object::Class(class))=self.heap[owner].as_mut(){class.own_slots.push((name.clone(),slot));}
+                }
                 self.ns_set(ns, name, descriptor);
             }
-            for (cell, value) in [(classcell, out.clone()), (dictcell, Value::Obj(ns))] {
-                if let Some(v) = cell {
-                    if let Value::Obj(i) = v {
-                        if matches!(self.object(i)?, Object::Cell(_)) {
-                            self.heap[i] = Some(Object::Cell(Some(value)));
-                        } else {
-                            return Err(pyerr("TypeError", "__classcell__ must be a cell"));
-                        }
-                    } else {
-                        return Err(pyerr("TypeError", "__classcell__ must be a cell"));
-                    }
-                }
-            }
+            if self.ns_get(ns,"__doc__").is_none(){self.ns_set(ns,"__doc__".into(),Value::None);}
+            self.mro_refresh_slots(owner);
+            self.class_refresh_allocator(owner);
+            self.mro_register_bases(owner)?;
             if self.class_mro(&out, 0).is_none() {
                 return Err(pyerr(
                     "TypeError",
                     "Cannot create a consistent method resolution order (MRO)",
                 ));
             }
-            let named_items=self.dict_items(Value::Obj(ns))?;
+        Ok(())
+    }
+    fn construct_class(&mut self,metaclass:Value,args:Vec<Value>,kw:KeywordArgs)->PyResult<Value> {
+        let record=self.construct_class_prepare(metaclass,args,kw,None)?;
+        let out=record.out.clone();let ns=record.ns;let kw=record.kw.clone();
+        let Value::Obj(owner)=out else{unreachable!()};
+        self.view_rooted(vec![out.clone()],|self_,_|{
+            self_.mro_recompute(owner)?;
+            self_.class_init_native_capability(owner);
+            self_.initialize_generic_class(&out)?;
+            self_.class_construct_materialize(&record)?;
+            let named_items=self_.dict_items(Value::Obj(ns))?;
             let named_roots=named_items.iter().flat_map(|(name,value)|[name.clone(),value.clone()]).collect();
-            self.view_rooted(named_roots,|runtime,_|{
+            self_.view_rooted(named_roots,|runtime,_|{
                 for (name,value) in named_items {
                     // __set_name__ is looked up on the descriptor's type;
                     // instance __getattr__ and instance attributes are ignored.
@@ -6064,24 +6117,24 @@ impl Runtime {
                 }
                 Ok(())
             })?;
-            let mro=self.class_mro(&out,0).ok_or_else(||pyerr("TypeError","invalid class MRO"))?;
+            let mro=self_.class_mro(&out,0).ok_or_else(||pyerr("TypeError","invalid class MRO"))?;
+            if !mro.iter().any(|base|Self::same_type(base,&out)){return Err(pyerr("TypeError","type is not a subtype of itself"));}
+            let position=mro.iter().position(|base|Self::same_type(base,&out)).unwrap();
             let mut hook=None;
-            for base in mro.into_iter().skip(1){
+            for base in mro.into_iter().skip(position+1){
                 if let Value::Obj(index)=base{
-                    if let Object::Class(class)=self.object(index)?{
-                        if let Some(method)=self.ns_get(class.attrs,"__init_subclass__"){
-                            hook=Some(self.bind_descriptor(method,None,out.clone())?);
+                    if let Object::Class(class)=self_.object(index)?{
+                        if let Some(method)=self_.ns_get(class.attrs,"__init_subclass__"){
+                            hook=Some(self_.bind_descriptor(method,None,out.clone())?);
                             break;
                         }
                     }
                 }
             }
-            if let Some(hook)=hook{self.call(hook,Vec::new(),kw.clone(),None)?;}
+            if let Some(hook)=hook{self_.call(hook,Vec::new(),kw.clone(),None)?;}
             else if !kw.is_empty(){return Err(pyerr("TypeError","__init_subclass__() takes no keyword arguments"));}
             Ok(out)
-        })();
-        self.roots.truncate(root);
-        result
+        })
     }
     fn merge_keyword_arguments(&mut self,left:Value,right:Value)->PyResult<Value>{self.merge_mapping_arguments(left,right,true)}
     fn merge_mapping_arguments(&mut self,left:Value,right:Value,reject_duplicates:bool)->PyResult<Value>{
@@ -6123,6 +6176,37 @@ impl Runtime {
                 }
             }
             Ok(Value::Obj(owner))
+        })
+    }
+    fn protocol_class_body_frame(&mut self,args:Vec<Value>)->PyResult<Frame> {
+        let owner=args[0].clone();let Value::Obj(namespace)=args[1] else{unreachable!()};let Value::Obj(env)=args[2] else{unreachable!()};
+        let code=self.as_int(&args[3])?.to_usize().ok_or_else(||pyerr("RuntimeError","invalid class body"))?;
+        let function=match &owner{Value::Obj(index)=>match self.object(*index)?{Object::Function(function)=>function,_=>unreachable!()},_=>unreachable!()};
+        Ok(Frame {
+            function: Some(owner),
+            generator_names: None,
+            code_handle: self.code_object_index(code),
+            code,
+            pc: 0,
+            locals: namespace,
+            temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
+            globals: function.globals,
+            builtins: function.builtins.clone(),
+            closure: Some(env),
+            stack: Vec::new(),
+            handlers: Vec::new(),
+            pending: Vec::new(),
+            exception: None,
+            exception_stack: Vec::new(),
+                inherited_exception: None,
+                except_star: Vec::new(),
+            next_call: None,
+            cache_returns: Vec::new(),
+            protocol: None,protocol_generator:None,protocol_exit:None,
+            comprehensions: Vec::new(),
+            resume_value: None,
+            injected_exception: None,
+            finally_regions: Vec::new(),
         })
     }
     fn make_class(&mut self,owner:Value,name:Value,bases:Vec<Value>,mut kw:KeywordArgs,caller:Option<&Frame>)->PyResult<Value> {
@@ -6696,58 +6780,11 @@ impl Runtime {
         }
         Ok(text)
     }
-    fn percent_format(&mut self, fmt: &str, v: Value) -> PyResult<String> {
-        let args = if let Value::Obj(i) = v.clone() {
-            match self.object(i)? {
-                Object::Tuple(xs) => xs,
-                _ => vec![v],
-            }
-        } else {
-            vec![v]
-        };
-        let mut a = 0;
-        let mut out = String::new();
-        let mut it = fmt.chars().peekable();
-        while let Some(c) = it.next() {
-            if c != '%' {
-                out.push(c);
-                continue;
-            }
-            if it.peek() == Some(&'%') {
-                it.next();
-                out.push('%');
-                continue;
-            }
-            let mut spec = String::new();
-            let kind = loop {
-                let c = it
-                    .next()
-                    .ok_or_else(|| pyerr("ValueError", "incomplete format"))?;
-                if "srdifegoxXc".contains(c) {
-                    break c;
-                }
-                spec.push(c)
-            };
-            let v = args
-                .get(a)
-                .ok_or_else(|| pyerr("TypeError", "not enough arguments for format string"))?
-                .clone();
-            a += 1;
-            out.push_str(&match kind {
-                's' => self.str_value(&v)?,
-                'r' => self.repr(&v)?,
-                'd' | 'i' => self.as_int(&v)?.to_string(),
-                'c' => char::from_u32(self.as_int(&v)?.to_usize().unwrap_or(0) as u32)
-                    .ok_or_else(|| pyerr("ValueError", "invalid character"))?
-                    .to_string(),
-                _ => {
-                    spec.push(kind);
-                    self.format_value(v, &spec)?
-                }
-            })
-        }
-        Ok(out)
+    fn percent_format(&mut self,fmt:&str,values:Value)->PyResult<String> {
+        let value=self.text_percent_sync(Value::Str(fmt.into()),values)?;
+        let Value::Str(text)=value else{unreachable!()};Ok(text.to_string())
     }
+
 }
 
 impl Runtime {
@@ -8148,6 +8185,7 @@ impl Runtime {
                 self.heap.get(*index).and_then(Option::as_ref),
                 Some(Object::Instance { .. })
             ) {
+                if self.object_class(&iterator).and_then(|class|self.slot_definition(&class,"__next__",0)).is_none(){return Err(pyerr("TypeError","object is not an iterator"));}
                 let method = self.special_method(iterator, "__next__")?;
                 return self.call(method, Vec::new(), Vec::new(), None);
             }
@@ -8399,6 +8437,16 @@ impl Runtime {
         }
     }
     fn class_mro(&self, class: &Value, depth: usize) -> Option<Vec<Value>> {
+        if let Value::Obj(owner)=class {
+            if let Some(Object::Class(class))=self.heap.get(*owner).and_then(Option::as_ref) {
+                if let Some(mro)=class.mro_value {
+                    return match self.heap.get(mro).and_then(Option::as_ref){Some(Object::Tuple(values))=>Some(values.clone()),_=>None};
+                }
+            }
+        }
+        self.calculate_class_mro(class,depth)
+    }
+    fn calculate_class_mro(&self, class: &Value, depth: usize) -> Option<Vec<Value>> {
         if depth > 100 {
             return None;
         }
@@ -8429,6 +8477,8 @@ impl Runtime {
             }
             _ => return None,
         };
+        if bases.len()==1 {let mut mro=vec![class.clone()];mro.extend(self.class_mro(&bases[0],depth+1)?);return Some(mro);}
+        for (index,base) in bases.iter().enumerate(){if bases[..index].iter().any(|other|Self::same_type(base,other)){return None;}}
         let mut seqs = Vec::new();
         for b in &bases {
             seqs.push(self.class_mro(b, depth + 1)?)
@@ -8919,9 +8969,7 @@ impl Runtime {
                     }
                     if name == "__mro__" {
                         if let Some(mro)=c.mro_value {return Ok(Value::Obj(mro));}
-                        let mro = self.class_mro(&v, 0)
-                            .ok_or_else(|| pyerr("TypeError", "invalid method resolution order"))?;
-                        return Ok(self.obj_value(Object::Tuple(mro)));
+                        return Ok(Value::None);
                     }
                     if name == "__name__" {
                         return Ok(c.name_value.clone());
@@ -8934,6 +8982,7 @@ impl Runtime {
                     if name == "__dict__" {
                         return Ok(self.obj_value(Object::MappingProxy { owner: c.attrs }));
                     }
+                    if name=="__base__" {return Ok(c.layout_base);}
                     if name == "__bases__" {
                         return Ok(c.bases_value);
                     }
@@ -9598,6 +9647,8 @@ impl Runtime {
                     return Ok(());
                 }
                 Object::Class(mut c) => {
+                    if name=="__bases__" {return self.mro_set_bases(i,value);}
+                    if name=="__mro__"||name=="__base__" {return Err(pyerr("AttributeError","readonly attribute"));}
                     if name=="__annotate__" {
                         if !matches!(value,Value::None) {
                             let callable=self.builtin("callable",vec![value.clone()],Vec::new(),None)?;
@@ -9619,6 +9670,7 @@ impl Runtime {
                         return Err(pyerr("TypeError", "can only assign string to __qualname__"));
                     }
                     self.ns_set(c.attrs, name.into(), value);
+                    if name=="__new__"{self.class_update_allocators(i)?;}
                     return Ok(());
                 }
                 Object::Module { attrs, .. } => {
@@ -9707,6 +9759,8 @@ impl Runtime {
                 Object::Instance { attrs, .. }
                 | Object::BuiltinInstance { attrs, .. } => Some(attrs),
                 Object::Class(c) => {
+                    if name=="__bases__" {return Err(pyerr("TypeError","cannot delete __bases__"));}
+                    if name=="__mro__"||name=="__base__" {return Err(pyerr("AttributeError","readonly attribute"));}
                     if matches!(name,"__name__"|"__qualname__"){return Err(pyerr("TypeError",format!("cannot delete '{}' attribute of immutable type '{}'",name,c.name)));}
                     Some(c.attrs)
                 },
@@ -9714,6 +9768,7 @@ impl Runtime {
             };
             if let Some(a) = attrs {
                 if self.ns_del(a, name) {
+                    if name=="__new__"&&matches!(self.heap.get(i).and_then(Option::as_ref),Some(Object::Class(_))){self.class_update_allocators(i)?;}
                     return Ok(());
                 }
             }

@@ -45,7 +45,15 @@ impl Runtime {
         let payload = self.native_payload(&value).unwrap_or_else(|| value.clone());
         if matches!(&payload, Value::Int(_) | Value::Bool(_)) { return self.as_int(&payload); }
         if !decimal { return self.as_int(&value); }
-        if let Value::Float(number) = &value { return Int::from_f64(**number).map_err(int_error); }
+        // Decimal formatting performs an internal exact truncation; it does
+        // not expose the selected-width normalization of a user int() call.
+        // An inherited float slot follows that rule too, while a Python
+        // __int__ override must still run through the ordinary call path.
+        if let Value::Float(number) = &payload {
+            if self.protocol_slot(&value,"__int__").is_none() {
+                return Int::exact_from_f64(**number).map_err(int_error);
+            }
+        }
         if self.object_class(&value).is_some_and(|class| {
             self.slot_definition(&class,"__int__",0).is_some()
                 || self.slot_definition(&class,"__index__",0).is_some()

@@ -579,14 +579,7 @@ impl Runtime {
                 if !self.is_subclass(&class, &Value::Builtin("object".into()))? {
                     return Err(pyerr("TypeError", "object.__new__ requires a type"));
                 }
-                let native = self
-                    .class_mro(&class, 0)
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|base| {
-                        matches!(base,Value::Builtin(name)if ["tuple","list","dict","set","frozenset","str","int","complex","float","bytes","bytearray","memoryview","bool","type","cell"].contains(&name.as_str()) || stdlib_type_name(name))
-                            || matches!(base, Value::Type(_))
-                    });
+                let native = !Self::same_type(&self.class_static_base(&class),&Value::Builtin("object".into()));
                 if native {
                     return Err(pyerr(
                         "TypeError",
@@ -594,9 +587,8 @@ impl Runtime {
                     ));
                 }
                 if args.len() > 1 || !kwargs.is_empty() {
-                    let new = self.class_attribute_lookup(&class, "__new__");
                     let init = self.class_attribute_lookup(&class, "__init__");
-                    if !new.as_ref().is_some_and(|new| new.same_identity(&value))
+                    if !self.class_uses_object_allocator(&class)
                         || matches!(init,Some(Value::Builtin(ref name))if name=="native_attr:wrapper:object:__init__")
                     {
                         return Err(pyerr(
@@ -702,9 +694,8 @@ impl Runtime {
             if owner == "object" && (!rest.is_empty() || !kwargs.is_empty()) {
                 let class = self.native_receiver_class(&receiver);
                 let init = self.class_attribute_lookup(&class, "__init__");
-                let new = self.class_attribute_lookup(&class, "__new__");
                 if !init.as_ref().is_some_and(|init| init.same_identity(&value))
-                    || matches!(new,Some(Value::Builtin(ref name))if name=="native_attr:new:object:__new__")
+                    || self.class_uses_object_allocator(&class)
                 {
                     return Err(pyerr(
                         "TypeError",
@@ -758,12 +749,17 @@ impl Runtime {
                     self.delattr_default(receiver, &key)?;
                     return Ok(Value::None);
                 }
+                "__subclasses__"=>{
+                    if !rest.is_empty()||!kwargs.is_empty(){return Err(pyerr("TypeError","__subclasses__ takes no arguments"));}
+                    let children=self.mro_children(&receiver).into_iter().map(Value::Obj).collect();
+                    return Ok(self.obj_value(Object::List(children)));
+                },
                 "mro" => {
                     if !rest.is_empty() || !kwargs.is_empty() {
                         return Err(pyerr("TypeError", "mro takes no arguments"));
                     }
                     let mro = self
-                        .class_mro(&receiver, 0)
+                        .calculate_class_mro(&receiver, 0)
                         .ok_or_else(|| pyerr("TypeError", "invalid class MRO"))?;
                     return Ok(self.obj_value(Object::List(mro)));
                 }

@@ -245,9 +245,7 @@ impl Runtime {
         let left = self
             .native_payload(receiver)
             .unwrap_or_else(|| receiver.clone());
-        let right = self
-            .native_payload(argument)
-            .unwrap_or_else(|| argument.clone());
+        let right = self.native_operand_payload(owner,name,argument);
         let lk = self.operand_kind(&left);
         let rk = self.operand_kind(&right);
         let equal = op == "==" || op == "!=";
@@ -445,12 +443,17 @@ impl Runtime {
             };
             return self.binary_default(op, format, value).map(Some);
         }
+        if owner=="dict"&&op=="|" {
+            if let (Some(receiver_raw),Some(argument_raw))=(self.native_capability_payload(receiver,"dict"),self.native_capability_payload(argument,"dict")) {
+                let (left,right)=if reflected{(argument_raw,receiver.clone())}else{(receiver_raw,argument.clone())};
+                let out=self.dictionary_copy(left)?;
+                return self.merge_mapping_arguments(out,right,false).map(Some);
+            }
+        }
         let receiver = self
             .native_payload(receiver)
             .unwrap_or_else(|| receiver.clone());
-        let arg = self
-            .native_payload(argument)
-            .unwrap_or_else(|| argument.clone());
+        let arg = self.native_operand_payload(owner,name,argument);
         let kind = self.operand_kind(&arg);
         let accepted = match owner {
             "int" | "bool" => kind == "int",

@@ -26,6 +26,11 @@ impl Runtime {
                 return self.start_protocol_call(frame,Value::Builtin(format!("method:{name}")),vec![left,right],Vec::new());
             }
         }
+        if (op=="%"||op=="%=") && matches!(left,Value::Str(_)) && self.object_class(&right).is_none() {
+            let mut state=Self::protocol_empty(ProtocolSink::Stack);
+            self.protocol_text_percent_start(&mut state,left,right)?;
+            frame.protocol=Some(state);self.resume_protocol(frame)?;return Ok(true);
+        }
         if operand_method(op.strip_suffix('=').unwrap_or(&op)).is_none() || (self.object_class(&left).is_none()&&self.object_class(&right).is_none()) || self.is_template_value(&left)||self.is_template_value(&right) {return Ok(false);}
         if self.is_typing_value(&left)||self.is_typing_value(&right)||self.generic_parts(&left).is_some()||self.generic_parts(&right).is_some(){return Ok(false);}
         if [&left,&right].iter().any(|value|matches!(value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::DictView{..}|Object::MappingProxy{..})))){return Ok(false);}
@@ -81,6 +86,25 @@ impl Runtime {
             return Ok(true);
         }
         let comparison=matches!(operation.kind,ProtocolOperandKind::Comparison{..});
+        if !comparison && matches!(operand_descriptor(slot.value()),Some(("str","__mod__"|"__rmod__"))) {
+            let reflected=matches!(operand_descriptor(slot.value()),Some((_,"__rmod__")));
+            let (format,values)=if reflected{(argument.clone(),receiver.clone())}else{(receiver.clone(),argument.clone())};
+            if matches!(self.native_payload(&format).unwrap_or_else(||format.clone()),Value::Str(_)) {
+                state.actions.push_front(ProtocolAction::Operand(Box::new(operation)));
+                self.protocol_text_percent_start(state,format,values)?;return Ok(true);
+            }
+        }
+        if !comparison {
+            if let Some(("dict",name @ ("__or__"|"__ror__")))=operand_descriptor(slot.value()) {
+                if self.native_capability_payload(&receiver,"dict").is_some()&&self.native_capability_payload(&argument,"dict").is_some() {
+                    // Copy the actual left object: overridden iteration can
+                    // require keys()/getitem callbacks before the RHS update.
+                    let (left,right)=if name=="__ror__"{(argument.clone(),receiver.clone())}else{(receiver.clone(),argument.clone())};
+                    state.actions.push_front(ProtocolAction::Operand(Box::new(operation)));
+                    self.protocol_dict_union(state,left,right)?;return Ok(true);
+                }
+            }
+        }
         if !comparison && matches!(operand_descriptor(slot.value()),Some(("list","__iadd__"))) {
             state.actions.push_front(ProtocolAction::Operand(Box::new(operation)));
             state.actions.push_front(ProtocolAction::Return(receiver.clone()));
@@ -110,11 +134,12 @@ impl Runtime {
                 if ["dict","set","frozenset"].contains(&owner) {
                     let op=match name{"__eq__"=>"==","__ne__"=>"!=","__lt__"=>"<","__le__"=>"<=","__gt__"=>">","__ge__"=>">=",_=>""};
                     state.actions.push_front(ProtocolAction::Operand(Box::new(operation.clone())));
-                    if self.protocol_collection_compare(state,op,receiver.clone(),argument.clone())?{return Ok(true);}state.actions.remove(0);
+                    let left=self.native_payload(&receiver).unwrap_or_else(||receiver.clone());let right=self.native_operand_payload(owner,name,&argument);
+                    if self.protocol_collection_compare(state,op,left,right)?{return Ok(true);}state.actions.remove(0);
                 }
                 if ["list","tuple"].contains(&owner) {
                     let op=match name {"__eq__"=>"==","__ne__"=>"!=","__lt__"=>"<","__le__"=>"<=","__gt__"=>">","__ge__"=>">=",_=>""};
-                    let left=self.native_payload(&receiver).unwrap_or_else(||receiver.clone());let right=self.native_payload(&argument).unwrap_or_else(||argument.clone());
+                    let left=self.native_payload(&receiver).unwrap_or_else(||receiver.clone());let right=self.native_operand_payload(owner,name,&argument);
                     state.actions.push_front(ProtocolAction::Operand(Box::new(operation.clone())));
                     if self.protocol_sequence_compare(state,op,left,right)? {return Ok(true);}
                     state.actions.remove(0);

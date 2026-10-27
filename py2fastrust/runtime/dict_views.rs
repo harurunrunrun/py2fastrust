@@ -574,6 +574,7 @@ impl Runtime {
         if matches!(object,Object::MappingProxy{..}) {
             if let Some(owner)=self.collection_keepers.get(index).cloned() {
                 return Some((||match name {
+                    "__getitem__" if args.len()==1&&kwargs.is_empty()=>self.getitem(owner,args[0].clone()),
                     "__iter__" if args.is_empty()&&kwargs.is_empty()=>self.iter(owner),
                     "__reversed__" if args.is_empty()&&kwargs.is_empty()=>self.builtin("reversed",vec![owner],Vec::new(),None),
                     "__len__" if args.is_empty()&&kwargs.is_empty()=>self.builtin("len",vec![owner],Vec::new(),None),

@@ -25,6 +25,7 @@ enum ProtocolAction {
     InvertBoolean,
     Stream(Box<ProtocolStream>),
     Input(Box<ProtocolInput>),
+    TextPercent(Box<ProtocolTextPercent>),
     Representation(Box<ProtocolRepresentation>),
     Collection(Box<ProtocolCollection>),
     Consumer(Box<ProtocolConsumer>),
@@ -32,6 +33,9 @@ enum ProtocolAction {
     Sort(Box<ProtocolSort>),
     Fold(Box<ProtocolFold>),
     SetWork(Box<ProtocolSetWork>),
+    Mro(Box<ProtocolMro>),
+    Class(Box<ProtocolClass>),
+    ClassParameters(Box<ProtocolClassParameters>),
 }
 #[derive(Clone, Debug)]
 enum ProtocolBindingRecovery { BoolLength(Value), Hash(Value), Repr(Value), Iter(Value), Contains(Value,Value), Decline }
@@ -66,6 +70,7 @@ impl ProtocolAction {
             Self::Operand(_)=>std::mem::size_of::<ProtocolOperand>(),
             Self::Stream(_)=>std::mem::size_of::<ProtocolStream>(),
             Self::Input(_)=>std::mem::size_of::<ProtocolInput>(),
+            Self::TextPercent(_)=>std::mem::size_of::<ProtocolTextPercent>(),
             Self::Representation(_)=>std::mem::size_of::<ProtocolRepresentation>(),
             Self::Collection(_)=>std::mem::size_of::<ProtocolCollection>(),
             Self::Consumer(_)=>std::mem::size_of::<ProtocolConsumer>(),
@@ -73,6 +78,9 @@ impl ProtocolAction {
             Self::Sort(_)=>std::mem::size_of::<ProtocolSort>(),
             Self::Fold(_)=>std::mem::size_of::<ProtocolFold>(),
             Self::SetWork(_)=>std::mem::size_of::<ProtocolSetWork>(),
+            Self::Mro(_)=>std::mem::size_of::<ProtocolMro>(),
+            Self::Class(_)=>std::mem::size_of::<ProtocolClass>(),
+            Self::ClassParameters(_)=>std::mem::size_of::<ProtocolClassParameters>(),
             _=>0,
         })
     }
@@ -114,6 +122,7 @@ impl ProtocolState {
             ProtocolAction::Sequence(sequence)=>sequence.roots(out),
             ProtocolAction::Stream(record)=>record.roots(out),
             ProtocolAction::Input(record)=>record.roots(out),
+            ProtocolAction::TextPercent(record)=>record.roots(out),
             ProtocolAction::Representation(record)=>record.roots(out),
             ProtocolAction::Collection(record)=>record.roots(out),
             ProtocolAction::Consumer(record)=>record.roots(out),
@@ -121,6 +130,9 @@ impl ProtocolState {
             ProtocolAction::Sort(record)=>record.roots(out),
             ProtocolAction::Fold(record)=>record.roots(out),
             ProtocolAction::SetWork(record)=>record.roots(out),
+            ProtocolAction::Mro(record)=>record.roots(out),
+            ProtocolAction::Class(record)=>record.roots(out),
+            ProtocolAction::ClassParameters(record)=>record.roots(out),
             ProtocolAction::EndBinding(Some(ProtocolBindingRecovery::BoolLength(value)|ProtocolBindingRecovery::Hash(value)|ProtocolBindingRecovery::Repr(value)|ProtocolBindingRecovery::Iter(value)))=>out.push(value.clone()),
             ProtocolAction::EndBinding(Some(ProtocolBindingRecovery::Contains(owner,key)))=>out.extend([owner.clone(),key.clone()]),
             ProtocolAction::Cached(pending)=>{out.push(pending.owner.clone());out.extend(pending.entry.args.iter().cloned());out.extend(pending.entry.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));}
@@ -133,10 +145,12 @@ impl Runtime {
     fn protocol_builtin_target(&self,mut value:Value)->bool {
         let mut visited=std::collections::HashSet::new();
         loop {match value {
-            Value::Builtin(name)=>return ["len","bool","int","hash","str","repr","iter","print","input","next","ascii","format","list","tuple","any","all","sorted","min","max","module:functools:reduce","map","filter","zip","enumerate","reversed","getattr","setattr","delattr"].contains(&name.as_str()) || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"cell",method))if cell_comparison_op(method).is_some()) || Self::protocol_collection_target(&name) || name.starts_with("module:itertools:") || name.starts_with("itertools.") || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"object","__getattribute__"|"__setattr__"|"__delattr__"|"__str__"))|Some((_,"dict","__getitem__"))) || name=="type_method:object:__getattribute__" || name=="unbound:dict:__getitem__",
+            Value::Builtin(name)=>return ["type","__build_class__","len","bool","int","hash","str","repr","iter","print","input","next","ascii","format","list","tuple","any","all","sorted","min","max","module:functools:reduce","map","filter","zip","enumerate","reversed","getattr","setattr","delattr","native_attr_readonly"].contains(&name.as_str()) || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"cell",method))if cell_comparison_op(method).is_some()) || Self::protocol_collection_target(&name) || name.starts_with("module:itertools:") || name.starts_with("itertools.") || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"object","__getattribute__"|"__setattr__"|"__delattr__"|"__str__"))|Some((_,"dict","__getitem__"))) || matches!(native_attribute_parts(&Value::Builtin(name.clone())),Some((_,"str","__mod__"|"__rmod__"))) || name=="type_method:object:__getattribute__" || name=="unbound:dict:__getitem__",
             Value::Obj(index)=>{if !visited.insert(index){return false;}match self.heap.get(index).and_then(Option::as_ref) {
                 Some(Object::Bound(function,_)|Object::Partial{function,..})=>value=function.clone(),
                 Some(Object::Cached(cache))=>value=cache.function.clone(),
+                Some(Object::GenericAlias{..})=>return true,
+                Some(Object::Class(_))=>return true,
                 _=>return false,
             }},
             _=>return false,
@@ -216,6 +230,7 @@ impl Runtime {
     }
     fn protocol_builtin(&mut self,state:&mut ProtocolState,plan:&ProtocolPlan)->PyResult<bool> {
         let Value::Builtin(name)=&plan.function else{return Ok(false)};
+        if self.protocol_class_builtin(state,plan)? {return Ok(true);}
         if self.protocol_cell_descriptor(state,plan)? {return Ok(true);}
         if matches!(native_attribute_parts(&plan.function),Some((_,"cell",_))) {state.value=Some(self.native_attribute_call(plan.function.clone(),plan.args.clone(),plan.kwargs.clone())?);return Ok(true);}
         if let Some((kind,owner,name))=native_attribute_parts(&plan.function) {
@@ -224,7 +239,9 @@ impl Runtime {
                 self.native_validate_receiver(owner,receiver)?;
             }
         }
+        if self.protocol_text_percent_builtin(state,plan)? {return Ok(true);}
         if self.protocol_input_builtin(state,plan)? {return Ok(true);}
+        if self.protocol_mro_builtin(state,plan)? {return Ok(true);}
         if self.protocol_stream_builtin(state,plan)? {return Ok(true);}
         if self.protocol_set_bulk_builtin(state,plan)? {return Ok(true);}
         if self.protocol_collection_builtin(state,plan)? {return Ok(true);}
@@ -260,6 +277,12 @@ impl Runtime {
     fn protocol_turn(&mut self,frame:Option<&Frame>,state:&mut ProtocolState)->PyResult<ProtocolTurn> {
         if let Some(mut plan)=state.plan.take() {
             if matches!(&plan.function,Value::Builtin(name)if name=="$protocol:generator_next") {return Ok(ProtocolTurn::Schedule(self.protocol_generator_frame(plan.args.remove(0))?));}
+            if matches!(&plan.function,Value::Builtin(name)if name=="$protocol:class_body") {return Ok(ProtocolTurn::Schedule(self.protocol_class_body_frame(plan.args)?));}
+            if let Value::Obj(owner)=&plan.function {if let Object::GenericAlias{origin,..}=self.object(*owner)? {
+                state.actions.push_front(ProtocolAction::Class(Box::new(ProtocolClass::Alias(plan.function.clone()))));
+                state.plan=Some(ProtocolPlan{function:origin,args:plan.args,kwargs:plan.kwargs});return Ok(ProtocolTurn::Continue);
+            }}
+            if self.protocol_type_instance(state,plan.function.clone(),plan.args.clone(),plan.kwargs.clone(),true)? {return Ok(ProtocolTurn::Continue);}
             if self.protocol_builtin(state,&plan)? {return Ok(ProtocolTurn::Continue);}
             match self.prepare_direct_call(plan.function.clone(),plan.args.clone(),plan.kwargs.clone())? {
                 PreparedCall::Frame(child)=>return Ok(ProtocolTurn::Schedule(child)),
@@ -308,6 +331,7 @@ impl Runtime {
             ProtocolAction::Sequence(sequence)=>self.protocol_sequence_result(state,*sequence,value)?,
             ProtocolAction::Stream(record)=>self.protocol_stream_result(state,*record,value)?,
             ProtocolAction::Input(record)=>self.protocol_input_result(state,*record,value)?,
+            ProtocolAction::TextPercent(record)=>self.protocol_text_percent_result(state,*record,value)?,
             ProtocolAction::Representation(record)=>self.protocol_representation_result(state,*record,value)?,
             ProtocolAction::Collection(record)=>self.protocol_collection_result(state,*record,value)?,
             ProtocolAction::Consumer(record)=>self.protocol_consumer_result(state,*record,value)?,
@@ -315,6 +339,9 @@ impl Runtime {
             ProtocolAction::Sort(record)=>self.protocol_sort_result(state,*record,value)?,
             ProtocolAction::Fold(record)=>self.protocol_fold_result(state,*record,value)?,
             ProtocolAction::SetWork(record)=>self.protocol_set_work_result(state,*record,value)?,
+            ProtocolAction::Mro(record)=>self.protocol_mro_result(state,*record,value)?,
+            ProtocolAction::Class(record)=>self.protocol_class_result(state,*record,value)?,
+            ProtocolAction::ClassParameters(record)=>self.protocol_class_parameters_result(state,*record,value)?,
             ProtocolAction::NeFromEq=>{if matches!(&value,Value::Builtin(name)if name=="NotImplemented"){state.value=Some(value);}else{state.actions.push_front(ProtocolAction::InvertBoolean);if !self.protocol_python_truth(state,value.clone())?{state.value=Some(Value::Bool(self.truth(&value)?));}}}
             ProtocolAction::InvertBoolean=>{let Value::Bool(value)=value else{unreachable!()};state.value=Some(Value::Bool(!value));}
             ProtocolAction::Invoke(args,kwargs)=>state.plan=Some(ProtocolPlan{function:value,args,kwargs}),
@@ -348,13 +375,16 @@ impl Runtime {
             }
         }
     }
-    fn protocol_binding_failure(&mut self,frame:&mut Frame,error:&PyException)->PyResult<bool> {
-        let Some(mut state)=frame.protocol.take() else{return Ok(false)};
-        let recovered=(||{
-            if self.protocol_input_recover_before(&mut state,error)? {return Ok(true);}
-            if self.protocol_consumer_failure(&mut state,error)?{self.protocol_sync_repr_guards(&mut state);return Ok(true);}
-            if self.protocol_stream_failure(&mut state,error)? {self.protocol_sync_repr_guards(&mut state);return Ok(true);}
-            if !self.exception_has_native_class(error,"AttributeError"){return self.protocol_input_failure(&mut state,error);}
+    fn protocol_state_failure(&mut self,state:&mut ProtocolState,error:&PyException,frame:Option<&Frame>)->PyResult<bool> {
+        let mut current=error.clone();let mut replaced=false;
+        while let Some(replacement)=self.protocol_text_percent_mask_failure(state,&current)? {current=replacement;replaced=true;}
+        let error=&current;
+        let result=(||{
+            if self.protocol_class_failure(frame,state,error)? {self.protocol_sync_repr_guards(state);return Ok(true);}
+            if self.protocol_input_recover_before(state,error)? {return Ok(true);}
+            if self.protocol_consumer_failure(state,error)?{self.protocol_sync_repr_guards(state);return Ok(true);}
+            if self.protocol_stream_failure(state,error,frame)? {self.protocol_sync_repr_guards(state);return Ok(true);}
+            if !self.exception_has_native_class(error,"AttributeError"){return self.protocol_input_failure(state,error);}
             if let Some(recovery)=state.binding_recovery.take() {
                 state.plan=None;state.value=None;
                 let end=state.actions.iter().position(|action|match (&recovery,action) {
@@ -365,16 +395,21 @@ impl Runtime {
                 }).unwrap_or(state.actions.len());
                 let keep=matches!(recovery,ProtocolBindingRecovery::Decline);
                 let discard=if keep {end}else{(end+1).min(state.actions.len())};
-                self.protocol_discard_actions(&mut state,discard);
+                self.protocol_discard_actions(state,discard);
                 match recovery {
-                    ProtocolBindingRecovery::BoolLength(value)=>{if !self.protocol_python_length(&mut state,value.clone(),true)?{state.value=Some(Value::Bool(match self.native_payload(&value){Some(payload)=>self.truth(&payload)?,None=>true}));}return Ok(true);}
+                    ProtocolBindingRecovery::BoolLength(value)=>{if !self.protocol_python_length(state,value.clone(),true)?{state.value=Some(Value::Bool(match self.native_payload(&value){Some(payload)=>self.truth(&payload)?,None=>true}));}return Ok(true);}
                     ProtocolBindingRecovery::Decline=>{state.value=Some(Value::Builtin("NotImplemented".into()));return Ok(true);}
-                    recovery=>return self.protocol_recover_builtin_binding(&mut state,recovery),
+                    recovery=>return self.protocol_recover_builtin_binding(state,recovery),
                 }
             }
-            if self.protocol_attribute_failure(&mut state)? {return Ok(true);}
-            self.protocol_input_failure(&mut state,error)
+            if self.protocol_attribute_failure(state)? {return Ok(true);}
+            self.protocol_input_failure(state,error)
         })();
+        match result {Ok(false) if replaced=>Err(current),result=>result}
+    }
+    fn protocol_binding_failure(&mut self,frame:&mut Frame,error:&PyException)->PyResult<bool> {
+        let Some(mut state)=frame.protocol.take() else{return Ok(false)};
+        let recovered=self.protocol_state_failure(&mut state,error,Some(frame));
         frame.protocol=Some(state);
         recovered
     }

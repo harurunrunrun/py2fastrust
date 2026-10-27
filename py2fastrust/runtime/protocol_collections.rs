@@ -14,6 +14,7 @@ struct ProtocolLookup {
 }
 #[derive(Clone,Debug)]
 enum ProtocolCollection {
+    ProxyResult(Value),
     Compare{left:Value,right:Value,entries:Vec<(Value,Value)>,index:usize,phase:u8,set:bool,invert:bool},
     Lookup(ProtocolLookup),
     DictInput{owner:Value,source:Value,kwargs:KeywordArgs,phase:u8,iterator:Option<Value>,key:Option<Value>,pair:Vec<Value>,index:usize,mapping:bool,return_owner:bool},
@@ -30,6 +31,7 @@ enum ProtocolCollection {
 }
 impl ProtocolCollection {
     fn roots(&self,out:&mut Vec<Value>){match self {
+        Self::ProxyResult(owner)=>out.push(owner.clone()),
         Self::DictInput{owner,source,kwargs,iterator,key,pair,..}=>{out.extend([owner.clone(),source.clone()]);out.extend(kwargs.iter().flat_map(|(key,value)|[key.original.clone(),value.clone()]));out.extend(iterator.iter().cloned());out.extend(key.iter().cloned());out.extend(pair.iter().cloned());}
         Self::SetCopy{owner,source,entries,..}=>{out.extend([owner.clone(),source.clone()]);out.extend(entries.iter().map(|(key,_)|key.clone()));}
         Self::TruthResult(_)=>{},
@@ -163,15 +165,29 @@ impl Runtime {
     fn start_protocol_contains(&mut self,frame:&mut Frame,key:Value,object:Value,reverse:bool)->PyResult<bool> {
         let mut state=Self::protocol_empty(ProtocolSink::Stack);
         state.actions.push_back(ProtocolAction::Collection(Box::new(ProtocolCollection::TruthResult(reverse))));
-        if let Some((method,class))=self.protocol_slot(&object,"__contains__"){let recovery=ProtocolBindingRecovery::Contains(object.clone(),key.clone());self.protocol_bind_recover(&mut state,method,object,class,vec![key],Vec::new(),ProtocolAction::ContainsResult,Some(recovery))?;}
-        else if self.protocol_view_contains(&mut state,object.clone(),key.clone())? {}
-        else if !self.protocol_collection_lookup(&mut state,object.clone(),key.clone(),ProtocolLookupOp::Contains,None)?{
+        if !self.protocol_contains_into(&mut state,key,object)? {return Ok(false);}
+        frame.protocol=Some(state);self.resume_protocol(frame)?;Ok(true)
+    }
+    fn protocol_contains_into(&mut self,state:&mut ProtocolState,key:Value,object:Value)->PyResult<bool> {
+        let object=self.proxy_payload(&object).unwrap_or(object);
+        if let Some((method,class))=self.protocol_slot(&object,"__contains__"){let recovery=ProtocolBindingRecovery::Contains(object.clone(),key.clone());self.protocol_bind_recover(state,method,object,class,vec![key],Vec::new(),ProtocolAction::ContainsResult,Some(recovery))?;}
+        else if self.protocol_view_contains(state,object.clone(),key.clone())? {}
+        else if !self.protocol_collection_lookup(state,object.clone(),key.clone(),ProtocolLookupOp::Contains,None)?{
             let payload=self.native_payload(&object).unwrap_or_else(||object.clone());
-            if matches!(&payload,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_)|Object::Tuple(_)))){self.protocol_search_next(&mut state,ProtocolCollection::Search{owner:object,key,name:"__contains__".into(),index:0,count:0,stop:usize::MAX,phase:0,current:None})?;}
+            // Closed numeric keys cannot run equality callbacks. Preserve the
+            // exact arithmetic range path instead of walking its cardinality.
+            // Subclasses/custom keys retain the queued comparison iterator.
+            let range=if matches!(key,Value::Int(_)|Value::Bool(_)|Value::Float(_)) {
+                match &payload {Value::Obj(index)=>match self.heap.get(*index).and_then(Option::as_ref){Some(Object::Range(start,stop,step))=>Some((start.inner().clone(),stop.inner().clone(),step.inner().clone())),_=>None},_=>None}
+            }else{None};
+            if let Some((start,stop,step))=range {
+                state.value=Some(Value::Bool(self.range_contains(start,stop,step,key)?));return Ok(true);
+            }
+            if matches!(&payload,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_)|Object::Tuple(_)))){self.protocol_search_next(state,ProtocolCollection::Search{owner:object,key,name:"__contains__".into(),index:0,count:0,stop:usize::MAX,phase:0,current:None})?;}
             else if matches!(payload,Value::Str(_)|Value::Bytes(_)){return Ok(false);}
             else {state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::IterateContains{iterator:Value::None,key,phase:0,reverse:false,current:None})));state.plan=Some(ProtocolPlan{function:Value::Builtin("iter".into()),args:vec![object],kwargs:Vec::new()});}
         }
-        frame.protocol=Some(state);self.resume_protocol(frame)?;Ok(true)
+        Ok(true)
     }
     fn protocol_dict_keywords(&mut self,state:&mut ProtocolState,owner:Value,keywords:KeywordArgs,return_owner:bool)->PyResult<()> {
         state.value=Some(Value::None);state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::Keywords{owner,keywords,index:0,return_owner})));Ok(())
@@ -194,8 +210,37 @@ impl Runtime {
         Ok(true)
     }
     fn protocol_dict_input(&mut self,state:&mut ProtocolState,owner:Value,source:Value,kwargs:KeywordArgs,return_owner:bool)->PyResult<()> {
-        if let Some(index)=self.dictionary_direct_source(&source){let entries=self.assoc_entries(index)?;state.value=Some(Value::None);state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::Copy{owner,source,entries,index:0,kwargs,return_owner})));}
-        else{state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::DictInput{owner,source:source.clone(),kwargs,phase:0,iterator:None,key:None,pair:Vec::new(),index:0,mapping:false,return_owner})));state.plan=Some(ProtocolPlan{function:Value::Builtin("getattr".into()),args:vec![source,Value::Str("keys".into()),Value::Builtin("$dict:no_keys".into())],kwargs:Vec::new()});}Ok(())
+        self.protocol_dict_input_mode(state,owner,source,kwargs,return_owner,false)
+    }
+    fn protocol_dict_union(&mut self,state:&mut ProtocolState,left:Value,right:Value)->PyResult<()> {
+        let out=self.obj_value(Object::Dict(Vec::new()));
+        state.actions.push_front(ProtocolAction::Return(out.clone()));
+        state.actions.push_front(ProtocolAction::Invoke(vec![out.clone(),right],Vec::new()));
+        state.actions.push_front(ProtocolAction::Return(Value::Builtin("method:update".into())));
+        self.protocol_dict_copy(state,out,left,Vec::new(),false)
+    }
+    fn protocol_dict_copy(&mut self,state:&mut ProtocolState,owner:Value,source:Value,kwargs:KeywordArgs,return_owner:bool)->PyResult<()> {
+        // PyDict_Copy returns a new empty dictionary before consulting a
+        // subclass's iteration or mapping slots, including hidden native MROs.
+        let empty=self.native_capability_payload(&source,"dict").and_then(|payload|self.dictionary_owner(&payload)).is_some_and(|index|self.assoc_size(index)==0);
+        if empty{return self.protocol_dict_keywords(state,owner,kwargs,return_owner);}
+        self.protocol_dict_input_mode(state,owner,source,kwargs,return_owner,true)
+    }
+    fn protocol_dict_input_mode(&mut self,state:&mut ProtocolState,owner:Value,source:Value,kwargs:KeywordArgs,return_owner:bool,copy_method:bool)->PyResult<()> {
+        if let Some(index)=self.dictionary_direct_source(&source){
+            let target=self.dictionary_owner(&owner).ok_or_else(||pyerr("TypeError","expected dictionary destination"))?;
+            if target==index{return self.protocol_dict_keywords(state,owner,kwargs,return_owner);}
+            let entries=self.assoc_entries(index)?;
+            // Cloning a clean table preserves stored hashes and comparisons.
+            // Unknown hashes must stay queued because recovering one can call
+            // Python; the native clone is used only when it is callback-free.
+            let hashes_known=self.dictionary_hashes.get(&index).is_some_and(|hashes|hashes.len()>=entries.len()&&hashes[..entries.len()].iter().all(Option::is_some));
+            if self.assoc_size(target)==0&&self.dictionary_can_clone(index,copy_method)&&(entries.is_empty()||hashes_known) {
+                self.dictionary_clone_into(target,index)?;
+                return self.protocol_dict_keywords(state,owner,kwargs,return_owner);
+            }
+            state.value=Some(Value::None);state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::Copy{owner,source,entries,index:0,kwargs,return_owner})));
+        }else{state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::DictInput{owner,source:source.clone(),kwargs,phase:0,iterator:None,key:None,pair:Vec::new(),index:0,mapping:false,return_owner})));state.plan=Some(ProtocolPlan{function:Value::Builtin("getattr".into()),args:vec![source,Value::Str("keys".into()),Value::Builtin("$dict:no_keys".into())],kwargs:Vec::new()});}Ok(())
     }
     fn protocol_set_input(&mut self,state:&mut ProtocolState,owner:Value,sources:Vec<Value>,frozen:bool,return_owner:bool)->PyResult<()> {
         state.value=Some(Value::None);state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::SetInput{owner,sources,source_index:0,iterator:None,phase:0,frozen,return_owner})));Ok(())
@@ -204,6 +249,7 @@ impl Runtime {
         let ProtocolCollection::DictInput{iterator,phase,..}=&mut record else{unreachable!()};let iterator=iterator.clone().unwrap();*phase=3;state.actions.push_front(ProtocolAction::Collection(Box::new(record)));state.plan=Some(ProtocolPlan{function:Value::Builtin("next".into()),args:vec![iterator,Value::Builtin("$dict:end".into())],kwargs:Vec::new()});Ok(())
     }
     fn protocol_dict_item(&mut self,state:&mut ProtocolState,object:Value,key:Value)->PyResult<()> {
+        let object=self.proxy_payload(&object).unwrap_or(object);
         if let Some((method,class))=self.protocol_slot(&object,"__getitem__"){self.protocol_bind(state,method,object,class,vec![key],Vec::new(),ProtocolAction::Pass,false)?;}
         else if !self.protocol_dict_getitem(state,object.clone(),key.clone())?{state.value=Some(self.getitem(object,key)?);}Ok(())
     }
@@ -230,11 +276,35 @@ impl Runtime {
         }
         let name=if let Some(name)=function.strip_prefix("method:"){name.to_owned()}else if let Some((_,_,name))=native_attribute_parts(&plan.function){name.to_owned()}else if let Some(name)=function.strip_prefix("unbound:"){name.split_once(':').map(|(_,name)|name.to_owned()).unwrap_or_default()}else{return Ok(false)};
         let Some(object)=plan.args.first().cloned()else{return Ok(false)};
+        if let Some(inner)=self.proxy_payload(&object) {
+            if name=="__getitem__" {
+                if plan.args.len()!=2||!plan.kwargs.is_empty(){return Err(pyerr("TypeError","__getitem__ expected one argument"));}
+                state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::ProxyResult(object))));
+                self.protocol_dict_item(state,inner,plan.args[1].clone())?;return Ok(true);
+            }
+            if ["copy","get","keys","values","items"].contains(&name.as_str()) {
+                state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::ProxyResult(object))));
+                state.actions.push_front(ProtocolAction::Invoke(plan.args[1..].to_vec(),plan.kwargs.clone()));
+                state.plan=Some(ProtocolPlan{function:Value::Builtin("getattr".into()),args:vec![inner,Value::Str(name.into())],kwargs:Vec::new()});return Ok(true);
+            }
+            if name=="__contains__" {
+                if plan.args.len()!=2||!plan.kwargs.is_empty(){return Err(pyerr("TypeError","__contains__ expected one argument"));}
+                state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::ProxyResult(object))));
+                state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::TruthResult(false))));
+                return self.protocol_contains_into(state,plan.args[1].clone(),inner);
+            }
+        }
         if name=="__contains__" && self.view_kind(&object).is_some() {
             if plan.args.len()!=2||!plan.kwargs.is_empty(){return Err(pyerr("TypeError","__contains__ expected one argument"));}
             return self.protocol_view_contains(state,object,plan.args[1].clone());
         }
         if self.dictionary_owner(&object).is_some(){
+            if matches!(native_attribute_parts(&plan.function),Some((_,"dict","__or__"|"__ror__")))&&plan.args.len()==2&&plan.kwargs.is_empty(){
+                let argument=plan.args[1].clone();
+                if self.native_capability_payload(&argument,"dict").is_none(){state.value=Some(Value::Builtin("NotImplemented".into()));return Ok(true);}
+                let (left,right)=if name=="__ror__"{(argument,object)}else{(object,argument)};
+                self.protocol_dict_union(state,left,right)?;return Ok(true);
+            }
             if name=="update"{if plan.args.len()>2{return Err(pyerr("TypeError","update expected at most one argument"));}if let Some(source)=plan.args.get(1){self.protocol_dict_input(state,object,source.clone(),plan.kwargs.clone(),false)?;}else{self.protocol_dict_keywords(state,object,plan.kwargs.clone(),false)?;}return Ok(true);}
 
             let count=plan.args.len()-1;let mutating=["__setitem__","__delitem__","pop","setdefault"].contains(&name.as_str());if mutating&&matches!(&object,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::MappingProxy{..}))){return Ok(false);}
@@ -265,6 +335,7 @@ impl Runtime {
     }
     fn protocol_collection_result(&mut self,state:&mut ProtocolState,record:ProtocolCollection,value:Value)->PyResult<()> {
         match record {
+            ProtocolCollection::ProxyResult(_)=>state.value=Some(value),
             ProtocolCollection::Compare{left,right,entries,index,phase,set,invert}=>{
                 if phase==0{return self.protocol_collection_compare_next(state,left,right,entries,index,set,invert);}
                 if phase==1{
@@ -308,7 +379,7 @@ impl Runtime {
             }
             ProtocolCollection::Keywords{owner,keywords,index,return_owner}=>{
                 if index==keywords.len(){state.value=Some(if return_owner{owner}else{Value::None});}
-                else{let (key,value)=keywords[index].clone();state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::Keywords{owner:owner.clone(),keywords,index:index+1,return_owner})));self.protocol_collection_lookup(state,owner,key.original,ProtocolLookupOp::Set(value),None)?;}
+                else{let (key,value)=keywords[index].clone();let known=key.hash;state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::Keywords{owner:owner.clone(),keywords,index:index+1,return_owner})));self.protocol_collection_lookup(state,owner,key.original,ProtocolLookupOp::Set(value),known)?;}
             }
             ProtocolCollection::Copy{owner,source,entries,index,kwargs,return_owner}=>{
                 if index==entries.len(){self.protocol_dict_keywords(state,owner,kwargs,return_owner)?;}

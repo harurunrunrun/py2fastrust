@@ -103,6 +103,7 @@ impl Runtime {
     fn protocol_discard_actions(&mut self, state: &mut ProtocolState, count: usize) -> Vec<ProtocolAction> {
         let mut removed = state.actions.drain(..count).collect::<Vec<_>>();
         for action in &mut removed {
+            if let ProtocolAction::Mro(record)=action {self.protocol_mro_discard(record);}
             if let ProtocolAction::Sort(record) = action { let _ = self.protocol_sort_restore(record, false); }
         }
         removed

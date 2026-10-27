@@ -27,6 +27,7 @@ impl Runtime {
         frame.protocol=Some(state);self.resume_protocol(frame)?;Ok(true)
     }
     fn start_protocol_getitem(&mut self,frame:&mut Frame,object:Value,key:Value)->PyResult<bool> {
+        let object=self.proxy_payload(&object).unwrap_or(object);
         let mut state=Self::protocol_empty(ProtocolSink::Stack);
         if let Some((method,class))=self.protocol_slot(&object,"__getitem__") {
             self.protocol_bind(&mut state,method,object,class,vec![key],Vec::new(),ProtocolAction::Pass,false)?;
@@ -82,9 +83,17 @@ impl Runtime {
                 let mut args=vec![object];args.extend(value);
                 self.protocol_bind(state,method,descriptor,class,args,Vec::new(),ProtocolAction::DiscardResult,false)?;return Ok(true);
             }
-        }}Ok(false)
+        }}
+        if name=="__bases__" {
+            if let Value::Obj(owner)=object {if matches!(self.heap.get(owner).and_then(Option::as_ref),Some(Object::Class(_))) {
+                let value=value.ok_or_else(||pyerr("TypeError","cannot delete __bases__"))?;
+                self.protocol_class_set_bases(state,owner,value)?;return Ok(true);
+            }}
+        }
+        Ok(false)
     }
     fn protocol_dict_getitem(&mut self,state:&mut ProtocolState,object:Value,key:Value)->PyResult<bool> {
+        if let Some(inner)=self.proxy_payload(&object) {self.protocol_dict_item(state,inner,key)?;return Ok(true);}
         self.protocol_collection_lookup(state,object,key,ProtocolLookupOp::Get{default:None,missing:true},None)
     }
     fn protocol_native_access(&mut self,state:&mut ProtocolState,plan:&ProtocolPlan)->PyResult<bool> {

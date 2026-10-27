@@ -2651,8 +2651,8 @@ impl Runtime {
     ) -> PyResult<Value> {
         let mut fields = codec_bind("bytearray", args, kwargs, &["source", "encoding", "errors"])?;
         let data = if let Some(source) = fields[0].take() {
-            let payload = self
-                .native_payload(&source)
+            let payload = self.native_capability_payload(&source,"str")
+                .or_else(||self.native_payload(&source))
                 .unwrap_or_else(|| source.clone());
             if matches!(payload, Value::Str(_)) {
                 let encoding = fields[1]

@@ -224,6 +224,11 @@ impl Runtime {
     }
 
     fn index_identity(&mut self, value: &Value) -> PyResult<Ident<Int>> {
+        if matches!(value,Value::Obj(_)) {
+            if let Some(Value::Int(number))=self.native_capability_payload(value,"int") {
+                let Value::Int(number)=Value::Int(number).fresh_primitive()else{unreachable!()};return Ok(number);
+            }
+        }
         match value {
             Value::Int(number) => Ok(number.clone()),
             Value::Bool(value) => Ok(Int::from_i128(if *value { 1 } else { 0 }).into()),

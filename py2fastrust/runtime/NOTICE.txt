@@ -37,3 +37,9 @@ input() control order in CPython 3.14.4, Python/bltinmodule.c:
 https://github.com/python/cpython/blob/v3.14.4/Python/bltinmodule.c
 This portion retains the Python Software Foundation license in
 py2fastrust/stdlib/PYTHON_LICENSE.txt, also included in generated Rust.
+
+Unicode percent-format behavior in text_percent.rs was independently checked
+against CPython 3.14.4, Objects/unicodeobject.c, and differential behavior probes:
+https://github.com/python/cpython/blob/v3.14.4/Objects/unicodeobject.c
+The runtime uses its own heap continuation implementation; the upstream
+reference is distributed under the Python Software Foundation license.

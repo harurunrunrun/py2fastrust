@@ -28,8 +28,21 @@ impl Runtime {
             if function=="tuple"&&matches!(&source,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Tuple(_)))){state.value=Some(source);return Ok(true);}
             let owner=if function=="list"{self.obj_value(Object::List(Vec::new()))}else{Value::None};(function.to_owned(),source,owner)
         };
-        // The exact self-extension fast path cannot observe an overridden iter.
-        if mode=="extend"{if let Value::Obj(index)=&source{if let Some(Object::List(items))=self.heap.get(*index).and_then(Option::as_ref){let items=items.clone();let payload=self.native_payload(&owner).unwrap_or_else(||owner.clone());if source.same_identity(&payload){let Value::Obj(index)=payload else{unreachable!()};let Some(Object::List(target))=self.heap[index].as_mut()else{unreachable!()};target.extend(items);self.protocol_sort_nonempty(index);state.value=Some(Value::None);return Ok(true);}}}}
+        // Self-extension duplicates native list storage, including subclass
+        // receivers. Neither __iter__ nor __len__ participates in this path.
+        if mode=="extend" {
+            let input=self.native_payload(&source).unwrap_or_else(||source.clone());
+            let target=self.native_payload(&owner).unwrap_or_else(||owner.clone());
+            if input.same_identity(&target) {
+                if let Value::Obj(index)=&input {
+                    if let Some(Object::List(items))=self.heap.get(*index).and_then(Option::as_ref) {
+                        let items=items.clone();let index=*index;
+                        let Some(Object::List(target))=self.heap[index].as_mut()else{unreachable!()};
+                        target.extend(items);self.protocol_sort_nonempty(index);state.value=Some(Value::None);return Ok(true);
+                    }
+                }
+            }
+        }
         state.actions.push_front(ProtocolAction::Consumer(Box::new(ProtocolConsumer{mode,source:source.clone(),owner,iterator:None,values:Vec::new(),phase:0})));state.plan=Some(ProtocolPlan{function:Value::Builtin("iter".into()),args:vec![source],kwargs:Vec::new()});Ok(true)
     }
     fn protocol_consumer_next(&mut self,state:&mut ProtocolState,mut record:ProtocolConsumer) {
@@ -48,7 +61,7 @@ impl Runtime {
     }
     fn protocol_consumer_result(&mut self,state:&mut ProtocolState,mut record:ProtocolConsumer,value:Value)->PyResult<()> {
         match record.phase {
-            0=>{record.iterator=Some(value);if record.mode=="any"||record.mode=="all"{self.protocol_consumer_next(state,record);}else{record.phase=2;let source=if record.mode=="tuple"{record.iterator.clone().unwrap()}else{record.source.clone()};state.actions.push_front(ProtocolAction::Consumer(Box::new(record)));state.plan=Some(ProtocolPlan{function:Value::Builtin("len".into()),args:vec![source],kwargs:Vec::new()});}}
+            0=>{record.iterator=Some(value);if record.mode=="any"||record.mode=="all"||record.mode=="tuple"{self.protocol_consumer_next(state,record);}else{record.phase=2;let source=if record.mode=="tuple"{record.iterator.clone().unwrap()}else{record.source.clone()};state.actions.push_front(ProtocolAction::Consumer(Box::new(record)));state.plan=Some(ProtocolPlan{function:Value::Builtin("len".into()),args:vec![source],kwargs:Vec::new()});}}
             2=>{let hint=self.as_int(&value)?.to_usize();self.protocol_consumer_reserve(&record,hint);self.protocol_consumer_next(state,record);}
             3=>{if matches!(&value,Value::Builtin(name)if name=="$consumer:no_hint"){self.protocol_consumer_reserve(&record,None);self.protocol_consumer_next(state,record);}else{record.phase=4;state.actions.push_front(ProtocolAction::Consumer(Box::new(record)));state.plan=Some(ProtocolPlan{function:value,args:Vec::new(),kwargs:Vec::new()});}}
             4=>{let hint=if !matches!(&value,Value::Builtin(name)if name=="NotImplemented"){let length=self.protocol_primitive_int(&value).ok_or_else(||pyerr("TypeError","__length_hint__ must be an integer"))?;if length.is_negative(){return Err(pyerr("ValueError","__length_hint__() should return >= 0"));}if length.to_i128().is_none_or(|value|value>isize::MAX as i128){return Err(pyerr("OverflowError","Python int too large to convert to C ssize_t"));}length.to_usize()}else{None};self.protocol_consumer_reserve(&record,hint);self.protocol_consumer_next(state,record);}

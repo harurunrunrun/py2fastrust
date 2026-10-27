@@ -80,7 +80,7 @@ impl Runtime {
         let encoded=values[1].is_some();let error_argument=values[2].is_some();
         let source=values[0].take();
         if let Some(source)=source {
-            let payload=self.native_payload(&source).unwrap_or_else(||source.clone());
+            let payload=self.native_capability_payload(&source,"str").or_else(||self.native_payload(&source)).unwrap_or_else(||source.clone());
             if let Value::Str(_) = &payload {
                 if !encoded { return Err(pyerr("TypeError","string argument without an encoding")); }
                 return self.codec_encode(payload,vec![Value::Str(encoding.into()),Value::Str(errors.into())],Vec::new());
@@ -136,6 +136,7 @@ impl Runtime {
             // including exporter exceptions and non-contiguous memoryviews. Keep
             // acquisition separate from decode errors, and preserve __buffer__
             // overrides on native subclasses.
+            let source=self.class_hidden_text_payload(&source).unwrap_or(source);
             let source=if matches!(source,Value::Bytes(_)|Value::Str(_)){source}else{
                 let data=self.buffer_read(&source,true).map_err(|_|pyerr("TypeError","decoding to str requires a bytes-like object"))?.ok_or_else(||pyerr("TypeError","decoding to str requires a bytes-like object"))?;
                 Value::Bytes(data.into())
@@ -143,6 +144,11 @@ impl Runtime {
             return self.codec_decode(source,vec![Value::Str(encoding.into()),Value::Str(errors.into())],Vec::new());
         }
         if matches!(source,Value::Str(_)){return Ok(source);}
+        // An alias delegates explicit attributes to its origin. Its implicit
+        // string slot still uses the alias's own representation.
+        if matches!(&source,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{..}|Object::UnpackedAlias(_)))) {
+            return self.repr(&source).map(|text|Value::Str(text.into()));
+        }
         match self.special_method(source.clone(),"__str__") {
             Ok(method)=>{
                 let result=self.call(method,Vec::new(),Vec::new(),None)?;

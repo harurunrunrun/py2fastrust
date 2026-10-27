@@ -22,7 +22,8 @@ they do not imply compatibility with all CPython internals or the entire standar
 
 Ordinary function recursion, including calls through `cache` and `lru_cache`, uses heap-allocated frames.
 Direct value protocols, `print`, iteration, `map`/`filter`/`zip`, itertools consumers,
-container construction and lookup, sorting, `min`/`max`, and `functools.reduce` use caller-owned
+container construction and lookup, sorting, `min`/`max`, `functools.reduce`, and Python class
+creation callbacks use caller-owned
 heap continuations, together with selected descriptor binding, subscription, attribute access,
 unary/binary operators, and rich comparisons.
 Return validation runs after the Python callback has returned, in its caller's exception scope.
@@ -34,7 +35,21 @@ recursive cell cycles remain exported until collection. Class annotation diction
 and conditional annotation cells share the public closure-cell storage.
 
 Heap classes retain stable `__mro__` and `__bases__` tuple identities, including
-their MRO ownership cycles. Creation hooks observe this metadata before they run.
+their MRO ownership cycles. Custom metaclass MRO binding and result iteration,
+class bodies and cells, namespace copies, slot iterables, generic parameter
+collection, `__set_name__`, `__init_subclass__`, and Python `__new__`/`__init__`
+callbacks use caller-owned continuations. Class callbacks follow the configured
+Python frame limit; native callback count at an error can differ from CPython.
+MRO callbacks observe the previous cached tuple (or `None` during creation).
+
+Changing `__bases__` validates physical layouts and updates descendants in
+registration and depth-first order. Pending descendant snapshots stay alive
+through callbacks and GC. Errors or discarded work restore owned updates while
+preserving a later reentrant change and callback writes to instance slots.
+Class allocation slots remain distinct from visible `__new__` attributes.
+Native payloads omitted by a custom MRO remain owned without exposing removed
+methods. Some native primitive conversion and buffer callbacks still require
+additional continuation adapters.
 
 `types.CellType` exposes its native class metadata, rich-comparison wrappers, and
 writable `cell_contents` descriptor. Empty cells sort before filled cells; filled
@@ -95,6 +110,13 @@ leases remain live through the I/O operation and release callbacks. Text
 files support UTF-8, ASCII, Latin-1, newline translation, `reconfigure`, and
 opaque seek cookies that restore pending decoder and newline state.
 Descriptor/opener behavior is currently verified on 64-bit Linux.
+
+Unicode `str` `%` formatting supports mapping keys, flags, dynamic width and
+precision, numeric conversions, `s`/`r`/`a`, and Unicode characters. String
+precision and width count Unicode characters. Python conversion and mapping
+callbacks use caller-owned heap continuations. Displaying a float with `%d`
+uses exact internal truncation, independently of the selected user integer width.
+Unpaired surrogate character results remain explicitly unsupported.
 
 Binary `%` formatting supports bytes, bytearray, mapping keys, flags, dynamic
 width and precision, integer and float conversions, and bytes/repr protocols.

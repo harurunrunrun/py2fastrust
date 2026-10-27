@@ -155,8 +155,12 @@ impl Runtime {
                 Err(error) if runtime.missing_special_method(&value, "__float__", &error) => (),
                 Err(error) => return Err(error),
             }
-            let payload = runtime
-                .native_payload(&value)
+            if runtime.object_class(&value).and_then(|class|runtime.slot_definition(&class,"__index__",0)).is_some() {
+                let number=runtime.as_int(&value)?;
+                return runtime.as_float(&Value::Int(number.into())).map(|number|Value::Float(number.into()));
+            }
+            let payload = runtime.class_hidden_text_payload(&value)
+                .or_else(||runtime.native_payload(&value))
                 .unwrap_or_else(|| value.clone());
             match payload {
                 Value::Str(text) => {

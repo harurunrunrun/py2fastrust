@@ -288,12 +288,15 @@ impl Runtime {
         }
         Ok(())
     }
-    fn protocol_stream_failure(&mut self,state:&mut ProtocolState,error:&PyException)->PyResult<bool>{
+    fn protocol_stream_failure(&mut self,state:&mut ProtocolState,error:&PyException,frame:Option<&Frame>)->PyResult<bool>{
         let mut current=error.clone();let mut replacement=false;
         loop {
             // A no-default inner next can propagate into input's ignored
             // flush/fileno boundary before reaching an outer next consumer.
+            if let Some(error)=self.protocol_text_percent_mask_failure(state,&current)? {current=error;replacement=true;continue;}
+            if self.protocol_class_failure(frame,state,&current)? {return Ok(true);}
             if self.protocol_input_recover_before(state,&current)? {return Ok(true);}
+            if self.protocol_consumer_failure(state,&current)? {return Ok(true);}
             let stop=self.exception_has_native_class(&current,"StopIteration");let index_error=self.exception_has_native_class(&current,"IndexError");
             let numeric=state.actions.iter().position(|action|matches!(action,ProtocolAction::Stream(record)if matches!(record.as_ref(),ProtocolStream::ToolConstructor{data,phase:1}if data.name=="islice")));
             if let Some(position)=numeric {

@@ -164,6 +164,9 @@ impl Runtime {
         let stop=self.exception_has_native_class(error,"StopIteration");
         let index=self.exception_has_native_class(error,"IndexError");
         let type_error=self.exception_has_native_class(error,"TypeError");
+        for action in state.actions.iter().take(boundary) {
+            if let ProtocolAction::Class(record)=action {if self.protocol_class_catches(record,error,None)?{return Ok(false);}}
+        }
         let inner=state.actions.iter().take(boundary).any(|action|match action {
             ProtocolAction::Consumer(record)=>type_error && record.phase==2,
             ProtocolAction::Stream(record)=>match record.as_ref() {

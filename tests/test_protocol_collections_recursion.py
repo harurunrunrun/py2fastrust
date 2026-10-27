@@ -2,7 +2,7 @@
 from pathlib import Path
 import shutil,subprocess,sys,tempfile,textwrap,unittest
 from py2fastrust import TranspileOptions,transpile
-WRAPPER='import sys,gc,functools\nexec(sys.stdin.read())\n'
+WRAPPER='import sys,gc,functools,collections\nexec(sys.stdin.read())\n'
 @unittest.skipUnless(shutil.which('rustc'),'rustc required')
 class ProtocolCollectionTests(unittest.TestCase):
     @classmethod
@@ -20,6 +20,63 @@ class ProtocolCollectionTests(unittest.TestCase):
         expected=subprocess.run([sys.executable,'-I','-c',WRAPPER],input=source,capture_output=True,text=True,timeout=40)
         actual=subprocess.run([str(self.binary)],input=source,capture_output=True,text=True,timeout=40)
         self.assertEqual(expected.returncode,0,expected.stderr);self.assertEqual(actual.returncode,0,actual.stderr);self.assertEqual(actual.stdout,expected.stdout,actual.stderr)
+    def test_proxy_callbacks_share_the_callers_continuation(self):
+        self.compare('''
+            class Mapping(dict):
+                def __getitem__(self,key):
+                    if key:return proxy[key-1]+1
+                    gc.collect()
+                    return 0
+                def get(self,key,default=None):
+                    if key:return proxy.get(key-1,default)+1
+                    gc.collect()
+                    return 0
+                def __contains__(self,key):
+                    if key:return key-1 in proxy
+                    gc.collect()
+                    return True
+            mapping=Mapping()
+            proxy=dict.keys(mapping).mapping
+            sys.setrecursionlimit(3000)
+            print(proxy[300],proxy.__getitem__(300),proxy.get(300),300 in proxy,proxy.__contains__(300))
+            for limit in [50,1000,3000]:
+                sys.setrecursionlimit(limit)
+                for operation in [lambda:proxy[10000],lambda:proxy.__getitem__(10000),lambda:proxy.get(10000),lambda:10000 in proxy,lambda:proxy.__contains__(10000)]:
+                    try:operation()
+                    except RecursionError:print(limit,'caught')
+            sys.setrecursionlimit(3000)
+            class FormatMapping(dict):
+                def __getitem__(self,key):
+                    gc.collect()
+                    return 'mapped:'+key
+            print('%(name)s' % dict.keys(FormatMapping()).mapping)
+        ''')
+    def test_proxy_delegation_roots_owner_through_attribute_callbacks(self):
+        self.compare('''
+            events=[]
+            class Mapping(dict):
+                def __del__(self):events.append('finalized')
+                @property
+                def get(self):
+                    global proxy
+                    del proxy
+                    gc.collect()
+                    print(events)
+                    def result(*args):
+                        gc.collect()
+                        return events[:],args
+                    return result
+            mapping=Mapping()
+            proxy=dict.keys(mapping).mapping
+            del mapping
+            print(proxy.get('key',9))
+            gc.collect()
+            print(events)
+            from collections import defaultdict
+            mapping=defaultdict(lambda:['created'])
+            proxy=dict.keys(mapping).mapping
+            print(proxy['missing'],mapping['missing'] is proxy['missing'],proxy.get('absent',7))
+        ''')
     def test_recursive_hash_literals_lookup_and_set_methods(self):
         self.compare('''
             class Key:

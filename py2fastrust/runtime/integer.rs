@@ -354,8 +354,10 @@ impl Int {
             let value = self
                 .to_i128()
                 .and_then(|n| u32::try_from(n).ok())
-                .and_then(char::from_u32)
+                .filter(|number|*number<0x110000)
                 .ok_or("OverflowError: %c arg not in range(0x110000)")?;
+            if (0xd800..=0xdfff).contains(&value){return Err("NotImplementedError: unpaired Unicode surrogates are not supported".into());}
+            let value=char::from_u32(value).unwrap();
             value.to_string()
         } else {
             let base = match kind {

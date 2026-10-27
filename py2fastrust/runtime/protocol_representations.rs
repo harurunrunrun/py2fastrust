@@ -19,7 +19,7 @@ impl ProtocolRepresentation {
     fn guard(&self)->Option<usize> {match self{Self::Container{guard,..}=>Some(*guard),_=>None}}
 }
 impl Runtime {
-    fn protocol_abandon(&mut self,frame:&mut Frame) {if let Some(mut state)=frame.protocol.take(){self.protocol_stream_abandon(&state);self.protocol_sort_abandon(&mut state);self.protocol_release_repr_guards(&mut state);}}
+    fn protocol_abandon(&mut self,frame:&mut Frame) {if let Some(mut state)=frame.protocol.take(){self.protocol_stream_abandon(&state);self.protocol_mro_abandon(&state);self.protocol_sort_abandon(&mut state);self.protocol_release_repr_guards(&mut state);}}
     fn protocol_release_repr_guards(&mut self,state:&mut ProtocolState) {for guard in state.repr_guards.drain(..){self.protocol_repr_active.remove(&guard);}}
     fn protocol_sync_repr_guards(&mut self,state:&mut ProtocolState) {
         let active=state.actions.iter().filter_map(|action|match action{ProtocolAction::Representation(record)=>record.guard(),_=>None}).collect::<std::collections::HashSet<_>>();
@@ -48,7 +48,13 @@ impl Runtime {
             if plan.args.len()!=1||!plan.kwargs.is_empty(){return Err(pyerr("TypeError","repr() takes one positional argument"));}plan.args[0].clone()
         };
         if name=="str"{if let Value::Obj(index)=&value {if let Object::Exception(error)=self.object(*index)? {
-            if error.group.is_some(){state.value=Some(Value::Str(self.exception_cached_message(&error)?.into()));return Ok(true);}
+            if let Some(group)=&error.group {
+                let count=self.exception_group_len(group);
+                state.actions.push_front(ProtocolAction::Representation(Box::new(ProtocolRepresentation::Wrapped{owner:value.clone(),open:String::new(),close:format!(" ({count} sub-exception{})",if count==1{""}else{"s"})})));
+                state.plan=Some(ProtocolPlan{function:Value::Builtin("str".into()),args:vec![group.message.clone()],kwargs:Vec::new()});return Ok(true);
+            }
+            if let Some(message)=self.file_exception_message(&error){state.value=Some(Value::Str(message?.into()));return Ok(true);}
+            if let Some(message)=codec_exception_message(self.exception_message_kind(&error),&error.args){state.value=Some(Value::Str(message.into()));return Ok(true);}
             match error.args.as_slice(){[]=>state.value=Some(Value::Str(String::new().into())),[argument]=>state.plan=Some(ProtocolPlan{function:Value::Builtin(if self.exception_has_native_class(&error,"KeyError"){"repr"}else{"str"}.into()),args:vec![argument.clone()],kwargs:Vec::new()}),_=>{let tuple=self.obj_value(Object::Tuple(error.args.clone()));state.plan=Some(ProtocolPlan{function:Value::Builtin("repr".into()),args:vec![tuple],kwargs:Vec::new()});}}return Ok(true);
         }}}
         if name=="str" {if let Value::Obj(owner)=&value {if let Some(Object::MappingProxy{owner:dictionary})=self.heap.get(*owner).and_then(Option::as_ref) {
