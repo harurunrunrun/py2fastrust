@@ -9,16 +9,9 @@ their Python evaluation order even when Rust needs a temporary or a clone.
 import ast
 from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
                            is_maybe,unmaybe,maybe_type,immutable,list_type,default_value)
-import math
+from .literal_semantics import float_literal
 
 from .native import _Binding, _Expression, _Generator, _Unsupported, _string
-
-
-def float_literal(value):
-    """Format a Rust binary64 literal without importing general codegen."""
-    return ("f64::NAN" if math.isnan(value) else
-            "f64::INFINITY" if value == math.inf else
-            "f64::NEG_INFINITY" if value == -math.inf else repr(value) + "_f64")
 
 
 TEXT_INPUT_HELPERS = r'''
@@ -319,10 +312,11 @@ class ScalarGenerator(_Generator):
             if isinstance(binding, _Binding) and binding.kind == "str":
                 return _Expression(f"&{binding.slot}", "str", owned=False)
         if isinstance(node, ast.Constant) and type(node.value) is str:
-            if any(0xD800 <= ord(c) <= 0xDFFF for c in node.value):
-                raise _Unsupported
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            if literal is None:raise _Unsupported
             self.has_extended_scalars = True
-            return _Expression(_string(node.value), "str", owned=False)
+            return _Expression(_string(literal.value),literal.kind,owned=False)
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "str" and len(node.args) == 1 and not node.keywords):
             value = self.read_expression(node.args[0], environment)
@@ -357,13 +351,11 @@ class ScalarGenerator(_Generator):
         if text is not None:
             return text
         if isinstance(node, ast.Constant) and type(node.value) in {str, float}:
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            if literal is None:raise _Unsupported
             self.has_extended_scalars = True
-            if type(node.value) is str:
-                if any(0xD800 <= ord(c) <= 0xDFFF for c in node.value):
-                    raise _Unsupported
-                return _Expression(f"String::from({_string(node.value)})", "str")
-            code = float_literal(node.value)
-            return _Expression(code, "float")
+            return _Expression(literal.rust_atom(self.literal,_string),literal.kind)
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and binding.kind == "str":

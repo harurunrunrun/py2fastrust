@@ -5,6 +5,7 @@ import re
 import runpy
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -156,10 +157,17 @@ print(s)
         for data in ("123\n0\n", "123\n", "123\n3\n"):
             self.compare(binary, source, data=data)
 
-    def test_unproved_descriptors_bad_arity_and_noninteger_receivers_stay_general(self):
+    def test_user_method_with_integer_builtin_name_keeps_its_class_identity(self):
+        source = "class C:\n def bit_count(self):return 77\nprint(C().bit_count())\n"
+        expected = subprocess.run([sys.executable, "-c", source], capture_output=True, text=True, timeout=10)
+        for mode in ("i64", "i128", "bigint"):
+            binary, _ = self.compile(source, mode)
+            actual = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual((actual.returncode, actual.stdout), (expected.returncode, expected.stdout), actual.stderr)
+
+    def test_unproved_descriptors_bad_arity_and_noninteger_receivers_are_not_lowered(self):
         programs = [
             "class I(int):\n def bit_length(self):return 77\nprint(I(1).bit_length())\n",
-            "class C:\n def bit_count(self):return 77\nprint(C().bit_count())\n",
             "print((1).bit_length(3))\n",
             "print((1).bit_count(extra=3))\n",
             "print((1.5).bit_length())\n",

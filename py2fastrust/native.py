@@ -492,14 +492,12 @@ class _Generator:
         return f"native_temp_{self.counter}"
 
     def normalize(self, value):
-        value = int(value) % (1 << self.bits)
-        return value if value < 1 << (self.bits - 1) else value - (1 << self.bits)
+        from .literal_semantics import integer_policy
+        return integer_policy(self.bits).normalize(value)
 
     def literal(self, value):
-        value = self.normalize(value)
-        if value == -(1 << (self.bits - 1)):
-            return "NativeInt::MIN"
-        return f"({value}_i128 as NativeInt)"
+        from .literal_semantics import integer_policy
+        return integer_policy(self.bits).rust_literal(value,_string)
 
     def slot(self, kind):
         inner=unmaybe(kind)
@@ -970,10 +968,11 @@ class _Generator:
                 and not node.args and not node.keywords):
             return self.integer_bit_query(node, environment)
         if isinstance(node, ast.Constant):
-            if type(node.value) is bool:
-                return _Expression(str(node.value).lower(), "bool", node.value)
-            if type(node.value) is int:
-                return _Expression(self.literal(node.value), "int", self.normalize(node.value))
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            if literal is not None and literal.kind in {"int","bool"}:
+                value=self.normalize(literal.value) if literal.kind=="int" else literal.value
+                return _Expression(literal.rust_atom(self.literal,_string),literal.kind,value)
             raise _Unsupported
         if isinstance(node, ast.Name):
             if node.id not in environment:

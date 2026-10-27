@@ -32,11 +32,6 @@ fn native_big_text_item(text:&str,index:&Int)->Result<String,String> {
 '''
 
 
-def _validate(text):
-    if any(0xD800 <= ord(character) <= 0xDFFF for character in text):
-        raise _Unsupported
-
-
 class BigIntText:
     def read_expression(self, node, environment):
         if isinstance(node, ast.Name):
@@ -45,17 +40,21 @@ class BigIntText:
                 self.has_big_text = True
                 return _Expression(f"&{binding.slot}", "str", owned=False)
         if isinstance(node, ast.Constant) and type(node.value) is str:
-            _validate(node.value)
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            if literal is None:raise _Unsupported
             self.has_big_text = True
-            return _Expression(_string(node.value), "str", owned=False)
+            return _Expression(_string(literal.value),literal.kind,owned=False)
         value = self.expression(node, environment)
         return (_Expression(f"&({value.code})", "str", owned=False) if value.kind == "str" else value)
 
     def text_expression(self, node, environment):
         if isinstance(node, ast.Constant) and type(node.value) is str:
-            _validate(node.value)
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            if literal is None:raise _Unsupported
             self.has_big_text = True
-            return _Expression(f"String::from({_string(node.value)})", "str")
+            return _Expression(literal.rust_atom(self.literal,_string),literal.kind)
         if isinstance(node, ast.Name):
             value = environment.get(node.id)
             if isinstance(value, _Binding) and value.kind == "str":

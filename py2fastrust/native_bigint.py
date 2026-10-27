@@ -106,15 +106,12 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         super().__init__(0, functions, function, function_input, constructors, specializations)
 
     def normalize(self, value):
-        return int(value)
+        from .literal_semantics import integer_policy
+        return integer_policy(0).normalize(value)
 
     def literal(self, value):
-        value = int(value)
-        if -(1 << 127) < value < (1 << 127):
-            return f"Int::from_i128({value}_i128)"
-        if value == -(1 << 127):
-            return "Int::from_i128(i128::MIN)"
-        return f"Int::parse({_string(str(value))},10).unwrap()"
+        from .literal_semantics import integer_policy
+        return integer_policy(0).rust_literal(value,_string)
 
     def slot(self, kind):
         if isinstance(unmaybe(kind),(TupleType,ListType)):return super().slot(kind)
@@ -230,10 +227,10 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 raise _Unsupported
             return _Expression(self.coerce(_Expression(binding.slot,binding.kind),binding.kind),binding.kind)
         if isinstance(node, ast.Constant):
-            if type(node.value) is int:
-                return _Expression(self.literal(node.value), "int", node.value)
-            if type(node.value) is bool:
-                return _Expression(str(node.value).lower(), "bool", node.value)
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            if literal is not None and literal.kind in {"int","bool"}:
+                return _Expression(literal.rust_atom(self.literal,_string),literal.kind,literal.value)
             raise _Unsupported
         if isinstance(node, ast.UnaryOp):
             value = self.expression(node.operand,environment)

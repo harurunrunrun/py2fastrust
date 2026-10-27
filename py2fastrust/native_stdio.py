@@ -196,7 +196,9 @@ def try_expression(generator,node,environment):
             return _Expression(f"({binding.slot}).clone()",binding.kind)
     if isinstance(node,ast.Constant):
         if type(node.value) is bytes:
-            return _Expression("vec!["+",".join(str(byte)+"_u8" for byte in node.value)+"]","bytes",length=len(node.value))
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            return _Expression(literal.rust_atom(generator.literal,_string),literal.kind,length=len(literal.value))
     if isinstance(node,ast.Call):
         reader=reference(node.func,environment)
         if reader is not None and reader.name == "reader":

@@ -325,10 +325,11 @@ class Model:
 
     def expression(self, plan, node, environment):
         if isinstance(node, ast.Constant):
-            tag = {int:"int", bool:"bool", str:"str", bytes:"bytes", float:"float", type(None):"none"}.get(type(node.value))
-            if tag is None or tag == "str" and any(0xD800 <= ord(c) <= 0xDFFF for c in node.value):
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            if literal is None:
                 raise ClassUnsupported(node)
-            return self.cell(plan, node, tag)
+            return self.cell(plan, node, literal.kind)
         if isinstance(node, ast.Name):
             name = self.resolved_name(plan,node)
             if name in environment:
@@ -883,22 +884,13 @@ class Emitter:
     def expression(self, node):
         wanted = self.kind(node)
         if isinstance(node,ast.Constant):
-            value = node.value
-            tag = {int:"int",bool:"bool",str:"str",bytes:"bytes",float:"float",type(None):"none"}[type(value)]
-            if tag == "int":
-                code,constant = self.literal(value),self.numeric.normalize(value)
-            elif tag == "bool":
-                code,constant = str(value).lower(),value
-            elif tag == "str":
-                code,constant = _string(value)+".to_owned()",None
-            elif tag == "bytes":
-                code,constant = "vec!["+",".join(f"{byte}_u8"for byte in value)+"]",None
-            elif tag == "float":
-                from .native_scalar import float_literal
-                code,constant = float_literal(value),None
-            else:
-                code,constant = "()",None
-            return self.encoded(code,(tag,),wanted,node,constant)
+            from .literal_semantics import Literal
+            literal=Literal.from_ast(node)
+            if literal is None:raise ClassUnsupported(node)
+            constant=(self.numeric.normalize(literal.value) if literal.kind=="int" else
+                      literal.value if literal.kind=="bool" else None)
+            code=literal.rust_atom(self.literal,_string)
+            return self.encoded(code,(literal.kind,),wanted,node,constant)
         if isinstance(node,ast.Name):
             name = self.model.resolved_name(self.plan,node)
             if wanted[0] in self.model.INTRINSICS:
