@@ -173,6 +173,107 @@ class Filename:
 exec(compile("path_result = 29", Filename(), "exec"), space)
 print(space["path_result"])
 '''
+SOURCE += r'''
+import builtins
+
+module_space = globals()
+module_space["inserted_from_mapping"] = 37
+print(module_space is globals(), inserted_from_mapping)
+del module_space["inserted_from_mapping"]
+try:
+    inserted_from_mapping
+except NameError:
+    print("deleted global")
+
+def comprehension_owner():
+    marker = 73
+    items = [marker for marker in range(3)]
+    [last := item for item in items]
+    callbacks = [lambda: step for step in range(3)]
+    return marker, last, [callback() for callback in callbacks], "step" in locals()
+
+print(comprehension_owner())
+
+old_builtins = {"marker": "old"}
+new_builtins = {"marker": "new"}
+captured_space = {"__builtins__": old_builtins, "new": new_builtins}
+exec("def first(): return marker\n__builtins__ = new\ndef second(): return marker",
+     captured_space)
+first = captured_space["first"]
+second = captured_space["second"]
+del captured_space["__builtins__"]
+gc.collect()
+print(first(), second(), first.__builtins__ is old_builtins,
+      second.__builtins__ is new_builtins)
+old_builtins["marker"] = "mutated"
+print(first())
+
+hook_events = []
+hook_builtins = dict(vars(builtins))
+hook_space = {"__builtins__": hook_builtins, "__name__": "standalone_hooks"}
+original_builder = builtins.__build_class__
+
+def build_hook(body, name, *bases, **kwargs):
+    hook_events.append((name, body.__code__.co_qualname))
+    return original_builder(body, name, *bases, **kwargs)
+
+def import_hook(name, global_space=None, local_space=None, fromlist=(), level=0):
+    hook_events.append((name, global_space is hook_space,
+                        local_space is hook_space, fromlist, level))
+    return sys
+
+hook_builtins["__build_class__"] = build_hook
+hook_builtins["__import__"] = import_hook
+exec("class Hooked:\n value = 41\nimport sys as imported", hook_space)
+print(hook_space["Hooked"].value, hook_space["imported"] is sys, hook_events)
+
+def stable_code():
+    def child():
+        return 43
+    return child
+
+saved_code = stable_code().__code__
+gc.collect()
+print(stable_code().__code__ is saved_code, saved_code.co_qualname)
+
+def named_generator():
+    yield 47
+
+named_iterator = named_generator()
+generator_code = named_iterator.gi_code
+named_generator.__name__ = "ChangedFunction"
+named_iterator.__name__ = "PausedGenerator"
+gc.collect()
+print(named_iterator.__name__, named_iterator.gi_code is generator_code,
+      generator_code.co_qualname, next(named_iterator))
+
+operand_events = []
+
+class NativeInteger(int):
+    pass
+
+class ReflectedInteger(int):
+    def __radd__(self, other):
+        operand_events.append("reflected")
+        return 99
+    def __eq__(self, other):
+        operand_events.append("equality")
+        return False
+
+print(NativeInteger(3) + ReflectedInteger(4),
+      NativeInteger(3) == ReflectedInteger(3), operand_events)
+
+class InPlaceList(list):
+    def __iadd__(self, other):
+        return NotImplemented
+    def __add__(self, other):
+        return list.__add__(self, other)
+
+inplace = InPlaceList([1])
+original = inplace
+inplace += [2]
+print(inplace, original, inplace is original, type(inplace).__name__)
+'''
 STDIN = "4\n1 2 3 4\n\n"
 
 
