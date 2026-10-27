@@ -22,7 +22,6 @@ class StrictDirectTests(unittest.TestCase):
 
     def test_unsupported_normal_python_never_selects_general_codegen(self):
         sources = (
-            "class Item:\n def __init__(self,value):self.value=value\nprint(Item(3).value)\n",
             "def outer(x):\n def inner():return x\n return inner\nprint(outer(3)())\n",
             "values=[1]\nalias=values\nalias.append(2)\nprint(values)\n",
             "def recurse(n):return recurse(n-1) if n else 0\nprint(recurse(3))\n",
@@ -46,10 +45,24 @@ class StrictDirectTests(unittest.TestCase):
                             self.assertIn("not implemented", result.diagnostics[0].message)
             general.assert_not_called()
 
+    def test_proved_class_programs_never_select_general_codegen(self):
+        sources = (
+            "class Item:\n def __init__(self,value):self.value=value\nprint(Item(3).value)\n",
+            "class Example:\n pass\n",
+            "# first\nclass Unsupported:pass\n",
+        )
+        with patch("py2fastrust.codegen.generate", side_effect=AssertionError("general backend entered")) as general:
+            for integer in ("i64", "i128", "bigint"):
+                for optimize in (False, True):
+                    for source in sources:
+                        with self.subTest(integer=integer,optimize=optimize,source=source):
+                            self.assert_direct(transpile(source, TranspileOptions(integer=integer,optimize=optimize)))
+            general.assert_not_called()
+
     def test_diagnostics_locate_the_unsupported_ast_operation(self):
         for integer in ("i64", "i128", "bigint"):
             with self.subTest(integer=integer):
-                result = transpile("# comments\n\nclass Example:\n pass\n", TranspileOptions(
+                result = transpile("# comments\n\nclass Example(object):\n pass\n", TranspileOptions(
                     integer=integer, filename="nested/source.py"))
                 diagnostic = result.diagnostics[0]
                 self.assertEqual((diagnostic.filename, diagnostic.line, diagnostic.column, diagnostic.code),
@@ -83,7 +96,7 @@ class StrictDirectTests(unittest.TestCase):
                     self.assertIn("fn main()", result.rust_source)
 
     def test_entrypoint_optional_diagnostics_and_pruning_flags(self):
-        source = "# first\nclass Unsupported:pass\n"
+        source = "# first\nclass Unsupported(object):pass\n"
         for integer in ("i64", "i128", "bigint"):
             diagnostics = []
             self.assertIsNone(try_generate_native(source, "entry.py", integer, diagnostic_out=diagnostics))
@@ -119,7 +132,7 @@ class StrictDirectTests(unittest.TestCase):
             root = Path(directory)
             source = root / "solution.py"
             output = root / "solution.rs"
-            source.write_text("# original\n\nclass Unsupported:pass\n", encoding="utf-8")
+            source.write_text("# original\n\nclass Unsupported(object):pass\n", encoding="utf-8")
             output.write_text("keep", encoding="utf-8")
             result = subprocess.run([sys.executable, "-m", "py2fastrust", str(source), "--no-optimize", "-o", str(output)],
                                     text=True, capture_output=True, timeout=30)

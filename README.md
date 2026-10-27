@@ -143,10 +143,19 @@ Immediately consumed generator expressions use typed loops for reductions.
 All integer modes also support character-based string slicing,
 `strip`/`lstrip`/`rstrip`, `count`, and `join` over proved string streams.
 
+Ordinary class instances can use concrete Rust structs, typed fields and
+methods, and shared flat scalar lists. Recursive methods compile to Rust
+futures with an iterative call executor and a logical Python recursion limit.
+This initial class implementation has a separate proof boundary; integrating
+it with common semantic lowering remains required work. Inheritance,
+descriptors, metaclasses, escaped methods, cyclic field ownership, and unproved
+container shapes are not yet implemented.
+
 If the implementation cannot establish a supported direct representation, it
 reports the missing construct or type combination. This currently includes
-many mutable aliases and mixed-type joins, recursion, closures, exceptions, user-defined generators,
-classes and metaclasses, dynamic execution, and most standard-module calls.
+many mutable aliases and mixed-type joins, recursion outside the class path,
+closures, exceptions, user-defined generators, general object models,
+dynamic execution, and most standard-module calls.
 These are implementation gaps that must be restored through direct generation;
 they are not removed from the project's goals and do not require users to add
 type hints or rewrite ordinary Python as a substitute.

@@ -2319,6 +2319,16 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     trusted_imports must come from Compiler's actual standard-module resolution;
     a spelling such as "collections" in user source is insufficient evidence.
     """
+    # Class lowering has concrete layouts; an unsupported operation reports its
+    # missing implementation and never retries a general execution backend.
+    try:
+        has_classes = any(isinstance(node, ast.ClassDef) for node in ast.walk(ast.parse(source, filename=filename)))
+    except (SyntaxError, RecursionError):
+        has_classes = False
+    if has_classes:
+        from .native_classes import try_generate_classes
+        return try_generate_classes(source, filename, integer, trusted_imports=trusted_imports,
+                                    prune_output=prune_output, diagnostic_out=diagnostic_out)
     if integer == "bigint":
         from .native_bigint import try_generate_bigint
         return try_generate_bigint(source, filename, prune_output=prune_output,

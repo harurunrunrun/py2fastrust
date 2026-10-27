@@ -11,8 +11,9 @@ keeps the same direct generation path.
 Proved integer/boolean and String/f64 scalars, BigInt scalar arithmetic and
 functions, integer containers, compatible branches/loops, scalar functions and
 selected competitive-programming input/BFS patterns are implemented. This is
-an incomplete subset of the required Python language. Recursion, closures,
-exceptions, classes/metaclasses, user-defined generators, dynamic execution, general imports
+an incomplete subset of the required Python language. Recursion outside the
+class path, closures, exceptions, general object models, user-defined generators,
+dynamic execution, general imports
 and many mixed-type/alias cases still require direct lowering. An `E006`
 diagnostic makes that gap explicit; it does not satisfy the missing feature.
 
@@ -51,6 +52,15 @@ values and use ASCII rules for integer splitting/parsing. Builtin `input()`
 keeps its distinct EOF and newline behavior. The current text input profile is
 strict UTF-8; custom/reconfigured streams and surrogate escapes need further
 direct implementation.
+
+Ordinary class lowering currently supports concrete typed instance fields,
+constructors, fixed method lookup, tuple results, instance/list aliases, and
+recursive methods. Missing fields use typed optional storage. Compiled Rust
+futures run on an iterative executor; both successful deep calls and exception
+unwinding avoid dependence on the native stack. This separate class proof
+still needs integration with common semantic lowering. Inheritance,
+descriptors, metaclasses, escaped methods, cyclic field layouts and incompatible
+field/result types remain explicit implementation gaps.
 
 ## Retained internal runtime implementation
 
