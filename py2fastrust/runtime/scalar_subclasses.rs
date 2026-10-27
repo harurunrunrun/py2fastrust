@@ -171,6 +171,7 @@ impl Runtime {
                     .as_float(&payload)
                     .map(|number| Value::Float(number.into())),
                 _ => {
+                    if runtime.object_class(&value).and_then(|class|runtime.slot_definition(&class,"__index__",0)).is_none(){if let Some(data)=runtime.buffer_read(&value,true)?{let text=std::str::from_utf8(&data).map_err(|_|pyerr("ValueError","could not convert buffer to float"))?;return scalar_parse_float(text,false).map(|number|Value::Float(number.into()));}}
                     let number = runtime.as_int(&value)?;
                     runtime
                         .as_float(&Value::Int(number.into()))

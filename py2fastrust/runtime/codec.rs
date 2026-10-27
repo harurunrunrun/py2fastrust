@@ -111,6 +111,7 @@ impl Runtime {
                     let mut result=Vec::new();result.try_reserve_exact(count).map_err(|_|pyerr("MemoryError","cannot allocate bytes"))?;result.resize(count,0);
                     return Ok(Value::Bytes(result.into()));
                 }
+                if let Some(data)=self.buffer_read(&source,false)?{return Ok(Value::Bytes(data.into()));}
                 let iterator=self.iter(source)?;self.roots[root].push(iterator.clone());let mut result=Vec::new();
                 while let Some(value)=self.next(iterator.clone())? {
                     self.roots[root].truncate(2);self.roots[root].push(value.clone());
@@ -131,7 +132,14 @@ impl Runtime {
         let decoding=values[1].is_some() || values[2].is_some();
         let source=match values[0].take(){Some(value)=>value,None=>return Ok(Value::Str(String::new().into()))};
         if decoding {
-            let source=self.native_payload(&source).unwrap_or(source);
+            // str(object, encoding) reports failed buffer acquisition as TypeError,
+            // including exporter exceptions and non-contiguous memoryviews. Keep
+            // acquisition separate from decode errors, and preserve __buffer__
+            // overrides on native subclasses.
+            let source=if matches!(source,Value::Bytes(_)|Value::Str(_)){source}else{
+                let data=self.buffer_read(&source,true).map_err(|_|pyerr("TypeError","decoding to str requires a bytes-like object"))?.ok_or_else(||pyerr("TypeError","decoding to str requires a bytes-like object"))?;
+                Value::Bytes(data.into())
+            };
             return self.codec_decode(source,vec![Value::Str(encoding.into()),Value::Str(errors.into())],Vec::new());
         }
         if matches!(source,Value::Str(_)){return Ok(source);}
@@ -173,6 +181,7 @@ impl Runtime {
         let values=codec_bind("decode",args,kwargs,&["encoding","errors"])?;
         let encoding=codec_argument(self,values[0].as_ref(),"utf-8","encoding")?;
         let errors=codec_argument(self,values[1].as_ref(),"strict","errors")?;
+        let source=if matches!(source,Value::Bytes(_)|Value::Str(_)){source}else{Value::Bytes(self.buffer_read(&source,true)?.ok_or_else(||pyerr("TypeError","decoding requires a bytes-like object"))?.into())};
         let bytes=match &source{Value::Bytes(bytes)=>bytes,Value::Str(_)=>return Err(pyerr("TypeError","decoding str is not supported")),_=>return Err(pyerr("TypeError","decoding requires a bytes-like object"))};
         let codec=TextCodec::lookup(&encoding)?;
         if matches!(codec,TextCodec::Latin1){return Ok(Value::Str(bytes.iter().map(|byte|*byte as char).collect()));}

@@ -125,8 +125,8 @@ impl Runtime {
                         _=>{
                             let lp=self.native_payload(&operation.left).unwrap_or_else(||operation.left.clone());let rp=self.native_payload(&operation.right).unwrap_or_else(||operation.right.clone());
                             if base=="*" {
-                                if ["str","bytes","list","tuple"].contains(&self.operand_kind(&lp))&&Self::operand_sequence_fallback(self.operand_slot(&operation.left,"__mul__").as_ref()){let count=self.as_int(&operation.right)?;state.value=Some(self.binary_default(base,lp,Value::Int(count.into()))?);return Ok(());}
-                                if ["str","bytes","list","tuple"].contains(&self.operand_kind(&rp))&&Self::operand_sequence_fallback(self.operand_slot(&operation.right,"__rmul__").as_ref()){let count=self.as_int(&operation.left)?;state.value=Some(self.binary_default(base,rp,Value::Int(count.into()))?);return Ok(());}
+                                if ["str","bytes","bytearray","list","tuple"].contains(&self.operand_kind(&lp))&&Self::operand_sequence_fallback(self.operand_slot(&operation.left,"__mul__").as_ref()){let count=self.as_int(&operation.right)?;state.value=Some(self.binary_default(base,lp,Value::Int(count.into()))?);return Ok(());}
+                                if ["str","bytes","bytearray","list","tuple"].contains(&self.operand_kind(&rp))&&Self::operand_sequence_fallback(self.operand_slot(&operation.right,"__rmul__").as_ref()){let count=self.as_int(&operation.left)?;state.value=Some(self.binary_default(base,rp,Value::Int(count.into()))?);return Ok(());}
                             }
                             return Err(pyerr("TypeError",format!("unsupported operand type(s) for {}: '{}' and '{}'",operation.op,self.typename(&operation.left),self.typename(&operation.right))));
                         }

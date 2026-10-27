@@ -43,7 +43,7 @@ impl Runtime {
         kwargs: KeywordArgs,
         root: usize,
     ) -> PyResult<Value> {
-        if !["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "complex", "frozenset"].contains(&type_name) {
+        if !["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "bytearray", "complex", "frozenset"].contains(&type_name) {
             return Err(pyerr(
                 "NotImplementedError",
                 format!("native payload for {} subclasses", type_name),
@@ -99,6 +99,7 @@ impl Runtime {
                 self.builtin("float",args,if custom_init{Vec::new()}else{kwargs},None)?
             },
             "bytes"=>self.bytes_constructor(args,kwargs)?,
+            "bytearray"=>self.obj_value(Object::ByteArray(Vec::new())),
             "list" => self.obj_value(Object::List(Vec::new())),
             "dict" => self.obj_value(Object::Dict(Vec::new())),
             "set" => self.obj_value(Object::Set(Vec::new())),

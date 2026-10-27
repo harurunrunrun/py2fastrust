@@ -7,13 +7,13 @@ they do not imply compatibility with all CPython internals or the entire standar
 
 | Category | Supported features |
 |---|---|
-| Values | `None`, `bool`, integers in the selected mode, `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`, `slice`, `range`, live dictionary views and `mappingproxy`, GenericAlias, union types, Template, Interpolation |
+| Values | `None`, `bool`, integers in the selected mode, `float`, `complex`, `str`, `bytes`, `bytearray`, `memoryview`, `list`, `tuple`, `dict`, `set`, `frozenset`, `slice`, `range`, live dictionary views and `mappingproxy`, GenericAlias, union types, Template, Interpolation |
 | Variables | Type changes, shared references, chained and unpacking assignments, `global`/`nonlocal`, unbound-name errors |
 | Control flow | `if`, `while`, `for`, `break`/`continue`, loop `else`, short-circuit operators, chained comparisons |
 | Functions | Defaults, positional-only and keyword-only arguments, variadic arguments, recursion, lambdas, closures with shared writable `cell_contents`, read-only `__closure__`, type parameters with lazy bounds and defaults |
 | Container expressions | Comprehensions, generator expressions, unpacking, negative indices, slicing |
 | Exceptions | `raise`, `except`, `except*`, exception-group splitting and merging, `else`, `finally`, `assert`, original `args`, cause/context/notes, exception-target cleanup, source information in tracebacks |
-| Classes | Inheritance, C3 MRO, descriptors, `property`, `staticmethod`/`classmethod`, `super`, metaclasses, `__slots__`, subclasses of `list`/`tuple`/`dict`/`set`/`frozenset`/`str`/`bytes`/`int`/`float`/`complex` |
+| Classes | Inheritance, C3 MRO, descriptors, `property`, `staticmethod`/`classmethod`, `super`, metaclasses, `__slots__`, subclasses of `list`/`tuple`/`dict`/`set`/`frozenset`/`str`/`bytes`/`bytearray`/`int`/`float`/`complex` |
 | Comprehensions | List/set/dict expressions execute in the enclosing frame with isolated iteration bindings and fresh local snapshots; generators and class-visible annotation comprehensions retain separate frames |
 | Namespaces | `__prepare__` returning custom mappings, private names, Unicode NFKC identifiers, ordinary module/builtin dictionaries with arbitrary hashable keys and string-subclass lookup protocols, dictionary insertion order, separate internal temporaries, Python 3.14 function-local snapshots including free variables |
 | Other constructs | `with`, generator `send`/`throw`/`close` and `yield from`, f-strings, t-strings, `match`/`case` |
@@ -46,6 +46,18 @@ Standard input is read on demand. `input()` flushes its prompt and pending stand
 Text and binary input share a buffered raw reader, with decoded look-ahead retained for text reads.
 Standard input uses the existing strict UTF-8 policy and preserves CR bytes in LF-terminated lines.
 
+`bytearray` provides mutable binary storage and its public construction, search,
+ASCII transformation, translation, and mutation methods. `memoryview` retains
+shared storage through slices, native scalar casts, shapes, strides, read-only
+views, context managers, and explicit release. Active exports prevent resizing;
+Python `__buffer__` and `__release_buffer__` methods participate in the same GC
+roots and lease lifecycle. Cyclic exporters remain pinned until collected.
+
+Binary `%` formatting supports bytes, bytearray, mapping keys, flags, dynamic
+width and precision, integer and float conversions, and bytes/repr protocols.
+Formatting keeps a bytearray format exported while callbacks run; equal-length
+changes affect later directives, and an attempted resize raises `BufferError`.
+
 Set iteration order is not guaranteed to match CPython's internal hash-table order.
 
 Non-raw string literals, f-strings, and t-strings support Unicode 16.0 character names
@@ -76,7 +88,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 
 - `async`/`await` are unsupported.
 - Some basic-value behavior, including unpaired Unicode surrogates, remains unsupported.
-- `bytearray`, `memoryview`, and file I/O through `open` are unsupported. Standard streams provide text and binary I/O.
+- File I/O through `open` is unsupported. Standard streams provide text and binary I/O.
 - Encoding conversion covers UTF-8, ASCII, and Latin-1, with limitations on supported `errors` modes. Constructing a `str` subclass with an encoding is unsupported.
 - Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, remains unsupported.
 - Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.

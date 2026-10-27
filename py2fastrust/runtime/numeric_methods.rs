@@ -124,6 +124,7 @@ impl Runtime {
                             match value{Value::Bytes(value)=>value.to_vec(),_=>return Err(pyerr("TypeError","__bytes__ returned non-bytes"))}
                         },
                         Err(error)if runtime.missing_special_method(&source,"__bytes__",&error)=>{
+                            if let Some(data)=runtime.buffer_read(&source,false)?{data}else{
                             let iterator=runtime.iter(source.clone())?;runtime.roots[root].push(iterator.clone());
                             runtime.assoc_length_hint(vec![source],Vec::new())?;
                             let mut output=Vec::new();
@@ -133,6 +134,7 @@ impl Runtime {
                                 output.push(byte as u8);runtime.roots[root].pop();
                             }
                             output
+                            }
                         },Err(error)=>return Err(error),
                     }
                 }};

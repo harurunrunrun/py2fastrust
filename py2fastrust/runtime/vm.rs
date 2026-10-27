@@ -326,6 +326,7 @@ struct CachedFunction {
 }
 #[derive(Clone, Debug)]
 enum IteratorState {
+    Buffer(Value, usize),
     Template(usize, usize),
     Associative(AssocIterator),
     Tools(Box<ToolsState>),
@@ -341,6 +342,9 @@ enum IteratorState {
 }
 #[derive(Clone, Debug)]
 enum Object {
+    ByteArray(Vec<u8>),
+    MemoryView(Box<MemoryViewData>),
+    BufferLease(Box<BufferLeaseData>),
     FrozenSet {items:Vec<Value>,hashes:Vec<i64>,hash:Option<i64>,buckets:HashMap<i64,Vec<usize>>},
     ExceptStarState(Box<ExceptStarState>),
     Template { strings: usize, interpolations: usize },
@@ -459,6 +463,7 @@ enum FrameExit {
     Yield(Value),
 }
 struct Runtime {
+    buffer_exports: HashMap<usize, usize>,
     annotation_namespaces: HashMap<usize, usize>,
     scope_cells: HashMap<usize, HashMap<String, Value>>,
     closure_bindings: HashMap<usize, HashMap<String, usize>>,
@@ -710,7 +715,7 @@ impl Runtime {
         for base in self.class_mro(class, 0)? {
             match &base {
                 Value::Builtin(name)
-                    if ["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "complex", "frozenset"].contains(&name.as_str()) || stdlib_type_name(name) =>
+                    if ["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "bytearray", "complex", "frozenset"].contains(&name.as_str()) || stdlib_type_name(name) =>
                 {
                     return Some(base)
                 }
@@ -883,6 +888,7 @@ impl Runtime {
                 return self.bind_descriptor(method, Some(v), class);
             }
             let native=self.slot_definition(&class,name,0);
+            if let Some(SlotDefinition::Native(descriptor))=&native{if ["__repr__","__str__"].contains(&name)&&matches!(native_attribute_parts(descriptor),Some((_,"bytearray",_))){return self.bind_descriptor(descriptor.clone(),Some(v),class);}}
             let native_bridge=matches!(&native,Some(SlotDefinition::Native(value))if ["__bool__","__contains__","__reversed__"].contains(&name)||(name=="__str__"&&matches!(native_attribute_parts(value),Some((_,"str",_)))));
             if self.native_payload(&v).is_some()&&native_bridge {
                 return Ok(self.obj_value(Object::Bound(Value::Builtin(format!("implicit_native:{name}")),v)));
@@ -1250,6 +1256,7 @@ impl Runtime {
     }
     fn new(codes: Vec<Code>, modules: Vec<(String, usize)>) -> Self {
         let mut rt = Self {
+            buffer_exports: HashMap::new(),
             annotation_namespaces: HashMap::new(),
             scope_cells: HashMap::new(),
             closure_bindings: HashMap::new(),
@@ -1381,6 +1388,9 @@ impl Runtime {
             "ExceptionGroup",
             "Exception",
             "ArithmeticError",
+            "BufferError",
+            "MemoryError",
+            "SystemError",
             "AssertionError",
             "AttributeError",
             "EOFError",
@@ -3300,6 +3310,167 @@ impl Runtime {
             _ => Err(pyerr("NotImplementedError", fullname)),
         }
     }
+    fn gc_children(&self,i:usize,pending:&mut Vec<Value>,code_seen:&mut std::collections::HashSet<usize>){
+        if let Some(state)=self.ordered_collections.get(&i){pending.extend(state.order.iter().map(|(key,_)|key.clone()));}
+        if let Some(keeper)=self.collection_keepers.get(&i){pending.push(keeper.clone());}
+        if let Some(slots) = self.instance_slots.get(&i) {
+            pending.extend(slots.values().cloned());
+        }
+        if let Some(parent) = self.scope_parents.get(&i) {
+            pending.push(Value::Obj(*parent));
+        }
+        if let Some(namespace)=self.annotation_namespaces.get(&i){pending.push(Value::Obj(*namespace));}
+        if let Some(cells)=self.scope_cells.get(&i){pending.extend(cells.values().cloned());}
+        if let Some(cells)=self.closure_bindings.get(&i){pending.extend(cells.values().map(|index|Value::Obj(*index)));}
+        if let Some(tuple)=self.function_closures.get(&i){pending.push(Value::Obj(*tuple));}
+        let obj = match self.heap[i].as_ref() {
+            Some(o) => o,
+            None => return,
+        };
+        match obj {
+            Object::MemoryView(view) if !view.released=>pending.push(Value::Obj(view.lease)),
+            Object::BufferLease(lease) if lease.active=>{pending.extend([lease.owner.clone(),lease.obj.clone()]);pending.extend(lease.exporter.iter().cloned());pending.extend(lease.exported_view.iter().cloned());},
+            Object::Template { strings, interpolations } => pending.extend([Value::Obj(*strings),Value::Obj(*interpolations)]),
+            Object::Interpolation { value, expression, conversion, format_spec } => pending.extend([value.clone(),expression.clone(),conversion.clone(),format_spec.clone()]),
+            Object::GenericAlias { origin, args, args_tuple, parameters, .. } => {
+                pending.push(origin.clone());pending.extend(args.iter().cloned());
+                pending.push(Value::Obj(*args_tuple));pending.extend(parameters.iter().map(|index|Value::Obj(*index)));
+            }
+            Object::TypeParameter(parameter) => {
+                pending.push(parameter.module.clone());pending.push(Value::Obj(parameter.attrs));
+                for lazy in [&parameter.bound, &parameter.constraints, &parameter.default] {
+                    pending.extend(lazy.value.iter().cloned());pending.extend(lazy.thunk.iter().cloned());
+                }
+            }
+            Object::TypeAlias { module, params, value, .. } => {
+                pending.extend([module.clone(), params.clone()]);
+                pending.extend(value.value.iter().cloned());pending.extend(value.thunk.iter().cloned());
+            }
+            Object::TypeUnpack(value) | Object::UnpackedAlias(value) | Object::TypeEvaluator(value) => pending.push(value.clone()),
+            Object::ParamSpecMarker { parameter, .. } => pending.push(parameter.clone()),
+            Object::ForwardRef { module, .. } => pending.push(module.clone()),
+            Object::TypeUnion { args, parameters } => {pending.extend(args.iter().cloned());pending.extend(parameters.iter().map(|index|Value::Obj(*index)));}
+            Object::DictView { owner, .. } | Object::MappingProxy { owner } => pending.push(Value::Obj(*owner)),
+            Object::Slot { owner, .. } => pending.push(owner.clone()),
+            Object::List(v) | Object::Tuple(v) | Object::Set(v) | Object::FrozenSet{items:v,..} => {
+                pending.extend(v.iter().cloned())
+            }
+            Object::Dict(v) => {
+                for (k, v) in v {
+                    pending.push(k.clone());
+                    pending.push(v.clone())
+                }
+            }
+            Object::Namespace(m, p) => {
+                pending.extend(m.values().cloned());
+                if let Some(i) = p {
+                    pending.push(Value::Obj(*i))
+                }
+            }
+            Object::Function(f) => {
+                self.code_roots(f.code,code_seen,pending);
+                pending.extend([f.name.clone(),f.qualname.clone()]);
+                pending.push(Value::Obj(f.attrs));
+                pending.extend(f.annotate.iter().cloned());
+                pending.extend([
+                    f.module.clone(),
+                    f.doc.clone(),
+                    f.annotations.clone(),
+                    f.type_params.clone(),
+                ]);
+                pending.push(Value::Obj(f.globals));
+                pending.push(f.builtins.clone());
+                if let Some(i) = f.closure {
+                    pending.push(Value::Obj(i))
+                }
+                pending.extend(f.defaults.iter().cloned());
+                pending.extend(f.kwdefaults.values().cloned())
+            }
+            Object::Class(c) => {
+                pending.push(c.name_value.clone());
+                pending.push(Value::Obj(c.attrs));
+                pending.extend(c.bases.iter().cloned());
+                pending.push(c.metaclass.clone())
+            }
+            Object::Instance { class, attrs } => {
+                pending.push(class.clone());
+                pending.push(Value::Obj(*attrs))
+            }
+            Object::BuiltinInstance { class, attrs, payload } => {
+                pending.push(class.clone());
+                pending.push(Value::Obj(*attrs));
+                pending.push(payload.clone());
+            }
+            Object::Bound(a, b) => {
+                pending.push(a.clone());
+                pending.push(b.clone())
+            }
+            Object::Module { attrs, .. } => pending.push(Value::Obj(*attrs)),
+            Object::Exception(e) => {
+                Self::exception_roots(e, pending);
+            }
+            Object::Partial {
+                function,
+                args,
+                args_tuple,
+                keywords,
+                attrs,
+            } => {
+                pending.push(function.clone());
+                pending.push(Value::Obj(*args_tuple));
+                pending.extend(args.iter().cloned());
+                pending.push(Value::Obj(*keywords));
+                pending.push(Value::Obj(*attrs));
+            }
+            Object::Cached(c) => {
+                if let Some(i) = c.attrs {
+                    pending.push(Value::Obj(i))
+                }
+                pending.push(c.function.clone());
+                for e in &c.entries {
+                    pending.extend(e.args.iter().cloned());
+                    pending.extend(e.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
+                    pending.push(e.value.clone())
+                }
+            }
+            Object::Record { fields, .. } => {
+                pending.extend(fields.iter().map(|(_, v)| v.clone()))
+            }
+            Object::ExceptStarState(state) => state.roots(pending),
+            Object::ExecutionLocals(value)=>pending.push(value.clone()),
+            Object::Cell(v) => pending.extend(v.iter().cloned()),
+            Object::Static(v) | Object::ClassMethod(v) => pending.push(v.clone()),
+            Object::Property { get, set, del } => {
+                pending.push(get.clone());
+                pending.extend(set.iter().cloned());
+                pending.extend(del.iter().cloned())
+            }
+            Object::Generator(f) => Self::frame_roots(f, pending),
+            Object::Code(code)=>self.code_roots(*code,code_seen,pending),
+            Object::Iterator(it) => match it {
+                IteratorState::Buffer(owner,_)=>pending.push(owner.clone()),
+                IteratorState::Template(owner,_) => pending.push(Value::Obj(*owner)),
+                IteratorState::Associative(state) => {if let Some(owner)=state.owner {pending.push(Value::Obj(owner));}if let Some(keeper)=&state.keeper{pending.push(keeper.clone());}},
+                IteratorState::Tools(state) => pending.extend(state.roots()),
+                IteratorState::Values(v, _) => pending.extend(v.iter().cloned()),
+                IteratorState::List(i, _) => pending.push(Value::Obj(*i)),
+                IteratorState::Enumerate(v, _) | IteratorState::Reversed(v, _) => {
+                    pending.push(v.clone())
+                }
+                IteratorState::Zip(v) => pending.extend(v.iter().cloned()),
+                IteratorState::Map(f, v) => {
+                    pending.push(f.clone());
+                    pending.extend(v.iter().cloned())
+                }
+                IteratorState::Filter(a, b) | IteratorState::Callable(a, b) => {
+                    pending.push(a.clone());
+                    pending.push(b.clone())
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
     fn gc_marks(&self, extra: &[Value]) -> Vec<bool> {
         let mut marked = vec![false; self.heap.len()];
         let mut code_seen=std::collections::HashSet::new();
@@ -3320,162 +3491,7 @@ impl Runtime {
                 continue;
             }
             marked[i] = true;
-            if let Some(state)=self.ordered_collections.get(&i){pending.extend(state.order.iter().map(|(key,_)|key.clone()));}
-            if let Some(keeper)=self.collection_keepers.get(&i){pending.push(keeper.clone());}
-            if let Some(slots) = self.instance_slots.get(&i) {
-                pending.extend(slots.values().cloned());
-            }
-            if let Some(parent) = self.scope_parents.get(&i) {
-                pending.push(Value::Obj(*parent));
-            }
-            if let Some(namespace)=self.annotation_namespaces.get(&i){pending.push(Value::Obj(*namespace));}
-            if let Some(cells)=self.scope_cells.get(&i){pending.extend(cells.values().cloned());}
-            if let Some(cells)=self.closure_bindings.get(&i){pending.extend(cells.values().map(|index|Value::Obj(*index)));}
-            if let Some(tuple)=self.function_closures.get(&i){pending.push(Value::Obj(*tuple));}
-            let obj = match self.heap[i].as_ref() {
-                Some(o) => o,
-                None => continue,
-            };
-            match obj {
-                Object::Template { strings, interpolations } => pending.extend([Value::Obj(*strings),Value::Obj(*interpolations)]),
-                Object::Interpolation { value, expression, conversion, format_spec } => pending.extend([value.clone(),expression.clone(),conversion.clone(),format_spec.clone()]),
-                Object::GenericAlias { origin, args, args_tuple, parameters, .. } => {
-                    pending.push(origin.clone());pending.extend(args.iter().cloned());
-                    pending.push(Value::Obj(*args_tuple));pending.extend(parameters.iter().map(|index|Value::Obj(*index)));
-                }
-                Object::TypeParameter(parameter) => {
-                    pending.push(parameter.module.clone());pending.push(Value::Obj(parameter.attrs));
-                    for lazy in [&parameter.bound, &parameter.constraints, &parameter.default] {
-                        pending.extend(lazy.value.iter().cloned());pending.extend(lazy.thunk.iter().cloned());
-                    }
-                }
-                Object::TypeAlias { module, params, value, .. } => {
-                    pending.extend([module.clone(), params.clone()]);
-                    pending.extend(value.value.iter().cloned());pending.extend(value.thunk.iter().cloned());
-                }
-                Object::TypeUnpack(value) | Object::UnpackedAlias(value) | Object::TypeEvaluator(value) => pending.push(value.clone()),
-                Object::ParamSpecMarker { parameter, .. } => pending.push(parameter.clone()),
-                Object::ForwardRef { module, .. } => pending.push(module.clone()),
-                Object::TypeUnion { args, parameters } => {pending.extend(args.iter().cloned());pending.extend(parameters.iter().map(|index|Value::Obj(*index)));}
-                Object::DictView { owner, .. } | Object::MappingProxy { owner } => pending.push(Value::Obj(*owner)),
-                Object::Slot { owner, .. } => pending.push(owner.clone()),
-                Object::List(v) | Object::Tuple(v) | Object::Set(v) | Object::FrozenSet{items:v,..} => {
-                    pending.extend(v.iter().cloned())
-                }
-                Object::Dict(v) => {
-                    for (k, v) in v {
-                        pending.push(k.clone());
-                        pending.push(v.clone())
-                    }
-                }
-                Object::Namespace(m, p) => {
-                    pending.extend(m.values().cloned());
-                    if let Some(i) = p {
-                        pending.push(Value::Obj(*i))
-                    }
-                }
-                Object::Function(f) => {
-                    self.code_roots(f.code,&mut code_seen,&mut pending);
-                    pending.extend([f.name.clone(),f.qualname.clone()]);
-                    pending.push(Value::Obj(f.attrs));
-                    pending.extend(f.annotate.iter().cloned());
-                    pending.extend([
-                        f.module.clone(),
-                        f.doc.clone(),
-                        f.annotations.clone(),
-                        f.type_params.clone(),
-                    ]);
-                    pending.push(Value::Obj(f.globals));
-                    pending.push(f.builtins.clone());
-                    if let Some(i) = f.closure {
-                        pending.push(Value::Obj(i))
-                    }
-                    pending.extend(f.defaults.iter().cloned());
-                    pending.extend(f.kwdefaults.values().cloned())
-                }
-                Object::Class(c) => {
-                    pending.push(c.name_value.clone());
-                    pending.push(Value::Obj(c.attrs));
-                    pending.extend(c.bases.iter().cloned());
-                    pending.push(c.metaclass.clone())
-                }
-                Object::Instance { class, attrs } => {
-                    pending.push(class.clone());
-                    pending.push(Value::Obj(*attrs))
-                }
-                Object::BuiltinInstance { class, attrs, payload } => {
-                    pending.push(class.clone());
-                    pending.push(Value::Obj(*attrs));
-                    pending.push(payload.clone());
-                }
-                Object::Bound(a, b) => {
-                    pending.push(a.clone());
-                    pending.push(b.clone())
-                }
-                Object::Module { attrs, .. } => pending.push(Value::Obj(*attrs)),
-                Object::Exception(e) => {
-                    Self::exception_roots(e, &mut pending);
-                }
-                Object::Partial {
-                    function,
-                    args,
-                    args_tuple,
-                    keywords,
-                    attrs,
-                } => {
-                    pending.push(function.clone());
-                    pending.push(Value::Obj(*args_tuple));
-                    pending.extend(args.iter().cloned());
-                    pending.push(Value::Obj(*keywords));
-                    pending.push(Value::Obj(*attrs));
-                }
-                Object::Cached(c) => {
-                    if let Some(i) = c.attrs {
-                        pending.push(Value::Obj(i))
-                    }
-                    pending.push(c.function.clone());
-                    for e in &c.entries {
-                        pending.extend(e.args.iter().cloned());
-                        pending.extend(e.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
-                        pending.push(e.value.clone())
-                    }
-                }
-                Object::Record { fields, .. } => {
-                    pending.extend(fields.iter().map(|(_, v)| v.clone()))
-                }
-                Object::ExceptStarState(state) => state.roots(&mut pending),
-                Object::ExecutionLocals(value)=>pending.push(value.clone()),
-                Object::Cell(v) => pending.extend(v.iter().cloned()),
-                Object::Static(v) | Object::ClassMethod(v) => pending.push(v.clone()),
-                Object::Property { get, set, del } => {
-                    pending.push(get.clone());
-                    pending.extend(set.iter().cloned());
-                    pending.extend(del.iter().cloned())
-                }
-                Object::Generator(f) => Self::frame_roots(f, &mut pending),
-                Object::Code(code)=>self.code_roots(*code,&mut code_seen,&mut pending),
-                Object::Iterator(it) => match it {
-                    IteratorState::Template(owner,_) => pending.push(Value::Obj(*owner)),
-                    IteratorState::Associative(state) => {if let Some(owner)=state.owner {pending.push(Value::Obj(owner));}if let Some(keeper)=&state.keeper{pending.push(keeper.clone());}},
-                    IteratorState::Tools(state) => pending.extend(state.roots()),
-                    IteratorState::Values(v, _) => pending.extend(v.iter().cloned()),
-                    IteratorState::List(i, _) => pending.push(Value::Obj(*i)),
-                    IteratorState::Enumerate(v, _) | IteratorState::Reversed(v, _) => {
-                        pending.push(v.clone())
-                    }
-                    IteratorState::Zip(v) => pending.extend(v.iter().cloned()),
-                    IteratorState::Map(f, v) => {
-                        pending.push(f.clone());
-                        pending.extend(v.iter().cloned())
-                    }
-                    IteratorState::Filter(a, b) | IteratorState::Callable(a, b) => {
-                        pending.push(a.clone());
-                        pending.push(b.clone())
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
+            self.gc_children(i,&mut pending,&mut code_seen);
         }
         marked
     }
@@ -3517,6 +3533,8 @@ impl Runtime {
         }
         self.roots.truncate(root);
         let marked = self.gc_marks(&[]);
+        self.buffer_collect_dead_leases(&marked);
+        let marked = self.gc_marks(&[]);
         let mut count = 0;
         for (i, live) in marked.into_iter().enumerate() {
             if !live && self.heap[i].is_some() {
@@ -3535,6 +3553,7 @@ impl Runtime {
                 self.assoc_layouts.remove(&i);
                 self.set_member_hashes.remove(&i);
             self.dictionary_hashes.remove(&i);
+                self.buffer_exports.remove(&i);
                 self.free.push(i);
                 count += 1;
             }
@@ -3553,6 +3572,8 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: KeywordArgs,
     ) -> PyResult<Value> {
+        if let Some(result)=self.buffer_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}
+
         if self.frozen_owner(&receiver).is_some(){if let Some(result)=self.frozen_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if matches!(&receiver,Value::Complex(_)){return self.complex_method(receiver,name,args,kwargs).unwrap();}
         if self.is_exception_value(&receiver){if let Some(result)=self.exception_group_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
@@ -4694,7 +4715,7 @@ impl Runtime {
                     }
                 };
             }
-            if ["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "complex", "frozenset"].contains(&typ) && method == "__new__"
+            if ["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "bytearray", "complex", "frozenset"].contains(&typ) && method == "__new__"
             {
                 let class = args
                     .first()
@@ -4757,7 +4778,8 @@ impl Runtime {
                     if base!=0 && !(2..=36).contains(&base) { return Err(pyerr("ValueError","int() base must be >= 2 and <= 36, or 0")); }
                     Some(base as u32)
                 } else { None };
-                let v=arguments.first().cloned().unwrap_or(Value::Int(Int::from_i128(0).into()));
+                let mut v=arguments.first().cloned().unwrap_or(Value::Int(Int::from_i128(0).into()));
+                if base.is_some(){let payload=self.native_payload(&v).unwrap_or_else(||v.clone());if matches!(payload,Value::Str(_)|Value::Bytes(_)){v=payload;}else if self.buffer_kind(&payload)==Some("bytearray"){v=Value::Bytes(self.buffer_owner_data(&payload)?.into());}}
                 if base.is_some() && !matches!(v,Value::Str(_) | Value::Bytes(_)) { return Err(pyerr("TypeError","int() can't convert non-string with explicit base")); }
                 Ok(Value::Int(match v {
                     Value::Int(i) => i,
@@ -4787,6 +4809,7 @@ impl Runtime {
                                 Err(error)=>return Err(error),
                             }
                         }
+                        if let Some(data)=self.buffer_read(&v,true)?{return self.builtin("int",vec![Value::Bytes(data.into())],Vec::new(),None);}
                         return Err(pyerr("TypeError","int() argument must be a string or a real number"));
                     }
                 }))
@@ -4804,10 +4827,7 @@ impl Runtime {
             "ascii" => Ok(Value::Str(text_ascii_escape(&self.repr(&arg(0)?)?).into())),
             "frozenset" => self.frozen_constructor(args,kwargs),
             "set" => self.set_constructor_value(args,kwargs),
-            "memoryview" => Err(pyerr(
-                "NotImplementedError",
-                "memoryview values are not implemented",
-            )),
+            "memoryview" => {if args.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","memoryview expected one positional argument"));}self.buffer_memoryview(args[0].clone(),284)},
             "list" | "tuple" => {
                 if args.len() > 1 || !kwargs.is_empty() {
                     return Err(pyerr("TypeError", format!("{}() takes at most one argument", name)));
@@ -4864,12 +4884,10 @@ impl Runtime {
                 Ok(d)
             }
             "bytes" => self.bytes_constructor(args, kwargs),
-            "bytearray" => Err(pyerr(
-                "NotImplementedError",
-                "bytearray values are not implemented",
-            )),
+            "bytearray" => self.buffer_bytearray_constructor(args,kwargs),
             "len" => {
                 let v = arg(0)?;
+                if let Some(length)=self.buffer_length(&v){return length.map(|length|Value::Int(Int::from_i128(length as i128).into()));}
                 if let Value::Obj(index)=&v {if matches!(self.object(*index)?,Object::MappingProxy{..}) {if let Some(keeper)=self.collection_keepers.get(index).cloned(){return self.builtin("len",vec![keeper],Vec::new(),None);}}if let Object::DictView { owner, .. } | Object::MappingProxy { owner }=self.object(*index)? {return Ok(Value::Int(Int::from_i128(self.assoc_size(owner) as i128).into()));}}
                 let fastlen = if let Value::Obj(i) = &v {
                     match self.heap.get(*i).and_then(|o| o.as_ref()) {
@@ -5245,6 +5263,9 @@ impl Runtime {
             "hash" => {
                 use std::hash::{Hash, Hasher};
                 let v = arg(0)?;
+                if self.buffer_kind(&v)==Some("bytearray"){return Err(pyerr("TypeError","unhashable type: bytearray"));}
+                if self.buffer_kind(&v)==Some("memoryview"){return self.buffer_hash(v);}
+
                 if matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Template{..}|Object::Interpolation{..}))) {let id=self.identity_number(&v);return Ok(Value::Int(Int::from_i128(id as i128).into()));}
                 if matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::FrozenSet{..}))){return self.frozen_hash(&v);}
                 if matches!(&v,Value::Complex(_)){return self.complex_hash(&v);}
@@ -5438,8 +5459,9 @@ impl Runtime {
             "__build_class__" => self.builtin_build_class(args,kwargs,caller),
             "__import__" => self.builtin_import(args,kwargs),
             "slice" => {
+                if args.is_empty()||args.len()>3||!kwargs.is_empty(){return Err(pyerr("TypeError","slice expected 1 to 3 positional arguments"));}
                 let (a, b, c) = if args.len() == 1 {
-                    (None, Some(self.as_int(&args[0])?), None)
+                    (None, if matches!(args[0],Value::None){None}else{Some(self.as_int(&args[0])?)}, None)
                 } else {
                     let a = if matches!(args[0], Value::None) {
                         None
@@ -5758,6 +5780,7 @@ impl Runtime {
         }
         let mut solid = None;
         for base in &bases {
+            if self.is_subclass(base,&Value::Builtin("memoryview".into()))?{return Err(pyerr("TypeError","memoryview is not an acceptable base type"));}
             if let Some(layout) = self.solid_layout(base) {
                 if let Some(previous) = &solid {
                     if !self.is_subclass(&layout, previous)?
@@ -6226,7 +6249,7 @@ impl Runtime {
             "BaseException" => "",
             "Exception" | "BaseExceptionGroup" | "GeneratorExit" | "SystemExit" | "KeyboardInterrupt" => "BaseException",
             "ExceptionGroup" => "Exception",
-            "ArithmeticError" | "AssertionError" | "AttributeError" | "EOFError"
+            "ArithmeticError" | "BufferError" | "MemoryError" | "SystemError" | "AssertionError" | "AttributeError" | "EOFError"
             | "ImportError" | "LookupError" | "NameError" | "OSError" | "RuntimeError"
             | "StopIteration" | "SyntaxError" | "TypeError" | "ValueError" => "Exception",
             "ZeroDivisionError" | "OverflowError" => "ArithmeticError",
@@ -6307,6 +6330,7 @@ impl Runtime {
         self.repr_inner(v, &mut Vec::new())
     }
     fn repr_inner(&mut self, v: &Value, seen: &mut Vec<usize>) -> PyResult<String> {
+        if let Some(kind)=self.buffer_kind(v){return if kind=="bytearray"{Ok(format!("bytearray({})",buffer_repr_bytes(&self.buffer_owner_data(v)?)))}else if kind=="memoryview"{let released=self.buffer_view(v).is_err();Ok(format!("<{}memory at 0x{:x}>",if released{"released "}else{""},self.identity_number(v)))}else{Ok(format!("<_buffer_wrapper object at 0x{:x}>",self.identity_number(v)))};}
         if let Some(result)=self.template_repr(v,seen){return result;}
         match v {
             Value::Str(s) => Ok(text_repr_str(s)),
@@ -6323,6 +6347,7 @@ impl Runtime {
                 }
                 seen.push(*i);
                 let s = match self.object(*i)? {
+                    Object::ByteArray(_)|Object::MemoryView(_)|Object::BufferLease(_)=>unreachable!("handled by buffer repr"),
                     Object::Template{..}|Object::Interpolation{..}=>unreachable!(),
                     Object::TypeParameter(_) | Object::TypeAlias{..} | Object::TypeUnpack(_) | Object::UnpackedAlias(_) | Object::ParamSpecMarker{..} | Object::TypeEvaluator(_) | Object::ForwardRef{..} | Object::TypeUnion{..} => self.typing_repr(v).unwrap()?,
                     Object::GenericAlias { origin, args, .. } => self.generic_repr(&origin,&args)?,
@@ -6654,6 +6679,7 @@ impl Runtime {
 
 impl Runtime {
     fn typename(&self, v: &Value) -> String {
+        if let Some(kind)=self.buffer_kind(v){return kind.into();}
         match v {
             Value::None => "NoneType".into(),
             Value::Bool(_) => "bool".into(),
@@ -6674,7 +6700,7 @@ impl Runtime {
                 }
                 if [
                     "int", "str", "list", "tuple", "dict", "set", "float", "complex", "bool", "type",
-                    "object", "bytes", "dict_keys", "dict_values", "dict_items", "mappingproxy", "GenericAlias", "staticmethod", "classmethod", "property",
+                    "object", "bytes", "bytearray", "memoryview", "dict_keys", "dict_values", "dict_items", "mappingproxy", "GenericAlias", "staticmethod", "classmethod", "property",
                 ]
                 .contains(&n.as_str())
                 {
@@ -6790,6 +6816,7 @@ impl Runtime {
         }
     }
     fn truth(&mut self, v: &Value) -> PyResult<bool> {
+        if let Some(length)=self.buffer_length(v){return length.map(|length|length!=0);}
         if matches!(v,Value::Builtin(n)if n=="NotImplemented") {
             return Err(pyerr(
                 "TypeError",
@@ -6846,6 +6873,7 @@ impl Runtime {
         Ok(false)
     }
     fn equal_default(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
+        if let Some(result)=self.buffer_compare("==",a,b){return result;}
         if let Some(result)=self.typing_equal(a,b){return result;}
         if let Some(result)=self.view_compare("==",a,b) {return result;}
         if let Some(result)=self.generic_equal(a,b) {return result;}
@@ -6997,6 +7025,7 @@ impl Runtime {
         }
     }
     fn compare_default(&mut self, op: &str, a: &Value, b: &Value) -> PyResult<bool> {
+        if let Some(result)=self.buffer_compare(op,a,b){return result;}
         if let Some(result)=self.view_compare(op,a,b) {return result;}
         if let Some(result)=self.frozen_compare(op,a,b){return result;}
         let ap=self.proxy_payload(a);let bp=self.proxy_payload(b);
@@ -7254,6 +7283,8 @@ impl Runtime {
         }
         if op == "kwargs_merge" {return self.merge_keyword_arguments(a,b);}
         if op=="dict_merge"{let copy=self.dictionary_copy(a)?;return self.merge_mapping_arguments(copy,b,false);}
+        if op=="%" && (matches!(&a,Value::Bytes(_)) || self.buffer_kind(&a)==Some("bytearray")){return self.bytes_percent_format(a,b);}
+        if let Some(result)=self.buffer_binary(op,a.clone(),b.clone()){return result;}
         if let Some(result)=self.complex_binary(op,&a,&b){return result;}
         if let Some(result)=self.frozen_binary(op,&a,&b){return result;}
         if let (Value::Bool(left),Value::Bool(right))=(&a,&b) {
@@ -7550,6 +7581,7 @@ impl Runtime {
         self.view_rooted(vec![obj.clone(),key.clone()],|runtime,_|runtime.getitem_inner(obj,key))
     }
     fn getitem_inner(&mut self, obj: Value, key: Value) -> PyResult<Value> {
+        if let Some(result)=self.buffer_getitem(obj.clone(),key.clone()){return result;}
         if matches!(&obj,Value::Builtin(name)if template_type_name(name) || matches!(name.as_str(),"itertools.chain"|"functools.partial")){return self.generic_alias(obj,key);}
         if self.is_typing_value(&obj){if let Some(result)=self.typing_getitem(obj.clone(),key.clone()){return result;}}
         if self.generic_parts(&obj).is_some() {return self.generic_method(obj,"__getitem__",vec![key],Vec::new()).unwrap();}
@@ -7685,6 +7717,7 @@ impl Runtime {
         self.view_rooted(vec![obj.clone(),key.clone(),value.clone()],|runtime,_|runtime.setitem_inner(obj,key,value))
     }
     fn setitem_inner(&mut self, obj: Value, key: Value, value: Value) -> PyResult<()> {
+        if let Some(result)=self.buffer_setitem(obj.clone(),key.clone(),value.clone()){return result;}
         if let Value::Obj(index) = &obj {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*index)? {
                 if let Some(method) = self.slot_override(&class, "__setitem__", 0) {
@@ -7781,6 +7814,7 @@ impl Runtime {
         self.view_rooted(vec![obj.clone(),key.clone()],|runtime,_|runtime.delitem_inner(obj,key))
     }
     fn delitem_inner(&mut self, obj: Value, key: Value) -> PyResult<()> {
+        if let Some(result)=self.buffer_delitem(obj.clone(),key.clone()){return result;}
         if let Value::Obj(index) = &obj {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*index)? {
                 if let Some(method) = self.slot_override(&class, "__delitem__", 0) {
@@ -7929,6 +7963,7 @@ impl Runtime {
         result
     }
     fn iter(&mut self, v: Value) -> PyResult<Value> {
+        if let Some(length)=self.buffer_length(&v){length?;return Ok(self.obj_value(Object::Iterator(IteratorState::Buffer(v,0))));}
         if let Value::Obj(index)=&v {if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Template{..})){return Ok(self.obj_value(Object::Iterator(IteratorState::Template(*index,0))));}}
         if self.type_parameter_kind(&v)==Some("typevartuple") || matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{..}))) {
             let unpack=if self.type_parameter_kind(&v)==Some("typevartuple") || self.generic_is_typing_alias(&v){self.obj_value(Object::TypeUnpack(v))}else{self.unpack_alias(v)?};return Ok(self.obj_value(Object::Iterator(IteratorState::Values(vec![unpack],0))));
@@ -8075,6 +8110,12 @@ impl Runtime {
                     return self.next_raw(payload);
                 },
                 Object::Iterator(state) => match state {
+                    IteratorState::Buffer(owner,position)=>{
+                        let length=self.buffer_length(&owner).ok_or_else(||pyerr("TypeError","invalid buffer iterator"))??;
+                        if position>=length{return Ok(None);}
+                        let result=self.buffer_getitem(owner.clone(),Value::Int(Int::from_i128(position as i128).into())).unwrap()?;
+                        self.heap[i]=Some(Object::Iterator(IteratorState::Buffer(owner,position+1)));return Ok(Some(result));
+                    },
                     IteratorState::Template(owner,mut position) => {
                         let result=self.template_next(owner,&mut position);
                         self.heap[i]=Some(Object::Iterator(IteratorState::Template(owner,position)));return result;
@@ -8398,6 +8439,7 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if let Some(result)=self.buffer_getattr(v.clone(),name){return result;}
         if let Some(result)=self.stdlib_type_attribute(&v,name) {return result;}
         if name=="__class__" {if let Some(class)=self.stdlib_instance_class(&v) {return Ok(class);}}
         if let Some(class)=self.stdlib_instance_class(&v) {if let Some(member)=self.class_attribute_lookup(&class,name) {return self.bind_descriptor(member,Some(v),class);}}
@@ -8412,7 +8454,7 @@ impl Runtime {
                 return self.bind_descriptor(descriptor,instance,class);
             }
         }
-        if matches!(&v,Value::Builtin(owner)if ["dict","list","tuple","set","frozenset","str","int","float","bytes","complex","object","type"].contains(&owner.as_str())) && !["__class__","__dict__","__name__","__qualname__","__mro__","__bases__","__module__","__annotations__","__annotate__","__type_params__"].contains(&name) {
+        if matches!(&v,Value::Builtin(owner)if ["dict","list","tuple","set","frozenset","str","int","float","bytes","bytearray","memoryview","complex","object","type"].contains(&owner.as_str())) && !["__class__","__dict__","__name__","__qualname__","__mro__","__bases__","__module__","__annotations__","__annotate__","__type_params__"].contains(&name) {
             if let Some(value)=self.class_attribute_lookup(&v,name){return self.bind_descriptor(value,None,v);}
             return Err(pyerr("AttributeError",format!("type has no attribute '{name}'")));
         }

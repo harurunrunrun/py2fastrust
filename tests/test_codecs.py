@@ -143,9 +143,9 @@ class CodecTests(unittest.TestCase):
             except TypeError: print('type')
         ''')
 
-    def test_unsupported_buffers_codecs_and_error_handlers_are_explicit(self):
+    def test_unsupported_codecs_and_error_handlers_are_explicit(self):
         source = '''
-for call in [lambda:bytearray(),lambda:memoryview(b'a'),lambda:b'\\xff'.decode('utf8','surrogateescape'),lambda:'日本'.encode('ascii','namereplace')]:
+for call in [lambda:b'\\xff'.decode('utf8','surrogateescape'),lambda:'日本'.encode('ascii','namereplace')]:
     try: call()
     except NotImplementedError: print('unsupported')
 for call in [lambda:'abc'.encode('utf16'),lambda:b'abc'.decode('utf16')]:
@@ -154,7 +154,7 @@ for call in [lambda:'abc'.encode('utf16'),lambda:b'abc'.decode('utf16')]:
 '''
         actual = subprocess.run([str(self.binary)],input=source,capture_output=True,text=True,timeout=30)
         self.assertEqual(actual.returncode,0,actual.stderr)
-        self.assertEqual(actual.stdout,"unsupported\n"*4+"unknown codec\n"*2)
+        self.assertEqual(actual.stdout,"unsupported\n"*2+"unknown codec\n"*2)
 
 
 if __name__ == "__main__":

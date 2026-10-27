@@ -2,6 +2,7 @@
 // access. Owned-member names and descriptor categories follow Python 3.14;
 // the override-only class_lookup remains separate for payload proof checks.
 fn native_attribute_kind(owner: &str, name: &str) -> Option<&'static str> {
+    if let Some(kind)=buffer_native_kind(owner,name){return Some(kind);}
     if let Some(kind)=stdlib_attribute_kind(owner,name) {return Some(kind);}
     match (owner, name) {
         ("dict", "__new__") => Some("new"),
@@ -461,6 +462,7 @@ impl Runtime {
             }
             "member" => {
                 if let Some(instance) = instance {
+                    if owner=="memoryview"{self.native_validate_receiver(&owner,&instance)?;return self.buffer_getattr(instance,&name).unwrap();}
                     self.native_validate_receiver(&owner, &instance)?;
                     let payload = self
                         .native_payload(&instance)
@@ -539,6 +541,8 @@ impl Runtime {
         let (kind, owner, name) = native_attribute_parts(&value)
             .ok_or_else(|| pyerr("TypeError", "expected native attribute"))?;
         let (kind, owner, name) = (kind.to_owned(), owner.to_owned(), name.to_owned());
+        if kind=="static"&&owner=="bytearray"&&name=="maketrans"{return self.buffer_maketrans(args,kwargs);}
+        if kind=="class"&&owner=="bytearray"&&name=="fromhex"{let class=args.first().cloned().ok_or_else(||pyerr("TypeError","fromhex requires a class"))?;if !self.is_subclass(&class,&Value::Builtin("bytearray".into()))?{return Err(pyerr("TypeError","fromhex requires a bytearray subtype"));}return self.buffer_fromhex(class,args[1..].to_vec(),kwargs);}
         if kind == "new" {
             let class = args
                 .first()
@@ -550,6 +554,7 @@ impl Runtime {
             if owner == "int" && matches!(&class,Value::Builtin(name)if name=="bool") {
                 return Err(pyerr("TypeError", "int.__new__ is not safe for bool"));
             }
+            if owner=="memoryview"{if !Self::same_type(&class,&Value::Builtin("memoryview".into())){return Err(pyerr("TypeError","memoryview is not an acceptable base type"));}return self.builtin("memoryview",args[1..].to_vec(),kwargs,None);}
             if owner == "object" {
                 if !self.is_subclass(&class, &Value::Builtin("object".into()))? {
                     return Err(pyerr("TypeError", "object.__new__ requires a type"));
@@ -559,7 +564,7 @@ impl Runtime {
                     .unwrap_or_default()
                     .iter()
                     .any(|base| {
-                        matches!(base,Value::Builtin(name)if ["tuple","list","dict","set","frozenset","str","int","complex","float","bytes","bool","type"].contains(&name.as_str()) || stdlib_type_name(name))
+                        matches!(base,Value::Builtin(name)if ["tuple","list","dict","set","frozenset","str","int","complex","float","bytes","bytearray","memoryview","bool","type"].contains(&name.as_str()) || stdlib_type_name(name))
                             || matches!(base, Value::Type(_))
                     });
                 if native {
@@ -667,6 +672,7 @@ impl Runtime {
         self.native_validate_receiver(&owner, &receiver)?;
         let rest = args[1..].to_vec();
         if stdlib_type_name(&owner) {return self.stdlib_method(&owner,&name,receiver,rest,kwargs).unwrap();}
+        if let Some(result)=self.buffer_descriptor_call(&owner,&name,receiver.clone(),rest.clone(),kwargs.clone()){return result;}
         if let Some(result)=self.scalar_descriptor_call(&owner,&name,receiver.clone(),rest.clone(),kwargs.clone()){return result;}
         if let Some(result)=self.numeric_descriptor_call(&owner,&name,receiver.clone(),rest.clone(),kwargs.clone()){return result;}
         if name == "__init__" {

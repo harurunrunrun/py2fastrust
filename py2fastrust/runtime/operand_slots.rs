@@ -79,13 +79,13 @@ impl Runtime {
             if let Some(value) = result {
                 return Ok(value);
             }
-            if ["list", "tuple", "str", "bytes"].contains(&owner) && name == "__add__" {
+            if ["list", "tuple", "str", "bytes", "bytearray"].contains(&owner) && name == "__add__" {
                 return Err(pyerr(
                     "TypeError",
                     "can only concatenate matching sequences",
                 ));
             }
-            if ["list", "tuple", "str", "bytes"].contains(&owner) && ["__mul__", "__rmul__"].contains(&name)
+            if ["list", "tuple", "str", "bytes", "bytearray"].contains(&owner) && ["__mul__", "__rmul__"].contains(&name)
             {
                 let count = self.as_int(&args[0])?;
                 let payload = self
@@ -145,7 +145,9 @@ impl Runtime {
             Value::Str(_) => "str",
             Value::Bytes(_) => "bytes",
             Value::Obj(index) => match self.heap.get(*index).and_then(Option::as_ref) {
-                Some(Object::List(_)) => "list",
+                Some(Object::ByteArray(_)) => "bytearray",
+            Some(Object::MemoryView(_)) => "memoryview",
+            Some(Object::List(_)) => "list",
                 Some(Object::Tuple(_)) => "tuple",
                 Some(Object::Dict(_)) => "dict",
                 Some(Object::Set(_)) => "set",
@@ -222,6 +224,7 @@ impl Runtime {
             "__ge__" => ">=",
             _ => return Ok(None),
         };
+        if ["bytearray","memoryview"].contains(&owner){return self.buffer_compare_native(owner,op,receiver,argument);}
         if owner == "object" {
             if op == "==" {
                 return Ok(receiver
@@ -424,13 +427,13 @@ impl Runtime {
             "xor" => "^",
             _ => return Ok(None),
         };
-        if owner == "str" && op == "%" {
+        if ["str","bytes","bytearray"].contains(&owner) && op == "%" {
             let format = if reflected { argument } else { receiver };
             let value = if reflected { receiver } else { argument };
             let format = self
                 .native_payload(format)
                 .unwrap_or_else(|| format.clone());
-            if !matches!(&format, Value::Str(_)) {
+            if !(match owner {"str"=>matches!(&format,Value::Str(_)),"bytes"=>matches!(&format,Value::Bytes(_)),_=>self.buffer_kind(&format)==Some("bytearray")}) {
                 return Ok(None);
             }
             let payload = self.native_payload(value);
@@ -465,6 +468,7 @@ impl Runtime {
                     op == "*" && kind == "int"
                 }
             }
+            "bytearray"=>op=="+"||(op=="*"&&kind=="int"),
             "list" | "tuple" => {
                 if op == "+" {
                     kind == owner
@@ -515,7 +519,7 @@ impl Runtime {
     fn operand_sequence_fallback(slot: Option<&SlotDefinition>) -> bool {
         slot.and_then(|slot| operand_descriptor(slot.value()))
             .is_some_and(|(owner, name)| {
-                ["str", "bytes", "list", "tuple"].contains(&owner)
+                ["str", "bytes", "bytearray", "list", "tuple"].contains(&owner)
                     && ["__add__", "__mul__", "__rmul__"].contains(&name)
             })
     }
@@ -536,6 +540,10 @@ impl Runtime {
             .native_payload(receiver)
             .unwrap_or_else(|| receiver.clone());
         match (owner, name) {
+            ("bytearray","__iadd__"|"__imul__")=>{
+                self.buffer_binary(if name=="__iadd__"{"+="}else{"*="},payload,argument.clone()).unwrap()?;
+                Ok(Some(receiver.clone()))
+            },
             ("list", "__iadd__") => {
                 let Value::Obj(index) = payload else {
                     return Ok(None);
@@ -657,7 +665,7 @@ impl Runtime {
                 .native_payload(right)
                 .unwrap_or_else(|| right.clone());
             if base == "*" {
-                if ["str", "bytes", "list", "tuple"].contains(&runtime.operand_kind(&lp))
+                if ["str", "bytes", "bytearray", "list", "tuple"].contains(&runtime.operand_kind(&lp))
                     && Self::operand_sequence_fallback(
                         runtime.operand_slot(left, "__mul__").as_ref(),
                     )
@@ -665,7 +673,7 @@ impl Runtime {
                     let count = runtime.as_int(right)?;
                     return runtime.binary_default(base, lp, Value::Int(count.into()));
                 }
-                if ["str", "bytes", "list", "tuple"].contains(&runtime.operand_kind(&rp))
+                if ["str", "bytes", "bytearray", "list", "tuple"].contains(&runtime.operand_kind(&rp))
                     && Self::operand_sequence_fallback(
                         runtime.operand_slot(right, "__rmul__").as_ref(),
                     )

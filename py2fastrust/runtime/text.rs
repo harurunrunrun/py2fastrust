@@ -7511,6 +7511,7 @@ impl Runtime {
     fn bytes_needle(&mut self, value: &Value, integer: bool) -> PyResult<Vec<u8>> {
         if let Some(payload)=self.native_payload(value){if matches!(payload,Value::Bytes(_)){return self.bytes_needle(&payload,integer);}}
         if integer && self.object_class(value).and_then(|class|self.slot_definition(&class,"__index__",0)).is_some(){let number=self.as_int(value)?;return self.bytes_needle(&Value::Int(number.into()),true);}
+        if !matches!(value,Value::Bytes(_)){if let Some(data)=self.buffer_read(value,true)?{return Ok(data);}}
         match value { Value::Bytes(value)=>Ok(value.to_vec()),Value::Int(_) | Value::Bool(_) if integer=>{let value=self.as_int(value)?.to_i128().ok_or_else(||pyerr("ValueError","byte must be in range(0, 256)"))?;if !(0..256).contains(&value){return Err(pyerr("ValueError","byte must be in range(0, 256)"));}Ok(vec![value as u8])},_=>Err(pyerr("TypeError","a bytes-like object is required")) }
     }
     fn bytes_method(&mut self, source: Vec<u8>, name: &str, args: Vec<Value>, kwargs: KeywordArgs) -> Option<PyResult<Value>> {
@@ -7536,7 +7537,7 @@ impl Runtime {
         }
         self.text_arity(name,&args,&kwargs,1,3)?;let (start,stop)=self.text_limits(&args,source.len())?;let valid=start<=stop&&start<=source.len();
         if name=="startswith"||name=="endswith" {
-            let prefixes=match &args[0]{Value::Bytes(value)=>vec![Value::Bytes(value.clone())],Value::Obj(index)=>match self.object(*index)?{Object::Tuple(values)=>values,_=>return Err(pyerr("TypeError","first arg must be bytes or a tuple of bytes"))},_=>return Err(pyerr("TypeError","first arg must be bytes or a tuple of bytes"))};
+            let argument=self.native_payload(&args[0]).unwrap_or_else(||args[0].clone());let prefixes=match &argument{Value::Bytes(value)=>vec![Value::Bytes(value.clone())],Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Tuple(_)))=>match self.object(*index)?{Object::Tuple(values)=>values,_=>unreachable!()},_=>vec![Value::Bytes(self.buffer_read(&args[0],true)?.ok_or_else(||pyerr("TypeError","first arg must be bytes or a tuple of bytes"))?.into())]};
             for prefix in prefixes{let prefix=self.bytes_needle(&prefix,false)?;if valid && if name=="startswith"{source[start..stop].starts_with(&prefix)}else{source[start..stop].ends_with(&prefix)}{return Ok(Value::Bool(true));}}return Ok(Value::Bool(false));
         }
         let needle=self.bytes_needle(&args[0],true)?;
