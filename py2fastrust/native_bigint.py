@@ -114,7 +114,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return integer_policy(0).rust_literal(value,_string)
 
     def slot(self, kind):
-        if isinstance(unmaybe(kind),(TupleType,ListType)):return super().slot(kind)
+        if isinstance(unmaybe(kind),(TupleType,ListType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
         if kind == "str":
             self.has_big_text = True
             slot = f"native_var_{len(self.bindings)}"
@@ -155,7 +155,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def truth(expression):
-        if isinstance(expression.kind,(TupleType,ListType)):return _Generator.truth(expression)
+        if isinstance(expression.kind,(TupleType,ListType)) or getattr(expression.kind,"_key_container",False):return _Generator.truth(expression)
         if expression.kind in {"str","bytes"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind == "list_int":
@@ -188,6 +188,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         stdio=try_expression(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_key_containers import try_expression as key_expression
+        keyed=key_expression(self,node,environment)
+        if keyed is not None:return keyed
         from .native_typed_lists import try_expression
         typed=try_expression(self,node,environment)
         if typed is not None:return typed
@@ -452,6 +455,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         stdio=try_statement(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_key_containers import try_statement as key_statement
+        keyed=key_statement(self,node,environment)
+        if keyed is not None:return keyed
         from .native_typed_lists import try_statement
         typed=try_statement(self,node,environment)
         if typed is not None:return typed
@@ -562,6 +568,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_stdio |= any(local.has_stdio for local in specializations.generators)
         generator.has_native_modules |= any(local.has_native_modules for local in specializations.generators)
         generator.has_tuples |= any(local.has_tuples for local in specializations.generators)
+        generator.has_key_containers |= any(local.has_key_containers for local in specializations.generators)
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError) as error:
         if diagnostic_out is not None:
@@ -587,6 +594,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         result.append(TEXT_METHOD_HELPERS)
     if generator.has_input:
         result += [runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),_INPUT_HELPERS]
+    if generator.has_key_containers:
+        from .native_key_containers import HELPERS as KEY_HELPERS,BIG_HASH
+        result.extend([KEY_HELPERS,BIG_HASH])
     if generator.has_tuples:
         from .native_tuples import render_helpers
         result.append(render_helpers())

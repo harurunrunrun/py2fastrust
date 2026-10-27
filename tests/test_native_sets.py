@@ -207,12 +207,12 @@ print(len(s),sum(s),sum(s,a),a in s)
         self.assertTrue(result.success)
         self.assertEqual(result.backend, "aot")
 
-    def test_bigint_keeps_the_general_aot_backend(self):
+    def test_bigint_integer_sets_use_native_backend(self):
         source = "s={1,1<<128};s.add(1<<256);print(len(s),sum(s),1<<256 in s)"
-        self.assertIsNone(try_generate_native(source, "big.py", "bigint"))
+        self.assertIsNotNone(try_generate_native(source, "big.py", "bigint"))
         result = transpile(source, TranspileOptions(integer="bigint"))
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "aot")
+        self.assertEqual(result.backend, "native")
         path = Path(self.tmp.name) / "big.rs"
         path.write_text(result.rust_source, encoding="utf-8")
         binary = path.with_suffix("")

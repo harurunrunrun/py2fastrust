@@ -106,6 +106,7 @@ class _Binding:
     def kind(self):
         if isinstance(self.info, _MaybeInfo):
             return maybe_type(self.info.kind)
+        if getattr(self.info,"_key_info",False):return self.info.kind
         if isinstance(self.info,TypedListInfo):
             return self.info.kind
         if isinstance(self.info, _ListInfo):
@@ -484,6 +485,7 @@ class _Generator:
         self.has_slices = False
         self.has_text_methods = False
         self.has_big_text = False
+        self.has_key_containers = False
         self.has_tuples = False
         self.has_typed_lists = False
         self.has_stdio = False
@@ -507,7 +509,7 @@ class _Generator:
 
     def slot(self, kind):
         inner=unmaybe(kind)
-        if isinstance(inner,(TupleType,ListType)):
+        if isinstance(inner,(TupleType,ListType)) or getattr(inner,"_key_container",False):
             self.register_type(inner)
             if is_maybe(kind) and not immutable(inner):raise _Unsupported
             slot=f"native_var_{len(self.bindings)}"
@@ -533,7 +535,11 @@ class _Generator:
 
     def register_type(self,kind):
         kind=unmaybe(kind)
-        if kind=="int_bool":self.has_scalar_union=True
+        if getattr(kind,"_key_container",False):
+            self.has_key_containers=True
+            self.register_type(kind.key)
+            if kind._key_container=="dict":self.register_type(kind.value)
+        elif kind=="int_bool":self.has_scalar_union=True
         elif kind=="str":
             if self.bits:self.has_extended_scalars=True
             else:self.has_big_text=True
@@ -626,6 +632,7 @@ class _Generator:
 
     @staticmethod
     def truth(expression):
+        if getattr(expression.kind,"_key_container",False):return f"!({expression.code}).is_empty()"
         if isinstance(expression.kind,TupleType):
             return f"{{let _=&({expression.code}); {str(bool(expression.kind.fields)).lower()}}}"
         if isinstance(expression.kind,ListType):return f"!({expression.code}).is_empty()"
@@ -639,6 +646,9 @@ class _Generator:
 
     @staticmethod
     def binding(expression):
+        if getattr(expression.kind,"_key_container",False):
+            from .native_key_types import KeyInfo
+            return KeyInfo(expression.kind,expression.length,expression.nonempty)
         if isinstance(expression.kind,ListType):return TypedListInfo(expression.kind,expression.length)
         if expression.kind == "list_int":
             return _ListInfo(expression.length)
@@ -953,6 +963,9 @@ class _Generator:
         stdio = try_expression(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_key_containers import try_expression as key_expression
+        keyed=key_expression(self,node,environment)
+        if keyed is not None:return keyed
         from .native_typed_lists import try_expression
         typed=try_expression(self,node,environment)
         if typed is not None:return typed
@@ -1456,6 +1469,9 @@ class _Generator:
         for name, binding in environment.items():
             if isinstance(binding, _Binding):
                 info = binding.info
+                if getattr(info,"_key_info",False):
+                    from .native_key_types import KeyInfo
+                    info=KeyInfo(info.kind,None,False)
                 widened = (TypedListInfo(info.kind,None) if isinstance(info,TypedListInfo) else _ListInfo(None) if isinstance(info, _ListInfo)
                            else _MatrixInfo(None) if isinstance(info, _MatrixInfo)
                            else _DequeInfo(None) if isinstance(info, _DequeInfo)
@@ -1703,6 +1719,9 @@ class _Generator:
         stdio = try_statement(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_key_containers import try_statement as key_statement
+        keyed=key_statement(self,node,environment)
+        if keyed is not None:return keyed
         from .native_typed_lists import try_statement
         typed=try_statement(self,node,environment)
         if typed is not None:return typed
@@ -2156,7 +2175,7 @@ class _Generator:
                 if flush: lines.append(self.at("native_flush_output(&mut native_output)", node) + ";")
                 return "\n".join(lines), environment
             expression = self.expression(call, environment)
-            return f"let _ = {'&(' + expression.code + ')' if (expression.kind in {'list_int', 'dict_int', 'set_int', 'matrix_int', 'deque_int'} or isinstance(expression.kind,ListType)) and not expression.owned else expression.code};", environment
+            return f"let _ = {'&(' + expression.code + ')' if (expression.kind in {'list_int', 'dict_int', 'set_int', 'matrix_int', 'deque_int'} or isinstance(expression.kind,ListType) or getattr(expression.kind,"_key_container",False)) and not expression.owned else expression.code};", environment
         raise _Unsupported
 
 
@@ -2482,7 +2501,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2507,9 +2526,17 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_input:
         result.append(runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"))
         result.append(_INPUT_HELPERS if generator.needs_integer_runtime else TEXT_INPUT_HELPERS)
+    if generator.has_key_containers:
+        from .native_key_containers import HELPERS as KEY_HELPERS
+        result.append(KEY_HELPERS)
     if generator.has_tuples:
         from .native_tuples import render_helpers
         result.append(render_helpers())
+        if not generator.needs_integer_runtime and not generator.has_extended_scalars:
+            # --no-optimize keeps the printable table even for integer-only
+            # tuples, so its Unicode notice must be present in that case too.
+            notice=files("py2fastrust").joinpath("stdlib","UNICODE_LICENSE.txt").read_text(encoding="utf-8")
+            result.append("\n".join("// "+line for line in notice.splitlines())+"\n")
     if generator.has_typed_lists:
         from .native_typed_lists import HELPERS as TYPED_LIST_HELPERS
         result.append(TYPED_LIST_HELPERS)

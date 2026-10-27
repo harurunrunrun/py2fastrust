@@ -52,6 +52,13 @@ Possibly unbound tuple bindings use `Option<TupleType>` storage. Mutable tuple
 elements, arbitrary shape unions, and general tuple iteration still require
 shared container/iteration lowering.
 
+Proved immutable tuple keys use structurally typed Rust sets and dictionaries
+in every integer mode. Numeric keys preserve Python's bool/int equality while
+retaining the original key, and dictionaries retain insertion order. BigInt
+integer keys use the same typed containers. Mutable values, observable set
+iteration, general container aliases, and empty-container inference across
+loop headers remain unfinished.
+
 Immutable string/tuple list elements share `ListType(element)` metadata with
 literal, comprehension, stream materialization, indexing, append, copies,
 slices, and Python-style output. Proved owned list results can cross function
@@ -77,6 +84,11 @@ integer lists with `key=None`. Argument expressions retain source evaluation
 order; search bounds use checked structural integers. Internal combinatorial
 arithmetic is exact, and the returned result follows the selected integer mode.
 Other sequence/key forms and remaining standard-library APIs are unfinished.
+
+Module members and standard-input references share a lexical identity resolver.
+Function specializations preserve the presence of global names even when their
+values are not static callable references. This common reference context is
+also used when validating cached specializations and calls between functions.
 
 Ordinary class lowering currently supports concrete typed instance fields,
 constructors, fixed method lookup, tuple results, instance/list aliases, and

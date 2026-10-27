@@ -53,6 +53,9 @@ def rust_type(kind):
         return tuple_code(rust_type(field) for field in kind.fields)
     if isinstance(kind,ListType):
         return "Vec<"+rust_type(kind.element)+">"
+    if getattr(kind,"_key_container",False):
+        from .native_key_types import container_type
+        return container_type(kind)
     return {"int":"NativeInt","bool":"bool","int_bool":"NativeScalar","str":"String",
             "bytes":"Vec<u8>","float":"f64","none":"()","list_int":"Vec<NativeInt>",
             "matrix_int":"Vec<Vec<NativeInt>>","dict_int":"NativeDict","set_int":"NativeSet",
@@ -66,6 +69,8 @@ def kind_tag(kind):
         return "tuple"+str(len(kind.fields))+"_"+"_".join(kind_tag(field) for field in kind.fields)+"_end"
     if isinstance(kind,ListType):
         return "list_"+kind_tag(kind.element)+"_end"
+    if getattr(kind,"_key_container",False):
+        return kind._key_container+"_"+kind_tag(kind.key)+("_"+kind_tag(kind.value) if kind._key_container=="dict" else "")+"_end"
     return kind
 
 
@@ -96,6 +101,7 @@ def default_value(kind,zero):
     if is_maybe(kind):return "None"
     if isinstance(kind,TupleType):return tuple_code(default_value(field,zero) for field in kind.fields)
     if isinstance(kind,ListType):return "Vec::new()"
+    if getattr(kind,"_key_container",False):return "NativeKeySet::new()" if kind._key_container=="set" else "NativeKeyDict::new()"
     return {"int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"String::new()",
             "bytes":"Vec::<u8>::new()","float":"0.0_f64","list_int":"Vec::new()",
             "matrix_int":"Vec::new()","set_int":"NativeSet::new()","dict_int":"NativeDict::new()",

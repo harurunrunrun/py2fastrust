@@ -131,6 +131,9 @@ class Planner:
 
     def stream(self, node, environment, *, allow_set=False):
         g = self.g
+        from .native_key_containers import stream as keyed_stream
+        keyed=keyed_stream(g,node,environment,self,allow_set)
+        if keyed is not None:return keyed
         if isinstance(node, ast.GeneratorExp):
             return self.generator(node, environment)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):

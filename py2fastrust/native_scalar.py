@@ -337,6 +337,9 @@ class ScalarGenerator(_Generator):
         stdio=try_expression(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_key_containers import try_expression as key_expression
+        keyed=key_expression(self,node,environment)
+        if keyed is not None:return keyed
         from .native_typed_lists import try_expression
         typed=try_expression(self,node,environment)
         if typed is not None:return typed
@@ -501,6 +504,9 @@ class ScalarGenerator(_Generator):
         stdio=try_statement(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_key_containers import try_statement as key_statement
+        keyed=key_statement(self,node,environment)
+        if keyed is not None:return keyed
         from .native_typed_lists import try_statement
         typed=try_statement(self,node,environment)
         if typed is not None:return typed
