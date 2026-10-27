@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { conversionSummary, verifyConversionResult } from './conversion-results.mjs';
+import { conversionSummary, currentWorkerResult, verifyConversionResult } from './conversion-results.mjs';
 
 const { values } = parseArgs({ options: {
   site: { type: 'string' }, source: { type: 'string', default: '.' },
@@ -100,6 +100,7 @@ try {
   context.on('request', request => requests.push({ url: request.url(), method: request.method() }));
   await page.addInitScript(() => {
     window.__workerMessages = [];
+    window.__workerRequests = [];
     window.__workerCount = 0;
     const OriginalWorker = window.Worker;
     window.Worker = class extends OriginalWorker {
@@ -107,6 +108,10 @@ try {
         super(...args);
         window.__workerCount += 1;
         this.addEventListener('message', event => window.__workerMessages.push(event.data));
+      }
+      postMessage(message, ...rest) {
+        window.__workerRequests.push(message);
+        return super.postMessage(message, ...rest);
       }
     };
   });
@@ -154,11 +159,16 @@ try {
     await page.locator('#integer').selectOption(item.integer);
     await page.locator('#license').selectOption(item.license);
     await page.locator('#optimize').setChecked(item.optimize !== false);
+    const responseBoundary = await page.evaluate(() => window.__workerMessages.length);
     await page.locator('#convert').click();
     await page.waitForFunction(() => !document.getElementById('convert').disabled, undefined, { timeout: 180_000 });
     const status = await page.locator('#status').textContent();
-    const workerResult = await page.evaluate(() =>
-      window.__workerMessages.filter(message => message.type === 'result').at(-1)?.result);
+    const workerExchange = await page.evaluate(() => ({
+      messages: window.__workerMessages,
+      requestId: window.__workerRequests.filter(message => message.type === 'convert').at(-1)?.id,
+    }));
+    const workerResult = currentWorkerResult(workerExchange.messages, responseBoundary,
+      workerExchange.requestId);
     const rust = await page.locator('#output').inputValue();
     const directory = await mkdtemp(join(tmpdir(), 'pytors-browser-'));
     await writeFile(join(directory, 'main.py'), item.source);

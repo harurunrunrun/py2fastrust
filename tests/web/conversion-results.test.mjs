@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { conversionSummary, verifyConversionResult } from './conversion-results.mjs';
+import { conversionSummary, currentWorkerResult, verifyConversionResult } from './conversion-results.mjs';
 
 const diagnostic = { filename: 'main.py', line: 1, column: 7, code: 'E006', message: 'not implemented' };
 function rejected(overrides = {}) {
@@ -14,6 +14,19 @@ function converted() {
     result: { rust_source: 'new Rust', diagnostics: [] }, cli: { status: 0 },
     output: 'new Rust', previousOutput: 'previous Rust' };
 }
+
+test('each conversion requires a fresh response with the current request ID', () => {
+  const old = { rust_source: null, diagnostics: [diagnostic] };
+  const fresh = { rust_source: 'fresh Rust', diagnostics: [] };
+  const messages = [{ type: 'result', id: 3, result: old },
+    { type: 'result', id: 4, result: old }, { type: 'result', id: 5, result: fresh }];
+  assert.equal(currentWorkerResult(messages, 1, 3), undefined);
+  assert.equal(currentWorkerResult(messages, 2, 4), undefined);
+  assert.equal(currentWorkerResult(messages, 1, 5), fresh);
+  assert.throws(() => verifyConversionResult(rejected({
+    result: currentWorkerResult(messages, 3, 6),
+  })), /missing worker result/);
+});
 
 test('a conversion rejection is recorded and later examples are still checked', () => {
   const cases = [converted(), rejected(), converted()].map(verifyConversionResult);

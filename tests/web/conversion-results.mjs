@@ -1,6 +1,11 @@
 // A rejected Python program is a conversion result, not a broken Pages build.
 import assert from 'node:assert/strict';
 
+export function currentWorkerResult(messages, boundary, requestId) {
+  return messages.slice(boundary).find(message =>
+    message.type === 'result' && message.id === requestId)?.result;
+}
+
 export function verifyConversionResult({ name, status, result, cli, output, previousOutput }) {
   assert.ifError(cli.error);
   assert.equal(cli.signal ?? null, null, `${name}: CLI was terminated`);
