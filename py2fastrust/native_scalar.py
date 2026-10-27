@@ -491,6 +491,9 @@ class ScalarGenerator(_Generator):
         return _Expression(f"{{ {self.read_binding(names[0], values[0])} {tail} }}", "bool")
 
     def statement(self, node, environment):
+        from .native_module_calls import try_statement as module_statement
+        module=module_statement(self,node,environment)
+        if module is not None:return module
         from .native_tuples import try_statement
         structural=try_statement(self,node,environment)
         if structural is not None:return structural

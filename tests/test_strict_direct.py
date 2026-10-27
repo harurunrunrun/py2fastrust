@@ -26,7 +26,6 @@ class StrictDirectTests(unittest.TestCase):
             "values=[1]\nalias=values\nalias.append(2)\nprint(values)\n",
             "def recurse(n):return recurse(n-1) if n else 0\nprint(recurse(3))\n",
             "try:\n print(1//0)\nexcept ZeroDivisionError:\n print(7)\n",
-            "import math\nprint(math.isqrt(9))\n",
             "print(eval('1+2'))\n",
             "def sequence():yield 1\nprint(list(sequence()))\n",
         )
@@ -57,6 +56,15 @@ class StrictDirectTests(unittest.TestCase):
                     for source in sources:
                         with self.subTest(integer=integer,optimize=optimize,source=source):
                             self.assert_direct(transpile(source, TranspileOptions(integer=integer,optimize=optimize)))
+            general.assert_not_called()
+
+    def test_proved_standard_calls_never_select_general_codegen(self):
+        sources=("import math\nprint(math.isqrt(9))\n",
+                 "from bisect import bisect_left\na=[1,3,3]\nprint(bisect_left(a,3))\n")
+        with patch("py2fastrust.codegen.generate",side_effect=AssertionError("general backend entered"))as general:
+            for integer in ("i64","i128","bigint"):
+                for source in sources:
+                    self.assert_direct(transpile(source,TranspileOptions(integer=integer)))
             general.assert_not_called()
 
     def test_diagnostics_locate_the_unsupported_ast_operation(self):

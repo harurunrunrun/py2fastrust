@@ -184,6 +184,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        from .native_module_calls import try_expression as module_expression
+        module=module_expression(self,node,environment)
+        if module is not None:return module
         from .native_tuples import try_expression
         structural=try_expression(self,node,environment)
         if structural is not None:return structural
@@ -439,6 +442,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return "\n".join(initializers),body,self.after_loop(joined)
 
     def statement(self, node, environment):
+        from .native_module_calls import try_statement as module_statement
+        module=module_statement(self,node,environment)
+        if module is not None:return module
         from .native_tuples import try_statement
         structural=try_statement(self,node,environment)
         if structural is not None:return structural
@@ -529,6 +535,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_big_text |= any(local.has_big_text for local in specializations.generators)
         generator.has_text_methods |= any(local.has_text_methods for local in specializations.generators)
         generator.has_stdio |= any(local.has_stdio for local in specializations.generators)
+        generator.has_native_modules |= any(local.has_native_modules for local in specializations.generators)
         generator.has_tuples |= any(local.has_tuples for local in specializations.generators)
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError) as error:
@@ -564,6 +571,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.has_stdio:
         from .native_stdio import render_helpers
         result.append(render_helpers(0))
+    if generator.has_native_modules:
+        from .native_module_calls import HELPERS as MODULE_HELPERS
+        result.append(MODULE_HELPERS)
     result.extend(specializations.sources)
     result.append("fn main(){\nuse std::fmt::Write as _;\nuse std::io::Write as _;\nlet mut native_output=String::new();\nlet native_result=(||->Result<(),NativeError>{")
     if generator.has_input:

@@ -61,6 +61,13 @@ keeps its distinct EOF and newline behavior. The current text input profile is
 strict UTF-8; custom/reconfigured streams and surrogate escapes need further
 direct implementation.
 
+Static module and callable references support integer `math.gcd`, `lcm`,
+`isqrt`, `factorial`, `comb`, and `perm`, plus the `bisect`/`insort` aliases on
+integer lists with `key=None`. Argument expressions retain source evaluation
+order; search bounds use checked structural integers. Internal combinatorial
+arithmetic is exact, and the returned result follows the selected integer mode.
+Other sequence/key forms and remaining standard-library APIs are unfinished.
+
 Ordinary class lowering currently supports concrete typed instance fields,
 constructors, fixed method lookup, tuple results, instance/list aliases, and
 recursive methods. Missing fields use typed optional storage. Compiled Rust

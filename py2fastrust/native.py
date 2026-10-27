@@ -481,6 +481,8 @@ class _Generator:
         self.has_tuples = False
         self.has_typed_lists = False
         self.has_stdio = False
+        self.has_native_modules = False
+        self.borrowed_slots = set()
         self.trusted_imports = frozenset()
         self.entry_local_names = set()
         self.entry_scope = None
@@ -934,6 +936,9 @@ class _Generator:
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        from .native_module_calls import try_expression as module_expression
+        module=module_expression(self,node,environment)
+        if module is not None:return module
         from .native_tuples import try_expression
         structural=try_expression(self,node,environment)
         if structural is not None:return structural
@@ -1674,6 +1679,9 @@ class _Generator:
         return "\n".join(initializers), body, self.after_loop(joined)
 
     def statement(self, node, environment):
+        from .native_module_calls import try_statement as module_statement
+        module=module_statement(self,node,environment)
+        if module is not None:return module
         from .native_tuples import try_statement
         structural=try_statement(self,node,environment)
         if structural is not None:return structural
@@ -2331,6 +2339,7 @@ class _Specializations:
                 element="int" if kind=="list_int" else kind.element
                 signature.append(f"{argument}: &[{rust_type(element)}]")
                 environment[name]=_Binding(argument,_ListInfo(None) if kind=="list_int" else TypedListInfo(kind,None))
+                local.borrowed_slots.add(argument)
                 local.has_lists |= kind=="list_int"
                 local.has_typed_lists |= isinstance(kind,ListType)
             else:
@@ -2424,7 +2433,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2479,6 +2488,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         result.append(_DEQUE_HELPERS)
     if generator.has_scalar_union:
         result.append(_SCALAR_UNION_HELPERS)
+    if generator.has_native_modules:
+        from .native_module_calls import HELPERS as MODULE_HELPERS
+        result.append(MODULE_HELPERS)
     result.extend(function_sources)
     result.append("fn main() {\nuse std::fmt::Write as _;\nuse std::io::Write as _;\n"
                   "let mut native_output = String::new();\n"

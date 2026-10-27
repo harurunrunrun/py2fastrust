@@ -15,6 +15,12 @@ Current direct module coverage includes proved `collections.deque` imports and
 reader aliases and local imports. This does not establish direct coverage of
 the other `sys` APIs listed in the retained inventory below.
 
+Resolved integer calls to `math.gcd`, `lcm`, `isqrt`, `factorial`, `comb`, and
+`perm` also have direct helpers. The six `bisect`/`insort` names support integer
+lists, checked `lo`/`hi`, and `key=None`. Module/function aliases use their
+resolved identities. General callable arguments, starred calls, other sequence
+types, and the remaining module APIs still need implementation.
+
 ## math
 
 | API | Status |
