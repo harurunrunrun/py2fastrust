@@ -152,32 +152,7 @@ impl Runtime {
                 }
                 self.builtin("int", converted, Vec::new(), None)?
             }
-            "str" => {
-                if args.len() > 3
-                    || kwargs
-                        .iter()
-                        .any(|(name, _)| !["object", "encoding", "errors"].contains(&name.as_str()))
-                {
-                    return Err(pyerr("TypeError", "invalid arguments to str.__new__"));
-                }
-                if args.len() > 1 || kwargs.iter().any(|(name, _)| name != "object") {
-                    return Err(pyerr(
-                        "NotImplementedError",
-                        "str subclass construction with an encoding is not implemented",
-                    ));
-                }
-                let mut converted = args;
-                if let Some((_, object)) = kwargs.first() {
-                    if !converted.is_empty() {
-                        return Err(pyerr(
-                            "TypeError",
-                            "argument for str() given by name and position",
-                        ));
-                    }
-                    converted.push(object.clone());
-                }
-                self.builtin("str", converted, Vec::new(), None)?
-            }
+            "str" => self.str_constructor(args, kwargs)?,
             _ => unreachable!(),
         };
         self.roots[root].push(payload.clone());

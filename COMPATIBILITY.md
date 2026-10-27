@@ -108,7 +108,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - `async`/`await` are unsupported.
 - Some basic-value behavior, including unpaired Unicode surrogates, remains unsupported.
 - File I/O still lacks Python-defined raw/buffer adapters, in-memory `io` streams, nonblocking descriptor semantics, and complete native I/O subclass/descriptor APIs. Text cookies currently use physical byte positions; expanded error-handler output and pending decoder state require the separate cookie implementation.
-- Encoding conversion covers UTF-8, ASCII, and Latin-1, with limitations on supported `errors` modes. Constructing a `str` subclass with an encoding is unsupported.
+- Encoding conversion covers UTF-8, ASCII, and Latin-1, with limitations on supported `errors` modes. String subclasses use the same decoding and buffer rules as `str`, including explicit `str.__new__` calls.
 - Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, remains unsupported.
 - Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.
 - AST input/output for `compile()`, top-level await, and incomplete-input flags are unsupported.
