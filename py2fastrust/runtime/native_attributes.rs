@@ -696,6 +696,7 @@ impl Runtime {
             }
         }
         if owner == "object" {
+            if let Some(result)=self.operand_attribute(&value,&receiver,&rest,&kwargs){return result;}
             match name.as_str() {
                 "__getattribute__" | "__setattr__" | "__delattr__" => {
                     return self.builtin(&format!("type_method:object:{name}"), args, kwargs, None)
@@ -738,6 +739,7 @@ impl Runtime {
             };
             return self.keyword_str_protocol(payload, &name, rest, kwargs).unwrap();
         }
+        if let Some(result)=self.operand_attribute(&value,&receiver,&rest,&kwargs){return result;}
         if owner == "dict" && name == "__getitem__" {
             if rest.len() != 1 || !kwargs.is_empty() {
                 return Err(pyerr("TypeError", "__getitem__ takes one argument"));

@@ -833,38 +833,7 @@ impl Runtime {
             .ok_or_else(|| pyerr("AttributeError", name))
     }
     fn rich_comparison(&mut self, op: &str, a: &Value, b: &Value) -> PyResult<Option<Value>> {
-        let (left, right) = match op {
-            "==" => ("__eq__", "__eq__"),
-            "!=" => ("__ne__", "__ne__"),
-            "<" => ("__lt__", "__gt__"),
-            "<=" => ("__le__", "__ge__"),
-            ">" => ("__gt__", "__lt__"),
-            ">=" => ("__ge__", "__le__"),
-            _ => return Ok(None),
-        };
-        let ac = self.object_class(a);
-        let bc = self.object_class(b);
-        let reverse = if let (Some(ac), Some(bc)) = (&ac, &bc) {
-            !Self::same_type(ac, bc) && self.is_subclass(bc, ac)?
-        } else {
-            false
-        };
-        let mut pairs = vec![(a, b, left), (b, a, right)];
-        if reverse {
-            pairs.reverse()
-        }
-        for (obj, arg, name) in pairs {
-            if let Some(class) = self.object_class(obj) {
-                if let Some(method) = self.slot_override(&class, name, 0) {
-                    let callable = self.bind_descriptor(method, Some(obj.clone()), class)?;
-                    let value = self.call(callable, vec![arg.clone()], Vec::new(), None)?;
-                    if !matches!(&value,Value::Builtin(n)if n=="NotImplemented") {
-                        return Ok(Some(value));
-                    }
-                }
-            }
-        }
-        Ok(None)
+        self.operand_rich_comparison(op,a,b)
     }
     fn equal(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
         if let Some(value) = self.rich_comparison("==", a, b)? {
@@ -7078,6 +7047,13 @@ impl Runtime {
         }
     }
     fn binary(&mut self, op: &str, a: Value, b: Value) -> PyResult<Value> {
+        if (op=="+" || op=="+=") && (self.is_template_value(&a) || self.is_template_value(&b)) {if let Some(result)=self.template_concat(a.clone(),b.clone()){return result;}}
+        if let Some(result)=self.typing_binary(op,&a,&b){return result;}
+        if let Some(result)=self.view_binary(op,a.clone(),b.clone()) {return result;}
+        if let Some(result)=self.operand_binary(op,&a,&b){return result;}
+        self.binary_default(op,a,b)
+    }
+    fn binary_default(&mut self, op: &str, a: Value, b: Value) -> PyResult<Value> {
         if (op=="+" || op=="+=") && (self.is_template_value(&a) || self.is_template_value(&b)) {if let Some(result)=self.template_concat(a.clone(),b.clone()){return result;}}
         if let Some(result)=self.typing_binary(op,&a,&b){return result;}
         if let Some(result)=self.view_binary(op,a.clone(),b.clone()) {return result;}
