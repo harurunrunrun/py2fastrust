@@ -1,5 +1,6 @@
 """Operations over proved finite native alternatives; no universal value type."""
 import ast
+from contextvars import ContextVar
 
 from .native_types import (UnionType,NullableType,TupleType,ListType,alternatives,
                           union_variant,union_declaration,immutable,join_types,rust_type)
@@ -17,15 +18,29 @@ def construct(kind,alternative,code):
     return code
 
 
+_projection_depth=ContextVar("native_projection_depth",default=0)
+
+
 def project(kind,code,callback):
-    """Borrow a finite value and generate an exhaustive, typed match."""
-    if isinstance(kind,NullableType):
-        return f"match &({code}){{None=>{callback('none','()')},Some(native_nullable_value)=>{project(kind.value,'(*native_nullable_value)',callback)}}}"
-    if isinstance(kind,UnionType):
-        arms=[f"{union_variant(kind,value)}(native_union_value)=>{project(value,'(*native_union_value)',callback)}"
-              for value in kind.alternatives]
-        return f"match &({code}){{{','.join(arms)}}}"
-    return callback(kind,code)
+    """Borrow a finite value and generate an exhaustive, hygienic match.
+
+    Callback-generated nested projections must not shadow the outer payload.
+    A context-local nesting depth gives deterministic names, restores the caller
+    context after errors, and keeps independent concurrent conversions isolated.
+    """
+    depth=_projection_depth.get()
+    token=_projection_depth.set(depth+1)
+    nullable=f"native_nullable_value_{depth}"
+    union=f"native_union_value_{depth}"
+    try:
+        if isinstance(kind,NullableType):
+            return f"match &({code}){{None=>{callback('none','()')},Some({nullable})=>{project(kind.value,'(*'+nullable+')',callback)}}}"
+        if isinstance(kind,UnionType):
+            arms=[f"{union_variant(kind,value)}({union})=>{project(value,'(*'+union+')',callback)}"
+                  for value in kind.alternatives]
+            return f"match &({code}){{{','.join(arms)}}}"
+        return callback(kind,code)
+    finally:_projection_depth.reset(token)
 
 
 def coerce_union(value,target,coerce):
