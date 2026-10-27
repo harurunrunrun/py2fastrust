@@ -345,17 +345,7 @@ fn native_unpack_length(length: usize, count: usize) -> Result<(), String> {
     else if length > count { Err(format!("ValueError: too many values to unpack (expected {})", count)) }
     else { Ok(()) }
 }
-fn native_repeat(values: Vec<NativeInt>, count: NativeInt) -> Result<Vec<NativeInt>, String> {
-    let count = isize::try_from(count).map_err(|_| "OverflowError: cannot fit 'int' into an index-sized integer".to_string())?;
-    if count <= 0 || values.is_empty() { return Ok(Vec::new()); }
-    let count = count as usize;
-    let size = values.len().checked_mul(count).ok_or_else(|| "MemoryError: repeated list is too large".to_string())?;
-    let mut result = Vec::new();
-    result.try_reserve_exact(size).map_err(|_| "MemoryError: repeated list is too large".to_string())?;
-    if values.len() == 1 { result.resize(size, values[0]); }
-    else { for _ in 0..count { result.extend_from_slice(&values); } }
-    Ok(result)
-}
+
 '''
 
 
@@ -1289,6 +1279,9 @@ class _Generator:
         raise _Unsupported
 
     def binary(self, operator, left, right, node):
+        from .native_list_operations import binary
+        sequence=binary(self,operator,left,right,node)
+        if sequence is not None:return sequence
         if (isinstance(operator, (ast.BitAnd, ast.BitOr, ast.BitXor))
                 and "int_bool" in (left.kind, right.kind)
                 and left.kind in {"bool", "int_bool"} and right.kind in {"bool", "int_bool"}):
@@ -1304,20 +1297,6 @@ class _Generator:
                 a, b = bool(left.constant), bool(right.constant)
                 constant = a & b if isinstance(operator, ast.BitAnd) else a | b if isinstance(operator, ast.BitOr) else a ^ b
             return _Expression(f"(({left.code}) {symbol} ({right.code}))", "bool", constant)
-        if isinstance(operator, ast.Mult) and "list_int" in (left.kind, right.kind):
-            values, count = (left, right) if left.kind == "list_int" else (right, left)
-            self.number(count)
-            self.has_lists = True
-            # Snapshot both operands in source order. List repetition produces
-            # a fresh list, so copying the immutable scalar elements is exact.
-            first, second = self.temporary(), self.temporary()
-            left_code = self.consume_list(left) if left.kind == "list_int" else self.number(left)
-            right_code = self.consume_list(right) if right.kind == "list_int" else self.number(right)
-            list_name, count_name = (first, second) if left.kind == "list_int" else (second, first)
-            repeated = self.at(f"native_repeat({list_name}, {count_name})", node)
-            code = f"{{ let {first} = {left_code}; let {second} = {right_code}; {repeated} }}"
-            length = None if values.length is None or count.constant is None else values.length * max(0, int(count.constant))
-            return _Expression(code, "list_int", length=length)
         a, b = self.number(left), self.number(right)
         simple = {ast.Add: "wrapping_add", ast.Sub: "wrapping_sub", ast.Mult: "wrapping_mul"}
         bitwise = {ast.BitAnd: "&", ast.BitOr: "|", ast.BitXor: "^"}

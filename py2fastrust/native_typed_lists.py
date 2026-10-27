@@ -65,6 +65,9 @@ fn native_typed_split(text:&str,separator:Option<&str>,maximum:i128)->Result<Vec
 '''
 
 
+from .native_list_operations import HELPERS as _LIST_OPERATION_HELPERS
+HELPERS += _LIST_OPERATION_HELPERS
+
 def _enable(g):
     g.has_typed_lists = True
     # The existing checked structural index helper is shared by both list

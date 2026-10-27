@@ -227,8 +227,7 @@ print(*A)
                     "A=[1]\nfor a in A:\n A,b=[2],3\n",
                     "def change(A):\n A.append(2)\nA=[1]\nchange(A)\n",
                     "for a in []:\n b=a\nprint(b)\n",
-                    "if int(input()):\n A=[]\nprint(len(A))\n",
-                    "A=[True,False]\nprint(sum(A))\n"]
+                    "if int(input()):\n A=[]\nprint(len(A))\n"]
         for source in programs:
             with self.subTest(source=source):
                 result = transpile(source, TranspileOptions(integer="bigint", filename="unproved.py"))

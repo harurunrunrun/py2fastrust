@@ -36,6 +36,12 @@ Shared mutable list aliases and shallow slices of nested mutable rows are not
 yet implemented on this path. String slicing uses character indices in all
 integer modes.
 
+Concatenation and repetition of proved flat lists share one operation plan in
+fixed-width and BigInt modes, including immutable bool/string/tuple elements.
+Operands are evaluated in source order; results have independent list storage.
+Repetition counts use checked index-sized conversion even for empty lists, and
+allocation sizes use checked structural arithmetic.
+
 String methods include `strip`/`lstrip`/`rstrip` with an optional
 character set, `count` with character-based bounds, and `join` over a proved
 string iterable. Joining exhausts generator inputs before constructing its

@@ -44,18 +44,6 @@ fn native_big_list_set(values:&mut [Int], index:&Int, value:Int)->Result<(),Stri
     values[offset]=value;
     Ok(())
 }
-fn native_big_list_repeat(values:&[Int], count:&Int)->Result<Vec<Int>,String> {
-    // Python converts the repetition count to Py_ssize_t even for [] and
-    // negative counts. No truncating BigInt -> machine-size casts are used.
-    let count=count.to_i128().and_then(|n|isize::try_from(n).ok())
-        .ok_or_else(||"OverflowError: cannot fit 'int' into an index-sized integer".to_string())?;
-    let length=values.len().checked_mul(count.max(0) as usize).ok_or("MemoryError")?;
-    let mut result=Vec::new();
-    native_big_list_reserve(&mut result,length)?;
-    if values.is_empty(){return Ok(result);}
-    for _ in 0..count.max(0){result.extend(values.iter().cloned());}
-    Ok(result)
-}
 fn native_big_list_copy(values:&[Int])->Result<Vec<Int>,String> {
     let mut result=Vec::new();
     native_big_list_reserve(&mut result,values.len())?;
@@ -175,33 +163,8 @@ class BigIntLists:
         return None
 
     def list_binary(self, operator, left, right, node):
-        if "list_int" not in {left.kind, right.kind}:
-            return None
-        self.has_lists = True
-        first, second = self.temporary(), self.temporary()
-        # Borrowing an exact list cannot invoke user code. The other operand's
-        # accepted scalar calls have no access to mutate this unique owner.
-        if isinstance(operator, ast.Mult):
-            if left.kind == "list_int" and right.kind in {"int", "bool", "int_bool"}:
-                setup = f"let {first}={'(' + left.code + ')' if left.owned else '&(' + left.code + ')'}; let {second}={self.number(right)};"
-                call = f"native_big_list_repeat(&{first},&{second})"
-                count = right.constant
-                length = left.length
-            elif right.kind == "list_int" and left.kind in {"int", "bool", "int_bool"}:
-                setup = f"let {first}={self.number(left)}; let {second}={'(' + right.code + ')' if right.owned else '&(' + right.code + ')'};"
-                call = f"native_big_list_repeat(&{second},&{first})"
-                count = left.constant
-                length = right.length
-            else:
-                raise _Unsupported
-            size = None if length is None or count is None else length * max(0, count)
-            return _Expression(f"{{{setup} {self.at(call,node)}}}", "list_int", length=size)
-        if isinstance(operator, ast.Add) and left.kind == right.kind == "list_int":
-            setup = f"let mut {first}={self.list_copy(left,node)}; let {second}={self.list_copy(right,node)};"
-            action = self.at(f"native_big_list_extend(&mut {first},{second})", node)
-            length = None if left.length is None or right.length is None else left.length + right.length
-            return _Expression(f"{{{setup} {action}; {first}}}", "list_int", length=length)
-        raise _Unsupported
+        from .native_list_operations import binary
+        return binary(self,operator,left,right,node)
 
     def list_extremum(self, node, environment):
         value = self.expression(node.args[0], environment)
