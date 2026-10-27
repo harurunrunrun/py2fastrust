@@ -187,13 +187,19 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         from .native_module_calls import try_expression as module_expression
         module=module_expression(self,node,environment)
         if module is not None:return module
-        from .native_tuples import try_expression
-        structural=try_expression(self,node,environment)
-        if structural is not None:return structural
         from .native_stdio import try_expression
         stdio=try_expression(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_typed_lists import try_expression
+        typed=try_expression(self,node,environment)
+        if typed is not None:return typed
+        from .native_next import try_expression
+        following=try_expression(self,node,environment)
+        if following is not None:return following
+        from .native_tuples import try_expression
+        structural=try_expression(self,node,environment)
+        if structural is not None:return structural
         text = self.text_expression(node, environment)
         if text is not None:
             return text
@@ -445,13 +451,16 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         from .native_module_calls import try_statement as module_statement
         module=module_statement(self,node,environment)
         if module is not None:return module
-        from .native_tuples import try_statement
-        structural=try_statement(self,node,environment)
-        if structural is not None:return structural
         from .native_stdio import try_statement
         stdio=try_statement(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_typed_lists import try_statement
+        typed=try_statement(self,node,environment)
+        if typed is not None:return typed
+        from .native_tuples import try_statement
+        structural=try_statement(self,node,environment)
+        if structural is not None:return structural
         alias = self.function_alias_assignment(node,environment)
         if alias is not None:
             return alias
@@ -476,7 +485,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                     return "\n".join(lines),environment
                 if isinstance(node.value,(ast.Tuple,ast.List)) and len(node.value.elts)==len(targets):
                     values = [self.expression(value,environment) for value in node.value.elts]
-                    if any(value.kind == "list_int" for value in values):
+                    if any(list_type(value.kind) for value in values):
                         raise _Unsupported
                     names = [self.temporary() for _ in values]
                     lines = [f"let {name}={value.code};" for name,value in zip(names,values)]
@@ -495,7 +504,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             if not all(isinstance(target,ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
             value = self.expression(node.value,environment)
-            if value.kind == "list_int" and (not value.owned or len(node.targets) != 1):
+            if list_type(value.kind) and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported
             name = self.temporary()
             lines = [f"let {name}={value.code};"]

@@ -33,9 +33,9 @@ class NativeIteratorReductionTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.directory.cleanup()
 
-    def compile(self, source, mode="i64", release=True):
+    def compile(self, source, mode="i64", release=True, prune=True):
         source = textwrap.dedent(source)
-        result = transpile(source, TranspileOptions(integer=mode, filename="case.py"))
+        result = transpile(source, TranspileOptions(integer=mode, filename="case.py", optimize=prune))
         self.assertTrue(result.success, result.diagnostics)
         self.assertEqual(result.backend, "native", source)
         rust = result.rust_source

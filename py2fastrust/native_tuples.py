@@ -70,16 +70,17 @@ def coerce_structural(expression,kind,coerce):
 
 def _mark(generator,kind):
     generator.has_tuples=True
-    fields=kind.fields if isinstance(kind,TupleType) else (kind,)
-    if any(field=="int_bool" for field in fields):
-        generator.has_scalar_union=True
+    generator.register_type(kind)
 
 
 def _scalar(kind):
-    return kind in {"int","bool","int_bool","str"}
+    return (all(_scalar(field) for field in kind.fields) if isinstance(kind,TupleType) else
+            kind in {"int","bool","int_bool","str"})
 
 
 def _equal(generator,left,right):
+    if isinstance(left.kind,TupleType) or isinstance(right.kind,TupleType):
+        return tuple_compare(generator,left,right,ast.Eq(),None)
     if left.kind in {"int","bool","int_bool"} and right.kind in {"int","bool","int_bool"}:
         return f"({generator.number(left)})==({generator.number(right)})"
     if left.kind==right.kind=="str":
@@ -88,6 +89,9 @@ def _equal(generator,left,right):
 
 
 def _order(generator,left,right,operator,node):
+    if isinstance(left.kind,TupleType) or isinstance(right.kind,TupleType):
+        operation={"<":ast.Lt,">":ast.Gt,"<=":ast.LtE,">=":ast.GtE}[operator]
+        return tuple_compare(generator,left,right,operation(),node)
     if left.kind in {"int","bool","int_bool"} and right.kind in {"int","bool","int_bool"}:
         return f"({generator.number(left)}){operator}({generator.number(right)})"
     if left.kind==right.kind=="str":
@@ -128,6 +132,12 @@ def tuple_ordering(generator,left,right,node):
     result=("std::cmp::Ordering::Less" if len(left.kind.fields)<len(right.kind.fields) else
             "std::cmp::Ordering::Greater" if len(left.kind.fields)>len(right.kind.fields) else "std::cmp::Ordering::Equal")
     for index,(a,b) in reversed(list(enumerate(zip(left.kind.fields,right.kind.fields)))):
+        if isinstance(a,TupleType) and isinstance(b,TupleType):
+            first=_Expression(tuple_field(left.code,index),a);second=_Expression(tuple_field(right.code,index),b)
+            comparison=tuple_ordering(generator,first,second,node)
+            temporary=generator.temporary()
+            result=f"{{let {temporary}={comparison};if {temporary}==std::cmp::Ordering::Equal{{{result}}}else{{{temporary}}}}}"
+            continue
         if not (a in {"int","bool","int_bool"} and b in {"int","bool","int_bool"} or a==b=="str"):
             raise _Unsupported
         first=_Expression(tuple_field(left.code,index),a);second=_Expression(tuple_field(right.code,index),b)
@@ -145,7 +155,10 @@ def tuple_repr(generator,value):
     for index,kind in enumerate(value.kind.fields):
         if index:lines.append(f'{result}.push_str(", ");')
         item=f"{name}.{index}"
-        if kind=="str":lines.append(f"{result}.push_str(&native_tuple_repr_str(&{item}));")
+        if isinstance(kind,TupleType):
+            nested=tuple_repr(generator,_Expression(item,kind,owned=False))
+            lines.append(f"{result}.push_str(&({nested}));")
+        elif kind=="str":lines.append(f"{result}.push_str(&native_tuple_repr_str(&{item}));")
         else:
             display=f'if {item}{{"True"}}else{{"False"}}' if kind=="bool" else item
             lines.append(f'write!(&mut {result},"{{}}",{display}).unwrap();')
@@ -171,11 +184,12 @@ def try_expression(generator,node,environment):
         if name=="tuple" and not node.args:
             kind=TupleType(());_mark(generator,kind)
             return _Expression("()",kind,length=0)
-        if name in {"tuple","len","bool"} and len(node.args)==1:
+        if name in {"tuple","len","bool","str"} and len(node.args)==1:
             value=generator.expression(node.args[0],environment)
             if isinstance(value.kind,TupleType):
                 _mark(generator,value.kind)
                 if name=="tuple":return value
+                if name=="str":return _Expression(tuple_repr(generator,value),"str")
                 constant=len(value.kind.fields) if name=="len" else bool(value.kind.fields)
                 code=generator.literal(constant) if name=="len" else str(constant).lower()
                 return _Expression(f"{{let _=&({value.code}); {code}}}","int" if name=="len" else "bool",constant)

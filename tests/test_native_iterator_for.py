@@ -364,11 +364,11 @@ class NativeIteratorForTests(NativeIteratorReductionTests):
         for source in (
             "a=[1,2]\nfor x in a:a.append(x)",
             "for (x,) in [1]:pass",
-            "for x in zip([1]):print(x)",
             "a=[[1]]\nfor row in a:row.append(2)",
         ):
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source,"case.py","i64"))
+        self.differential("for x in zip([1]):print(x)",modes=("i64","i128","bigint"))
 
 
 for _name in dir(NativeIteratorReductionTests):

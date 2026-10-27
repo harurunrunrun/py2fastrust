@@ -448,7 +448,7 @@ impl std::fmt::Display for NativeScalar {
 
 
 class _Generator:
-    BUILTINS = {"int", "input", "print", "range", "reversed", "abs", "pow", "len", "sum", "any", "all", "min", "max", "list", "map", "filter", "enumerate", "zip", "dict", "set", "sorted"}
+    BUILTINS = {"int", "input", "print", "range", "reversed", "abs", "pow", "len", "sum", "any", "all", "min", "max", "list", "map", "filter", "enumerate", "zip", "dict", "set", "sorted", "iter", "next"}
 
     def __init__(self, bits, functions=None, function=None, function_input=False, constructors=None, specializations=None):
         self.bits = bits
@@ -530,6 +530,9 @@ class _Generator:
     def register_type(self,kind):
         kind=unmaybe(kind)
         if kind=="int_bool":self.has_scalar_union=True
+        elif kind=="str":
+            if self.bits:self.has_extended_scalars=True
+            else:self.has_big_text=True
         elif isinstance(kind,TupleType):
             self.has_tuples=True
             for field in kind.fields:self.register_type(field)
@@ -939,13 +942,19 @@ class _Generator:
         from .native_module_calls import try_expression as module_expression
         module=module_expression(self,node,environment)
         if module is not None:return module
-        from .native_tuples import try_expression
-        structural=try_expression(self,node,environment)
-        if structural is not None:return structural
         from .native_stdio import try_expression
         stdio = try_expression(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_typed_lists import try_expression
+        typed=try_expression(self,node,environment)
+        if typed is not None:return typed
+        from .native_next import try_expression
+        following=try_expression(self,node,environment)
+        if following is not None:return following
+        from .native_tuples import try_expression
+        structural=try_expression(self,node,environment)
+        if structural is not None:return structural
         if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
             from .native_slices import try_slice
             return try_slice(self, node, environment)
@@ -1682,13 +1691,16 @@ class _Generator:
         from .native_module_calls import try_statement as module_statement
         module=module_statement(self,node,environment)
         if module is not None:return module
-        from .native_tuples import try_statement
-        structural=try_statement(self,node,environment)
-        if structural is not None:return structural
         from .native_stdio import try_statement
         stdio = try_statement(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_typed_lists import try_statement
+        typed=try_statement(self,node,environment)
+        if typed is not None:return typed
+        from .native_tuples import try_statement
+        structural=try_statement(self,node,environment)
+        if structural is not None:return structural
         alias = self.function_alias_assignment(node, environment)
         if alias is not None:
             return alias
@@ -1719,7 +1731,11 @@ class _Generator:
             if node.value is None:
                 raise _Unsupported
             value = self.expression(node.value, environment)
-            if value.kind not in {"int", "bool", "float", "str", "bytes"} and not isinstance(value.kind,TupleType):
+            if isinstance(value.kind,ListType) and not value.owned:
+                binding=environment.get(node.value.id) if isinstance(node.value,ast.Name) else None
+                if not isinstance(binding,_Binding) or binding.slot not in self.bindings:
+                    raise _Unsupported
+            if value.kind not in {"int", "bool", "float", "str", "bytes"} and not isinstance(value.kind,(TupleType,ListType)):
                 raise _Unsupported
             self.return_kinds.add(value.kind)
             return f"return Ok({value.code});", None
@@ -1857,6 +1873,10 @@ class _Generator:
         if isinstance(node, (ast.For, ast.While)):
             if node.orelse:
                 raise _Unsupported
+            refinement = ""
+            if isinstance(node,ast.While):
+                from .native_typed_lists import refine_empty_lists
+                refinement,environment=refine_empty_lists(self,node,environment,())
             label = self.temporary()
             context = {"label": label, "edges": []}
             header_initializers, widened = self.loop_header(node, environment)
@@ -1871,7 +1891,7 @@ class _Generator:
                 zero = test.constant is not None and not bool(test.constant)
                 initialization, body, joined = self.finish_loop(node, environment, widened, context, body, remaining,
                                                                nonempty, not zero, zero)
-                return f"{header_initializers}\n{initialization}\n'{label}: while {self.truth(test)} {{\n{body}\n}}", joined
+                return f"{refinement}\n{header_initializers}\n{initialization}\n'{label}: while {self.truth(test)} {{\n{body}\n}}", joined
             is_range = isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name) and node.iter.func.id == "range"
             list_name = None
             item_pair = False
@@ -2220,11 +2240,16 @@ def _function_plans(tree, table, bits, generator_type=_Generator):
                 if any(not isinstance(item,(ast.Tuple,ast.Load,ast.Constant,ast.BinOp,ast.UnaryOp,ast.operator,ast.unaryop))
                        or isinstance(item,ast.Constant) and type(item.value) not in {int,bool,str} for item in ast.walk(value)):
                     raise _Unsupported
-                fields=[default_generator.expression(item,{}) for item in value.elts]
-                if any(field.kind not in {"int","bool","str"} or field.kind!="str" and field.constant is None for field in fields):
-                    raise _Unsupported
                 from .native_types import tuple_code
-                defaults[name]=_Expression(tuple_code(field.code for field in fields),TupleType(tuple(field.kind for field in fields)))
+                def tuple_default(item):
+                    if isinstance(item,ast.Tuple):
+                        fields=[tuple_default(field) for field in item.elts]
+                        return _Expression(tuple_code(field.code for field in fields),TupleType(tuple(field.kind for field in fields)))
+                    field=default_generator.expression(item,{})
+                    if field.kind not in {"int","bool","str"} or field.kind!="str" and field.constant is None:
+                        raise _Unsupported
+                    return field
+                defaults[name]=tuple_default(value)
                 continue
             literal = value.operand if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)) else value
             if isinstance(literal, ast.Constant) and type(literal.value) in {str, float}:

@@ -339,13 +339,19 @@ class ScalarGenerator(_Generator):
         return f"let {name}{kind} = {value.code};"
 
     def expression(self, node, environment):
-        from .native_tuples import try_expression
-        structural=try_expression(self,node,environment)
-        if structural is not None:return structural
         from .native_stdio import try_expression
         stdio=try_expression(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_typed_lists import try_expression
+        typed=try_expression(self,node,environment)
+        if typed is not None:return typed
+        from .native_next import try_expression
+        following=try_expression(self,node,environment)
+        if following is not None:return following
+        from .native_tuples import try_expression
+        structural=try_expression(self,node,environment)
+        if structural is not None:return structural
         from .native_text_methods import try_text_method
         text = try_text_method(self, node, environment)
         if text is not None:
@@ -499,13 +505,16 @@ class ScalarGenerator(_Generator):
         from .native_module_calls import try_statement as module_statement
         module=module_statement(self,node,environment)
         if module is not None:return module
-        from .native_tuples import try_statement
-        structural=try_statement(self,node,environment)
-        if structural is not None:return structural
         from .native_stdio import try_statement
         stdio=try_statement(self,node,environment)
         if stdio is not None:
             return stdio
+        from .native_typed_lists import try_statement
+        typed=try_statement(self,node,environment)
+        if typed is not None:return typed
+        from .native_tuples import try_statement
+        structural=try_statement(self,node,environment)
+        if structural is not None:return structural
         alias = self.function_alias_assignment(node, environment)
         if alias is not None:
             return alias

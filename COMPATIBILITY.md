@@ -52,6 +52,16 @@ Possibly unbound tuple bindings use `Option<TupleType>` storage. Mutable tuple
 elements, arbitrary shape unions, and general tuple iteration still require
 shared container/iteration lowering.
 
+Immutable string/tuple list elements share `ListType(element)` metadata with
+literal, comprehension, stream materialization, indexing, append, copies,
+slices, and Python-style output. Proved owned list results can cross function
+boundaries. Typed sorting is stable and computes a supported key once per
+element. `next` immediately consumes a typed iterator with construction/default
+evaluation before its first pull and a positioned `StopIteration` on exhaustion.
+Escaping iterators, nullable defaults, unproved aliases and remaining sequence
+methods are still required work. Producer/consumer normalization is being
+unified further; these operations do not establish full Python compatibility.
+
 Trusted `sys.stdin`/`.buffer` imports and their `read`/`readline` aliases generate
 direct reads through the same buffered input object. Ordinary entry functions
 and function-local imports retain scope analysis. Text readers retain newlines
