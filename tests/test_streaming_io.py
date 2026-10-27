@@ -304,7 +304,7 @@ print(y+2,flush=True)
         for integer in ["i64", "i128", "bigint"]:
             result = transpile(source, TranspileOptions(integer=integer))
             self.assertTrue(result.success, result.diagnostics)
-            self.assertEqual(result.backend, "aot" if integer == "bigint" else "native")
+            self.assertEqual(result.backend, "native")
             rust = self.root / f"native-{integer}.rs"
             rust.write_text(result.rust_source)
             binary = self.root / f"native-{integer}"
@@ -333,7 +333,7 @@ print(first,flush=True)
 second=ask(8)
 print(second,flush=True)
 '''
-        for integer in ["i64", "i128"]:
+        for integer in ["i64", "i128", "bigint"]:
             result=transpile(source,TranspileOptions(integer=integer))
             self.assertTrue(result.success,result.diagnostics)
             self.assertEqual(result.backend,"native")
