@@ -55,8 +55,9 @@ def initialize(manifest_json):
     smoke_checks["resources"] = True
     return json.dumps({
         "integer_modes": ["i64", "i128", "bigint"],
+        "string_modes": ["ascii", "unicode"],
         "licenses": list(LICENSES),
-        "defaults": {"integer": "i64", "license": "CC0-1.0", "optimize": True},
+        "defaults": {"integer": "i64", "string_mode": "ascii", "license": "CC0-1.0", "optimize": True},
         "python_version": sys.version.split()[0],
         "python_profile": profile(),
         "package_version": __version__,
@@ -77,15 +78,17 @@ def convert(request_json):
     if not isinstance(options, dict):
         raise ValueError("Options must be an object.")
     integer = options.get("integer", "i64")
+    string_mode = options.get("string_mode", "ascii")
     license = options.get("license", "CC0-1.0")
     optimize = options.get("optimize", True)
-    if not isinstance(integer, str) or not isinstance(license, str) or not isinstance(optimize, bool):
+    if (not isinstance(integer, str) or not isinstance(string_mode, str)
+            or not isinstance(license, str) or not isinstance(optimize, bool)):
         raise ValueError("Invalid conversion option types.")
     # The core applies source-leading directives after these defaults. Keep
     # main.py relative, so its diagnostics and provenance match the CLI/API.
     os.chdir(WORK_DIRECTORY)
     result = transpile(source, TranspileOptions(
-        filename="main.py", integer=integer, license=license, optimize=optimize,
+        filename="main.py", integer=integer, string_mode=string_mode, license=license, optimize=optimize,
         module_paths=(WORK_DIRECTORY,),
     ))
     return json.dumps({

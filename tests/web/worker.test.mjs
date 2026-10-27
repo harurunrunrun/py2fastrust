@@ -56,7 +56,7 @@ async function harness({ invalidWheel = false, invalidBridge = false, production
       pyimport(name) {
         assert.equal(name, 'pytors_bridge');
         return {
-          initialize(text) { assert.deepEqual(JSON.parse(text), manifest); return '{}'; },
+          initialize(text) { assert.deepEqual(JSON.parse(text), manifest); return JSON.stringify({ string_modes: ['ascii', 'unicode'], defaults: { string_mode: 'ascii' } }); },
           convert(text) { conversions.push(JSON.parse(text)); return JSON.stringify({ rust_source: 'Rust', diagnostics: [] }); },
         };
       },
@@ -81,13 +81,15 @@ test('verified wheel/bridge, serialized requests, reusable runtime and source-as
   const ready = await h.send({ id: 1, type: 'init' });
   assert.equal(ready.type, 'ready');
   assert.equal(ready.metadata.source_commit, 'a'.repeat(40));
+  assert.deepEqual(ready.metadata.string_modes, ['ascii', 'unicode']);
+  assert.equal(ready.metadata.defaults.string_mode, 'ascii');
   const source = 'raise RuntimeError("must not execute")\n</script>\n';
-  const first = h.send({ id: 2, type: 'convert', source, options: { integer: 'bigint' } });
+  const first = h.send({ id: 2, type: 'convert', source, options: { integer: 'bigint', string_mode: 'unicode' } });
   const second = h.send({ id: 3, type: 'convert', source: 'print(42)', options: {} });
   assert.equal((await first).type, 'result');
   assert.equal((await second).type, 'result');
   assert.deepEqual(h.counts(), { loads: 1, installs: 1 });
-  assert.deepEqual(h.conversions, [{ source, options: { integer: 'bigint' } }, { source: 'print(42)', options: {} }]);
+  assert.deepEqual(h.conversions, [{ source, options: { integer: 'bigint', string_mode: 'unicode' } }, { source: 'print(42)', options: {} }]);
   assert.equal(h.requests.length, 3);
   assert.deepEqual([...h.files.keys()], ['/home/pyodide/pytors_bridge.py']);
 });

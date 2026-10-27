@@ -14,9 +14,10 @@ const [app, html, css, licenseFiles] = await Promise.all([
 const { createConverter } = await import(`data:text/javascript;base64,${Buffer.from(app).toString('base64')}`);
 const metadata = {
   integer_modes: ['i64', 'i128', 'bigint'],
+  string_modes: ['ascii', 'unicode'],
   licenses: licenseFiles.filter((name) => name.endsWith('.txt') && name !== 'NOTICE.txt')
     .map((name) => name.slice(0, -4)).sort(),
-  defaults: { integer: 'i64', license: 'CC0-1.0', optimize: true },
+  defaults: { integer: 'i64', string_mode: 'ascii', license: 'CC0-1.0', optimize: true },
 };
 
 class Element {
@@ -60,6 +61,7 @@ class FakeDocument {
       .map(([, tagName, id]) => [id, new Element(tagName, id)]));
     this.getElementById('source').value = 'print(1 + 2)\n';
     this.getElementById('integer').value = 'i64';
+    this.getElementById('string-mode').value = 'ascii';
     this.getElementById('license').value = 'CC0-1.0';
     this.getElementById('optimize').checked = true;
   }
@@ -121,6 +123,7 @@ test('starts one worker, waits for readiness, and uses the package option catalo
   assert.deepEqual(worker.messages, [{ id: 1, type: 'init' }]);
   assert.equal(ui.element('convert').disabled, true);
   assert.equal(ui.element('integer').disabled, true);
+  assert.equal(ui.element('string-mode').disabled, true);
   assert.equal(ui.element('editors').attributes.get('aria-busy'), 'true');
   worker.reply({ id: 0, type: 'ready', metadata });
   assert.equal(ui.element('convert').disabled, true);
@@ -132,6 +135,9 @@ test('starts one worker, waits for readiness, and uses the package option catalo
   assert.equal(ui.element('status').textContent, 'Ready.');
   assert.deepEqual(ui.element('integer').children.map((item) => item.value), metadata.integer_modes);
   assert.deepEqual(ui.element('license').children.map((item) => item.value), metadata.licenses);
+  assert.deepEqual(ui.element('string-mode').children.map((item) => item.value), metadata.string_modes);
+  assert.equal(ui.element('string-mode').value, 'ascii');
+  assert.equal(ui.element('string-mode').disabled, false);
   assert.equal(ui.element('license').value, 'CC0-1.0');
   assert.equal(ui.element('optimize').checked, true);
 });
@@ -143,12 +149,13 @@ test('sends source as data, blocks duplicate submissions, and reuses its worker'
   ui.element('source').value = source;
   ui.element('source').emit('input');
   ui.element('integer').value = 'i128';
+  ui.element('string-mode').value = 'unicode';
   ui.element('license').value = 'MIT';
   ui.element('optimize').checked = false;
   assert.equal(ui.submit().defaultPrevented, true);
   assert.deepEqual(worker.messages[1], {
     id: 2, type: 'convert', source,
-    options: { integer: 'i128', license: 'MIT', optimize: false },
+    options: { integer: 'i128', string_mode: 'unicode', license: 'MIT', optimize: false },
   });
   ui.submit();
   assert.equal(worker.messages.length, 2);
@@ -166,7 +173,7 @@ test('sends source as data, blocks duplicate submissions, and reuses its worker'
 });
 
 test('ignores a result after source or options change and identifies previous output', () => {
-  for (const changed of ['source', 'integer', 'license', 'optimize']) {
+  for (const changed of ['source', 'integer', 'string-mode', 'license', 'optimize']) {
     const ui = setup();
     ui.submit();
     ui.result('previous output');
@@ -174,7 +181,7 @@ test('ignores a result after source or options change and identifies previous ou
     const control = ui.element(changed);
     if (changed === 'source') control.value = 'print(42)\n';
     else if (changed === 'optimize') control.checked = false;
-    else control.value = changed === 'integer' ? 'bigint' : 'MIT';
+    else control.value = changed === 'integer' ? 'bigint' : changed === 'string-mode' ? 'unicode' : 'MIT';
     control.emit(changed === 'source' ? 'input' : 'change');
     ui.result('outdated output');
     assert.equal(ui.element('output').value, 'previous output', changed);
@@ -218,6 +225,7 @@ test('cancels without clearing editors and rejects messages from the terminated 
   ui.submit();
   ui.result('preserved Rust');
   ui.element('integer').value = 'bigint';
+  ui.element('string-mode').value = 'unicode';
   ui.element('license').value = 'MIT';
   ui.element('optimize').checked = false;
   ui.submit();
@@ -233,6 +241,7 @@ test('cancels without clearing editors and rejects messages from the terminated 
   assert.equal(ui.element('convert').disabled, true);
   ui.ready(newWorker);
   assert.equal(ui.element('integer').value, 'bigint');
+  assert.equal(ui.element('string-mode').value, 'unicode');
   assert.equal(ui.element('license').value, 'MIT');
   assert.equal(ui.element('optimize').checked, false);
   oldWorker.reply({ id: oldWorker.messages.at(-1).id, type: 'result', result: { rust_source: 'late result' } });

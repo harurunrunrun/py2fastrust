@@ -3,7 +3,7 @@ export function createConverter(document, {
   createWorker = () => new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' }),
 } = {}) {
   const elements = Object.fromEntries([
-    'converter', 'integer', 'license', 'optimize', 'convert', 'cancel', 'retry',
+    'converter', 'integer', 'string-mode', 'license', 'optimize', 'convert', 'cancel', 'retry',
     'source', 'output', 'output-note', 'editors', 'status', 'diagnostics', 'diagnostic-list',
   ].map((id) => [id, document.getElementById(id)]));
   let worker = null;
@@ -24,7 +24,7 @@ export function createConverter(document, {
     elements.cancel.hidden = !busy;
     elements.retry.hidden = state !== 'failed' && state !== 'cancelled';
     elements.retry.textContent = state === 'cancelled' ? 'Load Python' : 'Retry loading';
-    for (const control of [elements.integer, elements.license, elements.optimize]) {
+    for (const control of [elements.integer, elements['string-mode'], elements.license, elements.optimize]) {
       control.disabled = !hasMetadata;
     }
     elements.editors.setAttribute('aria-busy', String(busy));
@@ -60,21 +60,24 @@ export function createConverter(document, {
 
   function populateOptions(metadata) {
     const integers = metadata?.integer_modes;
+    const strings = metadata?.string_modes;
     const licenses = metadata?.licenses;
-    if (![integers, licenses].every((values) => Array.isArray(values) && values.length > 0
+    if (![integers, strings, licenses].every((values) => Array.isArray(values) && values.length > 0
       && values.every((value) => typeof value === 'string' && value.length > 0))) {
       throw new Error('The converter returned incomplete option metadata.');
     }
     const defaults = metadata.defaults || {};
     for (const [control, values, fallback] of [
       [elements.integer, integers, defaults.integer || 'i64'],
+      [elements['string-mode'], strings, defaults.string_mode || 'ascii'],
       [elements.license, licenses, defaults.license || 'CC0-1.0'],
     ]) {
       const selected = hasMetadata && values.includes(control.value) ? control.value : fallback;
       control.replaceChildren(...values.map((value) => {
         const option = document.createElement('option');
         option.value = value;
-        option.textContent = value;
+        option.textContent = control === elements['string-mode']
+          ? ({ ascii: 'ASCII', unicode: 'Unicode' }[value] || value) : value;
         return option;
       }));
       control.value = values.includes(selected) ? selected : values[0];
@@ -179,6 +182,7 @@ export function createConverter(document, {
         source: elements.source.value,
         options: {
           integer: elements.integer.value,
+          string_mode: elements['string-mode'].value,
           license: elements.license.value,
           optimize: elements.optimize.checked,
         },
@@ -219,7 +223,7 @@ export function createConverter(document, {
       convert();
     }
   });
-  for (const control of [elements.integer, elements.license, elements.optimize]) {
+  for (const control of [elements.integer, elements['string-mode'], elements.license, elements.optimize]) {
     control.addEventListener('change', changed);
   }
   initialize();

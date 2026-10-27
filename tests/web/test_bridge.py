@@ -60,6 +60,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.metadata["licenses"], list(LICENSES))
         self.assertEqual(len(self.metadata["licenses"]), 20)
         self.assertEqual(self.metadata["integer_modes"], ["i64", "i128", "bigint"])
+        self.assertEqual(self.metadata["string_modes"], ["ascii", "unicode"])
+        self.assertEqual(self.metadata["defaults"]["string_mode"], "ascii")
         self.assertEqual(self.metadata["resource_count"], len(manifest()["resources"]))
 
     def test_resource_integrity_is_required_before_conversion(self):
@@ -82,6 +84,13 @@ class BridgeTests(unittest.TestCase):
             for optimize in (True, False):
                 with self.subTest(integer=integer, optimize=optimize):
                     self.assert_api_parity("print(2**70)\n", integer=integer, optimize=optimize)
+
+    def test_string_modes_and_source_override_match_api(self):
+        for mode in ("ascii", "unicode"):
+            with self.subTest(string_mode=mode):
+                self.assert_api_parity('s="hello"\nprint(s[2])\n', string_mode=mode)
+        source='# pytors: --string-mode unicode\ns="あいう"\nprint(s[1])\n'
+        self.assert_api_parity(source, string_mode="ascii")
 
     def test_every_license_has_the_full_core_header(self):
         source = '# original license: example\nprint("/* inert */")\n'
@@ -122,10 +131,13 @@ class BridgeTests(unittest.TestCase):
                 self.assertGreaterEqual(first["column"], 1)
         self.assert_api_parity("print(1)\n", integer="i32")
         self.assert_api_parity("print(1)\n", license="unknown")
+        self.assert_api_parity("print(1)\n", string_mode="unknown")
 
     def test_transport_values_are_validated(self):
         for value in ({"source": None}, {"source": "print(1)", "options": []},
-                      {"source": "print(1)", "options": {"optimize": "false"}}):
+                      {"source": "print(1)", "options": {"optimize": "false"}},
+                      {"source": "print(1)", "options": {"string_mode": False}},
+                      {"source": "print(1)", "options": {"string_mode": None}}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 bridge.convert(json.dumps(value))
 
