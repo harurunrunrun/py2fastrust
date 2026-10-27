@@ -7191,6 +7191,10 @@ impl Runtime {
         if op=="dict_merge"{let copy=self.dictionary_copy(a)?;return self.merge_mapping_arguments(copy,b,false);}
         if let Some(result)=self.complex_binary(op,&a,&b){return result;}
         if let Some(result)=self.frozen_binary(op,&a,&b){return result;}
+        if let (Value::Bool(left),Value::Bool(right))=(&a,&b) {
+            let result=match op {"&"=>Some(*left & *right),"|"=>Some(*left | *right),"^"=>Some(*left ^ *right),_=>None};
+            if let Some(result)=result{return Ok(Value::Bool(result));}
+        }
         let integers = matches!(a, Value::Int(_) | Value::Bool(_))
             && matches!(b, Value::Int(_) | Value::Bool(_));
         if integers {
@@ -8335,6 +8339,14 @@ impl Runtime {
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
         if let Some(result)=self.native_attribute_meta(v.clone(),name){return result;}
+        if ["__and__","__rand__","__or__","__ror__","__xor__","__rxor__"].contains(&name)
+            && (matches!(&v,Value::Bool(_)|Value::Int(_)) || matches!(&v,Value::Builtin(owner)if owner=="bool")) {
+            let class=Value::Builtin(if matches!(&v,Value::Int(_)){"int"}else{"bool"}.into());
+            if let Some(descriptor)=self.class_attribute_lookup(&class,name) {
+                let instance=if matches!(&v,Value::Builtin(_)){None}else{Some(v)};
+                return self.bind_descriptor(descriptor,instance,class);
+            }
+        }
         if matches!(&v,Value::Builtin(owner)if ["dict","list","tuple","set","frozenset","str","int","complex","object","type"].contains(&owner.as_str())) && !["__class__","__dict__","__name__","__qualname__","__mro__","__bases__","__module__","__annotations__","__annotate__","__type_params__"].contains(&name) {
             if let Some(value)=self.class_attribute_lookup(&v,name){return self.bind_descriptor(value,None,v);}
             return Err(pyerr("AttributeError",format!("type has no attribute '{name}'")));

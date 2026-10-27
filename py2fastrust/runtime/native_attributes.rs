@@ -115,6 +115,7 @@ fn native_attribute_kind(owner: &str, name: &str) -> Option<&'static str> {
             | "__sizeof__" | "__getnewargs__",
         ) => Some("method"),
         ("str", "maketrans") => Some("static"),
+        ("bool", "__and__" | "__rand__" | "__or__" | "__ror__" | "__xor__" | "__rxor__") => Some("wrapper"),
         ("int", "__new__") => Some("new"),
         (
             "int",

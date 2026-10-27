@@ -448,7 +448,7 @@ impl Runtime {
             .unwrap_or_else(|| argument.clone());
         let kind = self.operand_kind(&arg);
         let accepted = match owner {
-            "int" => kind == "int",
+            "int" | "bool" => kind == "int",
             "float" => ["int", "float"].contains(&kind),
             "complex" => {
                 ["int", "float", "complex"].contains(&kind)
@@ -479,11 +479,17 @@ impl Runtime {
         if !accepted {
             return Ok(None);
         }
-        let (left, right) = if reflected {
+        let (mut left, mut right) = if reflected {
             (arg, receiver)
         } else {
             (receiver, arg)
         };
+        // int's descriptors return integers even with two bool arguments.
+        // bool owns distinct bitwise slots which preserve bool/bool results.
+        if owner == "int" && ["&", "|", "^"].contains(&op) {
+            if let Value::Bool(value)=left {left=Value::Int(Int::from_i128(value as i128).into());}
+            if let Value::Bool(value)=right {right=Value::Int(Int::from_i128(value as i128).into());}
+        }
         self.binary_default(op, left, right).map(Some)
     }
     fn operand_binary_slot(
