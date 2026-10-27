@@ -14,7 +14,8 @@ they do not imply compatibility with all CPython internals or the entire standar
 | Container expressions | Comprehensions, generator expressions, unpacking, negative indices, slicing |
 | Exceptions | `raise`, `except`, `except*`, exception-group splitting and merging, `else`, `finally`, `assert`, original `args`, cause/context/notes, exception-target cleanup, source information in tracebacks |
 | Classes | Inheritance, C3 MRO, descriptors, `property`, `staticmethod`/`classmethod`, `super`, metaclasses, `__slots__`, subclasses of `list`/`tuple`/`dict`/`set`/`frozenset`/`str`/`int`/`complex` |
-| Namespaces | `__prepare__` returning custom mappings, private names, Unicode NFKC identifiers, dictionary insertion order, separate internal temporaries, Python 3.14 function-local snapshots including free variables |
+| Comprehensions | List/set/dict expressions execute in the enclosing frame with isolated iteration bindings and fresh local snapshots; generators and class-visible annotation comprehensions retain separate frames |
+| Namespaces | `__prepare__` returning custom mappings, private names, Unicode NFKC identifiers, ordinary module/builtin dictionaries with arbitrary hashable keys and string-subclass lookup protocols, dictionary insertion order, separate internal temporaries, Python 3.14 function-local snapshots including free variables |
 | Other constructs | `with`, generator `send`/`throw`/`close` and `yield from`, f-strings, t-strings, `match`/`case` |
 | Dynamic execution | `compile`/`eval`/`exec`, `compile(optimize=0/1/2)`, calls between static and dynamic code, lazy annotations and `type` statements, all known `__future__` features and flag inheritance |
 | Memory | Object identity, cyclic references, mark-and-sweep GC rooted in frames and temporary values, `__del__` and resurrection |
@@ -29,6 +30,12 @@ and unknown syntax retain those components. `--no-optimize` disables this prunin
 `frozenset` supports construction, hashing, iteration, membership, comparisons, read-only set methods,
 mixed operations with `set`, subclasses, and GenericAlias.
 Member hashes and the final frozenset hash are retained; operations that copy a set's contents reuse stored member hashes.
+
+Standard input is read on demand. `input()` flushes its prompt and pending standard output;
+`print(..., flush=True)` and explicit standard-stream flushes are observable before input EOF.
+Text and binary input share a buffered raw reader, with decoded look-ahead retained for text reads.
+Standard input uses the existing strict UTF-8 policy and preserves CR bytes in LF-terminated lines.
+
 Set iteration order is not guaranteed to match CPython's internal hash-table order.
 
 Non-raw string literals, f-strings, and t-strings support Unicode 16.0 character names
@@ -65,11 +72,9 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.
 - AST input/output for `compile()`, top-level await, and incomplete-input flags are unsupported.
 - Executing existing code objects with explicit closure cells is unsupported. Closures created by ordinary and dynamically compiled source are supported.
-- Module namespace dictionaries still have limitations for non-string keys and string-subclass key protocols during global name resolution.
 - Imports whose names are determined at runtime, external C extensions, networking, threads, `asyncio`, and CPython-specific internal APIs are out of scope.
 - Unlisted standard-module APIs, including `inspect`, `pickle`, and `weakref`, are not provided.
-- Compatibility differences remain in `namedtuple` caller-module inference, the representation of empty function defaults, and base-descriptor operations on dictionary subclasses.
-- Comprehensions run in separate frames, so `locals()` called within them may differ from Python 3.14's inlined comprehensions.
+- In one CPython 3.14.4 bug case, a captured comprehension iteration variable shadows a free variable of the enclosing function and the interpreter retains the new cell. Generated code instead restores the original enclosing cell as [PEP 709](https://peps.python.org/pep-0709/) specifies. AST and dynamic compilation agree on that restoration.
 - A traceback's `tb_frame` is a snapshot containing source information. It does not expose live-frame manipulation or CPython bytecode offsets.
 - Native specialization of code containing dynamic functions and classes is limited; such code may use the general runtime.
 - Superseded container storage in native code can remain until the enclosing Rust scope ends. Peak memory may exceed that of the equivalent Python program.

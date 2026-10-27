@@ -253,26 +253,56 @@ impl Runtime {
             .and_then(|value| i32::try_from(value).ok())
             .ok_or_else(|| pyerr("OverflowError", "Python int too large to convert to C int"))
     }
-    fn execution_function_frame(&mut self, code: usize, globals: usize) -> PyResult<Frame> {
-        // A code object carries no defaults. Reuse ordinary argument binding
-        // for fresh fast locals and empty *args/**kwargs when executing it.
-        let function = Function {
-            annotate: None,
-            annotations_evaluated: true,
-            attrs: self.builtins,
-            name: self.codes[code].name.clone().into(),
-            qualname: self.codes[code].name.clone().into(),
-            module: Value::None,
-            doc: Value::None,
-            annotations: Value::None,
-            type_params: Value::None,
-            code,
-            globals,
-            closure: None,
-            defaults: Vec::new(),
-            kwdefaults: HashMap::new(),
-        };
-        self.bind_function(&function, Vec::new(), Vec::new())
+    // Execution phase ordering follows CPython 3.14.4 (PSF license):
+    // Python/pythonrun.c run_eval_code_obj, Python/ceval.c PyEval_EvalCode,
+    // and Objects/funcobject.c _PyFunction_FromConstructor.
+    // https://github.com/python/cpython/tree/v3.14.4
+    // String compilation rechecks presence before selecting the execution
+    // builtins; constructing the internal function then reads __name__.
+    fn execution_ensure_builtins(&mut self,globals:usize)->PyResult<()> {
+        if self.global_name_get(globals,"__builtins__")?.is_none() {
+            self.global_name_set(globals,"__builtins__".into(),self.active_builtins.clone())?;
+        }
+        Ok(())
+    }
+    fn execution_run_code(&mut self,code:usize,globals:usize,locals:usize,discard:bool)->PyResult<Value> {
+        self.view_rooted(vec![Value::Obj(globals),Value::Obj(locals)],|runtime,root|{
+            let builtins=runtime.capture_builtins(globals,runtime.active_builtins.clone())?;
+            runtime.roots[root].push(builtins.clone());
+            let module=runtime.global_name_get(globals,"__name__")?.unwrap_or(Value::None);
+            runtime.roots[root].push(module.clone());
+            // The internal function owns its metadata for the whole frame,
+            // including a generator whose first iteration happens much later.
+            let function=Function {
+                annotate:None,annotations_evaluated:true,
+                attrs:runtime.alloc(Object::Dict(Vec::new())),
+                name:runtime.codes[code].name.clone().into(),qualname:runtime.codes[code].name.clone().into(),
+                module,doc:Value::None,annotations:Value::None,type_params:Value::None,
+                code,globals,builtins:builtins.clone(),closure:None,
+                defaults:Vec::new(),defaults_set:false,kwdefaults:HashMap::new(),
+            };
+            let owner=runtime.obj_value(Object::Function(function.clone()));
+            runtime.roots[root].push(owner.clone());
+            // A code object carries no defaults. Use ordinary argument binding
+            // for fresh fast locals and empty *args/**kwargs in function code.
+            let frame=if runtime.codes[code].kind==ScopeKind::Function {
+                runtime.bind_function(&function,owner,Vec::new(),Vec::new())?
+            }else{
+                Frame {
+                    function:Some(owner),code,pc:0,locals,
+                    temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
+                    globals,builtins,closure:None,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
+                    exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),
+                    next_call:None,cache_returns:Vec::new(),comprehensions:Vec::new(),resume_value:None,injected_exception:None,finally_regions:Vec::new(),
+                }
+            };
+            let value=if runtime.codes[code].is_generator {
+                runtime.obj_value(Object::Generator(Box::new(frame)))
+            }else{
+                match runtime.execute(frame)?.0 {FrameExit::Return(value)|FrameExit::Yield(value)=>value}
+            };
+            Ok(if discard {Value::None}else{value})
+        })
     }
     fn execution_filename(&mut self, value: Value) -> PyResult<String> {
         let mut payload = self.native_payload(&value).unwrap_or_else(|| value.clone());

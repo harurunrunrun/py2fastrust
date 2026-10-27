@@ -489,7 +489,8 @@ impl Runtime {
         let supported = match object {
             Object::DictView { owner, kind } => {
                 if name == "mapping" {
-                    return Some(Ok(self.obj_value(Object::MappingProxy { owner })));
+                    let result=self.obj_value(Object::MappingProxy { owner });
+                    return Some(Ok(self.collection_inherit_keeper(result,&value)));
                 }
                 [
                     "__iter__",
@@ -567,6 +568,22 @@ impl Runtime {
             return None;
         };
         let object = self.heap.get(*index).and_then(Option::as_ref)?.clone();
+        if matches!(object,Object::MappingProxy{..}) {
+            if let Some(owner)=self.collection_keepers.get(index).cloned() {
+                return Some((||match name {
+                    "__iter__" if args.is_empty()&&kwargs.is_empty()=>self.iter(owner),
+                    "__reversed__" if args.is_empty()&&kwargs.is_empty()=>self.builtin("reversed",vec![owner],Vec::new(),None),
+                    "__len__" if args.is_empty()&&kwargs.is_empty()=>self.builtin("len",vec![owner],Vec::new(),None),
+                    "__contains__" if args.len()==1&&kwargs.is_empty()=>self.compare("in",&args[0],&owner).map(Value::Bool),
+                    "__repr__" if args.is_empty()&&kwargs.is_empty()=>self.repr(&value).map(|text|Value::Str(text.into())),
+                    "__str__" if args.is_empty()&&kwargs.is_empty()=>self.str_value(&value).map(|text|Value::Str(text.into())),
+                    "__or__" if args.len()==1&&kwargs.is_empty()=>self.binary("|",owner,args[0].clone()),
+                    "__ror__" if args.len()==1&&kwargs.is_empty()=>self.binary("|",args[0].clone(),owner),
+                    "copy"|"get"|"keys"|"values"|"items"=>{let function=self.getattr(owner,name)?;self.call(function,args,kwargs,None)},
+                    _=>Err(pyerr("TypeError","invalid mappingproxy method arguments")),
+                })());
+            }
+        }
         if matches!(object, Object::Dict(_) | Object::Namespace(..)) && name == "__contains__" {
             return Some(if args.len() != 1 || !kwargs.is_empty() {
                 Err(pyerr("TypeError", "__contains__ expected one argument"))
@@ -763,7 +780,7 @@ impl Runtime {
             if let Some(Object::MappingProxy { owner }) =
                 self.heap.get(*index).and_then(Option::as_ref)
             {
-                return Some(Value::Obj(*owner));
+                return Some(self.collection_keepers.get(index).cloned().unwrap_or(Value::Obj(*owner)));
             }
         }
         None

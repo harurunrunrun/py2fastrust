@@ -120,6 +120,9 @@ Imports, reflection, indirect calls, user-defined functions or classes, and unkn
 `--no-optimize` retains all runtime components.
 
 The runtime handles shared objects, GC, function frames, exceptions, classes, and closures.
+List, set, and dict comprehensions run in their enclosing frame with isolated iteration bindings
+and Python 3.14 local snapshots. Generators and class-visible annotation comprehensions retain their own frames.
+Module and builtin namespaces are ordinary dictionaries. Functions and frames retain the builtin mapping captured at creation; replacing a module's `__builtins__` affects later captures, while mutations to an already captured mapping remain visible.
 Calls retain original expanded keyword key objects and their stored hashes across functions, partials, caches, and metaclasses.
 Ordinary cached-function recursion uses explicit execution frames, including cache misses and exceptional returns.
 Exception groups and `except*` support subgroup handling, reraising, and merging unhandled exceptions.
@@ -135,6 +138,10 @@ Dynamic execution accepts keyword `globals`/`locals` and preserves dictionary su
 Unicode 16.0 character names and aliases in `\N{name}` escapes work in dynamically compiled strings,
 f-strings, and t-strings.
 Immutable `frozenset` values support mixed operations with `set`, cached hashing, subclasses, and generic aliases.
+Standard input is buffered and read on demand in both backends. Interactive pipe programs can
+show an `input()` prompt or `print(..., flush=True)` output before stdin reaches EOF.
+Text reads keep decoded look-ahead while sharing the underlying input with `sys.stdin.buffer`.
+
 
 The benchmarks check that CPython, generated Rust, and handwritten Rust produce the same results.
 They cover arithmetic, I/O, arrays, sorting, dictionaries, sets, BFS, DP, and BigInt.

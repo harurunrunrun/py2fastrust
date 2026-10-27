@@ -293,90 +293,20 @@ class deque:
         return self
 
 
+def _dict_data(value):
+    # The built-in payload is the sole mapping storage; ordinary base dict
+    # descriptors and this module therefore observe exactly the same entries.
+    return _py2fastrust_dict_payload(value)
+
+
+_repr_running = set()
+
+
 class _Mapping(dict):
+    __slots__ = ()
+
     def __init__(self, *args, **kwargs):
-        if not hasattr(self, "_data"):
-            self._data = {}
-            self._version = 0
-            self._repr_running = False
-        self.update(*args, **kwargs)
-
-    def __getitem__(self, key):
-        return self._data[key]
-
-    def __setitem__(self, key, value):
-        if key not in self._data:
-            self._version += 1
-        self._data[key] = value
-
-    def __delitem__(self, key):
-        del self._data[key]
-        self._version += 1
-
-    def __iter__(self):
-        return _MappingIterator(self)
-
-    def __reversed__(self):
-        return _MappingIterator(self, reverse=True)
-
-    def __len__(self):
-        return len(self._data)
-
-    def __contains__(self, key):
-        return key in self._data
-
-    def keys(self):
-        return _OrderedKeysView(self) if isinstance(self, OrderedDict) else _DictKeysView(self)
-
-    def values(self):
-        return _OrderedValuesView(self) if isinstance(self, OrderedDict) else _DictValuesView(self)
-
-    def items(self):
-        return _OrderedItemsView(self) if isinstance(self, OrderedDict) else _DictItemsView(self)
-
-    def get(self, key, default=None):
-        return self._data.get(key, default)
-
-    def pop(self, key, *default):
-        if len(default) > 1:
-            raise TypeError("pop expected at most 2 arguments")
-        if key in self._data:
-            value = self._data[key]
-            del self[key]
-            return value
-        if default:
-            return default[0]
-        raise KeyError(key)
-
-    def popitem(self):
-        if not self._data:
-            raise KeyError("popitem(): dictionary is empty")
-        key = list(self._data)[-1]
-        return key, self.pop(key)
-
-    def clear(self):
-        if self._data:
-            self._data.clear()
-            self._version += 1
-
-    def setdefault(self, key, default=None):
-        if key not in self._data:
-            self[key] = default
-        return self._data[key]
-
-    def update(self, *args, **kwargs):
-        if len(args) > 1:
-            raise TypeError("update expected at most 1 argument")
-        if args:
-            source = args[0]
-            if hasattr(source, "keys"):
-                for key in source.keys():
-                    self[key] = source[key]
-            else:
-                for key, value in source:
-                    self[key] = value
-        for key, value in kwargs.items():
-            self[key] = value
+        dict.__init__(self, *args, **kwargs)
 
     @classmethod
     def fromkeys(cls, iterable, value=None):
@@ -386,52 +316,48 @@ class _Mapping(dict):
         return result
 
     def copy(self):
-        return type(self)(self._data)
+        return type(self)(self)
 
     __copy__ = copy
 
     def __eq__(self, other):
         if isinstance(other, _Mapping):
-            other = other._data
-        return self._data == other
-
-    def __repr__(self):
-        return repr(self._data)
+            other = _dict_data(other)
+        return _dict_data(self) == other
 
 
 class defaultdict(_Mapping):
+    __slots__ = ("default_factory",)
+
     def __init__(self, default_factory=None, /, *args, **kwargs):
         if default_factory is not None and not callable(default_factory):
             raise TypeError("first argument must be callable or None")
-        self.default_factory = default_factory
+        defaultdict.default_factory.__set__(self, default_factory)
         _Mapping.__init__(self, *args, **kwargs)
 
     def __missing__(self, key):
-        if self.default_factory is None:
+        factory = defaultdict.default_factory.__get__(self, type(self))
+        if factory is None:
             raise KeyError(key)
-        value = self.default_factory()
-        self[key] = value
+        value = factory()
+        dict.__setitem__(self, key, value)
         return value
 
-    def __getitem__(self, key):
-        if key in self._data:
-            return self._data[key]
-        return self.__missing__(key)
-
     def copy(self):
-        return type(self)(self.default_factory, self._data)
+        return type(self)(defaultdict.default_factory.__get__(self, type(self)), _dict_data(self))
 
     __copy__ = copy
 
     def __repr__(self):
-        prefix = type(self).__name__ + "(" + repr(self.default_factory) + ", "
-        if self._repr_running:
+        prefix = type(self).__name__ + "(" + repr(defaultdict.default_factory.__get__(self, type(self))) + ", "
+        identity = id(self)
+        if identity in _repr_running:
             return prefix + "{...})"
-        self._repr_running = True
+        _repr_running.add(identity)
         try:
-            return prefix + repr(self._data) + ")"
+            return prefix + repr(_dict_data(self)) + ")"
         finally:
-            self._repr_running = False
+            _repr_running.discard(identity)
 
     def __or__(self, other):
         if not isinstance(other, dict):
@@ -443,7 +369,7 @@ class defaultdict(_Mapping):
     def __ror__(self, other):
         if not isinstance(other, dict):
             return NotImplemented
-        result = type(self)(self.default_factory, other)
+        result = type(self)(defaultdict.default_factory.__get__(self, type(self)), other)
         result.update(self)
         return result
 
@@ -452,25 +378,27 @@ class defaultdict(_Mapping):
         return self
 
 
+# The factory is a nullable built-in member: deleting it restores None while
+# ordinary Python slots keep their usual unbound-attribute behavior.
+_py2fastrust_nullable_slot(defaultdict.default_factory)
+
+
 class Counter(_Mapping):
     def __init__(self, iterable=None, /, **kwargs):
-        if not hasattr(self, "_data"):
-            self._data = {}
-            self._version = 0
-            self._repr_running = False
         self.update(iterable, **kwargs)
 
     def __missing__(self, key):
         return 0
 
-    def __getitem__(self, key):
-        return self._data.get(key, 0)
+    def __delitem__(self, key):
+        if key in self:
+            dict.__delitem__(self, key)
 
     def update(self, iterable=None, /, **kwargs):
         if iterable is not None:
             if hasattr(iterable, "keys"):
                 if not self:
-                    _Mapping.update(self, iterable)
+                    dict.update(self, iterable)
                 else:
                     for key in iterable.keys():
                         self[key] = iterable[key] + self.get(key, 0)
@@ -492,10 +420,10 @@ class Counter(_Mapping):
             self[key] = self.get(key, 0) - value
 
     def total(self):
-        return sum(self._data.values())
+        return sum(self.values())
 
     def most_common(self, n=None):
-        values = sorted(self._data.items(), key=lambda item: item[1], reverse=True)
+        values = sorted(self.items(), key=lambda item: item[1], reverse=True)
         return values if n is None else values[:max(n, 0)]
 
     def elements(self):
@@ -510,7 +438,7 @@ class Counter(_Mapping):
         raise NotImplementedError("Counter.fromkeys() is undefined")
 
     def __repr__(self):
-        if not self._data:
+        if not _dict_data(self):
             return type(self).__name__ + "()"
         try:
             counts = dict(self.most_common())
@@ -610,30 +538,60 @@ class Counter(_Mapping):
 
 
 class OrderedDict(_Mapping):
+    def __init__(self, *args, **kwargs):
+        self.update(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        _py2fastrust_ordered("set", self, key, value)
+
+    def __delitem__(self, key):
+        _py2fastrust_ordered("delete", self, key)
+
+    def __iter__(self):
+        return _MappingIterator(self)
+
+    def __reversed__(self):
+        return _MappingIterator(self, reverse=True)
+
+    def keys(self):
+        return _OrderedKeysView(self)
+
+    def values(self):
+        return _OrderedValuesView(self)
+
+    def items(self):
+        return _OrderedItemsView(self)
+
+    def update(self, *args, **kwargs):
+        if len(args) > 1:
+            raise TypeError("update expected at most 1 argument")
+        if args:
+            source = args[0]
+            if hasattr(source, "keys"):
+                for key in source.keys():
+                    self[key] = source[key]
+            else:
+                for key, value in source:
+                    self[key] = value
+        for key, value in kwargs.items():
+            self[key] = value
+
+    def clear(self):
+        _py2fastrust_ordered("clear", self)
+
     def move_to_end(self, key, last=True):
-        keys = list(self._data)
-        if key not in self._data:
-            raise KeyError(key)
-        boundary = keys[-1 if last else 0]
-        if boundary is key or boundary == key:
-            return
-        value = self._data.pop(key)
-        if last:
-            self._data[key] = value
-        else:
-            pairs = list(self._data.items())
-            self._data.clear()
-            self._data[key] = value
-            for old_key, old_value in pairs:
-                self._data[old_key] = old_value
-        self._version += 1
+        _py2fastrust_ordered("move", self, key, last)
+
+    def pop(self, key, *default):
+        if len(default) > 1:
+            raise TypeError("pop expected at most 2 arguments")
+        return _py2fastrust_ordered("pop", self, key, *default)
 
     def popitem(self, last=True):
-        if not self._data:
-            raise KeyError("dictionary is empty")
-        key = list(self._data)[-1 if last else 0]
-        value = self.pop(key)
-        return key, value
+        return _py2fastrust_ordered("popitem", self, last)
+
+    def setdefault(self, key, default=None):
+        return _py2fastrust_ordered("setdefault", self, key, default)
 
     def __eq__(self, other):
         if isinstance(other, OrderedDict):
@@ -641,15 +599,16 @@ class OrderedDict(_Mapping):
         return _Mapping.__eq__(self, other)
 
     def __repr__(self):
-        if not self._data:
+        if not self:
             return type(self).__name__ + "()"
-        if self._repr_running:
+        identity = id(self)
+        if identity in _repr_running:
             return "..."
-        self._repr_running = True
+        _repr_running.add(identity)
         try:
-            return type(self).__name__ + "(" + repr(self._data) + ")"
+            return type(self).__name__ + "(" + repr(dict(self.items())) + ")"
         finally:
-            self._repr_running = False
+            _repr_running.discard(identity)
 
     def __or__(self, other):
         if not isinstance(other, dict):
@@ -669,20 +628,12 @@ class OrderedDict(_Mapping):
         self.update(other)
         return self
 
-    @classmethod
-    def fromkeys(cls, iterable, value=None):
-        result = cls()
-        for key in iterable:
-            result[key] = value
-        return result
-
 
 class _MappingIterator:
     def __init__(self, owner, kind="keys", reverse=False):
         self.owner = owner
         self.kind = kind
-        self.version = owner._version
-        self.keys = list(owner._data)
+        self.version, self.keys, self.size = _py2fastrust_ordered("iteration", owner)
         if reverse:
             self.keys.reverse()
         self.index = 0
@@ -694,18 +645,20 @@ class _MappingIterator:
     def __next__(self):
         if self.exhausted:
             raise StopIteration
-        if self.version != self.owner._version:
-            message = "OrderedDict mutated during iteration" if isinstance(self.owner, OrderedDict) else "dictionary changed size during iteration"
-            raise RuntimeError(message)
+        if (self.size != len(_dict_data(self.owner))
+                or self.version != _py2fastrust_ordered("version", self.owner)):
+            raise RuntimeError("OrderedDict mutated during iteration")
         if self.index == len(self.keys):
             self.exhausted = True
             raise StopIteration
         key = self.keys[self.index]
         self.index += 1
+        if key not in _dict_data(self.owner):
+            raise KeyError(key)
         if self.kind == "values":
-            return self.owner[key]
+            return _dict_data(self.owner)[key]
         if self.kind == "items":
-            return key, self.owner[key]
+            return key, _dict_data(self.owner)[key]
         return key
 
 
@@ -899,8 +852,7 @@ _MappingProxy.__module__ = "builtins"
 def namedtuple(typename, field_names, *, rename=False, defaults=None, module=None):
     keywords = {"False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield"}
     def valid(name):
-        return (isinstance(name, str) and bool(name) and (name[0] == "_" or name[0].isalpha())
-                and all(char == "_" or char.isalnum() for char in name) and name not in keywords)
+        return type(name) is str and name.isidentifier() and name not in keywords
     typename = str(typename)
     if not valid(typename):
         raise ValueError("Type names and field names must be valid identifiers")
@@ -1007,10 +959,7 @@ def namedtuple(typename, field_names, *, rename=False, defaults=None, module=Non
     NamedTuple.__name__ = typename
     NamedTuple.__qualname__ = typename
     if module is None:
-        try:
-            module = _sys._getframemodulename(1) or "__main__"
-        except AttributeError:
-            module = "__main__"
+        module = _py2fastrust_namedtuple_module()
     NamedTuple.__module__ = module
     NamedTuple.__doc__ = typename + "(" + parameters + ("," if len(fields) == 1 else "") + ")"
     return NamedTuple

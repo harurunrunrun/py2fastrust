@@ -410,7 +410,7 @@ fn d_decode_formatted_text(text:&str,raw:bool)->Result<String,String>{
 }
 
 #[derive(Default)]
-struct DSymbols { locals: Vec<String>, globals: Vec<String>, nonlocals: Vec<String>, uses: Vec<String>, annotated: Vec<String>, error: Option<String>, generator: bool, private: Option<String> }
+struct DSymbols { locals: Vec<String>, globals: Vec<String>, nonlocals: Vec<String>, uses: Vec<String>, comp_targets: Vec<String>, separate_comprehensions:bool, annotated: Vec<String>, error: Option<String>, generator: bool, private: Option<String> }
 fn d_push_name(names: &mut Vec<String>, name: &str) { if !names.iter().any(|x| x == name) { names.push(name.to_owned()); } }
 
 // Mangling belongs to a lexical class context, including its nested functions
@@ -438,6 +438,11 @@ fn d_mangle_pattern(private: &Option<String>, pattern: MatchPattern) -> MatchPat
     }
 }
 impl DSymbols {
+    fn finish_comprehensions(&mut self)->Vec<String> {
+        let names:Vec<String>=self.comp_targets.iter().filter(|name|!self.locals.contains(name) && !self.uses.contains(name) && !self.globals.contains(name) && !self.nonlocals.contains(name)).cloned().collect();
+        for name in &names {d_push_name(&mut self.locals,name);}
+        names
+    }
     fn target(&mut self, expr: &DExpr) {
         match &expr.kind {
             DExprKind::Name(name) => d_push_name(&mut self.locals,&d_mangle(&self.private,name)),
@@ -453,12 +458,15 @@ impl DSymbols {
             DExprKind::Named(name,value) => { d_push_name(&mut self.locals,&d_mangle(&self.private,name)); self.expr(value); },
             DExprKind::Yield(value,_) => { self.generator = true; if let Some(value) = value { self.expr(value); } },
             DExprKind::Lambda(params,_) => { for value in &params.defaults { self.expr(value); } for (_,value) in &params.kwdefaults { self.expr(value); } },
-            DExprKind::Comprehension { element,value,generators,.. } => {
-                // Iteration variables belong to the implicit comprehension function.
-                // Named expressions, however, bind in the containing scope.
+            DExprKind::Comprehension { kind,element,value,generators } => {
+                // Inlined targets have fast slots in the owner even when their
+                // values remain isolated. Real child closures see those slots;
+                // other comprehensions retain their original lexical lookup.
                 if let Some(first) = generators.first() { self.expr(&first.iter); }
-                self.comprehension_named(element); if let Some(value) = value { self.comprehension_named(value); }
-                for generator in generators { self.comprehension_named(&generator.iter); for value in &generator.filters { self.comprehension_named(value); } }
+                let inline=kind!="generator" && !self.separate_comprehensions;
+                if inline {for generator in generators {let mut targets=Self{private:self.private.clone(),..Self::default()};targets.target(&generator.target);for name in targets.locals{d_push_name(&mut self.comp_targets,&name);}}}
+                self.comprehension_named(element,inline); if let Some(value) = value { self.comprehension_named(value,inline); }
+                for generator in generators { self.comprehension_named(&generator.iter,inline); for value in &generator.filters { self.comprehension_named(value,inline); } }
             }
             DExprKind::List(values) | DExprKind::Tuple(values) | DExprKind::Set(values) | DExprKind::Joined(values) | DExprKind::Template(values) | DExprKind::Bool(_,values) => for value in values { self.expr(value); },
             DExprKind::RawInterpolation(_,value)=>self.expr(value),
@@ -473,9 +481,10 @@ impl DSymbols {
             _ => (),
         }
     }
-    fn comprehension_named(&mut self, expr: &DExpr) {
+    fn comprehension_named(&mut self, expr: &DExpr, inline:bool) {
         let mut nested = Self { private:self.private.clone(),..Self::default() }; nested.expr(expr);
         for name in nested.locals { d_push_name(&mut self.locals,&name); }
+        if inline {for name in nested.comp_targets {d_push_name(&mut self.comp_targets,&name);}}
     }
     fn pattern_uses(&mut self, pattern: &MatchPattern) {
         match pattern {
@@ -569,12 +578,12 @@ impl DSymbols {
 }
 
 struct DLoop { start: usize, breaks: Vec<usize>, continues: Vec<usize> }
-struct DCtx { index: usize, loops: Vec<DLoop>, scopes: Vec<(ScopeKind,Vec<String>,Vec<String>)>, private: Option<String> }
-fn d_scope_binds(scopes: &[(ScopeKind,Vec<String>,Vec<String>)], name: &str) -> bool {
-    for (kind,locals,globals) in scopes.iter().rev() {
-        if *kind==ScopeKind::Class { if name=="__class__"{return true;}continue; }
-        if *kind==ScopeKind::Module || globals.iter().any(|value|value==name) { return false; }
-        if locals.iter().any(|value|value==name) { return true; }
+struct DCtx { index: usize, loops: Vec<DLoop>, scopes: Vec<(ScopeKind,Vec<String>,Vec<String>)>, comp_locals:Vec<Vec<String>>, private: Option<String> }
+fn d_lexical_scope_binds(ctx:&DCtx,name:&str)->bool {
+    for (index,(kind,locals,globals)) in ctx.scopes.iter().enumerate().rev() {
+        if *kind==ScopeKind::Class {if name=="__class__"{return true;}continue;}
+        if *kind==ScopeKind::Module || globals.iter().any(|value|value==name){return false;}
+        if locals.iter().any(|value|value==name) && !ctx.comp_locals[index].iter().any(|value|value==name){return true;}
     }
     false
 }
@@ -679,7 +688,7 @@ impl DCompiler {
     }
     fn code(&mut self, name: &str, kind: ScopeKind, params: &DParams, body: &[DStmt], enclosing: &DCtx, definition_line: usize) -> Result<usize,String> {
         let private=if kind == ScopeKind::Class { Some(name.to_owned()) } else { enclosing.private.clone() };
-        let mut symbols = DSymbols { private:private.clone(),..DSymbols::default() }; symbols.block(body);
+        let mut symbols = DSymbols { private:private.clone(),separate_comprehensions:matches!(kind,ScopeKind::Annotation|ScopeKind::TypeParameters) && d_annotation_class_scope(&enclosing.scopes),..DSymbols::default() }; symbols.block(body);
         let generic_class=kind==ScopeKind::Class && self.codes[enclosing.index].kind==ScopeKind::TypeParameters;
         if generic_class {d_push_name(&mut symbols.locals,"__type_params__");d_push_name(&mut symbols.uses,".type_params");}
         if let Some(error) = symbols.error { return Err(error); }
@@ -708,14 +717,15 @@ impl DCompiler {
                     break;
                 }
             }
-            let found = d_scope_binds(&enclosing.scopes,name);
+            let found = d_lexical_scope_binds(enclosing,name);
             if !found { return Err(self.error(1,&format!("no binding for nonlocal '{name}' found"))); }
         }
+        let comp_locals=symbols.finish_comprehensions();
         symbols.locals.retain(|name| !symbols.globals.contains(name) && !symbols.nonlocals.contains(name));
         let mut frees=symbols.nonlocals.clone();
         if matches!(kind,ScopeKind::Annotation|ScopeKind::TypeParameters) && !(kind==ScopeKind::Annotation && self.stringized_annotation) && d_annotation_class_scope(&enclosing.scopes){d_push_name(&mut frees,"__classdict__");}
         for name in &symbols.uses {
-            if !symbols.locals.contains(name) && !symbols.globals.contains(name) && d_scope_binds(&enclosing.scopes,name) { d_push_name(&mut frees,name); }
+            if !symbols.locals.contains(name) && !symbols.globals.contains(name) && d_lexical_scope_binds(enclosing,name) { d_push_name(&mut frees,name); }
         }
         if !symbols.locals.iter().chain(symbols.globals.iter()).any(|name|name=="__class__")
             && (symbols.uses.iter().any(|name|name=="__class__") || (kind!=ScopeKind::Class && symbols.uses.iter().any(|name|name=="super")))
@@ -723,10 +733,11 @@ impl DCompiler {
         if symbols.generator && kind == ScopeKind::Class { return Err(self.error(1,"yield outside function")); }
         let index = self.codes.len();
         let docstring=if self.optimize<2 && kind==ScopeKind::Function{body.first().and_then(d_docstring).map(|value|d_clean_doc(value))}else{None};
-        self.codes.push(Code { name:name.to_owned(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator,future_flags:self.future_flags,docstring });
+        self.codes.push(Code { name:name.to_owned(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator,future_flags:self.future_flags,docstring });
         let is_class = kind == ScopeKind::Class;
         let mut scopes = enclosing.scopes.clone(); scopes.push((kind,symbols.locals,symbols.globals));
-        let mut ctx = DCtx { index,loops:Vec::new(),scopes,private };
+        let mut comp_scopes=enclosing.comp_locals.clone();comp_scopes.push(comp_locals);
+        let mut ctx = DCtx { index,loops:Vec::new(),scopes,comp_locals:comp_scopes,private };
         let mut body_start = 0;
         if is_class {
             self.emit(&ctx,Op::Const(Const::Int(definition_line.to_string())),definition_line,0); self.emit(&ctx,Op::Store("__firstlineno__".to_owned()),definition_line,0);
@@ -787,6 +798,7 @@ impl DCompiler {
                         for base in bases.iter().chain(keywords.iter().map(|(_,value)|value)) {
                             if let Some(message)=d_annotation_violation(base){return Err(self.error(line,message));}
                         }
+                        self.emit(ctx,Op::CaptureBuiltins,line,col);
                         let expanded=self.class_arguments(ctx,bases,keywords,true,line,col)?;
                         let code=self.code(name,ScopeKind::Class,&DParams::default(),body,ctx,line)?;
                         let op=if expanded{Op::MakeClassEx{name:name.clone(),code:self.offset+code}}else{Op::MakeClass{name:name.clone(),code:self.offset+code,bases:bases.len()+1,keywords:keywords.iter().map(|(name,_)|name.clone().unwrap()).collect()}};
@@ -882,6 +894,7 @@ impl DCompiler {
             }
             DStmtKind::Class(name,bases,keywords,body,decorators) => {
                 for decorator in decorators { self.expr(ctx,decorator)?; }
+                self.emit(ctx,Op::CaptureBuiltins,line,col);
                 let expanded=self.class_arguments(ctx,bases,keywords,false,line,col)?;
                 let code = self.code(name,ScopeKind::Class,&DParams::default(),body,ctx,line)?;
                 let op=if expanded{Op::MakeClassEx{name:name.clone(),code:self.offset+code}}else{Op::MakeClass { name:name.clone(),code:self.offset+code,bases:bases.len(),keywords:keywords.iter().map(|(name,_)|name.clone().unwrap()).collect() }};
@@ -1070,7 +1083,7 @@ impl DCompiler {
         let tuple=make(DExprKind::Tuple(parameters.iter().map(|parameter|make(DExprKind::Name(parameter.name.clone()))).collect()));
         body.push(DStmt{kind:DStmtKind::Assign(vec![make(DExprKind::Name(".type_params".to_owned()))],tuple),line,column});
         body.push(DStmt{kind:DStmtKind::TypeDefinition(Box::new(inner)),line,column});
-        let enclosing=DCtx{index:ctx.index,loops:Vec::new(),scopes:ctx.scopes.clone(),private};
+        let enclosing=DCtx{index:ctx.index,loops:Vec::new(),scopes:ctx.scopes.clone(),comp_locals:ctx.comp_locals.clone(),private};
         let code=self.code(&format!("<generic parameters of {name}>"),ScopeKind::TypeParameters,&wrapper_params,&body,&enclosing,line)?;
         self.emit(ctx,Op::MakeFunction{code:self.offset+code,defaults:0,kwdefaults:Vec::new()},line,column);
         for argument in &arguments{self.expr(ctx,argument)?;}
@@ -1288,6 +1301,7 @@ impl DCompiler {
     fn comprehension(&mut self, outer: &mut DCtx, kind: &str, element: &DExpr, value: Option<&DExpr>, generators: &[DGenerator], line: usize, col: usize) -> Result<(),String> {
         if generators.is_empty() { return Err(self.error(line,"comprehension requires a generator")); }
         for generator in generators { if d_contains_named(&generator.iter) { return Err(self.error(line,"assignment expression cannot be used in a comprehension iterable expression")); } }
+        let inline=kind!="generator" && !(matches!(self.codes[outer.index].kind,ScopeKind::Annotation|ScopeKind::TypeParameters) && d_annotation_class_scope(&outer.scopes));
         let mut symbols = DSymbols { private:outer.private.clone(),..DSymbols::default() };
         for generator in generators { symbols.target(&generator.target); }
         let mut named = DSymbols { private:outer.private.clone(),..DSymbols::default() }; named.expr(element); if let Some(value) = value { named.expr(value); } for generator in generators { for value in &generator.filters { named.expr(value); } }
@@ -1302,26 +1316,41 @@ impl DCompiler {
         if !named.locals.is_empty() && outer.scopes.iter().rev().find(|(kind,_,_)|*kind != ScopeKind::Comprehension).is_some_and(|(kind,_,_)|*kind == ScopeKind::Class) { return Err(self.error(line,"assignment expression within a comprehension cannot be used in a class body")); }
         symbols.locals.push(".0".to_owned());
         let mut globals = Vec::new(); let mut nonlocals = Vec::new();
-        for name in named.locals { if self.codes[outer.index].kind == ScopeKind::Module || self.codes[outer.index].globals.contains(&name) { globals.push(name); } else { nonlocals.push(name); } }
+        for name in named.locals { let owner=outer.scopes.iter().rev().find(|(kind,_,_)|*kind!=ScopeKind::Comprehension); if owner.is_some_and(|(kind,_,globals)|*kind==ScopeKind::Module || globals.contains(&name)) { globals.push(name); } else { nonlocals.push(name); } }
+        symbols.comp_targets=named.comp_targets.clone();symbols.uses=named.uses.clone();symbols.globals=globals.clone();symbols.nonlocals=nonlocals.clone();
+        let comp_locals=symbols.finish_comprehensions();
         let mut frees=nonlocals.clone();
-        for name in &named.uses { if !symbols.locals.contains(name) && !globals.contains(name) && d_scope_binds(&outer.scopes,name) { d_push_name(&mut frees,name); } }
+        for name in &named.uses { if !symbols.locals.contains(name) && !globals.contains(name) && d_lexical_scope_binds(outer,name) { d_push_name(&mut frees,name); } }
         if named.uses.iter().any(|name|name=="__class__" || name=="super") && outer.scopes.iter().any(|(kind,_,_)|*kind==ScopeKind::Class) { d_push_name(&mut frees,"__class__"); }
         let index = self.codes.len(); let mut params = Params::default(); params.positional.push(".0".to_owned());
-        self.codes.push(Code { name:format!("<{kind}comp>"),filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator",future_flags:self.future_flags,docstring:None });
-        let mut scopes = outer.scopes.clone(); scopes.push((ScopeKind::Comprehension,symbols.locals,globals)); let mut ctx = DCtx { index,loops:Vec::new(),scopes,private:outer.private.clone() };
+        self.codes.push(Code { name:format!("<{kind}comp>"),filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator",future_flags:self.future_flags,docstring:None });
+        let mut scopes = outer.scopes.clone(); scopes.push((ScopeKind::Comprehension,symbols.locals,globals));let mut comp_scopes=outer.comp_locals.clone();comp_scopes.push(comp_locals); let mut ctx = DCtx { index,loops:Vec::new(),scopes,comp_locals:comp_scopes,private:outer.private.clone() };
         let result = if kind == "generator" { None } else { let tmp = self.temporary(&ctx); self.emit(&ctx,match kind { "list"=>Op::BuildList(0),"set"=>Op::BuildSet(0),_=>Op::BuildDict(0) },line,col); self.emit(&ctx,Op::Store(tmp.clone()),line,col); Some(tmp) };
-        self.comprehension_loop(&mut ctx,kind,element,value,generators,0,result.as_deref(),line,col)?;
-        if let Some(result) = result { self.emit(&ctx,Op::Load(result),line,col); } else { self.emit(&ctx,Op::Const(Const::None),line,col); } self.emit(&ctx,Op::Return,line,col);
+        self.comprehension_loop(&mut ctx,kind,element,value,generators,0,result.as_deref(),inline,line,col)?;
+        if let Some(result) = result { self.emit(&ctx,Op::Load(result),line,col); } else { self.emit(&ctx,Op::Const(Const::None),line,col); }
         self.propagate_frees(index,outer);
         self.order_cell_locals(index);
-        self.emit(outer,Op::MakeFunction { code:self.offset+index,defaults:0,kwdefaults:Vec::new() },line,col); self.expr(outer,&generators[0].iter)?; self.emit(outer,Op::GetIter,line,col); self.emit(outer,Op::Call { pos:1,keywords:Vec::new() },line,col); Ok(())
+        if !inline {
+            self.emit(&ctx,Op::Return,line,col);
+            self.emit(outer,Op::MakeFunction { code:self.offset+index,defaults:0,kwdefaults:Vec::new() },line,col); self.expr(outer,&generators[0].iter)?; self.emit(outer,Op::GetIter,line,col); self.emit(outer,Op::Call { pos:1,keywords:Vec::new() },line,col);
+        } else {
+            self.expr(outer,&generators[0].iter)?;self.emit(outer,Op::GetIter,line,col);
+            self.codes[index].params=Params::default();self.codes[index].locals.retain(|name|name!=".0");
+            self.emit(outer,Op::BeginComprehension(self.offset+index),line,col);
+            let cleanup=self.emit(outer,Op::SetupFinally(0),line,col);
+            let offset=self.here(outer);
+            for instruction in self.codes[index].ops.clone(){self.codes[outer.index].ops.push(Instr{op:comprehension_rebase(instruction.op,offset),line:instruction.line,column:instruction.column});}
+            self.emit(outer,Op::PopHandler,line,col);self.patch(outer,cleanup,self.here(outer));
+            self.emit(outer,Op::EndComprehension,line,col);self.emit(outer,Op::EndFinally,line,col);
+        }
+        Ok(())
     }
-    fn comprehension_loop(&mut self, ctx: &mut DCtx, kind: &str, element: &DExpr, value: Option<&DExpr>, generators: &[DGenerator], index: usize, result: Option<&str>, line: usize, col: usize) -> Result<(),String> {
+    fn comprehension_loop(&mut self, ctx: &mut DCtx, kind: &str, element: &DExpr, value: Option<&DExpr>, generators: &[DGenerator], index: usize, result: Option<&str>, inline:bool, line: usize, col: usize) -> Result<(),String> {
         let generator = &generators[index];
-        if index == 0 { self.emit(ctx,Op::Load(".0".to_owned()),line,col); } else { self.expr(ctx,&generator.iter)?; self.emit(ctx,Op::GetIter,line,col); }
+        if index == 0 { if !inline{self.emit(ctx,Op::Load(".0".to_owned()),line,col);} } else { self.expr(ctx,&generator.iter)?; self.emit(ctx,Op::GetIter,line,col); }
         let start = self.here(ctx); let exhausted = self.emit(ctx,Op::ForIter(0),line,col); self.store(ctx,&generator.target)?;
         for filter in &generator.filters { self.expr(ctx,filter)?; self.emit(ctx,Op::JumpFalse(start),line,col); }
-        if index + 1 < generators.len() { self.comprehension_loop(ctx,kind,element,value,generators,index+1,result,line,col)?; }
+        if index + 1 < generators.len() { self.comprehension_loop(ctx,kind,element,value,generators,index+1,result,inline,line,col)?; }
         else if kind == "generator" { self.expr(ctx,element)?; self.emit(ctx,Op::Yield,line,col); self.emit(ctx,Op::Pop,line,col); }
         else if kind == "dict" {
             let key = self.temporary(ctx); self.expr(ctx,element)?; self.emit(ctx,Op::Store(key.clone()),line,col); self.expr(ctx,value.ok_or_else(||self.error(line,"missing dictionary comprehension value"))?)?;
@@ -1343,11 +1372,12 @@ fn compile_dynamic_optimized(source: &str, filename: &str, mode: &str, code_offs
     d_validate_except_star(&body,filename,0,&[])?;
     if mode == "single" && (body.is_empty() || body.iter().any(|stmt| stmt.line != body[0].line)) { return Err(format!("SyntaxError: multiple statements found while compiling a single statement ({filename}:1)")); }
     let mut symbols = DSymbols::default(); symbols.block(&body);
+    let comp_locals=symbols.finish_comprehensions();
     if let Some(error) = symbols.error { return Err(error); }
     if !symbols.nonlocals.is_empty() { return Err(format!("SyntaxError: nonlocal declaration not allowed at module level ({filename}:1)")); }
-    let code = Code { name:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags,docstring:None };
+    let code = Code { name:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags,docstring:None };
     let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single",future_flags,scope_annotations:HashMap::new(),stringized_annotation:false,optimize };
-    let mut ctx = DCtx { index:0,loops:Vec::new(),scopes:vec![(ScopeKind::Module,symbols.locals,symbols.globals)],private:None };
+    let mut ctx = DCtx { index:0,loops:Vec::new(),scopes:vec![(ScopeKind::Module,symbols.locals,symbols.globals)],comp_locals:vec![comp_locals],private:None };
     if mode == "eval" {
         if let DStmtKind::Expr(value) = &body[0].kind { compiler.expr(&mut ctx,value)?; }
     } else {

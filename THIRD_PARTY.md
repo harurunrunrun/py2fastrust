@@ -94,3 +94,9 @@ The implementation retains the distinct clone conditions and known-hash paths
 so keyword-key comparison and hashing effects are preserved. These adaptations
 use the PSF license retained in `py2fastrust/stdlib/PYTHON_LICENSE.txt`; generated
 general-runtime Rust includes that full license with the runtime notice.
+
+The execution phase ordering in `py2fastrust/runtime/execution.rs` follows
+CPython 3.14.4's `run_eval_code_obj` (`Python/pythonrun.c`), `PyEval_EvalCode`
+(`Python/ceval.c`), and `_PyFunction_FromConstructor` (`Objects/funcobject.c`).
+These sources are distributed under the PSF license included in
+`py2fastrust/stdlib/PYTHON_LICENSE.txt` and in generated Rust source notices.

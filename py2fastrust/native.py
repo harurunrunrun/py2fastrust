@@ -171,40 +171,37 @@ impl Iterator for NativeRange {
 '''
 
 
+_OUTPUT_HELPERS = r'''
+fn native_flush_output(output:&mut String)->Result<(),String> {
+    use std::io::Write;
+    let mut stdout=std::io::stdout().lock();
+    stdout.write_all(output.as_bytes()).map_err(|error|format!("OSError: {error}"))?;
+    output.clear();
+    stdout.flush().map_err(|error|format!("OSError: {error}"))
+}
+'''
+
+
 _INPUT_HELPERS = r'''
-struct NativeInput { text: String, position: usize, loaded: bool }
+struct NativeInput { reader: StandardInput, line: String }
 impl NativeInput {
-    fn new() -> Self {
-        Self { text: String::new(), position: 0, loaded: false }
+    fn new() -> Self {Self {reader:StandardInput::new(),line:String::new()}}
+    fn line(&mut self,output:&mut String)->Result<&str,String> {
+        if !output.is_empty(){native_flush_output(output)?;}
+        self.reader.read_text_into(&mut self.line,None,true).map_err(StandardInputError::native_message)?;
+        if self.line.is_empty(){return Err("EOFError: EOF when reading a line".into());}
+        if self.line.ends_with('\n'){self.line.pop();}
+        Ok(&self.line)
     }
-    fn line(&mut self) -> Result<&str, String> {
-        if !self.loaded {
-            use std::io::Read;
-            // Decoding is an input operation, so earlier print calls must be
-            // observable even when the input is not valid UTF-8.
-            std::io::stdin().read_to_string(&mut self.text).map_err(|error| {
-                let kind = if error.kind() == std::io::ErrorKind::InvalidData { "UnicodeDecodeError" } else { "OSError" };
-                format!("{}: {}", kind, error)
-            })?;
-            self.loaded = true;
-        }
-        if self.position == self.text.len() { return Err("EOFError: EOF when reading a line".into()); }
-        let start = self.position;
-        let bytes = self.text.as_bytes();
-        while self.position < bytes.len() && bytes[self.position] != b'\n' { self.position += 1; }
-        let end = self.position;
-        if self.position < bytes.len() { self.position += 1; }
-        Ok(&self.text[start..end])
+    fn integer(&mut self,output:&mut String) -> Result<NativeInt, String> {
+        native_parse_integer(self.line(output)?)
     }
-    fn integer(&mut self) -> Result<NativeInt, String> {
-        native_parse_integer(self.line()?)
-    }
-    fn integers(&mut self) -> Result<Vec<NativeInt>, String> {
-        self.line()?.split(native_space).filter(|word| !word.is_empty())
+    fn integers(&mut self,output:&mut String) -> Result<Vec<NativeInt>, String> {
+        self.line(output)?.split(native_space).filter(|word| !word.is_empty())
             .map(native_parse_integer).collect()
     }
-    fn unpack_integers_vec(&mut self, count: usize) -> Result<Vec<NativeInt>, String> {
-        let mut words = self.line()?.split(native_space).filter(|word| !word.is_empty());
+    fn unpack_integers_vec(&mut self, count: usize,output:&mut String) -> Result<Vec<NativeInt>, String> {
+        let mut words = self.line(output)?.split(native_space).filter(|word| !word.is_empty());
         let mut result = Vec::with_capacity(count);
         for index in 0..count {
             let word = words.next().ok_or_else(|| format!("ValueError: not enough values to unpack (expected {}, got {})", count, index))?;
@@ -216,8 +213,8 @@ impl NativeInput {
         }
         Ok(result)
     }
-    fn unpack_integers<const N: usize>(&mut self) -> Result<[NativeInt; N], String> {
-        let mut words = self.line()?.split(native_space).filter(|word| !word.is_empty());
+    fn unpack_integers<const N: usize>(&mut self,output:&mut String) -> Result<[NativeInt; N], String> {
+        let mut words = self.line(output)?.split(native_space).filter(|word| !word.is_empty());
         // The target count is a compile-time fact. No heap allocation is
         // needed for each edge's a,b input tuple, including error paths.
         let mut result = [0; N];
@@ -483,7 +480,7 @@ class _Generator:
 
     def integer_input_list(self, node):
         self.needs_integer_runtime = self.has_input = self.has_lists = True
-        return _Expression(self.at("native_input.integers()", node), "list_int")
+        return _Expression(self.at("native_input.integers(&mut native_output)", node), "list_int")
 
     def dict_view(self, node, environment):
         """Recognize an immediate view consumer; views never become variables."""
@@ -840,7 +837,7 @@ class _Generator:
                 argument = node.args[0]
                 if isinstance(argument, ast.Call) and isinstance(argument.func, ast.Name) and argument.func.id == "input" and not argument.args and not argument.keywords:
                     self.needs_integer_runtime = self.has_input = True
-                    return _Expression(self.at("native_input.integer()", argument), "int")
+                    return _Expression(self.at("native_input.integer(&mut native_output)", argument), "int")
                 value = self.expression(argument, environment)
                 return _Expression(self.number(value), "int", value.constant)
             if name == "abs" and len(node.args) == 1:
@@ -1210,8 +1207,8 @@ class _Generator:
                 if self.input_map(node.value):
                     self.needs_integer_runtime = self.has_input = True
                     # Keep unusually large unpackings off the Rust stack.
-                    unpack = (f"native_input.unpack_integers::<{count}>()" if count <= 32 else
-                              f"native_input.unpack_integers_vec({count})")
+                    unpack = (f"native_input.unpack_integers::<{count}>(&mut native_output)" if count <= 32 else
+                              f"native_input.unpack_integers_vec({count}, &mut native_output)")
                     value_code = self.at(unpack, node)
                     lines = [f"let {name} = {value_code};"]
                 else:
@@ -1546,13 +1543,19 @@ class _Generator:
                     return lines, environment
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "print":
                 separator, end = " ", "\n"
+                flush = False
                 seen = set()
                 for keyword in call.keywords:
-                    if keyword.arg not in {"sep", "end"} or keyword.arg in seen or not isinstance(keyword.value, ast.Constant) or type(keyword.value.value) is not str:
+                    if keyword.arg not in {"sep", "end", "flush"} or keyword.arg in seen or not isinstance(keyword.value, ast.Constant):
                         raise _Unsupported
                     seen.add(keyword.arg)
-                    if keyword.arg == "sep": separator = keyword.value.value
-                    else: end = keyword.value.value
+                    if keyword.arg == "flush":
+                        if type(keyword.value.value) is not bool: raise _Unsupported
+                        flush = keyword.value.value
+                    else:
+                        if type(keyword.value.value) is not str: raise _Unsupported
+                        if keyword.arg == "sep": separator = keyword.value.value
+                        else: end = keyword.value.value
                 values = [self.expression(argument.value if isinstance(argument, ast.Starred) else argument, environment)
                           for argument in call.args]
                 starred = [isinstance(argument, ast.Starred) for argument in call.args]
@@ -1576,6 +1579,7 @@ class _Generator:
                         if star:
                             lines.append("}")
                     lines.append(f"native_output.push_str({_string(end)});")
+                    if flush: lines.append(self.at("native_flush_output(&mut native_output)", node) + ";")
                     return "\n".join(lines), environment
                 for index, (name, value) in enumerate(zip(names, values)):
                     if index:
@@ -1583,6 +1587,7 @@ class _Generator:
                     formatted = name if value.kind == "int" else f'(if {name} {{ "True" }} else {{ "False" }})'
                     lines.append(f'write!(&mut native_output, "{{}}", {formatted}).unwrap();')
                 lines.append(f"native_output.push_str({_string(end)});")
+                if flush: lines.append(self.at("native_flush_output(&mut native_output)", node) + ";")
                 return "\n".join(lines), environment
             expression = self.expression(call, environment)
             return f"let _ = {'&(' + expression.code + ')' if expression.kind in {'list_int', 'dict_int', 'set_int', 'matrix_int', 'deque_int'} and not expression.owned else expression.code};", environment
@@ -1802,12 +1807,14 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         f"const INT_BITS: u32 = {generator.bits};\ntype NativeInt = {integer};\n",
         "/*\n" + notice + "\n*/\n",
         _HELPERS,
+        _OUTPUT_HELPERS,
     ]
     if generator.needs_integer_runtime:
         unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
         result.append("\n".join("// " + line for line in unicode_license.splitlines()) + "\n")
         result.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
     if generator.has_input:
+        result.append(runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"))
         result.append(_INPUT_HELPERS)
     if generator.has_lists:
         result.append(_LIST_HELPERS)

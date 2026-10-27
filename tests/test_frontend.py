@@ -30,9 +30,25 @@ class FrontendTests(unittest.TestCase):
     def test_comprehension_has_isolated_bindings(self):
         program = Compiler().compile("def f(n):\n return [x+n for x in range(n)]\n")
         code = next(c for c in program.codes if c.name == "listcomp")
+        owner = next(c for c in program.codes if c.name == "f")
+        code_id = program.codes.index(code)
         self.assertIn("x", code.locals)
         self.assertNotIn("n", code.globals)
+        self.assertEqual(code.params.positional, [])
+        self.assertIn(("BeginComprehension", (code_id,)), [(op.op, op.args) for op in owner.ops])
+        self.assertIn("EndComprehension", [op.op for op in owner.ops])
+        self.assertFalse(any(op.op == "MakeFunction" and op.args[0] == code_id for op in owner.ops))
+        self.assertFalse(any(op.op == "Load" and op.args[0] == ".0" for op in owner.ops))
+
+    def test_generator_comprehension_retains_its_own_frame(self):
+        program = Compiler().compile("def f(n):\n return (x+n for x in range(n))\n")
+        code = next(c for c in program.codes if c.name == "genexpr")
+        owner = next(c for c in program.codes if c.name == "f")
+        code_id = program.codes.index(code)
         self.assertEqual(code.params.positional, [".0"])
+        self.assertTrue(code.is_generator)
+        self.assertTrue(any(op.op == "MakeFunction" and op.args[0] == code_id for op in owner.ops))
+        self.assertNotIn("BeginComprehension", [op.op for op in owner.ops])
 
     def test_invalid_context_is_rejected_by_cpython(self):
         for source in ("return 1", "break", "nonlocal x", "yield 1", "continue"):

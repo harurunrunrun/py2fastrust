@@ -22,6 +22,7 @@ struct Code {
     filename: String,
     kind: ScopeKind,
     locals: Vec<String>,
+    comp_locals: Vec<String>,
     globals: Vec<String>,
     nonlocals: Vec<String>,
     frees: Vec<String>,
@@ -51,6 +52,8 @@ enum Const {
 enum Op {
     Const(Const),
     Keyword(String),
+    BeginComprehension(usize),
+    EndComprehension,
     Load(String),
     Store(String),
     StoreCell(String),
@@ -84,6 +87,7 @@ enum Op {
         pos: usize,
         keywords: Vec<String>,
     },
+    CaptureBuiltins,
     MakeFunction {
         code: usize,
         defaults: usize,
@@ -220,6 +224,14 @@ struct PyExceptionData {
     trace: Vec<(String, usize, String)>,
 }
 type PyResult<T> = Result<T, PyException>;
+fn standard_input_exception(error:StandardInputError)->PyException {
+    match error {
+        StandardInputError::Io(error)=>pyerr("OSError",error.to_string()),
+        StandardInputError::Memory=>pyerr("MemoryError","cannot allocate input buffer"),
+        StandardInputError::Decode{object,start,end,reason}=>codec_error(TextCodec::Utf8,Value::Bytes(object.into()),start,end,reason,true),
+    }
+}
+
 fn pyerr(kind: &str, message: impl Into<String>) -> PyException {
     let message = message.into();
     PyException(Box::new(PyExceptionData {
@@ -263,8 +275,10 @@ struct Function {
     type_params: Value,
     code: usize,
     globals: usize,
+    builtins: Value,
     closure: Option<usize>,
     defaults: Vec<Value>,
+    defaults_set: bool,
     kwdefaults: HashMap<String, Value>,
 }
 #[derive(Clone, Debug)]
@@ -412,11 +426,13 @@ struct Handler {
 }
 #[derive(Clone, Debug)]
 struct Frame {
+    function: Option<Value>,
     code: usize,
     pc: usize,
     locals: usize,
     temps: usize,
     globals: usize,
+    builtins: Value,
     closure: Option<usize>,
     stack: Vec<Value>,
     handlers: Vec<Handler>,
@@ -427,6 +443,7 @@ struct Frame {
     except_star: Vec<Value>,
     next_call: Option<Box<Frame>>,
     cache_returns: Vec<CacheReturn>,
+    comprehensions: Vec<InlineComprehension>,
     resume_value: Option<Value>,
     injected_exception: Option<PyException>,
     finally_regions: Vec<(usize, usize, bool)>,
@@ -458,12 +475,12 @@ struct Runtime {
     builtins: usize,
     globals: usize,
     output: OutputBuffer,
-    input: Vec<u8>,
-    input_pos: usize,
+    input: StandardInput,
     recursion: usize,
     recursion_limit: usize,
     allocations: usize,
     scope_bindings: HashMap<usize, Vec<String>>,
+    scope_comprehension_bindings: HashMap<usize,Vec<String>>,
     running_generators: Vec<usize>,
     scope_parents: HashMap<usize, usize>,
     gc_running: bool,
@@ -472,7 +489,12 @@ struct Runtime {
     instance_slots: HashMap<usize, HashMap<usize, Value>>,
     next_slot: usize,
     active_future_flags: u32,
+    active_builtins: Value,
     handled_exception: Option<PyException>,
+    collection_callers: Vec<usize>,
+    collection_nullable_slots: std::collections::HashSet<usize>,
+    ordered_collections: HashMap<usize,OrderedCollectionState>,
+    collection_keepers: HashMap<usize,Value>,
 }
 impl Runtime {
     fn new_exception(&mut self, kind: &str, args: Vec<Value>) -> PyResult<PyException> {
@@ -540,12 +562,13 @@ impl Runtime {
         roots.extend(error.context.iter().cloned());
     }
     fn locals_snapshot(&mut self, frame: &Frame) -> PyResult<Value> {
+        if !frame.comprehensions.is_empty() { return self.comprehension_locals(frame); }
         let code = self.codes[frame.code].clone();
         let mut names = code.params.positional;
         names.extend(code.params.kwonly);
         names.extend(code.params.vararg);
         names.extend(code.params.kwarg);
-        names.extend(code.locals);
+        names.extend(self.comprehension_local_names(frame.code));
         let mut frees = code.frees;
         frees.sort();
         names.extend(frees.clone());
@@ -573,7 +596,7 @@ impl Runtime {
                 };
                 if let Some(value) = value {
                     self.roots[root].push(value.clone());
-                    entries.push((Value::Str(name.into()), value));
+                    entries.push((Value::Str(self.intern_keyword(&name)), value));
                 }
             }
             Ok(self.obj_value(Object::Dict(entries)))
@@ -706,6 +729,7 @@ impl Runtime {
         value: Option<Value>,
         delete: bool,
     ) -> PyResult<Value> {
+        let nullable=matches!(&descriptor,Value::Obj(index)if self.collection_nullable_slots.contains(index));
         let (owner, name, slot) = match &descriptor {
             Value::Obj(index) => match self.object(*index)? {
                 Object::Slot { owner, name, slot } => (owner, name, slot),
@@ -780,6 +804,10 @@ impl Runtime {
                 .insert(slot, value);
             return Ok(Value::None);
         }
+        if delete && nullable {
+            if let Some(slots)=self.instance_slots.get_mut(&index){slots.remove(&slot);}
+            return Ok(Value::None);
+        }
         if delete {
             return if self
                 .instance_slots
@@ -796,6 +824,7 @@ impl Runtime {
             .get(&index)
             .and_then(|slots| slots.get(&slot))
             .cloned()
+            .or_else(||nullable.then_some(Value::None))
             .ok_or_else(|| pyerr("AttributeError", name))
     }
     fn rich_comparison(&mut self, op: &str, a: &Value, b: &Value) -> PyResult<Option<Value>> {
@@ -938,14 +967,21 @@ impl Runtime {
         }
         self.delattr_default(obj, name)
     }
-    fn stream_call(&mut self, name: &str, args: Vec<Value>, binary: bool) -> PyResult<Value> {
+    fn stream_call(&mut self, name: &str, args: Vec<Value>, kwargs:KeywordArgs, binary: bool) -> PyResult<Value> {
         let (target, method) = name.split_once(':').unwrap_or(("stdin", name));
+        if !kwargs.is_empty(){return Err(pyerr("TypeError",format!("{method}() takes no keyword arguments")));}
+        if ["read","readline","readlines"].contains(&method) {
+            if args.len()>1{return Err(pyerr("TypeError",format!("{method}() takes at most 1 argument")));}
+        } else if args.len()!=usize::from(method=="write") {
+            return Err(pyerr("TypeError",format!("invalid arguments for {method}()")));
+        }
         match method {
             "isatty" => return Ok(Value::Bool(false)),
             "readable" => return Ok(Value::Bool(target == "stdin")),
             "writable" => return Ok(Value::Bool(target != "stdin")),
             "flush" => {
-                self.finish();
+                if target=="stdout" {self.flush_stdout()?;}
+                else if target=="stderr" {std::io::stderr().flush().map_err(|error|pyerr("OSError",error.to_string()))?;}
                 return Ok(Value::None);
             }
             "write" => {
@@ -978,16 +1014,14 @@ impl Runtime {
         if target != "stdin" {
             return Err(pyerr("OSError", "not readable"));
         }
-        let count = if let Some(v) = args.first() {
-            self.as_int(v)?.to_i128().unwrap_or(-1)
-        } else {
-            -1
-        };
+        let count=if let Some(value)=args.first() {
+            if matches!(value,Value::None) && method!="readline" {None}else{self.stream_size(value)?}
+        } else {None};
         if method == "readlines" {
             let mut lines = Vec::new();
             let mut total = 0;
             loop {
-                let line = self.stream_call(&format!("{}:readline", target), Vec::new(), binary)?;
+                let line = self.stream_call(&format!("{}:readline", target), Vec::new(),Vec::new(), binary)?;
                 let size = match &line {
                     Value::Str(line) => line.chars().count(),
                     Value::Bytes(line) => line.len(),
@@ -998,95 +1032,21 @@ impl Runtime {
                 }
                 total += size;
                 lines.push(line);
-                if count > 0 && total as i128 > count {
+                if count.is_some_and(|count|count>0 && total>count) {
                     break;
                 }
             }
             return Ok(self.obj_value(Object::List(lines)));
         }
-        if !binary && ["read", "readline"].contains(&method) {
-            let mut text = String::new();
-            let mut length = 0;
-            while self.input_pos < self.input.len() && (count < 0 || length < count) {
-                let first = self.input[self.input_pos];
-                let ch = {
-                    let width = match first {
-                        0..=127 => 1,
-                        194..=223 => 2,
-                        224..=239 => 3,
-                        240..=244 => 4,
-                        _ => return Err(pyerr("UnicodeDecodeError", "input is not valid UTF-8")),
-                    };
-                    let end = self.input_pos.saturating_add(width);
-                    let bytes = self
-                        .input
-                        .get(self.input_pos..end)
-                        .ok_or_else(|| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?;
-                    let ch = std::str::from_utf8(bytes)
-                        .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?
-                        .chars()
-                        .next()
-                        .unwrap();
-                    self.input_pos = end;
-                    ch
-                };
-                text.push(ch);
-                length += 1;
-                if method == "readline" && ch == '\n' {
-                    break;
-                }
-            }
-            return Ok(Value::Str(text.into()));
-        }
-        let start = self.input_pos;
-        let mut end = self.input.len();
-        if method == "readline" {
-            end = self.input[start..]
-                .iter()
-                .position(|b| *b == b'\n')
-                .map(|i| start + i + 1)
-                .unwrap_or(end)
-        }
-        if count >= 0 {
-            if binary {
-                end = end.min(start.saturating_add(count as usize));
-            } else {
-                let s = std::str::from_utf8(&self.input[start..end])
-                    .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?;
-                end = s
-                    .char_indices()
-                    .nth(count as usize)
-                    .map(|(i, _)| start + i)
-                    .unwrap_or(end)
-            }
-        }
-        let bytes = self.input[start..end].to_vec();
-        self.input_pos = end;
-        if method == "readlines" {
-            let mut lines = Vec::new();
-            for line in bytes.split_inclusive(|b| *b == b'\n') {
-                lines.push(if binary {
-                    Value::Bytes(line.to_vec().into())
-                } else {
-                    Value::Str(
-                        String::from_utf8(line.to_vec())
-                            .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?.into(),
-                    )
-                })
-            }
-            return Ok(self.obj_value(Object::List(lines)));
-        }
-        if method != "read" && method != "readline" {
-            return Err(pyerr("AttributeError", method));
-        }
-        Ok(if binary {
-            Value::Bytes(bytes.into())
+        if method!="read" && method!="readline" {return Err(pyerr("AttributeError",method));}
+        let value=if binary {
+            Value::Bytes(self.input.read_binary(count,method=="readline").map_err(standard_input_exception)?.into())
         } else {
-            Value::Str(
-                String::from_utf8(bytes)
-                    .map_err(|_| pyerr("UnicodeDecodeError", "input is not valid UTF-8"))?.into(),
-            )
-        })
+            let mut text=String::new();
+            self.input.read_text_into(&mut text,count,method=="readline").map_err(standard_input_exception)?;
+            Value::Str(text.into())
+        };
+        Ok(value)
     }
     fn find_finally_end(&self, code: usize, start: usize) -> usize {
         let mut depth = 0;
@@ -1266,46 +1226,42 @@ impl Runtime {
             }
         }
     }
-    fn mapping_get(&mut self, i: usize, n: &str) -> PyResult<Option<Value>> {
-        if let Some(Object::ExecutionLocals(value))=self.heap.get(i).and_then(Option::as_ref){return self.getitem(value.clone(),Value::Str(n.into())).map(Some);}
-        if matches!(
-            self.heap.get(i).and_then(|o| o.as_ref()),
-            Some(Object::Namespace(..) | Object::Dict(_))
-        ) {
-            Ok(self.ns_get(i, n))
-        } else {
-            match self.getitem(Value::Obj(i), Value::Str(n.into())) {
-                Ok(v) => Ok(Some(v)),
-                Err(e) if self.exception_has_native_class(&e, "KeyError") => Ok(None),
-                Err(e) => Err(e),
-            }
+    fn mapping_get(&mut self, index: usize, name: &str) -> PyResult<Option<Value>> {
+        match self.heap.get(index).and_then(Option::as_ref) {
+            Some(Object::Namespace(..)) => return Ok(self.ns_get(index, name)),
+            Some(Object::Dict(_)) => return self.global_name_get(index, name),
+            _ => (),
+        }
+        let mapping = self.execution_locals_value(index);
+        let key = Value::Str(self.intern_keyword(name));
+        match self.getitem(mapping, key) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if self.exception_has_native_class(&error, "KeyError") => Ok(None),
+            Err(error) => Err(error),
         }
     }
-    fn mapping_set(&mut self, i: usize, n: String, v: Value) -> PyResult<()> {
-        if let Some(Object::ExecutionLocals(value))=self.heap.get(i).and_then(Option::as_ref){return self.setitem(value.clone(),Value::Str(n.into()),v);}
-        if matches!(
-            self.heap.get(i).and_then(|o| o.as_ref()),
-            Some(Object::Namespace(..) | Object::Dict(_))
-        ) {
-            self.ns_set(i, n, v);
-            Ok(())
-        } else {
-            self.setitem(Value::Obj(i), Value::Str(n.into()), v)
+    fn mapping_set(&mut self, index: usize, name: String, value: Value) -> PyResult<()> {
+        match self.heap.get(index).and_then(Option::as_ref) {
+            Some(Object::Namespace(..)) => { self.ns_set(index, name, value); return Ok(()); }
+            Some(Object::Dict(_)) => return self.global_name_set(index, name, value),
+            _ => (),
         }
+        let mapping = self.execution_locals_value(index);
+        let key = Value::Str(self.intern_keyword(&name));
+        self.setitem(mapping, key, value)
     }
-    fn mapping_del(&mut self, i: usize, n: &str) -> PyResult<bool> {
-        if let Some(Object::ExecutionLocals(value))=self.heap.get(i).and_then(Option::as_ref){return self.delitem(value.clone(),Value::Str(n.into())).map(|()|true);}
-        if matches!(
-            self.heap.get(i).and_then(|o| o.as_ref()),
-            Some(Object::Namespace(..) | Object::Dict(_))
-        ) {
-            Ok(self.ns_del(i, n))
-        } else {
-            match self.delitem(Value::Obj(i), Value::Str(n.into())) {
-                Ok(()) => Ok(true),
-                Err(e) if self.exception_has_native_class(&e, "KeyError") => Ok(false),
-                Err(e) => Err(e),
-            }
+    fn mapping_del(&mut self, index: usize, name: &str) -> PyResult<bool> {
+        match self.heap.get(index).and_then(Option::as_ref) {
+            Some(Object::Namespace(..)) => return Ok(self.ns_del(index, name)),
+            Some(Object::Dict(_)) => return self.global_name_del(index, name),
+            _ => (),
+        }
+        let mapping = self.execution_locals_value(index);
+        let key = Value::Str(self.intern_keyword(name));
+        match self.delitem(mapping, key) {
+            Ok(()) => Ok(true),
+            Err(error) if self.exception_has_native_class(&error, "KeyError") => Ok(false),
+            Err(error) => Err(error),
         }
     }
     fn new(codes: Vec<Code>, modules: Vec<(String, usize)>) -> Self {
@@ -1331,12 +1287,12 @@ impl Runtime {
             builtins: 0,
             globals: 0,
             output: OutputBuffer::new(),
-            input: Vec::new(),
-            input_pos: 0,
+            input: StandardInput::new(),
             recursion: 0,
             recursion_limit: 1000,
             allocations: 0,
             scope_bindings: HashMap::new(),
+            scope_comprehension_bindings: HashMap::new(),
             running_generators: Vec::new(),
             scope_parents: HashMap::new(),
             gc_running: false,
@@ -1345,10 +1301,16 @@ impl Runtime {
             instance_slots: HashMap::new(),
             next_slot: 0,
             active_future_flags: 0,
+            active_builtins: Value::None,
             handled_exception: None,
+            collection_callers: Vec::new(),
+            collection_nullable_slots: std::collections::HashSet::new(),
+            ordered_collections: HashMap::new(),
+            collection_keepers: HashMap::new(),
         };
-        rt.builtins = rt.alloc(Object::Namespace(OrderedNamespace::new(), None));
-        rt.globals = rt.alloc(Object::Namespace(OrderedNamespace::new(), None));
+        rt.builtins = rt.alloc(Object::Dict(Vec::new()));
+        rt.active_builtins = Value::Obj(rt.builtins);
+        rt.globals = rt.alloc(Object::Dict(Vec::new()));
         for name in [
             "abs",
             "all",
@@ -1418,6 +1380,10 @@ impl Runtime {
             "vars",
             "zip",
             "__import__",
+            "_py2fastrust_dict_payload",
+            "_py2fastrust_nullable_slot",
+            "_py2fastrust_namedtuple_module",
+            "_py2fastrust_ordered",
         ] {
             rt.ns_set(rt.builtins, name.into(), Value::Builtin(name.into()));
         }
@@ -1469,14 +1435,16 @@ impl Runtime {
             "NotImplemented".into(),
             Value::Builtin("NotImplemented".into()),
         );
+        rt.ns_set(rt.builtins, "__name__".into(), Value::Str("builtins".into()));
+        let builtin_module = rt.obj_value(Object::Module { name: "builtins".into(), attrs: rt.builtins });
+        rt.modules.insert("builtins".into(), builtin_module.clone());
         rt.ns_set(rt.globals, "__name__".into(), Value::Str("__main__".into()));
-        rt.ns_set(rt.globals, "__builtins__".into(), Value::Obj(rt.builtins));
+        rt.ns_set(rt.globals, "__builtins__".into(), builtin_module);
         let main = rt.alloc(Object::Module {
             name: "__main__".into(),
             attrs: rt.globals,
         });
         rt.modules.insert("__main__".into(), Value::Obj(main));
-        let _ = std::io::stdin().read_to_end(&mut rt.input);
         rt
     }
     fn alloc(&mut self, obj: Object) -> usize {
@@ -1488,7 +1456,11 @@ impl Runtime {
             self.annotation_namespaces.remove(&i);
             self.scope_cells.remove(&i);
             self.scope_bindings.remove(&i);
+            self.scope_comprehension_bindings.remove(&i);
             self.scope_parents.remove(&i);
+            self.ordered_collections.remove(&i);
+            self.collection_keepers.remove(&i);
+            self.collection_nullable_slots.remove(&i);
             self.finalized.remove(&i);
             self.heap[i]=Some(obj);
             i
@@ -1519,17 +1491,18 @@ impl Runtime {
         }
     }
     fn ns_set(&mut self, i: usize, name: String, v: Value) {
+        let interned = self.intern_keyword(&name);
         if let Some(Object::BuiltinInstance{payload:Value::Obj(index),..})=self.heap.get(i).and_then(Option::as_ref){let index=*index;self.ns_set(index,name,v);return;}
         let mut inserted=None;
         if let Some(Some(o))=self.heap.get_mut(i) {
             match o {
                 Object::Namespace(m,_)=>{
-                    let new=!m.contains_key(&name);m.insert(name.clone(),v);
+                    let new=!m.contains_key(&name);m.insert_ident(interned.clone(),v);
                     if new {inserted=m.ident_items().into_iter().find(|(key,_)|matches!(key,Value::Str(key)if key==&name)).map(|(key,_)|key);}
                 },
                 Object::Dict(m)=>{
                     if let Some((_,old))=m.iter_mut().find(|(key,_)|matches!(key,Value::Str(key)if key==&name)) {*old=v;}
-                    else {let key=Value::Str(name.into());inserted=Some(key.clone());m.push((key,v));}
+                    else {let key=Value::Str(interned);inserted=Some(key.clone());m.push((key,v));}
                 },
                 _=>{},
             }
@@ -1581,15 +1554,16 @@ impl Runtime {
                 .ns_get(f.temps, name)
                 .ok_or_else(|| pyerr("RuntimeError", "unbound internal temporary"));
         }
+        if !f.comprehensions.is_empty() { return self.comprehension_load(f,name); }
         let global = self.codes[f.code].globals.iter().any(|s| s == name);
         let islocal = (self.codes[f.code].kind == ScopeKind::Function
             || self.codes[f.code].kind == ScopeKind::Comprehension
             || self.codes[f.code].kind == ScopeKind::TypeParameters)
-            && self.codes[f.code].locals.iter().any(|s| s == name);
+            && self.codes[f.code].locals.iter().any(|s| s == name)
+            && !self.codes[f.code].frees.iter().chain(&self.codes[f.code].nonlocals).any(|s|s==name);
         if global {
-            return self
-                .ns_get(f.globals, name)
-                .or_else(|| self.builtin_lookup(f.globals, name))
+            if let Some(value) = self.mapping_get(f.globals, name)? { return Ok(value); }
+            return self.builtin_lookup(f.builtins.clone(), name)?
                 .ok_or_else(|| pyerr("NameError", format!("name '{}' is not defined", name)));
         }
         if let Some(v) = self.mapping_get(f.locals, name)? {
@@ -1638,26 +1612,23 @@ impl Runtime {
                 )
             });
         }
-        self.ns_get(f.globals, name)
-            .or_else(|| self.builtin_lookup(f.globals, name))
+        let global_value = if matches!(self.codes[f.code].kind, ScopeKind::Function | ScopeKind::Comprehension | ScopeKind::Annotation | ScopeKind::TypeParameters) {
+            self.mapping_get(f.globals, name)?
+        } else {
+            self.global_name_get(f.globals, name)?
+        };
+        if let Some(value) = global_value { return Ok(value); }
+        self.builtin_lookup(f.builtins.clone(), name)?
             .ok_or_else(|| pyerr("NameError", format!("name '{}' is not defined", name)))
-    }
-    fn builtin_lookup(&self, g: usize, n: &str) -> Option<Value> {
-        match self.ns_get(g, "__builtins__") {
-            Some(Value::Obj(i)) => match self.heap.get(i).and_then(|o| o.as_ref()) {
-                Some(Object::Module { attrs, .. }) => self.ns_get(*attrs, n),
-                _ => self.ns_get(i, n),
-            },
-            _ => self.ns_get(self.builtins, n),
-        }
     }
     fn store(&mut self, f: &Frame, name: String, v: Value) -> PyResult<()> {
         if name.starts_with('$') || name.starts_with('\0') {
             self.ns_set(f.temps, name, v);
             return Ok(());
         }
+        if !f.comprehensions.is_empty() { return self.comprehension_store(f,name,v); }
         if self.codes[f.code].globals.contains(&name) {
-            self.ns_set(f.globals, name, v);
+            self.global_name_set(f.globals, name, v)?;
         } else if self.codes[f.code].nonlocals.contains(&name) {
             let i = self.find_nonlocal(f.closure, &name).ok_or_else(|| {
                 pyerr(
@@ -1673,11 +1644,13 @@ impl Runtime {
     }
     fn run(&mut self) -> PyResult<Value> {
         let f = Frame {
+            function: None,
             code: 0,
             pc: 0,
             locals: self.globals,
             temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
             globals: self.globals,
+            builtins: Value::Obj(self.builtins),
             closure: None,
             stack: Vec::new(),
             handlers: Vec::new(),
@@ -1688,6 +1661,7 @@ impl Runtime {
                 except_star: Vec::new(),
             next_call: None,
             cache_returns: Vec::new(),
+            comprehensions: Vec::new(),
             resume_value: None,
             injected_exception: None,
             finally_regions: Vec::new(),
@@ -1772,7 +1746,9 @@ impl Runtime {
         })
     }
     fn frame_roots(frame: &Frame, out: &mut Vec<Value>) {
+        out.extend(frame.function.iter().cloned());
         out.extend(frame.stack.iter().cloned());
+        out.extend(frame.comprehensions.iter().map(|scope|Value::Obj(scope.namespace)));
         for pending in &frame.cache_returns {
             out.push(pending.owner.clone());
             out.extend(pending.entry.args.iter().cloned());
@@ -1787,6 +1763,7 @@ impl Runtime {
         out.push(Value::Obj(frame.locals));
         out.push(Value::Obj(frame.temps));
         out.push(Value::Obj(frame.globals));
+        out.push(frame.builtins.clone());
         if let Some(i) = frame.closure {
             out.push(Value::Obj(i))
         }
@@ -1814,6 +1791,9 @@ impl Runtime {
         let previous_exception=self.handled_exception.clone();
         f.inherited_exception=previous_exception.clone();
         let previous_flags=self.active_future_flags;
+        let previous_builtins=self.active_builtins.clone();
+        let collection_depth=self.collection_callers.len();
+        self.collection_callers.push(f.globals);
         let base_depth = self.recursion;
         let root = self.roots.len();
         self.roots.push(Vec::new());
@@ -1821,6 +1801,7 @@ impl Runtime {
         let mut frames: Vec<Frame> = Vec::new();
         let result = (|| loop {
             self.active_future_flags=self.codes[f.code].future_flags;
+            self.active_builtins=f.builtins.clone();
             self.handled_exception=f.exception.clone().or_else(||f.inherited_exception.clone());
             let mut roots = Vec::new();
             Self::frame_roots(&f, &mut roots);
@@ -1868,6 +1849,7 @@ impl Runtime {
             match result {
                 Ok(Some(FrameExit::Return(v))) => {
                     if let Some(mut parent) = frames.pop() {
+                        self.collection_callers.pop();
                         parent.stack.push(v);
                         self.recursion -= 1;
                         f = parent;
@@ -1885,6 +1867,7 @@ impl Runtime {
                             ));
                         }
                         let inherited=f.exception.clone().or_else(||f.inherited_exception.clone());
+                        self.collection_callers.push(child.globals);
                         frames.push(f);
                         self.recursion += 1;
                         f = *child;
@@ -1893,6 +1876,7 @@ impl Runtime {
                 }
                 Err(mut e) => loop {
                     self.active_future_flags=self.codes[f.code].future_flags;
+                    self.active_builtins=f.builtins.clone();
                     if e.context.is_none() {
                         if let Some(mut previous) = f.exception.clone().or_else(||f.inherited_exception.clone()) {
                             let previous = self.exception_value(&mut previous);
@@ -1935,6 +1919,7 @@ impl Runtime {
                         break;
                     }
                     if let Some(parent) = frames.pop() {
+                        self.collection_callers.pop();
                         self.recursion -= 1;
                         f = parent;
                     } else {
@@ -1944,7 +1929,9 @@ impl Runtime {
             }
         })();
         self.roots.truncate(root);
+        self.collection_callers.truncate(collection_depth);
         self.active_future_flags=previous_flags;
+        self.active_builtins=previous_builtins;
         self.handled_exception=previous_exception;
         self.recursion = base_depth;
         result
@@ -2010,6 +1997,8 @@ impl Runtime {
                     self.ns_set(self.builtins, "_".into(), v)
                 }
             }
+            Op::BeginComprehension(code)=>self.begin_comprehension(f,code),
+            Op::EndComprehension=>self.end_comprehension(f)?,
             Op::Keyword(name)=>{let key=self.intern_keyword(&name);f.stack.push(Value::Str(key));}
             Op::Const(c) => {
                 let v = self.code_constant(f.code,c)?;
@@ -2046,9 +2035,17 @@ impl Runtime {
                 } else {
                     f.locals
                 };
-                let deleted=if self.codes[f.code].globals.contains(&n){Ok(self.ns_del(ns,&n))}else{self.mapping_del(ns,&n)};
-                let deleted=if self.codes[f.code].kind==ScopeKind::Class{deleted.unwrap_or(false)}else{deleted?};
+                let global=self.codes[f.code].globals.contains(&n);
+                let deleted=if global{self.global_name_del(ns,&n)}else{self.mapping_del(ns,&n)};
+                // DELETE_NAME replaces mapping errors; DELETE_GLOBAL keeps
+                // them even when its enclosing code is a class body.
+                let deleted=if !global && matches!(self.codes[f.code].kind,ScopeKind::Module|ScopeKind::Class){deleted.unwrap_or(false)}else{deleted?};
                 if !deleted {
+                    if !global && !self.codes[f.code].nonlocals.contains(&n)
+                        && !matches!(self.codes[f.code].kind,ScopeKind::Module|ScopeKind::Class)
+                        && self.codes[f.code].locals.contains(&n) {
+                        return Err(pyerr("UnboundLocalError",format!("cannot access local variable '{}' where it is not associated with a value",n)));
+                    }
                     return Err(pyerr("NameError", format!("name '{}' is not defined", n)));
                 }
             }
@@ -2246,52 +2243,41 @@ impl Runtime {
                     Ok(())
                 })?;
             }
-            Op::MakeFunction {
-                code,
-                defaults,
-                kwdefaults,
-            } => {
-                let kwvals = Self::pop_many(f, kwdefaults.len())?;
-                let defs = Self::pop_many(f, defaults)?;
-                let closure = if matches!(self.codes[code].kind, ScopeKind::Annotation | ScopeKind::TypeParameters) {
-                    Some(f.locals)
-                } else {
-                    match self.codes[f.code].kind {
-                        ScopeKind::Class => f.closure,
-                        ScopeKind::Module => None,
-                        _ => Some(f.locals),
-                    }
+            Op::CaptureBuiltins => {
+                // Class bodies are functions created before evaluating bases.
+                // Looking up their module can itself run a string-key callback.
+                let module=self.global_name_get(f.globals,"__name__")?.unwrap_or(Value::None);
+                let (module,builtins)=self.view_rooted(vec![module],|runtime,root|{
+                    let builtins=runtime.capture_builtins(f.globals,f.builtins.clone())?;
+                    Ok((runtime.roots[root][0].clone(),builtins))
+                })?;
+                // Keep both hidden body-function fields alive until class exit.
+                f.stack.push(module);f.stack.push(builtins);
+            }
+            Op::MakeFunction { code, defaults, kwdefaults } => {
+                let kwvals=Self::pop_many(f,kwdefaults.len())?;
+                let defs=Self::pop_many(f,defaults)?;
+                let closure=if let Some(scope)=f.comprehensions.last(){Some(scope.namespace)}else if matches!(self.codes[code].kind,ScopeKind::Annotation|ScopeKind::TypeParameters){Some(f.locals)}else{
+                    match self.codes[f.code].kind {ScopeKind::Class=>f.closure,ScopeKind::Module=>None,_=>Some(f.locals)}
                 };
-                let attrs = self.alloc(Object::Dict(Vec::new()));
-                let annotations = self.obj_value(Object::Dict(Vec::new()));
-                let type_params = self.obj_value(Object::Tuple(Vec::new()));
-                let name = match self.code_constant(code, Const::Str(self.codes[code].name.clone()))? {
-                    Value::Str(name) => name,
-                    _ => unreachable!(),
-                };
-                let qualname = name.clone();
-                let module = self.ns_get(f.globals, "__name__").unwrap_or(Value::None);
-                let doc = match self.codes[code].docstring.clone() {
-                    Some(s) => self.code_constant(code, Const::Str(s))?,
-                    _ => Value::None,
-                };
-                let fun = self.obj_value(Object::Function(Function {
-                    annotate: None,
-                    annotations_evaluated: false,
-                    attrs,
-                    name,
-                    qualname,
-                    module,
-                    doc,
-                    annotations,
-                    type_params,
-                    code,
-                    globals: f.globals,
-                    closure,
-                    defaults: defs,
-                    kwdefaults: kwdefaults.into_iter().zip(kwvals).collect(),
-                }));
-                f.stack.push(fun)
+                let attrs=self.alloc(Object::Dict(Vec::new()));
+                let annotations=self.obj_value(Object::Dict(Vec::new()));
+                let type_params=self.obj_value(Object::Tuple(Vec::new()));
+                let name=match self.code_constant(code,Const::Str(self.codes[code].name.clone()))?{Value::Str(name)=>name,_=>unreachable!()};
+                let doc=match self.codes[code].docstring.clone(){Some(value)=>self.code_constant(code,Const::Str(value))?,_=>Value::None};
+                let mut roots=defs.clone();roots.extend(kwvals.iter().cloned());
+                roots.extend([Value::Obj(attrs),annotations.clone(),type_params.clone(),doc.clone(),Value::Obj(f.globals),f.builtins.clone()]);
+                roots.extend(closure.map(Value::Obj));
+                let fun=self.view_rooted(roots,|runtime,root|{
+                    let module=runtime.global_name_get(f.globals,"__name__")?.unwrap_or(Value::None);
+                    runtime.roots[root].push(module.clone());
+                    let builtins=runtime.capture_builtins(f.globals,f.builtins.clone())?;
+                    Ok(runtime.obj_value(Object::Function(Function{
+                        annotate:None,annotations_evaluated:false,attrs,name:name.clone(),qualname:name,module,doc,annotations,type_params,
+                        code,globals:f.globals,builtins,closure,defaults:defs,defaults_set:defaults>0,kwdefaults:kwdefaults.into_iter().zip(kwvals).collect(),
+                    })))
+                })?;
+                f.stack.push(fun);
             }
             Op::MakeTypeParam { name, kind } => {
                 let default = Self::pop(f)?;
@@ -2490,18 +2476,20 @@ impl Runtime {
                 let kv = Self::pop_many(f, keywords.len())?;
                 let bases = Self::pop_many(f, bases)?;
                 let mut kw=Vec::new();for(name,value)in keywords.into_iter().zip(kv){kw.push((self.static_keyword(name),value));}
-                let cls = self.make_class(f, name, code, bases, kw)?;
+                let builtins=Self::pop(f)?;let body_module=Self::pop(f)?;
+                let cls = self.make_class(f, name, code, bases, kw, builtins,body_module)?;
                 f.stack.push(cls)
             }
             Op::MakeClassEx { name, code } => {
                 let keywords=Self::pop(f)?;
                 let bases=Self::pop(f)?;
+                let builtins=Self::pop(f)?;let body_module=Self::pop(f)?;
                 let root=self.roots.len();
-                self.roots.push(vec![bases.clone(),keywords.clone()]);
+                self.roots.push(vec![bases.clone(),keywords.clone(),builtins.clone(),body_module.clone()]);
                 let result=(||{
                     let bases=self.to_vec(bases)?;
                     let keywords=self.keyword_items(keywords)?;
-                    self.make_class(f,name,code,bases,keywords)
+                    self.make_class(f,name,code,bases,keywords,builtins,body_module)
                 })();
                 self.roots.truncate(root);
                 f.stack.push(result?);
@@ -2681,7 +2669,7 @@ impl Runtime {
             let parent = name.rsplit_once('.').unwrap().0;
             self.import_module(parent)?;
         }
-        let attrs = self.alloc(Object::Namespace(OrderedNamespace::new(), None));
+        let attrs = self.alloc(Object::Dict(Vec::new()));
         let module = self.obj_value(Object::Module {
             name: name.into(),
             attrs,
@@ -2932,12 +2920,15 @@ impl Runtime {
             self.ns_set(attrs, "modules".into(), dict);
         }
         if let Some(code) = self.module_codes.get(name).copied() {
+            let builtins=self.capture_builtins(attrs,self.active_builtins.clone())?;
             let frame = Frame {
+                function: None,
                 code,
                 pc: 0,
                 locals: attrs,
                 temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
                 globals: attrs,
+                builtins,
                 closure: None,
                 stack: Vec::new(),
                 handlers: Vec::new(),
@@ -2948,6 +2939,7 @@ impl Runtime {
                 except_star: Vec::new(),
                 next_call: None,
             cache_returns: Vec::new(),
+            comprehensions: Vec::new(),
                 resume_value: None,
                 injected_exception: None,
                 finally_regions: Vec::new(),
@@ -2980,7 +2972,7 @@ impl Runtime {
         };
         match module {
             "typing" => self.typing_module_call(name,args,kwargs),
-            "stream" | "streambuffer" => self.stream_call(name, args, module == "streambuffer"),
+            "stream" | "streambuffer" => self.stream_call(name, args, kwargs, module == "streambuffer"),
             "sys" => match name {
                 "setrecursionlimit" => {
                     self.recursion_limit = self
@@ -3362,6 +3354,7 @@ impl Runtime {
     fn gc_marks(&self, extra: &[Value]) -> Vec<bool> {
         let mut marked = vec![false; self.heap.len()];
         let mut pending = vec![Value::Obj(self.builtins), Value::Obj(self.globals)];
+        pending.push(self.active_builtins.clone());
         pending.extend(self.modules.values().cloned());
         pending.extend(self.template_metadata.values().cloned());
         for entry in &self.typing_alias_cache {pending.extend([entry.owner.clone(),entry.key.clone(),entry.value.clone()]);}
@@ -3376,6 +3369,8 @@ impl Runtime {
                 continue;
             }
             marked[i] = true;
+            if let Some(state)=self.ordered_collections.get(&i){pending.extend(state.order.iter().map(|(key,_)|key.clone()));}
+            if let Some(keeper)=self.collection_keepers.get(&i){pending.push(keeper.clone());}
             if let Some(slots) = self.instance_slots.get(&i) {
                 pending.extend(slots.values().cloned());
             }
@@ -3436,6 +3431,7 @@ impl Runtime {
                         f.type_params.clone(),
                     ]);
                     pending.push(Value::Obj(f.globals));
+                    pending.push(f.builtins.clone());
                     if let Some(i) = f.closure {
                         pending.push(Value::Obj(i))
                     }
@@ -3569,7 +3565,11 @@ impl Runtime {
             if !live && self.heap[i].is_some() {
                 self.heap[i] = None;
                 self.scope_bindings.remove(&i);
+            self.scope_comprehension_bindings.remove(&i);
                 self.scope_parents.remove(&i);
+                self.ordered_collections.remove(&i);
+                self.collection_keepers.remove(&i);
+                self.collection_nullable_slots.remove(&i);
                 self.finalized.remove(&i);
                 self.instance_slots.remove(&i);
                 self.assoc_layouts.remove(&i);
@@ -3598,7 +3598,7 @@ impl Runtime {
         if self.is_exception_value(&receiver){if let Some(result)=self.exception_group_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if self.is_template_value(&receiver){if let Some(result)=self.template_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if self.is_typing_value(&receiver){if let Some(result)=self.typing_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
-        if let Some(result)=self.dictview_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
+        if let Some(result)=self.dictview_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result.map(|value|self.collection_inherit_keeper(value,&receiver));}
         if let Some(result)=self.generic_method(receiver.clone(),name,args.clone(),kwargs.clone()) {return result;}
         if name=="__class_getitem__" && (matches!(&receiver,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) || matches!(&receiver,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))) {
             if args.len()!=1 || !kwargs.is_empty() {return Err(pyerr("TypeError","__class_getitem__() takes exactly one argument"));}
@@ -3629,7 +3629,8 @@ impl Runtime {
             if matches!(name,"__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") && matches!(payload,Value::Int(_)) {
                 return self.method(name,payload.fresh_primitive(),args,kwargs);
             }
-            return self.method(name, payload, args, kwargs);
+            let result=self.method(name,payload,args,kwargs)?;
+            return Ok(self.collection_keep(result,receiver));
         }
         if let Value::Obj(i) = receiver.clone() {
             if matches!(
@@ -3717,6 +3718,14 @@ impl Runtime {
         }
         if name == "__getitem__" {
             return self.getitem(receiver, arg(0)?);
+        }
+        if name == "__setitem__" {
+            if args.len()!=2||!kwargs.is_empty(){return Err(pyerr("TypeError","__setitem__ expected two arguments"));}
+            self.setitem(receiver,args[0].clone(),args[1].clone())?;return Ok(Value::None);
+        }
+        if name == "__delitem__" {
+            if args.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","__delitem__ expected one argument"));}
+            self.delitem(receiver,args[0].clone())?;return Ok(Value::None);
         }
         if name == "__contains__" {
             let values = self.to_vec(receiver)?;
@@ -4460,6 +4469,23 @@ impl Runtime {
         kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if name=="_py2fastrust_nullable_slot" {
+            if args.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","invalid internal slot arguments"));}
+            if let Value::Obj(index)=&args[0] {if matches!(self.object(*index)?,Object::Slot{..}) {self.collection_nullable_slots.insert(*index);return Ok(Value::None);}}
+            return Err(pyerr("TypeError","expected a slot descriptor"));
+        }
+        if name=="_py2fastrust_ordered" {return self.collection_ordered(args,kwargs);}
+        if name=="_py2fastrust_dict_payload" {
+            if args.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","invalid internal dictionary arguments"));}
+            return Ok(Value::Obj(self.collection_dict_owner(&args[0])?));
+        }
+        if name=="_py2fastrust_namedtuple_module" {
+            if !args.is_empty()||!kwargs.is_empty(){return Err(pyerr("TypeError","invalid internal caller arguments"));}
+            // Original frame bookkeeping supplies the caller's module namespace;
+            // generated programs never call CPython's internal frame API.
+            let module=if let Some(index)=self.collection_callers.len().checked_sub(2){self.global_name_get(self.collection_callers[index],"__name__")?}else{None};
+            return Ok(match module {Some(value) if self.truth(&value)?=>value,_=>Value::Str("__main__".into())});
+        }
         if name=="complex:from_number"{return self.complex_from_number(args,kwargs);}
         if name=="complex"{return self.complex_constructor(args,kwargs);}
         if template_type_name(name){return self.template_constructor(name,args,kwargs).unwrap();}
@@ -4510,6 +4536,16 @@ impl Runtime {
         }
         if let Some(method) = name.strip_prefix("unbound:") {
             let (owner, method) = method.split_once(':').unwrap_or(("", method));
+            let original=args.first().cloned();
+            if owner=="dict" && method=="copy" {
+                if args.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","copy() takes no arguments"));}
+                self.collection_dict_owner(&args[0])?;
+                return self.dictionary_copy(args[0].clone());
+            }
+            if owner=="dict" && method=="__getitem__" {
+                if args.len()!=2||!kwargs.is_empty(){return Err(pyerr("TypeError","__getitem__ expected one argument"));}
+                return self.collection_dict_getitem(args[0].clone(),args[1].clone());
+            }
             let mut args = args;
             if let Some(Value::Obj(i)) = args.first() {
                 if let Object::BuiltinInstance { payload, .. } = self.object(*i)? {
@@ -4523,6 +4559,7 @@ impl Runtime {
             if args.is_empty() {
                 return Err(pyerr("TypeError", "unbound descriptor needs an instance"));
             }
+            if owner=="dict" {self.collection_dict_owner(&args[0])?;}
             if owner=="str" && !matches!(&args[0],Value::Str(_)){return Err(pyerr("TypeError",format!("descriptor '{method}' requires a 'str' object")));}
             if owner=="set" && !self.frozen_owner(&args[0]).is_some_and(|(_,frozen)|!frozen){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'set' object",method)));}
             if owner=="frozenset" && !self.frozen_owner(&args[0]).is_some_and(|(_,frozen)|frozen){return Err(pyerr("TypeError",format!("descriptor '{}' requires a 'frozenset' object",method)));}
@@ -4532,6 +4569,7 @@ impl Runtime {
                 self.delitem(args[0].clone(),args[1].clone())?;return Ok(Value::None);
             }
             if method == "__setitem__" {
+                if args.len()!=3||!kwargs.is_empty(){return Err(pyerr("TypeError","__setitem__() takes exactly two arguments"));}
                 self.setitem(
                     args[0].clone(),
                     args.get(1)
@@ -4543,7 +4581,8 @@ impl Runtime {
                 )?;
                 return Ok(Value::None);
             }
-            return self.method(method, args[0].clone(), args[1..].to_vec(), kwargs);
+            let result=self.method(method, args[0].clone(), args[1..].to_vec(), kwargs)?;
+            return Ok(if let Some(original)=original{self.collection_keep(result,original)}else{result});
         }
         if name == "descriptor:get" {
             let descriptor = args
@@ -4729,49 +4768,8 @@ impl Runtime {
         };
         let kw = |n: &str| kwargs.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
         match name {
-            "print" => {
-                let sep = match kw("sep") {
-                    None | Some(Value::None) => " ".into(),
-                    Some(v) => self.str_value(&v)?,
-                };
-                let end = match kw("end") {
-                    None | Some(Value::None) => "\n".into(),
-                    Some(v) => self.str_value(&v)?,
-                };
-                let mut ss = Vec::new();
-                for v in args {
-                    ss.push(self.str_value(&v)?)
-                }
-                let text = format!("{}{}", ss.join(&sep), end);
-                if let Some(file) = kw("file").filter(|v| !matches!(v, Value::None)) {
-                    let write = self.getattr(file, "write")?;
-                    self.call(write, vec![Value::Str(text.into())], Vec::new(), None)?;
-                } else {
-                    self.output.push_str(&text)
-                }
-                if let Some(flush) = kw("flush") {
-                    if self.truth(&flush)? {
-                        self.finish()
-                    }
-                }
-                Ok(Value::None)
-            }
-            "input" => {
-                if let Some(v) = args.first() {
-                    let s = self.str_value(v)?;
-                    self.output.push_str(&s)
-                }
-                let line = self.stream_call("stdin:readline", Vec::new(), false)?;
-                match line {
-                    Value::Str(line) if line.is_empty() => {
-                        Err(pyerr("EOFError", "EOF when reading a line"))
-                    }
-                    Value::Str(line) => {
-                        Ok(Value::Str(line.strip_suffix('\n').unwrap_or(&line).into()))
-                    }
-                    _ => unreachable!(),
-                }
-            }
+            "print" => self.print_values(args,kwargs),
+            "input" => self.input_value(args,kwargs),
             "int" => {
                 if args.len()>2 || kwargs.iter().any(|(name,_)|name!="base") { return Err(pyerr("TypeError","invalid arguments for int()")); }
                 let mut arguments=args;
@@ -4919,7 +4917,7 @@ impl Runtime {
             )),
             "len" => {
                 let v = arg(0)?;
-                if let Value::Obj(index)=&v {if let Object::DictView { owner, .. } | Object::MappingProxy { owner }=self.object(*index)? {return Ok(Value::Int(Int::from_i128(self.assoc_size(owner) as i128).into()));}}
+                if let Value::Obj(index)=&v {if matches!(self.object(*index)?,Object::MappingProxy{..}) {if let Some(keeper)=self.collection_keepers.get(index).cloned(){return self.builtin("len",vec![keeper],Vec::new(),None);}}if let Object::DictView { owner, .. } | Object::MappingProxy { owner }=self.object(*index)? {return Ok(Value::Int(Int::from_i128(self.assoc_size(owner) as i128).into()));}}
                 let fastlen = if let Value::Obj(i) = &v {
                     match self.heap.get(*i).and_then(|o| o.as_ref()) {
                         Some(Object::List(xs) | Object::Tuple(xs) | Object::Set(xs) | Object::FrozenSet{items:xs,..}) => {
@@ -5096,8 +5094,8 @@ impl Runtime {
                     let index=*index;
                     match self.object(index)? {
                         Object::Dict(_) | Object::Namespace(..)=>return self.assoc_iterator(index,DictViewKind::Keys,true),
-                        Object::DictView { owner, kind }=>return self.assoc_iterator(owner,kind,true),
-                        Object::MappingProxy { owner }=>return self.assoc_iterator(owner,DictViewKind::Keys,true),
+                        Object::DictView { owner, kind }=>{let result=self.assoc_iterator(owner,kind,true)?;return Ok(self.collection_inherit_keeper(result,&value));},
+                        Object::MappingProxy { owner }=>{if let Some(keeper)=self.collection_keepers.get(&index).cloned(){return self.builtin("reversed",vec![keeper],Vec::new(),None);}return self.assoc_iterator(owner,DictViewKind::Keys,true)},
                         Object::Set(_) | Object::FrozenSet{..}=>return Err(pyerr("TypeError","set objects are not reversible")),
                         _=>{},
                     }
@@ -5374,8 +5372,8 @@ impl Runtime {
                     });
                 }
                 let f = caller.ok_or_else(|| pyerr("RuntimeError", "no active frame"))?;
-                if self.codes[f.code].kind == ScopeKind::Module
-                    || self.codes[f.code].kind == ScopeKind::Class
+                if f.comprehensions.is_empty() && (self.codes[f.code].kind == ScopeKind::Module
+                    || self.codes[f.code].kind == ScopeKind::Class)
                 {
                     return Ok(self.execution_locals_value(f.locals));
                 }
@@ -5388,7 +5386,8 @@ impl Runtime {
                         .map(|(n, _)| n)
                         .collect::<Vec<_>>()
                 } else if let Some(f) = caller {
-                    self.keyword_items(Value::Obj(f.locals))?
+                    let namespace=if f.comprehensions.is_empty(){Value::Obj(f.locals)}else{self.locals_snapshot(f)?};
+                    self.keyword_items(namespace)?
                         .into_iter()
                         .map(|(n, _)| n.spelling)
                         .filter(|n| !n.starts_with('$') && !n.starts_with('\0'))
@@ -5433,10 +5432,13 @@ impl Runtime {
                 let locals=if !matches!(args[2],Value::None){self.execution_locals(args[2].clone())?}
                 else if !matches!(args[1],Value::None){globals}
                 else if let Some(frame)=caller{
-                    if matches!(self.codes[frame.code].kind,ScopeKind::Function|ScopeKind::Comprehension|ScopeKind::Annotation|ScopeKind::TypeParameters){match self.locals_snapshot(frame)?{Value::Obj(index)=>index,_=>unreachable!()}}
+                    if !frame.comprehensions.is_empty() || matches!(self.codes[frame.code].kind,ScopeKind::Function|ScopeKind::Comprehension|ScopeKind::Annotation|ScopeKind::TypeParameters){match self.locals_snapshot(frame)?{Value::Obj(index)=>index,_=>unreachable!()}}
                     else{frame.locals}
                 }else{globals};
-                if self.ns_get(globals,"__builtins__").is_none(){self.ns_set(globals,"__builtins__".into(),Value::Obj(self.builtins));}
+                let root=self.roots.len();
+                self.roots.push(vec![source.clone(),Value::Obj(globals),Value::Obj(locals)]);
+                let result=(||{
+                self.execution_ensure_builtins(globals)?;
                 if !matches!(parameters[3],Value::None){
                     return Err(pyerr("TypeError",if matches!(&source,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Code(_)))){"cannot use a closure with this code object"}else{"closure can only be used when source is a code object"}));
                 }
@@ -5444,12 +5446,6 @@ impl Runtime {
                 if let Some(code)=precompiled {
                     if !self.codes[code].frees.is_empty() {
                         return Err(pyerr("TypeError",if name=="eval" {"code object passed to eval() may not contain free variables".to_owned()} else {format!("code object requires a closure of exactly length {}",self.codes[code].frees.len())}));
-                    }
-                    if self.codes[code].kind==ScopeKind::Function {
-                        let frame=self.execution_function_frame(code,globals)?;
-                        let value=if self.codes[code].is_generator {self.obj_value(Object::Generator(Box::new(frame)))}
-                        else {match self.execute(frame)?.0 {FrameExit::Return(value)|FrameExit::Yield(value)=>value}};
-                        return Ok(if name=="exec" {Value::None}else{value});
                     }
                 }
                 let code = if let Some(code)=precompiled { code
@@ -5472,30 +5468,11 @@ impl Runtime {
                     self.codes.extend(codes);
                     offset
                 };
-                let frame = Frame {
-                    code,
-                    pc: 0,
-                    locals,
-                    temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
-                    globals,
-                    closure: None,
-                    stack: Vec::new(),
-                    handlers: Vec::new(),
-                    pending: Vec::new(),
-                    exception: None,
-                    exception_stack: Vec::new(),
-                inherited_exception: None,
-                except_star: Vec::new(),
-                    next_call: None,
-            cache_returns: Vec::new(),
-                    resume_value: None,
-                    injected_exception: None,
-                    finally_regions: Vec::new(),
-                };
-                let v = match self.execute(frame)?.0 {
-                    FrameExit::Return(v) | FrameExit::Yield(v) => v,
-                };
-                Ok(if name == "exec" { Value::None } else { v })
+                if precompiled.is_none() {self.execution_ensure_builtins(globals)?;}
+                self.execution_run_code(code,globals,locals,name=="exec")
+                })();
+                self.roots.truncate(root);
+                result
             }
             "__import__" => {
                 let n = self.str_value(&arg(0)?)?;
@@ -5548,7 +5525,9 @@ impl Runtime {
                         .first()
                         .cloned()
                         .ok_or_else(|| pyerr("RuntimeError", "super(): no arguments"))?;
-                    self.load(f, &n)?
+                    let isolated=f.comprehensions.iter().rev().find(|scope|self.codes[scope.code].locals.contains(&n));
+                    if let Some(scope)=isolated {self.ns_get(scope.namespace,&n).ok_or_else(||pyerr("RuntimeError","super(): arg[0] deleted"))?}
+                    else {self.mapping_get(f.locals,&n)?.ok_or_else(||pyerr("RuntimeError","super(): arg[0] deleted"))?}
                 } else {
                     Value::None
                 };
@@ -5714,7 +5693,7 @@ impl Runtime {
                 }
                 Object::Cached(cache) => self.cached_call(i, cache, args, kwargs, caller),
                 Object::Function(function) => {
-                    let frame = self.bind_function(&function, args, kwargs)?;
+                    let frame = self.bind_function(&function, Value::Obj(i), args, kwargs)?;
                     if self.codes[function.code].is_generator {
                         return Ok(self.obj_value(Object::Generator(Box::new(frame))));
                     }
@@ -6079,8 +6058,10 @@ impl Runtime {
         code: usize,
         bases: Vec<Value>,
         mut kw: KeywordArgs,
+        builtins: Value,
+        body_module: Value,
     ) -> PyResult<Value> {
-        let root=self.roots.len();let mut roots=bases.clone();roots.extend(kw.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));Self::frame_roots(f,&mut roots);self.roots.push(roots);
+        let root=self.roots.len();let mut roots=bases.clone();roots.extend([builtins.clone(),body_module]);roots.extend(kw.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));Self::frame_roots(f,&mut roots);self.roots.push(roots);
         let result=(||{
         let original_bases=self.obj_value(Object::Tuple(bases.clone()));
         self.roots[root].push(original_bases.clone());
@@ -6138,12 +6119,10 @@ impl Runtime {
             self.alloc(Object::Dict(Vec::new()))
         };
         self.roots[root].push(Value::Obj(namespace));
-        self.mapping_set(
-            namespace,
-            "__module__".into(),
-            self.ns_get(f.globals, "__name__")
-                .unwrap_or(Value::Str("__main__".into())),
-        )?;
+        let module=if let Some(value)=self.mapping_get(namespace,"__name__")? {value}
+        else if let Some(value)=self.global_name_get(f.globals,"__name__")? {value}
+        else {self.builtin_lookup(builtins.clone(),"__name__")?.ok_or_else(||pyerr("NameError","name '__name__' is not defined"))?};
+        self.mapping_set(namespace,"__module__".into(),module)?;
         self.mapping_set(namespace, "__qualname__".into(), Value::Str(name.clone().into()))?;
         let parent = if self.codes[f.code].kind == ScopeKind::Class {
             f.closure
@@ -6155,11 +6134,13 @@ impl Runtime {
         self.scope_bindings
             .insert(namespace, self.codes[code].locals.clone());
         let frame = Frame {
+            function: None,
             code,
             pc: 0,
             locals: namespace,
             temps: self.alloc(Object::Namespace(OrderedNamespace::new(), None)),
             globals: f.globals,
+            builtins,
             closure: Some(env),
             stack: Vec::new(),
             handlers: Vec::new(),
@@ -6170,6 +6151,7 @@ impl Runtime {
                 except_star: Vec::new(),
             next_call: None,
             cache_returns: Vec::new(),
+            comprehensions: Vec::new(),
             resume_value: None,
             injected_exception: None,
             finally_regions: Vec::new(),
@@ -6370,7 +6352,7 @@ impl Runtime {
                     Object::TypeParameter(_) | Object::TypeAlias{..} | Object::TypeUnpack(_) | Object::UnpackedAlias(_) | Object::ParamSpecMarker{..} | Object::TypeEvaluator(_) | Object::ForwardRef{..} | Object::TypeUnion{..} => self.typing_repr(v).unwrap()?,
                     Object::GenericAlias { origin, args, .. } => self.generic_repr(&origin,&args)?,
                     Object::DictView { owner, kind } => self.dictview_repr(owner,Some(kind),seen)?,
-                    Object::MappingProxy { owner } => self.dictview_repr(owner,None,seen)?,
+                    Object::MappingProxy { owner } => if let Some(keeper)=self.collection_keepers.get(i).cloned(){format!("mappingproxy({})",self.repr_inner(&keeper,seen)?)}else{self.dictview_repr(owner,None,seen)?},
                     Object::FrozenSet{..}=>self.frozen_repr(v,seen)?,
                     Object::List(xs) | Object::Tuple(xs) | Object::Set(xs) => {
                         let mut ss = Vec::new();
@@ -6836,7 +6818,8 @@ impl Runtime {
                 Some(Object::List(xs) | Object::Tuple(xs) | Object::Set(xs) | Object::FrozenSet{items:xs,..}) => {
                     return Ok(!xs.is_empty())
                 }
-                Some(Object::DictView { owner, .. } | Object::MappingProxy { owner }) => return Ok(self.assoc_size(*owner)!=0),
+                Some(Object::MappingProxy { owner }) => {if let Some(keeper)=self.collection_keepers.get(i).cloned(){return self.truth(&keeper);}return Ok(self.assoc_size(*owner)!=0);},
+                Some(Object::DictView { owner, .. }) => return Ok(self.assoc_size(*owner)!=0),
                 Some(Object::Dict(xs)) => return Ok(!xs.is_empty()),
                 Some(Object::Namespace(xs, _)) => return Ok(!xs.is_empty()),
                 _ => {}
@@ -7633,6 +7616,7 @@ impl Runtime {
                     })?;
                     return self.call(fun, vec![key], Vec::new(), None);
                 }
+                if matches!(&payload,Value::Obj(owner)if matches!(self.heap.get(*owner).and_then(Option::as_ref),Some(Object::Dict(_)))) {return self.collection_dict_getitem(obj,key);}
                 return self.getitem(payload, key);
             }
         }
@@ -7915,7 +7899,7 @@ impl Runtime {
         }
         if let Value::Obj(i) = v.clone() {
             match self.object(i)? {
-                Object::MappingProxy { owner } => return self.dict_items(Value::Obj(owner)),
+                Object::MappingProxy { owner } => return self.dict_items(self.collection_keepers.get(&i).cloned().unwrap_or(Value::Obj(owner))),
                 Object::Dict(xs) => return Ok(xs),
                 Object::Namespace(m, _) => {
                     return Ok(m.ident_items())
@@ -7993,7 +7977,7 @@ impl Runtime {
                     return self.call(fun, Vec::new(), Vec::new(), None);
                 }
                 if self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen){return self.frozen_iterator(v);}
-                return self.iter(payload);
+                let result=self.iter(payload)?;return Ok(self.collection_keep(result,v));
             }
         }
         if let Value::Obj(i) = &v {
@@ -8022,8 +8006,8 @@ impl Runtime {
                 Object::Range(a, b, c) => IteratorState::Range(a.into_inner(), b.into_inner(), c.into_inner()),
                 Object::Tuple(v) => IteratorState::Values(v, 0),
                 Object::Dict(_) | Object::Namespace(..) | Object::Set(_) | Object::FrozenSet{..} => return self.assoc_iterator(i,DictViewKind::Keys,false),
-                Object::DictView { owner, kind } => return self.assoc_iterator(owner,kind,false),
-                Object::MappingProxy { owner } => return self.assoc_iterator(owner,DictViewKind::Keys,false),
+                Object::DictView { owner, kind } => {let result=self.assoc_iterator(owner,kind,false)?;return Ok(self.collection_inherit_keeper(result,&v));},
+                Object::MappingProxy { owner } => {if let Some(keeper)=self.collection_keepers.get(&i).cloned(){return self.iter(keeper);}let result=self.assoc_iterator(owner,DictViewKind::Keys,false)?;return Ok(self.collection_inherit_keeper(result,&v));},
                 Object::Iterator(_) | Object::Generator(_) => return Ok(v),
                 Object::Instance { .. } => {
                     if let Ok(fun) = self.special_method(v.clone(), "__iter__") {
@@ -8096,7 +8080,7 @@ impl Runtime {
                 if kind == "stream" || kind == "streambuffer" {
                     let line = self.stream_call(
                         &format!("{}:readline", target),
-                        Vec::new(),
+                        Vec::new(),Vec::new(),
                         kind == "streambuffer",
                     )?;
                     return Ok(match &line {
@@ -8502,6 +8486,7 @@ impl Runtime {
                     Some(&["index", "count", "__iter__", "__len__", "__getitem__"])
                 }
                 Some(Object::Dict(_) | Object::Namespace(..)) => Some(&[
+                    "__setitem__", "__delitem__",
                     "get",
                     "keys",
                     "values",
@@ -8687,15 +8672,16 @@ impl Runtime {
                     }
                 }
                 Object::Module { attrs, .. } => {
+                    if name == "__dict__" { return Ok(Value::Obj(attrs)); }
                     if name=="__annotations__" {
-                        if let Some(value)=self.ns_get(attrs,name){return Ok(value);}
-                        let annotations=if let Some(annotate)=self.ns_get(attrs,"__annotate__").filter(|value|!matches!(value,Value::None)) {
+                        if let Some(value)=self.global_name_get(attrs,name)?{return Ok(value);}
+                        let annotations=if let Some(annotate)=self.global_name_get(attrs,"__annotate__")?.filter(|value|!matches!(value,Value::None)) {
                             self.call(annotate,vec![Value::Int(Int::from_i128(1).into())],Vec::new(),None)?
                         }else{self.obj_value(Object::Dict(Vec::new()))};
                         if !matches!(&annotations,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Dict(_)|Object::Namespace(..)))){return Err(pyerr("TypeError","__annotate__ must return a dictionary"));}
-                        self.ns_set(attrs,name.into(),annotations.clone());return Ok(annotations);
+                        self.global_name_set(attrs,name.into(),annotations.clone())?;return Ok(annotations);
                     }
-                    if let Some(x) = self.ns_get(attrs, name) {
+                    if let Some(x) = self.global_name_get(attrs, name)? {
                         return Ok(x);
                     }
                 }
@@ -8870,9 +8856,10 @@ impl Runtime {
                     "__type_params__" => return Ok(fun.type_params),
                     "__dict__" => return Ok(Value::Obj(fun.attrs)),
                     "__globals__" => return Ok(Value::Obj(fun.globals)),
+                    "__builtins__" => return Ok(fun.builtins),
                     "__code__" => return Ok(self.obj_value(Object::Code(fun.code))),
                     "__defaults__" => {
-                        return Ok(if fun.defaults.is_empty() {
+                        return Ok(if !fun.defaults_set {
                             Value::None
                         } else {
                             self.obj_value(Object::Tuple(fun.defaults))
@@ -9155,6 +9142,9 @@ impl Runtime {
                     return Ok(Value::Builtin(format!("type_method:object:{}", name)));
                 }
                 if n=="str" && ["__hash__","__eq__","__ne__","__str__","__repr__"].contains(&name){return Ok(Value::Builtin(format!("unbound:str:{name}")));}
+                if n=="dict" && ["copy","pop","popitem","clear","setdefault","__contains__","__reversed__"].contains(&name){
+                    return Ok(Value::Builtin(format!("unbound:dict:{}",name)));
+                }
                 if ["int", "str", "bytes", "list", "tuple", "dict", "set"].contains(&n.as_str())
                     && [
                         "__getitem__",
@@ -9298,6 +9288,7 @@ impl Runtime {
                 }
                 Object::Function(mut fun) => {
                     match name {
+                        "__builtins__" => return Err(pyerr("AttributeError","readonly attribute")),
                         "__name__" | "__qualname__" => {
                             let text = if let Value::Str(s) = value {
                                 s
@@ -9340,10 +9331,14 @@ impl Runtime {
                         }
                         "__type_params__" => fun.type_params = value,
                         "__defaults__" => {
+                            fun.defaults_set = !matches!(value, Value::None);
                             fun.defaults = if matches!(value, Value::None) {
                                 Vec::new()
                             } else {
-                                self.to_vec(value)?
+                                match self.native_payload(&value).unwrap_or(value) {
+                                    Value::Obj(index)=>match self.object(index)? {Object::Tuple(values)=>values,_=>return Err(pyerr("TypeError","__defaults__ must be set to a tuple object"))},
+                                    _=>return Err(pyerr("TypeError","__defaults__ must be set to a tuple object")),
+                                }
                             }
                         }
                         "__kwdefaults__" => {
@@ -9472,10 +9467,15 @@ impl Runtime {
                     return Ok(());
                 }
                 Object::Module { attrs, .. } => {
+                    if name=="__dict__" {return Err(pyerr("AttributeError","readonly attribute"));}
                     if name=="__annotate__" && !matches!(value,Value::None) {
                         let callable=self.builtin("callable",vec![value.clone()],Vec::new(),None)?;
                         if !self.truth(&callable)? {return Err(pyerr("TypeError","__annotate__ must be callable or None"));}
-                        self.ns_del(attrs,"__annotations__");
+                        // Assignment precedes invalidation. If a cached-key
+                        // comparison raises, the new annotation function stays.
+                        self.global_name_set(attrs,name.into(),value)?;
+                        self.global_name_del(attrs,"__annotations__")?;
+                        return Ok(());
                     }
                     if matches!(
                         self.heap.get(i).and_then(|o| o.as_ref()),
@@ -9491,8 +9491,7 @@ impl Runtime {
                             ),
                         ));
                     }
-                    self.ns_set(attrs, name.into(), value);
-                    return Ok(());
+                    return self.global_name_set(attrs, name.into(), value);
                 }
                 _ => {}
             }
@@ -9521,15 +9520,28 @@ impl Runtime {
         }
         if let Value::Obj(i) = obj {
             let attrs = match self.object(i)? {
+                Object::Module { attrs, .. } => {
+                    if name=="__dict__" {return Err(pyerr("AttributeError","readonly attribute"));}
+                    match self.global_name_del(attrs,name) {
+                        Ok(true)=>return Ok(()),
+                        Err(error) if self.exception_has_native_class(&error,"KeyError")=>(),
+                        Err(error)=>return Err(error),
+                        Ok(false)=>(),
+                    }
+                    return Err(pyerr("AttributeError",name));
+                }
                 Object::Exception(mut error) => {
                     if name=="__dict__"{return Err(pyerr("TypeError","cannot delete __dict__"));}
                     if self.exception_native_attribute(&error,name){error.attributes.insert(name.into(),Value::None);self.heap[i]=Some(Object::Exception(error));return Ok(());}
                     if error.dict.is_some_and(|attrs|self.ns_del(attrs,name)){self.heap[i]=Some(Object::Exception(error));return Ok(());}
                     return Err(pyerr("AttributeError",name));
                 }
+                Object::Function(fun) => {
+                    if name=="__builtins__" {return Err(pyerr("AttributeError","readonly attribute"));}
+                    Some(fun.attrs)
+                }
                 Object::Instance { attrs, .. }
-                | Object::BuiltinInstance { attrs, .. }
-                | Object::Module { attrs, .. } => Some(attrs),
+                | Object::BuiltinInstance { attrs, .. } => Some(attrs),
                 Object::Class(c) => Some(c.attrs),
                 _ => None,
             };
@@ -9558,21 +9570,23 @@ impl Runtime {
     fn bind_function(
         &mut self,
         function: &Function,
+        owner: Value,
         args: Vec<Value>,
         kwargs: KeywordArgs,
     ) -> PyResult<Frame> {
-        let mut roots=args.clone();
+        let mut roots=args.clone();roots.push(owner.clone());
         roots.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         roots.extend(function.defaults.iter().cloned());
         roots.extend(function.kwdefaults.values().cloned());
-        roots.extend([Value::Obj(function.globals),Value::Obj(function.attrs)]);
+        roots.extend([Value::Obj(function.globals),Value::Obj(function.attrs),function.builtins.clone()]);
         roots.extend(function.closure.map(Value::Obj));
         self.view_rooted(roots,|runtime,root|{
             let code=&runtime.codes[function.code];
-            let code_name=code.name.clone();let code_locals=code.locals.clone();let params=code.params.clone();
+            let comp_locals=code.comp_locals.clone();let code_name=code.name.clone();let code_locals=code.locals.iter().filter(|name|!code.globals.contains(name) && !code.frees.contains(name) && !code.nonlocals.contains(name)).cloned().collect();let params=code.params.clone();
             let ns=runtime.alloc(Object::Namespace(OrderedNamespace::new(),function.closure));
             runtime.roots[root].push(Value::Obj(ns));
             runtime.scope_bindings.insert(ns,code_locals);
+            runtime.scope_comprehension_bindings.insert(ns,comp_locals);
             let count=params.positional.len();
             for(name,value)in params.positional.iter().zip(&args){runtime.ns_set(ns,name.clone(),value.clone());}
             if let Some(name)=&params.vararg{
@@ -9613,10 +9627,11 @@ impl Runtime {
                 runtime.ns_set(ns,name.clone(),value);
             }
             Ok(Frame{
+                function:Some(owner),
                 code:function.code,pc:0,locals:ns,
                 temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
-                globals:function.globals,closure:function.closure,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
-                exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),next_call:None,cache_returns:Vec::new(),
+                globals:function.globals,builtins:function.builtins.clone(),closure:function.closure,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
+                exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),next_call:None,cache_returns:Vec::new(),comprehensions:Vec::new(),
                 resume_value:None,injected_exception:None,finally_regions:Vec::new(),
             })
         })
@@ -9649,7 +9664,7 @@ impl Runtime {
         match self.object(i)? {
             Object::Function(function)=>{
                 if self.recursion>=self.recursion_limit {return Err(pyerr("RecursionError","maximum recursion depth exceeded"));}
-                Ok(PreparedCall::Frame(self.bind_function(&function,args,kwargs)?))
+                Ok(PreparedCall::Frame(self.bind_function(&function,Value::Obj(i),args,kwargs)?))
             }
             Object::Bound(inner,receiver)=>{args.insert(0,receiver);self.prepare_direct_call_inner(inner,args,kwargs)}
             Object::Cached(cache)=>match self.cached_lookup(i,cache,args,kwargs)? {

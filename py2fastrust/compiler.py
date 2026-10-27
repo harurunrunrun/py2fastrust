@@ -4,6 +4,7 @@ import ast
 import __future__
 import symtable
 import tokenize
+import types
 from importlib.resources import files
 from pathlib import Path
 
@@ -55,6 +56,8 @@ class Compiler:
         self.future_flags = {}
         # Native imports require the actual resolver provenance, not a module name.
         self.native_imports = set()
+        self.local_layouts = {}
+        self.used_layouts = set()
 
     def parse(self, source, filename):
         try:
@@ -66,6 +69,14 @@ class Compiler:
             raise CompilationError(Diagnostic(exc.msg, filename, exc.lineno or 1, exc.offset or 1, "E001")) from None
         except ValueError as exc:
             raise CompilationError(Diagnostic(str(exc), filename, 1, 1, "E001")) from None
+        layouts = []
+        def collect(code):
+            layouts.append(code)
+            for value in code.co_consts:
+                if isinstance(value, types.CodeType):
+                    collect(value)
+        collect(compiled)
+        self.local_layouts[filename] = layouts
         self.future_flags[filename] = compiled.co_flags & FUTURE_MASK
         return tree, table
 
@@ -113,8 +124,28 @@ class Compiler:
             # CPython's optimized locals expose ordinary locals first, then
             # nonparameter cells in name order, followed by the free variables.
             local_names = [name for name in local_names if name not in cells] + sorted(cells)
+        # The official compiler provides PEP 709 fast-local order, including
+        # isolated targets that no longer have a child symbol table. Keep the
+        # symbol table's global decisions for names used outside a comprehension.
+        if kind in {"Function", "Class", "Module"}:
+            code_name = "<module>" if kind == "Module" else "<lambda>" if name == "lambda" else name
+            lines = {getattr(node, "lineno", 1)}
+            lines.update(getattr(item, "lineno", 1) for item in getattr(node, "decorator_list", ()))
+            candidates = [layout for layout in self.local_layouts.get(filename, ())
+                          if id(layout) not in self.used_layouts and layout.co_name == code_name
+                          and (kind == "Module" or layout.co_firstlineno in lines)]
+            if candidates:
+                layout = candidates[0]
+                self.used_layouts.add(id(layout))
+                order = list(dict.fromkeys((*layout.co_varnames, *layout.co_cellvars)))
+                local_names = order + [name for name in local_names if name not in order]
+        own_targets = set()
+        if kind == "Comprehension":
+            for generator in getattr(node, "generators", ()):
+                own_targets.update(target.id for target in ast.walk(generator.target) if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store))
         code = Code(name, filename, kind,
                     locals=local_names,
+                    comp_locals=[s.get_name() for s in symbols if s.is_local() and s.is_comp_iter() and s.get_name() not in own_targets],
                     globals=[s.get_name() for s in symbols if s.is_declared_global()],
                     nonlocals=[s.get_name() for s in symbols if s.is_nonlocal()],
                     frees=[s.get_name() for s in symbols if s.is_free()],
@@ -126,6 +157,9 @@ class Compiler:
                 raise CompilationError(Diagnostic("unpaired Unicode surrogates are not supported", filename,
                                                  getattr(first, "lineno", 1), getattr(first, "col_offset", 0) + 1, "E002"))
             code.docstring = clean_docstring(docstring) if docstring is not None else None
+        if kind == "Function":
+            code.globals.extend(s.get_name() for s in symbols
+                                if s.is_global() and s.get_name() in local_names and s.get_name() not in code.globals)
         code_id = len(self.program.codes)
         self.program.codes.append(code)
         emitter = Emitter(self, code_id, table)
@@ -260,7 +294,7 @@ class Emitter:
         self.private_class = name
         # Synthetic comprehension symbol tables are produced outside the
         # lexical class. Apply the same idempotent transformation to them.
-        for field in ("locals", "globals", "nonlocals", "frees"):
+        for field in ("locals", "comp_locals", "globals", "nonlocals", "frees"):
             setattr(self.code, field, [self.mangle(item) for item in getattr(self.code, field)])
 
     def emit(self, op, *args, node=None):
@@ -1012,6 +1046,7 @@ class Emitter:
             return
         for decorator in (() if type_scope else node.decorator_list):
             self.visit(decorator)
+        self.emit("CaptureBuiltins", node=node)
         expanded = any(isinstance(base, ast.Starred) for base in node.bases) or any(
             keyword.arg is None for keyword in node.keywords
         )
@@ -1263,7 +1298,11 @@ class Emitter:
         # visited before the comprehension body by the official symbol table.
         self.visit(node.generators[0].iter)
         self.emit("GetIter", node=node)
-        if kind == "Generator":
+        visible_scope = self
+        while visible_scope.code.kind in {"Annotation", "TypeParameters"} and visible_scope.enclosing is not None:
+            visible_scope = visible_scope.enclosing
+        inline = kind != "Generator" and not (self.code.kind in {"Annotation", "TypeParameters"} and visible_scope.code.kind == "Class")
+        if not inline:
             emitter = self.child(node, name, "Comprehension")
         else:
             # PEP 709 inlines list/set/dict comprehensions in CPython's symbol
@@ -1289,7 +1328,14 @@ class Emitter:
                 while scope is not None and scope.code.kind != "Module":
                     if name in scope.code.globals:
                         break
-                    if scope.code.kind != "Class" and name in scope.code.locals:
+                    binding = name in scope.code.locals
+                    if binding and scope.code.kind == "Function":
+                        try:
+                            symbol = scope.table.lookup(name)
+                            binding = symbol.is_local() and not symbol.is_comp_iter()
+                        except KeyError:
+                            pass
+                    if scope.code.kind != "Class" and binding:
                         if name not in emitter.code.frees:
                             emitter.code.frees.append(name)
                         break
@@ -1316,7 +1362,7 @@ class Emitter:
                 other.remove(target)
             if target not in destination:
                 destination.append(target)
-            if not global_target and target not in owner.code.locals:
+            if not global_target and target not in owner.code.locals and target not in owner.code.nonlocals:
                 owner.code.locals.append(target)
         emitter.code.params = Parameters(positional=[".0"])
         result = emitter.temp()
@@ -1328,7 +1374,7 @@ class Emitter:
             if gen.is_async:
                 emitter.fail(node, "async comprehensions are not implemented")
             if level == 0:
-                emitter.emit("Load", ".0", node=node)
+                emitter.emit("Load", ".0", node=node) if not inline else None
             else:
                 emitter.visit(gen.iter)
                 emitter.emit("GetIter", node=node)
@@ -1363,13 +1409,29 @@ class Emitter:
             emitter.emit("Jump", start, node=node)
             emitter.patch(end)
         generate(0)
-        if kind != "Generator":
+        if not inline:
+            if kind != "Generator":
+                emitter.emit("Load", result, node=node)
+                emitter.emit("Return", node=node)
+            emitter.finish()
+            self.emit("MakeFunction", emitter.code_id, 0, [], node=node)
+            self.emit("Swap", node=node)
+            self.emit("Call", 1, [], node=node)
+        else:
             emitter.emit("Load", result, node=node)
-            emitter.emit("Return", node=node)
-        emitter.finish()
-        self.emit("MakeFunction", emitter.code_id, 0, [], node=node)
-        self.emit("Swap", node=node)
-        self.emit("Call", 1, [], node=node)
+            emitter.code.params = Parameters()
+            emitter.code.locals = [name for name in emitter.code.locals if name != ".0"]
+            self.emit("BeginComprehension", emitter.code_id, node=node)
+            cleanup = self.emit("SetupFinally", 0, node=node)
+            offset = len(self.code.ops)
+            branches = {"Jump", "JumpTrue", "JumpFalse", "ForIter", "SetupExcept", "SetupFinally", "Break", "Continue"}
+            for instruction in emitter.code.ops:
+                args = ((instruction.args[0] + offset,) if instruction.op in branches else instruction.args)
+                self.code.ops.append(Instruction(instruction.op, args, instruction.line, instruction.column))
+            self.emit("PopHandler", node=node)
+            self.patch(cleanup)
+            self.emit("EndComprehension", node=node)
+            self.emit("EndFinally", node=node)
 
     def visit_ListComp(self, node):
         self.comprehension(node, "listcomp", "List")
