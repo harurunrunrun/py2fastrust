@@ -114,7 +114,7 @@ class SourceOptionsTests(unittest.TestCase):
             self.assertEqual(output.read_text(), 'keep')
             rust = (root / "from source.rs").read_text()
             self.assertTrue(rust.startswith('// LICENSE: Unlicense\n'))
-            self.assertIn('const INT_BITS: u32 = 128;', rust)
+            self.assertIn('// Integer mode: i128;', rust)
             source.write_text('# py2fastrust: --check\nprint(1)\n')
             result = subprocess.run([sys.executable, '-m', 'py2fastrust', str(source), '-o', str(output)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
