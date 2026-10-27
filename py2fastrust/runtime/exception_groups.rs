@@ -71,6 +71,7 @@ impl Runtime {
     }
     fn exception_native_attribute(&self,error:&PyException,name:&str)->bool{
         match name{
+            "errno"|"strerror"|"filename"|"filename2"=>self.exception_has_native_class(error,"OSError"),
             "value"=>self.exception_has_native_class(error,"StopIteration"),
             "code"=>self.exception_has_native_class(error,"SystemExit"),
             _=>false,
@@ -146,6 +147,7 @@ impl Runtime {
         }
     }
     fn exception_object_message(&mut self, error: &PyException) -> PyResult<String> {
+        if let Some(message)=self.file_exception_message(error){return message;}
         if let Some(group) = &error.group {
             let count = self.exception_group_len(group);
             return Ok(format!(
@@ -159,6 +161,7 @@ impl Runtime {
         self.exception_message(kind, &error.args)
     }
     fn exception_cached_message(&mut self, error: &PyException) -> PyResult<String> {
+        if let Some(message)=self.file_exception_message(error){return message;}
         if let Some(group) = &error.group {
             let count = self.exception_group_len(group);
             let message = match self

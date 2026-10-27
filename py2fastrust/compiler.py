@@ -16,7 +16,7 @@ from .native_leaf import prove_native_leaf
 BUILTIN_MODULES = {
     "sys", "math", "heapq", "bisect", "collections", "itertools", "functools",
     "builtins", "operator", "types", "typing", "string", "string.templatelib",
-    "gc", "time", "_py2fastrust_functools", "__future__",
+    "gc", "time", "io", "_py2fastrust_functools", "__future__",
 }
 VENDORED_MODULES = {"heapq", "bisect", "collections", "functools", "__future__"}
 FUTURE_ANNOTATIONS = __future__.annotations.compiler_flag

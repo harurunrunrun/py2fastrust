@@ -61,6 +61,17 @@ views, context managers, and explicit release. Active exports prevent resizing;
 Python `__buffer__` and `__release_buffer__` methods participate in the same GC
 roots and lease lifecycle. Cyclic exporters remain pinned until collected.
 
+Native file I/O supports `open`, `io.FileIO`, `io.BufferedReader`,
+`io.BufferedWriter`, `io.BufferedRandom`, and `io.TextIOWrapper` with stable
+`raw`/`buffer` identities, context managers, iteration, close/detach, checked
+seek/truncate, and directional buffering. Files accept path-like objects;
+64-bit Unix descriptors support `closefd` and checked alias closure. Binary
+`write`, `readinto`, and `readinto1` use contiguous buffer exports, including
+Python exporters, typed views, and writable multidimensional views. Export
+leases remain live through the I/O operation and release callbacks. Text
+files support UTF-8, ASCII, Latin-1, newline translation, and `reconfigure`.
+Descriptor/opener behavior is currently verified on 64-bit Linux.
+
 Binary `%` formatting supports bytes, bytearray, mapping keys, flags, dynamic
 width and precision, integer and float conversions, and bytes/repr protocols.
 Formatting keeps a bytearray format exported while callbacks run; equal-length
@@ -96,7 +107,7 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 
 - `async`/`await` are unsupported.
 - Some basic-value behavior, including unpaired Unicode surrogates, remains unsupported.
-- File I/O through `open` is unsupported. Standard streams provide text and binary I/O.
+- File I/O still lacks Python-defined raw/buffer adapters, in-memory `io` streams, nonblocking descriptor semantics, and complete native I/O subclass/descriptor APIs. Text cookies currently use physical byte positions; expanded error-handler output and pending decoder state require the separate cookie implementation.
 - Encoding conversion covers UTF-8, ASCII, and Latin-1, with limitations on supported `errors` modes. Constructing a `str` subclass with an encoding is unsupported.
 - Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, remains unsupported.
 - Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.

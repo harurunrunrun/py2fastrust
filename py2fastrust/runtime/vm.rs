@@ -344,6 +344,7 @@ enum IteratorState {
 }
 #[derive(Clone, Debug)]
 enum Object {
+    IoFile(IoFile),
     ByteArray(Vec<u8>),
     MemoryView(Box<MemoryViewData>),
     BufferLease(Box<BufferLeaseData>),
@@ -870,6 +871,7 @@ impl Runtime {
         Ok(Value::Bool(self.compare_default(op, a, b)?))
     }
     fn object_class(&self, v: &Value) -> Option<Value> {
+        if let Some(file)=self.file_value(v){return Some(Value::Builtin(file.type_name));}
         if let Some(class)=self.stdlib_instance_class(v) {return Some(class);}
         if let Value::Obj(i) = v {
             match self.heap.get(*i).and_then(|o| o.as_ref()) {
@@ -885,6 +887,7 @@ impl Runtime {
         }
     }
     fn special_method(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if let Some(result)=self.file_special_method(v.clone(),name){return result;}
         if let Some(class) = self.object_class(&v) {
             if let Some(method) = self.slot_override(&class, name, 0) {
                 return self.bind_descriptor(method, Some(v), class);
@@ -1404,6 +1407,9 @@ impl Runtime {
             "NameError",
             "NotImplementedError",
             "OSError",
+            "FileNotFoundError", "FileExistsError", "PermissionError", "IsADirectoryError", "NotADirectoryError",
+            "BlockingIOError", "InterruptedError", "BrokenPipeError", "ChildProcessError", "ConnectionError",
+            "ConnectionAbortedError", "ConnectionRefusedError", "ConnectionResetError", "ProcessLookupError", "TimeoutError",
             "OverflowError",
             "RecursionError",
             "RuntimeError",
@@ -1691,6 +1697,8 @@ impl Runtime {
         }
     }
     fn finish(&mut self) {
+        for object in &self.heap {if let Some(Object::IoFile(file))=object {if matches!(file.payload,FilePayload::Text(_)){let _=file.flush();}}}
+        for object in &self.heap {if let Some(Object::IoFile(file))=object {let _=file.flush();}}
         let _ = std::io::stdout().write_all(self.output.as_bytes());
         let _ = std::io::stdout().flush();
         self.output.clear();
@@ -2791,7 +2799,7 @@ impl Runtime {
                 _ => &[],
             }
         };
-        if functions.is_empty() && name != "builtins" && name != "string" && !self.module_codes.contains_key(name) {
+        if functions.is_empty() && name != "builtins" && name != "string" && name != "io" && !self.module_codes.contains_key(name) {
             return Err(pyerr(
                 "ModuleNotFoundError",
                 format!("No module named '{}'", name),
@@ -2846,6 +2854,12 @@ impl Runtime {
             for (n, v) in entries {
                 self.ns_set(attrs, n.spelling, v)
             }
+        }
+        if name == "io" {
+            self.ns_set(attrs,"open".into(),Value::Builtin("open".into()));
+            for (public,native) in [("FileIO","FileIO"),("BufferedReader","BufferedReader"),("BufferedWriter","BufferedWriter"),("BufferedRandom","BufferedRandom"),("TextIOWrapper","TextIOWrapper"),("IOBase","_IOBase"),("RawIOBase","_RawIOBase"),("BufferedIOBase","_BufferedIOBase"),("TextIOBase","_TextIOBase")] {self.ns_set(attrs,public.into(),Value::Builtin(format!("_io.{native}")));}
+            self.ns_set(attrs,"UnsupportedOperation".into(),Value::Type("UnsupportedOperation".into()));
+            self.ns_set(attrs,"DEFAULT_BUFFER_SIZE".into(),Value::Int(Int::from_i128(131072).into()));
         }
         if name == "sys" && !self.module_codes.contains_key(name) {
             self.ns_set(attrs, "stdin".into(), Value::Builtin("stream:stdin".into()));
@@ -3335,6 +3349,7 @@ impl Runtime {
             None => return,
         };
         match obj {
+            Object::IoFile(file)=>{pending.push(Value::Obj(file.attrs));pending.extend(file.child.iter().cloned());},
             Object::MemoryView(view) if !view.released=>pending.push(Value::Obj(view.lease)),
             Object::BufferLease(lease) if lease.active=>{pending.extend([lease.owner.clone(),lease.obj.clone()]);pending.extend(lease.exporter.iter().cloned());pending.extend(lease.exported_view.iter().cloned());},
             Object::Template { strings, interpolations } => pending.extend([Value::Obj(*strings),Value::Obj(*interpolations)]),
@@ -4459,6 +4474,9 @@ impl Runtime {
         kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if name=="open" {return self.file_open(args,kwargs);}
+        if let Some(method)=name.strip_prefix("file_method:"){return self.file_method(method,args,kwargs);}
+        if file_type_name(name){return self.file_constructor(name,args,kwargs);}
         if stdlib_type_name(name) {let (module,member)=name.split_once('.').unwrap();return self.module_call(&format!("module:{module}:{member}"),args,kwargs);}
         if let Some(slot)=name.strip_prefix("implicit_native:"){return self.implicit_native_call(slot,args,kwargs);}
         if name.starts_with("native_attr:") {return self.native_attribute_call(Value::Builtin(name.into()),args,kwargs);}
@@ -5332,7 +5350,7 @@ impl Runtime {
                                 format!("unhashable type: '{}'", self.typename(&v)),
                             ));
                         }
-                        Some(Object::Instance{..}|Object::Class(_)|Object::Function(_)|Object::Cached(_)|Object::Partial{..}|Object::Module{..}|Object::Generator(_)|Object::Iterator(_))=>{
+                        Some(Object::IoFile(_)|Object::Instance{..}|Object::Class(_)|Object::Function(_)|Object::Cached(_)|Object::Partial{..}|Object::Module{..}|Object::Generator(_)|Object::Iterator(_))=>{
                             return Ok(Value::Int(Int::from_i128(i as i128).into()))
                         }
                         _ => {}
@@ -5567,6 +5585,8 @@ impl Runtime {
             return Ok(true);
         }
         if an=="ExceptionGroup" && bn=="BaseExceptionGroup" {return Ok(true);}
+        if an=="UnsupportedOperation" && bn=="ValueError"{return Ok(true);}
+        if file_type_name(&an){let mut current=an.as_str();while let Some(parent)=file_type_parent(current){if parent==bn{return Ok(true);}current=parent;}}
         if !an.is_empty() && !bn.is_empty() {
             let mut k = an.as_str();
             for _ in 0..30 {
@@ -6279,6 +6299,8 @@ impl Runtime {
             "RecursionError" | "NotImplementedError" => "RuntimeError",
             "UnicodeEncodeError" | "UnicodeDecodeError" | "UnicodeTranslateError" => "UnicodeError",
             "UnicodeError" => "ValueError",
+            "FileNotFoundError"|"FileExistsError"|"PermissionError"|"IsADirectoryError"|"NotADirectoryError"|"BlockingIOError"|"InterruptedError"|"ChildProcessError"|"ConnectionError"|"ProcessLookupError"|"TimeoutError"|"UnsupportedOperation"=>"OSError",
+            "BrokenPipeError"|"ConnectionAbortedError"|"ConnectionRefusedError"|"ConnectionResetError"=>"ConnectionError",
             "IndentationError"=>"SyntaxError",
             "TabError"=>"IndentationError",
             _ => "",
@@ -6367,6 +6389,7 @@ impl Runtime {
                 }
                 seen.push(*i);
                 let s = match self.object(*i)? {
+                    Object::IoFile(file)=>self.file_repr(&file)?,
                     Object::ByteArray(_)|Object::MemoryView(_)|Object::BufferLease(_)=>unreachable!("handled by buffer repr"),
                     Object::Template{..}|Object::Interpolation{..}=>unreachable!(),
                     Object::TypeParameter(_) | Object::TypeAlias{..} | Object::TypeUnpack(_) | Object::UnpackedAlias(_) | Object::ParamSpecMarker{..} | Object::TypeEvaluator(_) | Object::ForwardRef{..} | Object::TypeUnion{..} => self.typing_repr(v).unwrap()?,
@@ -6505,7 +6528,7 @@ impl Runtime {
                 Ok(s)
             }
             Value::Builtin(n) => {
-                if template_type_name(n) || stdlib_type_name(n){return Ok(format!("<class '{}'>",n));}
+                if file_type_name(n) || template_type_name(n) || stdlib_type_name(n){return Ok(format!("<class '{}'>",n));}
                 if n=="typing.NoDefault" {return Ok("typing.NoDefault".into());}
                 if n=="typing.Unpack" {return Ok("typing.Unpack".into());}
                 if n=="NoneType" {return Ok("<class 'NoneType'>".into());}
@@ -6731,6 +6754,7 @@ impl Runtime {
             }
             Value::Type(_) => "type".into(),
             Value::Obj(i) => match self.heap.get(*i).and_then(|o| o.as_ref()) {
+                Some(Object::IoFile(file))=>file.type_name.rsplit('.').next().unwrap().into(),
                 Some(Object::Static(_))=>"staticmethod".into(),
                 Some(Object::ClassMethod(_))=>"classmethod".into(),
                 Some(Object::Property{..})=>"property".into(),
@@ -7983,6 +8007,7 @@ impl Runtime {
         result
     }
     fn iter(&mut self, v: Value) -> PyResult<Value> {
+        if let Some(file)=self.file_value(&v){file.check()?;return Ok(v);}
         if let Some(length)=self.buffer_length(&v){length?;return Ok(self.obj_value(Object::Iterator(IteratorState::Buffer(v,0))));}
         if let Value::Obj(index)=&v {if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Template{..})){return Ok(self.obj_value(Object::Iterator(IteratorState::Template(*index,0))));}}
         if self.type_parameter_kind(&v)==Some("typevartuple") || matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{..}))) {
@@ -8107,6 +8132,7 @@ impl Runtime {
         Ok(result)
     }
     fn next_raw(&mut self, it: Value) -> PyResult<Option<Value>> {
+        if self.file_value(&it).is_some(){return self.file_method("__next__",vec![it],Vec::new()).map(Some);}
         if let Value::Builtin(name) = &it {
             if let Some((kind, target)) = name.split_once(':') {
                 if kind == "stream" || kind == "streambuffer" {
@@ -8350,6 +8376,8 @@ impl Runtime {
             },
             Value::Builtin(n) if n == "object" => return Some(vec![class.clone()]),
             Value::Builtin(n) if n == "bool" => vec![Value::Builtin("int".into())],
+            Value::Builtin(n) if file_type_name(n)=>vec![Value::Builtin(file_type_parent(n).unwrap_or("object").into())],
+            Value::Type(n) if n=="UnsupportedOperation"=>vec![Value::Type("OSError".into()),Value::Type("ValueError".into())],
             Value::Builtin(_) => vec![Value::Builtin("object".into())],
             Value::Type(n) if n=="ExceptionGroup" => vec![Value::Type("BaseExceptionGroup".into()),Value::Type("Exception".into())],
             Value::Type(n) => {
@@ -8459,6 +8487,7 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if let Some(result)=self.file_getattr(v.clone(),name){return result;}
         if let Some(result)=self.buffer_getattr(v.clone(),name){return result;}
         if let Some(result)=self.stdlib_type_attribute(&v,name) {return result;}
         if name=="__class__" {if let Some(class)=self.stdlib_instance_class(&v) {return Ok(class);}}
@@ -9237,6 +9266,7 @@ impl Runtime {
         ))
     }
     fn setattr_default(&mut self, obj: Value, name: &str, value: Value) -> PyResult<()> {
+        if let Some(result)=self.file_setattr(&obj,name,value.clone()){return result;}
         if matches!(&obj,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) {
             if let Some(meta)=self.object_class(&obj) {if let Some(descriptor)=self.class_attribute_lookup(&meta,name) {
                 if self.attribute_is_data(&descriptor)&&!matches!(native_attribute_parts(&descriptor),Some((_,"type",_))) {
@@ -9581,6 +9611,7 @@ impl Runtime {
         ))
     }
     fn delattr_default(&mut self, obj: Value, name: &str) -> PyResult<()> {
+        if let Some(result)=self.file_delattr(&obj,name){return result;}
         if let Some(class) = self.object_class(&obj) {
             let descriptor=if matches!(&obj,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Instance{..}|Object::BuiltinInstance{..}))){self.class_attribute_lookup(&class,name)}else{self.slot_override(&class,name,0)};
             if let Some(descriptor) = descriptor {
