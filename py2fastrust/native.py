@@ -459,6 +459,7 @@ class _Generator:
         self.has_iterator_frames = False
         self.has_slices = False
         self.has_text_methods = False
+        self.has_big_text = False
         self.entry_scope = None
 
     def temporary(self):
@@ -1956,7 +1957,7 @@ class _Generator:
                 values = [self.expression(argument.value if isinstance(argument, ast.Starred) else argument, environment)
                           for argument in call.args]
                 starred = [isinstance(argument, ast.Starred) for argument in call.args]
-                if any(value.kind not in ({"list_int", "deque_int"} if star else {"int", "bool", "int_bool"})
+                if any(value.kind not in ({"list_int", "deque_int"} if star else {"int", "bool", "int_bool", "str"})
                        for value, star in zip(values, starred)):
                     raise _Unsupported
                 names = [self.temporary() for _ in values]
@@ -1981,7 +1982,7 @@ class _Generator:
                 for index, (name, value) in enumerate(zip(names, values)):
                     if index:
                         lines.append(f"native_output.push_str({_string(separator)});")
-                    formatted = name if value.kind in {"int", "int_bool"} else f'(if {name} {{ "True" }} else {{ "False" }})'
+                    formatted = name if value.kind != "bool" else f'(if {name} {{ "True" }} else {{ "False" }})'
                     lines.append(f'write!(&mut native_output, "{{}}", {formatted}).unwrap();')
                 lines.append(f"native_output.push_str({_string(end)});")
                 if flush: lines.append(self.at("native_flush_output(&mut native_output)", node) + ";")

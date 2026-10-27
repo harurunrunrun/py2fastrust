@@ -14,6 +14,7 @@ from .native import (_Binding, _Expression, _Function, _Generator, _ListInfo, _S
                      _Unsupported, _OUTPUT_HELPERS, _declarations,
                      _function_plans, _string, _direct_diagnostic)
 from .native_bigint_lists import BigIntLists, HELPERS as LIST_HELPERS
+from .native_bigint_text import BigIntText, HELPERS as BIG_TEXT_HELPERS
 
 
 _HELPERS = r'''
@@ -95,8 +96,8 @@ fn native_space(character:char)->bool {character.is_whitespace()||('\u{1c}'..='\
 '''
 
 
-class BigIntGenerator(BigIntLists, _Generator):
-    BUILTINS = _Generator.BUILTINS | {"bool", "reversed"}
+class BigIntGenerator(BigIntText, BigIntLists, _Generator):
+    BUILTINS = _Generator.BUILTINS | {"bool", "reversed", "str"}
 
     def __init__(self, bits=0, functions=None, function=None, function_input=False, constructors=None, specializations=None):
         super().__init__(0, functions, function, function_input, constructors, specializations)
@@ -113,6 +114,11 @@ class BigIntGenerator(BigIntLists, _Generator):
         return f"Int::parse({_string(str(value))},10).unwrap()"
 
     def slot(self, kind):
+        if kind == "str":
+            self.has_big_text = True
+            slot = f"native_var_{len(self.bindings)}"
+            self.bindings[slot] = kind
+            return slot
         if kind not in {"int", "bool", "int_bool", "list_int"}:
             raise _Unsupported
         return super().slot(kind)
@@ -130,7 +136,7 @@ class BigIntGenerator(BigIntLists, _Generator):
     @staticmethod
     def coerce(expression, kind):
         if expression.kind == kind:
-            return f"({expression.code}).clone()" if kind in {"int", "int_bool"} else expression.code
+            return f"({expression.code}).clone()" if kind in {"int", "int_bool", "str"} else expression.code
         if kind == "int_bool" and expression.kind in {"int", "bool"}:
             variant = "Int" if expression.kind == "int" else "Bool"
             value = f"({expression.code}).clone()" if expression.kind == "int" else expression.code
@@ -139,6 +145,8 @@ class BigIntGenerator(BigIntLists, _Generator):
 
     @staticmethod
     def truth(expression):
+        if expression.kind == "str":
+            return f"!({expression.code}).is_empty()"
         if expression.kind == "list_int":
             return f"!({expression.code}).is_empty()"
         if expression.kind == "int":
@@ -149,6 +157,11 @@ class BigIntGenerator(BigIntLists, _Generator):
             return expression.code
         raise _Unsupported
 
+    def scalar_kind(self, values):
+        if values and all(value.kind == "str" for value in values):
+            return "str"
+        return super().scalar_kind(values)
+
     def integer_bit_query(self, node, environment):
         value = self.expression(node.func.value, environment)
         method = node.func.attr
@@ -157,6 +170,9 @@ class BigIntGenerator(BigIntLists, _Generator):
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        text = self.text_expression(node, environment)
+        if text is not None:
+            return text
         if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
             from .native_slices import try_slice
             return try_slice(self, node, environment)
@@ -239,6 +255,9 @@ class BigIntGenerator(BigIntLists, _Generator):
         raise _Unsupported
 
     def binary(self, operator, left, right, node):
+        text = self.text_binary(operator, left, right, node)
+        if text is not None:
+            return text
         result = self.list_binary(operator,left,right,node)
         if result is not None:
             return result
@@ -356,7 +375,7 @@ class BigIntGenerator(BigIntLists, _Generator):
         entry_slots = {binding.slot for binding in entry.values() if isinstance(binding,_Binding)}
         for name,binding in joined.items():
             if isinstance(binding,_Binding) and binding.slot not in entry_slots:
-                default = {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))","list_int":"Vec::<Int>::new()"}[binding.kind]
+                default = {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))","list_int":"Vec::<Int>::new()","str":"String::new()"}[binding.kind]
                 old = entry.get(name)
                 if isinstance(old,_Binding) and binding.kind == "int_bool":
                     default = self.coerce(_Expression(old.slot,old.kind),binding.kind)
@@ -465,6 +484,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         body,_ = generator.statements(tree.body,{})
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
         generator.has_slices |= any(local.has_slices for local in specializations.generators)
+        generator.has_big_text |= any(local.has_big_text for local in specializations.generators)
+        generator.has_text_methods |= any(local.has_text_methods for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source,filename,error))
@@ -482,6 +503,11 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.has_slices:
         from .native_slices import SLICE_HELPERS
         result.append(SLICE_HELPERS)
+    if generator.has_big_text:
+        result.append(BIG_TEXT_HELPERS)
+    if generator.has_text_methods:
+        from .native_text_methods import HELPERS as TEXT_METHOD_HELPERS
+        result.append(TEXT_METHOD_HELPERS)
     if generator.has_input:
         result += [runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),_INPUT_HELPERS]
     result.extend(specializations.sources)

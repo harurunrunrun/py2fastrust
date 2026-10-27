@@ -136,7 +136,7 @@ aggregation and insertion-order iteration, and owned adjacency-list BFS.
 Standard input is buffered and read on demand. Output flushes before a blocking
 input operation, including inside supported ordinary functions.
 Immediately consumed generator expressions use typed loops for reductions.
-Fixed-width modes also support character-based string slicing,
+All integer modes also support character-based string slicing,
 `strip`/`lstrip`/`rstrip`, `count`, and `join` over proved string streams.
 
 If the implementation cannot establish a supported direct representation, it

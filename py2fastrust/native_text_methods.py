@@ -94,9 +94,12 @@ def try_text_method(generator, node, environment):
             value = g.expression(bound, environment)
             name = g.temporary()
             lines.append(f"let {name}={g.number(value)};")
-            bounds.append(f"Some({name} as i128)")
+            normalized = (f"{name} as i128" if g.bits else
+                          f"{name}.to_i128().unwrap_or_else(||if {name}.is_negative(){{i128::MIN}}else{{i128::MAX}})")
+            bounds.append(f"Some({normalized})")
         bounds += ["None"] * (2-len(bounds))
-        expression = f"native_text_count({receiver},{pattern},{','.join(bounds)}) as NativeInt"
+        count = f"native_text_count({receiver},{pattern},{','.join(bounds)})"
+        expression = f"{count} as NativeInt" if g.bits else f"Int::from_i128({count} as i128)"
         kind = "int"
     else:
         if len(node.args) != 1:
