@@ -5561,27 +5561,52 @@ impl Runtime {
         key: Option<Value>,
         reverse: bool,
     ) -> PyResult<Vec<Value>> {
-        let mut xs = Vec::new();
-        for v in values {
-            let k = if let Some(fun) = &key {
-                if matches!(fun, Value::None) {
-                    v.clone()
-                } else {
-                    self.call(fun.clone(), vec![v.clone()], Vec::new(), None)?
-                }
-            } else {
-                v.clone()
-            };
-            xs.push((k, v))
-        }
-        for i in 1..xs.len() {
-            let mut j = i;
-            while j > 0 && self.compare(if reverse { ">" } else { "<" }, &xs[j].0, &xs[j - 1].0)? {
-                xs.swap(j, j - 1);
-                j -= 1
+        // Python callbacks can collect while keys are being computed or
+        // compared. Keep every original value and every completed key alive.
+        let mut roots=values.clone();roots.extend(key.iter().cloned());
+        self.view_rooted(roots,|runtime,root|{
+            let count=values.len();
+            let mut keys=Vec::with_capacity(count);
+            for value in &values {
+                let derived=if let Some(function)=key.as_ref().filter(|value|!matches!(value,Value::None)) {
+                    runtime.call(function.clone(),vec![value.clone()],Vec::new(),None)?
+                }else{value.clone()};
+                runtime.roots[root].push(derived.clone());
+                keys.push(derived);
             }
-        }
-        Ok(xs.into_iter().map(|(_, v)| v).collect())
+            // Sort indices rather than moving Values through comparisons.
+            // Bottom-up merging is stable, bounds comparisons by O(n log n),
+            // and uses no Rust recursion for long lists.
+            let mut order:Vec<usize>=(0..count).collect();
+            let mut scratch=vec![0;count];
+            let mut width=1usize;
+            while width<count {
+                let mut start=0usize;
+                while start<count {
+                    let middle=start.saturating_add(width).min(count);
+                    let end=middle.saturating_add(width).min(count);
+                    let (mut left,mut right,mut output)=(start,middle,start);
+                    while left<middle && right<end {
+                        // Both directions use Python's less-than protocol.
+                        // Selecting the left on ties preserves original order.
+                        let take_right=if reverse {
+                            runtime.compare("<",&keys[order[left]],&keys[order[right]])?
+                        }else{
+                            runtime.compare("<",&keys[order[right]],&keys[order[left]])?
+                        };
+                        scratch[output]=if take_right{let index=order[right];right+=1;index}
+                            else{let index=order[left];left+=1;index};
+                        output+=1;
+                    }
+                    while left<middle {scratch[output]=order[left];left+=1;output+=1;}
+                    while right<end {scratch[output]=order[right];right+=1;output+=1;}
+                    start=end;
+                }
+                std::mem::swap(&mut order,&mut scratch);
+                width=width.saturating_mul(2);
+            }
+            Ok(order.into_iter().map(|index|values[index].clone()).collect())
+        })
     }
 }
 
