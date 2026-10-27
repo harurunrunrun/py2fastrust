@@ -5191,7 +5191,11 @@ impl Runtime {
                 let n = self
                     .as_int(&arg(0)?)?
                     .to_usize()
+                    .filter(|number| *number < 0x110000)
                     .ok_or_else(|| pyerr("ValueError", "chr() arg not in range(0x110000)"))?;
+                if (0xd800..=0xdfff).contains(&n) {
+                    return Err(pyerr("NotImplementedError", "unpaired Unicode surrogates are not supported"));
+                }
                 Ok(Value::Str(
                     char::from_u32(n as u32)
                         .ok_or_else(|| pyerr("ValueError", "chr() arg not in range(0x110000)"))?
