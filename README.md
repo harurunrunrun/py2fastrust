@@ -125,6 +125,10 @@ before native lowering. All direct emitters consume the same read-only source
 unit and lexical metadata. No VM instruction compilation is needed for public
 conversion. Only requested modules are resolved; `__future__` is not implicitly
 loaded.
+A shared semantic graph solves allocation field constraints and loop-header
+binding shapes before ordinary Rust lowering, including empty collections and
+possibly unbound names. It contains compile-time facts and typed control-flow
+edges; the generated program executes its Rust statements directly.
 
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather

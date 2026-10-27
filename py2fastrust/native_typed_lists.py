@@ -284,9 +284,6 @@ def try_statement(g,node,environment):
             if not immutable(value.kind):
                 raise _Unsupported
             kind = ListType(value.kind)
-            probe = getattr(g,"_empty_list_probe",None)
-            if probe is not None:
-                probe.append((target.id,binding.slot,kind))
             slot = g.bind(target.id,_Expression("",kind,length=0),environment)
             initialization = f"{slot}=Vec::new();\n"
             length = 0
@@ -315,6 +312,8 @@ def try_statement(g,node,environment):
 
 
 def _representation(g,value,*,quoted=False):
+    from .native_types import EmptyType
+    if isinstance(value.kind,EmptyType):return f"native_empty::<String>({value.code})"
     from .native_unions import representation
     finite=representation(g,value,_representation,quoted)
     if finite is not None:return finite
@@ -365,7 +364,8 @@ def _print(g,node,environment):
     values = [(isinstance(argument,ast.Starred),g.expression(argument.value if isinstance(argument,ast.Starred) else argument,environment))
               for argument in call.args]
     from .native_unions import union_kind
-    if not any(isinstance(value.kind,(ListType,TupleType)) or union_kind(value.kind) or value.kind=="none" or not star and value.kind == "list_int" for star,value in values):
+    from .native_types import EmptyType
+    if not any(isinstance(value.kind,(ListType,TupleType,EmptyType)) or union_kind(value.kind) or value.kind=="none" or not star and value.kind == "list_int" for star,value in values):
         return None
     separator,end,flush = " ","\n",False
     seen = set()
@@ -416,60 +416,6 @@ def _print(g,node,environment):
     return "\n".join(lines),environment
 
 
-def refine_empty_lists(g,node,environment,pairs,owners=()):
-    """Solve element constraints of uniquely owned, initially empty lists.
-
-    The body proof is a compiler pass: it constructs no source values and
-    executes no Python expressions. A second lowering uses the solved element
-    type on every back edge, including the zero-iteration path.
-    """
-    targets = {target.id for target,_ in pairs}
-    candidates = {name:binding for name,binding in environment.items()
-                  if name not in targets and isinstance(binding,_Binding)
-                  and isinstance(binding.info,_ListInfo) and binding.info.length == 0}
-    if not candidates:
-        return "",environment
-    previous = getattr(g,"_empty_list_probe",None)
-    constraints = []
-    g._empty_list_probe = constraints
-    inside = environment.copy()
-    for target,value in pairs:
-        inside[target.id] = _Binding(value.code,g.binding(value))
-    context = {"label":g.temporary(),"edges":[]}
-    depth = len(g.iterating_lists)
-    g.iterating_lists.extend(set(owners)-targets)
-    g.loops.append(context)
-    try:
-        try:
-            g.statements(node.body,inside)
-        except _Unsupported:
-            # The actual proof is rerun below. A branch may lose its binding
-            # before the common element type has been solved.
-            pass
-    finally:
-        g.loops.pop()
-        del g.iterating_lists[depth:]
-        g._empty_list_probe = previous
-    solved = {}
-    for name,slot,kind in constraints:
-        if name not in candidates or candidates[name].slot != slot:
-            continue
-        if name in solved:
-            kind = join_types(solved[name],kind)
-            if kind is None:
-                raise _Unsupported
-        solved[name] = kind
-    if not solved:
-        return "",environment
-    result = environment.copy()
-    lines = []
-    for name,kind in solved.items():
-        if previous is not None:
-            previous.append((name,candidates[name].slot,kind))
-        slot = g.bind(name,_Expression("",kind,length=0),result)
-        lines.append(f"{slot}=Vec::new();")
-    return "\n".join(lines),result
-
 
 def stream(g,node,environment,planner,*,value=None):
     from .native_iterators import Stream
@@ -488,3 +434,6 @@ def stream(g,node,environment,planner,*,value=None):
         owner,setup = value.code,""
     fields = ((value.kind.element,"@.clone()",True),)
     return planner.leaf(setup,f"let {cursor}={owner}.iter();",cursor,fields,owners,length=value.length)
+
+from .native_constraint_lowering import MAP_HELPERS
+HELPERS+=MAP_HELPERS

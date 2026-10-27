@@ -6,9 +6,13 @@ clones preserve Python's immutable-value semantics without requiring ``Copy``.
 Missing direct lowering produces a positioned diagnostic in the public API.
 """
 
+from .native_constraints import ConstraintFailure
+from .native_constraint_lowering import result_shapes
+
 import ast
+from dataclasses import replace
 from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
-                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value,UnionType,NullableType)
+                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value,UnionType,NullableType,EmptyType,EMPTY)
 from importlib.resources import files
 import symtable
 
@@ -92,7 +96,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return integer_policy(0).rust_literal(value,_string)
 
     def slot(self, kind):
-        if isinstance(unmaybe(kind),(TupleType,ListType,UnionType,NullableType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
+        if isinstance(unmaybe(kind),(TupleType,ListType,UnionType,NullableType,EmptyType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
         if kind == "str":
             self.has_big_text = True
             slot = f"native_var_{len(self.bindings)}"
@@ -104,6 +108,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def number(expression):
+        if isinstance(expression.kind,EmptyType):return f"native_empty::<NativeInt>({expression.code})"
         if expression.kind == "int":
             return expression.code
         if expression.kind == "bool":
@@ -114,16 +119,25 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def coerce(expression, kind):
+        if isinstance(expression.kind,EmptyType):return f"native_empty::<{rust_type(kind)}>({expression.code})"
         from .native_tuples import coerce_structural
         from .native_unions import coerce_union
         finite=coerce_union(expression,kind,BigIntGenerator.coerce)
         if finite is not None:return finite
         if is_maybe(kind):
-            if expression.kind==kind:return f"({expression.code}).clone()"
+            if expression.kind==kind:return expression.code if not immutable(unmaybe(kind)) and expression.owned else f"({expression.code}).clone()"
             if is_maybe(expression.kind):
+                if not immutable(unmaybe(expression.kind)):
+                    if not expression.owned:raise _Unsupported
+                    item=_Expression("native_optional",unmaybe(expression.kind))
+                    return f"({expression.code}).map(|native_optional|{BigIntGenerator.coerce(item,unmaybe(kind))})"
                 item=_Expression("native_optional.clone()",unmaybe(expression.kind))
                 return f"({expression.code}).as_ref().map(|native_optional|{BigIntGenerator.coerce(item,unmaybe(kind))})"
             return f"Some({BigIntGenerator.coerce(expression,unmaybe(kind))})"
+        from .native_constraints import canonical_kind
+        source_shape=canonical_kind(expression.kind);target_shape=canonical_kind(kind)
+        if isinstance(source_shape,ListType) and isinstance(target_shape,ListType):
+            return coerce_structural(replace(expression,kind=source_shape),target_shape,BigIntGenerator.coerce)
         structural=coerce_structural(expression,kind,BigIntGenerator.coerce)
         if structural is not None:return structural
         if expression.kind == kind:
@@ -136,6 +150,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def truth(expression):
+        if isinstance(expression.kind,EmptyType):return f"native_empty::<bool>({expression.code})"
         from .native_unions import truth
         finite=truth(expression,BigIntGenerator.truth)
         if finite is not None:return finite
@@ -164,7 +179,11 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         constant = None if value.constant is None else getattr(int(value.constant), method)()
         return _Expression(code, "int", constant)
 
+    @result_shapes
     def expression(self, node, environment):
+        from .native_constraint_lowering import allocation_expression
+        allocated=allocation_expression(self,node,environment)
+        if allocated is not None:return allocated
         from .native_unions import leaf_expression
         leaf=leaf_expression(self,node,environment)
         if leaf is not None:return leaf
@@ -211,7 +230,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and isinstance(binding.info, _ListInfo):
                 return _Expression(binding.slot,"list_int",owned=False,length=binding.info.length)
-            if isinstance(binding, _Binding) and is_maybe(binding.kind):
+            if isinstance(binding, _Binding) and (is_maybe(binding.kind) or isinstance(binding.kind,EmptyType)):
                 return super().expression(node, environment)
             if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool"}:
                 raise _Unsupported
@@ -368,65 +387,12 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return integer_range(self,node,environment)
 
     def finish_loop(self, node, entry, header, context, body, remaining, nonempty, may_repeat, zero=False):
-        # The shared CFG proof uses moves for fixed-width Copy values. BigInt
-        # edges instead copy immutable values explicitly, and construct typed
-        # zero placeholders only for bindings proved definite after the loop.
-        if remaining is not None:
-            marker = "// "+self.temporary()+"_edge"
-            context["edges"].append((marker,"normal",remaining))
-            body += "\n"+marker
-        edges = context["edges"]
-        environments = ([entry] if not nonempty else [])+[environment for _,_,environment in edges]
-        if zero:
-            environments = [entry]
-        joined,post_moves = self.join(environments,preferred=entry)
-        if joined is None:
-            joined = self.after_loop(entry)
-        initializers = []
-        entry_slots = {binding.slot for binding in entry.values() if isinstance(binding,_Binding)}
-        for name,binding in joined.items():
-            if isinstance(binding,_Binding) and binding.slot not in entry_slots:
-                default = None if is_maybe(binding.kind) else default_value(binding.kind,self.literal(0))
-                old = entry.get(name)
-                if default is None:
-                    default = self.coerce(_Expression(old.slot,old.kind),binding.kind) if isinstance(old,_Binding) else "None"
-                elif isinstance(old,_Binding) and binding.kind == "int_bool":
-                    default = self.coerce(_Expression(old.slot,old.kind),binding.kind)
-                initializers.append(f"{binding.slot}={default};")
-        live = self.read_before_write(node.body)
-        if isinstance(node,ast.While):
-            live |= {value.id for value in ast.walk(node.test) if isinstance(value,ast.Name) and isinstance(value.ctx,ast.Load)}
-        else:
-            live -= {value.id for value in ast.walk(node.target) if isinstance(value,ast.Name)}
-        replacements = {}
-        offset = 0 if nonempty else 1
-        for index,(marker,kind,environment) in enumerate(edges):
-            copies = []
-            if kind != "break" and may_repeat and not zero:
-                for name,previous in header.items():
-                    if _static_reference(previous):
-                        if name in live and environment.get(name) is not previous:
-                            raise _Unsupported
-                        continue
-                    if not isinstance(previous,_Binding):
-                        continue
-                    current = environment.get(name)
-                    previous_inner = unmaybe(previous.kind)
-                    current_inner = unmaybe(current.kind) if isinstance(current,_Binding) else None
-                    compatible = isinstance(current,_Binding) and (current.kind==previous.kind or previous.kind=="int_bool" and current.kind in {"int","bool"}
-                                 or is_maybe(previous.kind) and (current_inner==previous_inner or previous_inner=="int_bool" and current_inner in {"int","bool"}))
-                    if not compatible:
-                        if name in live:
-                            raise _Unsupported
-                    elif current.slot != previous.slot:
-                        copies.append(f"{previous.slot}={self.coerce(_Expression(current.slot,current.kind),previous.kind)};")
-            if not zero:
-                copies += post_moves[index+offset]
-            replacements[marker] = "\n".join(dict.fromkeys(copies))
-        body = "\n".join(replacements.get(line,line) for line in body.split("\n"))
-        return "\n".join(initializers),body,self.after_loop(joined)
+        return super().finish_loop(node,entry,header,context,body,remaining,nonempty,may_repeat,zero)
 
     def statement(self, node, environment):
+        from .native_constraint_lowering import reset_statement
+        reset=reset_statement(self,node,environment)
+        if reset is not None:return reset
         from .native_module_calls import try_statement as module_statement
         module=module_statement(self,node,environment)
         if module is not None:return module
@@ -513,9 +479,13 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.string_mode=string_mode
         generator.trusted_imports=trusted_imports
         generator.source_unit=unit
+        from .native_constraints import analyze
+        generator.type_analysis=specializations.type_analysis=analyze(unit)
+        generator.constraint_facts=generator.type_analysis.scope()
         body,_ = generator.statements(tree.body,{})
         for local in specializations.generators:generator.union_types.update(local.union_types)
         generator.has_scalar_union |= any(local.has_scalar_union for local in specializations.generators)
+        generator.has_empty_type |= any(local.has_empty_type for local in specializations.generators)
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
         generator.has_slices |= any(local.has_slices for local in specializations.generators)
         generator.has_big_text |= any(local.has_big_text for local in specializations.generators)
@@ -526,7 +496,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_key_containers |= any(local.has_key_containers for local in specializations.generators)
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
         generator.has_native_words |= any(local.has_native_words for local in specializations.generators)
-    except (SyntaxError,_Unsupported,RecursionError) as error:
+    except (SyntaxError,_Unsupported,RecursionError,ConstraintFailure) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
         return None
@@ -568,6 +538,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.has_native_modules:
         from .native_module_calls import HELPERS as MODULE_HELPERS
         result.append(MODULE_HELPERS)
+    if generator.has_empty_type:
+        from .native_constraint_lowering import EMPTY_HELPERS
+        result.append(EMPTY_HELPERS)
     if generator.union_types:
         from .native_unions import render_types
         result.append(render_types(generator.union_types))

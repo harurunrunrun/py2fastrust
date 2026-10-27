@@ -6,6 +6,8 @@ require further direct lowering. Expressions keep
 their Python evaluation order even when Rust needs a temporary or a clone.
 """
 
+from .native_constraint_lowering import result_shapes
+
 import ast
 from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
                            is_maybe,unmaybe,maybe_type,immutable,list_type,default_value)
@@ -346,7 +348,11 @@ class ScalarGenerator(_Generator):
         kind = ": &str" if value.kind == "str" else ""
         return f"let {name}{kind} = {value.code};"
 
+    @result_shapes
     def expression(self, node, environment):
+        from .native_constraint_lowering import allocation_expression
+        allocated=allocation_expression(self,node,environment)
+        if allocated is not None:return allocated
         from .native_unions import leaf_expression
         leaf=leaf_expression(self,node,environment)
         if leaf is not None:return leaf

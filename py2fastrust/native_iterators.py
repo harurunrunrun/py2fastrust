@@ -575,6 +575,8 @@ def try_reduction(generator, node, environment):
     accumulator = g.temporary()
     if name == "sum":
         start = extra or _Expression(g.literal(0), "int", 0)
+        from .native_types import EmptyType
+        if isinstance(value.kind,EmptyType):value=_Expression(g.coerce(value,"int"),"int")
         if value.kind not in {"int", "bool", "int_bool"} or start.kind not in {"int", "bool", "int_bool"}:
             raise _Unsupported
         kind = g.scalar_kind([start, _Expression("", "int")])
@@ -638,8 +640,7 @@ def try_for_loop(generator, node, environment):
     pairs = planner.target_values(node.target,stream)
     targets = [target for target,_ in pairs]
     values = [value for _,value in pairs]
-    from .native_typed_lists import refine_empty_lists
-    refinement,environment = refine_empty_lists(g,node,environment,pairs,stream.owners)
+    refinement=""
     if any(target.id in g.iterating_lists for target in targets):
         raise _Unsupported
     if any(value.kind == "list_int" and not value.owned for value in values):

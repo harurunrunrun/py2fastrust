@@ -33,7 +33,8 @@ def canonical_tuple(fields):
 
 
 def compatible_keys(left,right):
-    from .native_types import TupleType
+    from .native_types import TupleType,EmptyType
+    if isinstance(left,EmptyType) or isinstance(right,EmptyType):return True
     if left in {"int","bool","int_bool"} and right in {"int","bool","int_bool"}:return True
     if left==right=="str":return True
     return (isinstance(left,TupleType) and isinstance(right,TupleType) and len(left.fields)==len(right.fields)
@@ -41,7 +42,8 @@ def compatible_keys(left,right):
 
 
 def canonical_type(kind):
-    from .native_types import TupleType
+    from .native_types import TupleType,EmptyType
+    if isinstance(kind,EmptyType):return "NativeEmpty"
     if kind in {"int","bool","int_bool"}:return "NativeInt"
     if kind=="str":return "String"
     if isinstance(kind,TupleType):return canonical_tuple(canonical_type(field) for field in kind.fields)

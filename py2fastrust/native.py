@@ -10,14 +10,17 @@ the public API; it never selects a general execution backend.
 import ast
 from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
                            is_maybe,unmaybe,maybe_type,immutable,list_type,default_value,
-                           UnionType,NullableType,join_types)
+                           UnionType,NullableType,join_types,EmptyType,EMPTY)
 from dataclasses import dataclass, field, replace
 from importlib.resources import files
 import symtable
 
 from .typeflow import TypeSet
+from .native_constraints import ConstraintFailure
+from .native_constraint_lowering import result_shapes
 from .diagnostics import Diagnostic
 from .call_semantics import FunctionSignature, CallBindingError, normalize_call
+from .references import DequeConstructor as _DequeConstructor
 
 
 class _Unsupported(Exception):
@@ -30,6 +33,7 @@ def _static_reference(value):
 
 def _direct_diagnostic(source, filename, error=None, node=None, unit=None):
     """Locate the innermost AST operation whose direct lowering failed."""
+    node = getattr(error,"node",node)
     traceback = getattr(error, "__traceback__", None)
     while traceback is not None:
         candidate = traceback.tb_frame.f_locals.get("node")
@@ -48,6 +52,18 @@ def _direct_diagnostic(source, filename, error=None, node=None, unit=None):
     construct = f" ({type(node).__name__})" if node is not None else ""
     return Diagnostic("direct Rust generation is not implemented for this construct or type combination" + construct,
                       filename, line, column, "E006")
+
+
+@dataclass(frozen=True)
+class _EdgeMove:
+    """A single typed CFG transfer, kept structural until edge emission."""
+    destination: str
+    kind: object
+    source: object = None
+
+    def render(self,generator):
+        value="None" if self.source is None else generator.coerce(_Expression(self.source.slot,self.source.kind),self.kind)
+        return f"{self.destination} = {value};"
 
 
 @dataclass(frozen=True)
@@ -74,12 +90,6 @@ class _MatrixInfo:
 @dataclass(frozen=True)
 class _DequeInfo:
     length: int | None
-
-
-@dataclass(frozen=True)
-class _DequeConstructor:
-    _native_reference=True
-    name: str
 
 
 @dataclass(frozen=True)
@@ -442,6 +452,10 @@ class _Generator:
         self.return_kinds = set()
         self.return_values = {}
         self.union_types = set()
+        self.type_analysis=None
+        self.constraint_facts=None
+        self.constraint_header_slots={}
+        self.has_empty_type=False
         self.expression_scopes = []
         self.expression_trace_id = None
         self.expression_mutations = []
@@ -474,15 +488,14 @@ class _Generator:
 
     def slot(self, kind):
         inner=unmaybe(kind)
-        if isinstance(inner,(TupleType,ListType,UnionType,NullableType)) or getattr(inner,"_key_container",False):
+        if isinstance(inner,(TupleType,ListType,UnionType,NullableType,EmptyType)) or getattr(inner,"_key_container",False):
             self.register_type(inner)
-            if is_maybe(kind) and not immutable(inner):raise _Unsupported
             slot=f"native_var_{len(self.bindings)}"
             self.bindings[slot]=kind
             return slot
         if is_maybe(kind):
             inner = unmaybe(kind)
-            if inner not in {"int", "bool", "int_bool", "float", "str", "bytes", "none"}:
+            if inner not in {"int", "bool", "int_bool", "float", "str", "bytes", "none", "list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
                 raise _Unsupported
             # Register scalar helper requirements through the ordinary slot
             # factory without retaining an extra user-value binding.
@@ -500,7 +513,8 @@ class _Generator:
 
     def register_type(self,kind):
         kind=unmaybe(kind)
-        if isinstance(kind,UnionType):
+        if isinstance(kind,EmptyType):self.has_empty_type=True
+        elif isinstance(kind,UnionType):
             self.union_types.add(kind)
             for value in kind.alternatives:self.register_type(value)
         elif isinstance(kind,NullableType):self.register_type(kind.value)
@@ -554,6 +568,7 @@ class _Generator:
 
     @staticmethod
     def number(expression):
+        if isinstance(expression.kind,EmptyType):return f"native_empty::<NativeInt>({expression.code})"
         if expression.kind == "int":
             return expression.code
         if expression.kind == "bool":
@@ -564,20 +579,30 @@ class _Generator:
 
     @staticmethod
     def coerce(expression, kind):
+        if isinstance(expression.kind,EmptyType):return f"native_empty::<{rust_type(kind)}>({expression.code})"
         from .native_tuples import coerce_structural
         from .native_unions import coerce_union
         finite=coerce_union(expression,kind,_Generator.coerce)
         if finite is not None:return finite
         if is_maybe(kind):
             if expression.kind==kind:
-                # Fixed scalar Option slots are Copy; they need no clone at
-                # loop joins. The BigInt backend keeps its owning override.
+                if not immutable(unmaybe(kind)):
+                    if not expression.owned:raise _Unsupported
+                    return expression.code
                 if unmaybe(kind) in {"int","bool","int_bool","float"}:return expression.code
                 return f"({expression.code}).clone()"
             if is_maybe(expression.kind):
+                if not immutable(unmaybe(expression.kind)):
+                    if not expression.owned:raise _Unsupported
+                    item=_Expression("native_optional",unmaybe(expression.kind))
+                    return f"({expression.code}).map(|native_optional|{_Generator.coerce(item,unmaybe(kind))})"
                 item=_Expression("native_optional.clone()",unmaybe(expression.kind))
                 return f"({expression.code}).as_ref().map(|native_optional|{_Generator.coerce(item,unmaybe(kind))})"
             return f"Some({_Generator.coerce(expression,unmaybe(kind))})"
+        from .native_constraints import canonical_kind
+        source_shape=canonical_kind(expression.kind);target_shape=canonical_kind(kind)
+        if isinstance(source_shape,ListType) and isinstance(target_shape,ListType):
+            return coerce_structural(replace(expression,kind=source_shape),target_shape,_Generator.coerce)
         structural=coerce_structural(expression,kind,_Generator.coerce)
         if structural is not None:return structural
         if expression.kind == kind:
@@ -598,6 +623,7 @@ class _Generator:
 
     @staticmethod
     def truth(expression):
+        if isinstance(expression.kind,EmptyType):return f"native_empty::<bool>({expression.code})"
         if getattr(expression.kind,"_key_container",False):return f"!({expression.code}).is_empty()"
         if isinstance(expression.kind,TupleType):
             return f"{{let _=&({expression.code}); {str(bool(expression.kind.fields)).lower()}}}"
@@ -882,7 +908,11 @@ class _Generator:
         constant = None if value.constant is None else getattr(int(value.constant), method)()
         return _Expression(code, "int", constant)
 
+    @result_shapes
     def expression(self, node, environment):
+        from .native_constraint_lowering import allocation_expression
+        allocated=allocation_expression(self,node,environment)
+        if allocated is not None:return allocated
         from .native_unions import leaf_expression
         leaf=leaf_expression(self,node,environment)
         if leaf is not None:return leaf
@@ -944,8 +974,9 @@ class _Generator:
                     message = f"NameError: cannot access free variable '{node.id}' where it is not associated with a value in enclosing scope"
                 else:
                     message = f"UnboundLocalError: cannot access local variable '{node.id}' where it is not associated with a value"
-                read = f"{information.slot}.as_ref().cloned().ok_or_else(|| String::from({_string(message)}))"
-                return _Expression(self.at(read, node), info.kind)
+                clone=".cloned()" if immutable(info.kind) else ""
+                read = f"{information.slot}.as_ref(){clone}.ok_or_else(|| String::from({_string(message)}))"
+                return _Expression(self.at(read, node), info.kind,owned=immutable(info.kind))
             if isinstance(info, _ListInfo):
                 return _Expression(information.slot, "list_int", owned=False, length=info.length)
             if isinstance(info, _MatrixInfo):
@@ -1284,7 +1315,7 @@ class _Generator:
             code.append(rendered)
         return "\n".join(code), environment
 
-    def join(self, environments, preferred=None):
+    def join(self, environments, preferred=None, *, structured=False):
         """Merge normal paths, emitting moves into a typed phi slot per name.
 
         Scalar names that are absent on a path use Option<T>. Reads retain a
@@ -1311,13 +1342,15 @@ class _Generator:
             for value in values:
                 if isinstance(value, _Binding):
                     current = value.info.kind if isinstance(value.info, _MaybeInfo) else value.kind
-                    types = types.join(TypeSet.from_kind(current))
+                    from .native_constraints import canonical_kind
+                    types = types.join(TypeSet.from_kind(canonical_kind(current)))
                 elif value is not None:
                     types = types.join(TypeSet(unknown=True))
             kind = types.native_kind
+            if kind is not None:
+                from .native_constraints import native_kind
+                kind=native_kind(kind,self.bits)
             if kind is None:
-                continue
-            if optional and not immutable(kind):
                 continue
             if kind == "int_bool":
                 self.has_scalar_union = True
@@ -1353,10 +1386,10 @@ class _Generator:
                 if environment is not None:
                     source = environment.get(name)
                     if source is None:
-                        moves[index].append(f"{slot} = None;")
+                        moves[index].append(_EdgeMove(slot,kind))
                     elif source.slot != slot:
-                        moves[index].append(f"{slot} = {self.coerce(_Expression(source.slot, source.kind), kind)};")
-        return result, moves
+                        moves[index].append(_EdgeMove(slot,kind,source))
+        return result, moves if structured else [[move.render(self) for move in edge] for edge in moves]
 
     @staticmethod
     def after_loop(environment):
@@ -1429,186 +1462,17 @@ class _Generator:
         return reads
 
     def loop_header(self, node, environment):
-        """Widen finite scalar kinds before lowering reads on a back edge.
-
-        This pass only adds possible bool/int kinds. Unsupported values still
-        fail the ordinary body proof; no result narrows an existing type set.
-        """
-        header = self.after_loop(environment)
-        live = self.read_before_write(node.body)
-        if isinstance(node, ast.While):
-            live |= {value.id for value in ast.walk(node.test) if isinstance(value, ast.Name) and isinstance(value.ctx, ast.Load)}
-        else:
-            live -= {value.id for value in ast.walk(node.target) if isinstance(value, ast.Name)}
-        entry = {name: TypeSet.from_kind(value.kind)
-                 for name, value in environment.items() if isinstance(value, _Binding)}
-        unknown = TypeSet.from_kind("unknown")
-
-        def infer(expression, state):
-            if isinstance(expression, ast.Constant) and type(expression.value) in {int, bool}:
-                return TypeSet.from_kind("bool" if type(expression.value) is bool else "int")
-            if isinstance(expression, ast.Name):
-                return state.get(expression.id, TypeSet(maybe_unbound=True))
-            if isinstance(expression, ast.Compare):
-                return TypeSet.from_kind("bool")
-            if isinstance(expression, ast.UnaryOp):
-                return TypeSet.from_kind("bool" if isinstance(expression.op, ast.Not) else "int") if infer(expression.operand, state).kinds <= {"bool", "int"} else unknown
-            if isinstance(expression, (ast.BoolOp, ast.IfExp)):
-                values = expression.values if isinstance(expression, ast.BoolOp) else [expression.body, expression.orelse]
-                kinds = TypeSet()
-                for value in values:
-                    current = infer(value, state)
-                    if not current.kinds <= {"int", "bool"}:
-                        return unknown
-                    kinds = kinds.join(current)
-                return kinds
-            if isinstance(expression, ast.BinOp):
-                left, right = infer(expression.left, state), infer(expression.right, state)
-                if not left.kinds <= {"int", "bool"} or not right.kinds <= {"int", "bool"}:
-                    return unknown
-                kinds = TypeSet.from_kind("int")
-                if isinstance(expression.op, (ast.BitAnd, ast.BitOr, ast.BitXor)) and "bool" in left.kinds and "bool" in right.kinds:
-                    kinds = TypeSet.from_kind("bool")
-                    if "int" in left.kinds or "int" in right.kinds:
-                        kinds = kinds.join(TypeSet.from_kind("int"))
-                return kinds
-            if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Name) and expression.func.id in {"int", "abs", "pow", "len", "sum"}:
-                return TypeSet.from_kind("int")
-            return unknown
-
-        if sum(1 for statement in node.body for _ in ast.walk(statement)) > 2048:
-            return "", header
-
-        def merge(states):
-            states = [state for state in states if state is not None]
-            if not states:
-                return None
-            joined = {}
-            for name in set().union(*(state.keys() for state in states)):
-                types = TypeSet()
-                for state in states:
-                    types = types.join(state.get(name, TypeSet(maybe_unbound=True)))
-                joined[name] = types
-            return joined
-
-        def block(statements, incoming):
-            state = incoming.copy()
-            continues, breaks = [], []
-            for statement in statements:
-                if isinstance(statement, ast.Assign):
-                    types = infer(statement.value, state)
-                    for target in statement.targets:
-                        if isinstance(target, ast.Name):
-                            state[target.id] = types
-                elif isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
-                    expression = ast.BinOp(left=statement.target, op=statement.op, right=statement.value)
-                    state[statement.target.id] = infer(expression, state)
-                elif isinstance(statement, ast.If):
-                    yes, yc, yb = block(statement.body, state)
-                    no, nc, nb = block(statement.orelse, state)
-                    continues += yc + nc
-                    breaks += yb + nb
-                    state = merge([yes, no])
-                    if state is None:
-                        return None, continues, breaks
-                elif isinstance(statement, ast.Continue):
-                    return None, continues + [state], breaks
-                elif isinstance(statement, ast.Break):
-                    return None, continues, breaks + [state]
-                elif isinstance(statement, ast.Return):
-                    return None, continues, breaks
-                elif isinstance(statement, (ast.For, ast.While)):
-                    inner, normal, exits = loop(statement, state)
-                    state = merge([inner, normal, *exits])
-            return state, continues, breaks
-
-        def loop(statement, incoming):
-            current = incoming.copy()
-            while True:
-                body_entry = current.copy()
-                if isinstance(statement, ast.For):
-                    for target in ast.walk(statement.target):
-                        if isinstance(target, ast.Name):
-                            body_entry[target.id] = TypeSet.from_kind("int")
-                normal, continues, breaks = block(statement.body, body_entry)
-                joined = merge([incoming, normal, *continues])
-                if joined == current:
-                    return current, normal, breaks
-                current = joined
-
-        possibilities, _, _ = loop(node, entry)
-        initializers = []
-        for name in sorted(live):
-            old = environment.get(name)
-            if (isinstance(old, _Binding) and old.kind in {"int", "bool"}
-                    and possibilities.get(name, TypeSet()).native_kind == "int_bool"):
-                slot = self.slot("int_bool")
-                header[name] = _Binding(slot, "int_bool")
-                initializers.append(f"{slot} = {self.coerce(_Expression(old.slot, old.kind), 'int_bool')};")
-        return "\n".join(initializers), header
+        from .native_constraint_lowering import loop_header
+        return loop_header(self,node,environment)
 
     def finish_loop(self, node, entry, header, context, body, remaining, nonempty, may_repeat, zero=False):
-        if remaining is not None:
-            marker = "// " + self.temporary() + "_edge"
-            context["edges"].append((marker, "normal", remaining))
-            body += "\n" + marker
-        edges = context["edges"]
-        environments = ([entry] if not nonempty else []) + [environment for _, _, environment in edges]
-        if zero:
-            environments = [entry]
-        joined, post_moves = self.join(environments, preferred=entry)
-        if joined is None:
-            # All executed paths leave the function. Keeping only old definite
-            # bindings conservatively lets the Rust tail remain type checked.
-            joined = self.after_loop(entry)
-        initializers = []
-        entry_slots = {value.slot for value in entry.values() if isinstance(value, _Binding)}
-        for name, binding in joined.items():
-            if isinstance(binding, _Binding) and binding.slot not in entry_slots:
-                default = None if is_maybe(binding.kind) else default_value(binding.kind,self.literal(0))
-                if default is None:
-                    default = self.coerce(_Expression(entry[name].slot, entry[name].kind), binding.kind) if isinstance(entry.get(name), _Binding) else "None"
-                elif isinstance(entry.get(name), _Binding) and entry[name].kind in {"int", "bool", "int_bool"} and binding.kind == "int_bool":
-                    default = self.coerce(_Expression(entry[name].slot, entry[name].kind), binding.kind)
-                initializers.append(f"{binding.slot} = {default};")
-        live = self.read_before_write(node.body)
-        if isinstance(node, ast.While):
-            live |= {value.id for value in ast.walk(node.test) if isinstance(value, ast.Name) and isinstance(value.ctx, ast.Load)}
-        else:
-            live -= {value.id for value in ast.walk(node.target) if isinstance(value, ast.Name)}
-        replacements = {}
-        offset = 0 if nonempty else 1
-        for index, (marker, kind, environment) in enumerate(edges):
-            copies = []
-            if kind != "break" and may_repeat and not zero:
-                for name, previous in header.items():
-                    if _static_reference(previous):
-                        if name in live and environment.get(name) is not previous:
-                            raise _Unsupported
-                        continue
-                    if not isinstance(previous, _Binding):
-                        continue
-                    current = environment.get(name)
-                    previous_inner = unmaybe(previous.kind)
-                    current_inner = unmaybe(current.kind) if isinstance(current, _Binding) else None
-                    compatible = isinstance(current, _Binding) and (current.kind == previous.kind or previous.kind == "int_bool" and current.kind in {"int", "bool"}
-                                 or is_maybe(previous.kind) and (current_inner == previous_inner or previous_inner == "int_bool" and current_inner in {"int", "bool"}))
-                    if not compatible:
-                        if name in live:
-                            raise _Unsupported
-                    elif current.slot != previous.slot:
-                        copies.append(f"{previous.slot} = {self.coerce(_Expression(current.slot, current.kind), previous.kind)};")
-            if not zero:
-                copies += post_moves[index + offset]
-            # Same-kind header/post phis use the same slot. Moving an owned
-            # container once is required; duplicating the move would alias it.
-            replacements[marker] = "\n".join(dict.fromkeys(copies))
-        # Markers occupy entire generated lines, so replacement never touches
-        # user strings (their newlines are escaped by _string).
-        body = "\n".join(replacements.get(line, line) for line in body.split("\n"))
-        return "\n".join(initializers), body, self.after_loop(joined)
+        from .native_constraint_lowering import finish_loop
+        return finish_loop(self,node,entry,header,context,body,remaining,nonempty,may_repeat,zero)
 
     def statement(self, node, environment):
+        from .native_constraint_lowering import reset_statement
+        reset=reset_statement(self,node,environment)
+        if reset is not None:return reset
         from .native_module_calls import try_statement as module_statement
         module=module_statement(self,node,environment)
         if module is not None:return module
@@ -1771,9 +1635,6 @@ class _Generator:
             if node.orelse:
                 raise _Unsupported
             refinement = ""
-            if isinstance(node,ast.While):
-                from .native_typed_lists import refine_empty_lists
-                refinement,environment=refine_empty_lists(self,node,environment,())
             label = self.temporary()
             context = {"label": label, "edges": []}
             header_initializers, widened = self.loop_header(node, environment)
@@ -2205,6 +2066,7 @@ class _Specializations:
         self.names = set()
         self.trusted_imports = frozenset()
         self.source_unit = None
+        self.type_analysis=None
 
     @staticmethod
     def readonly_arrays(node, names):
@@ -2257,6 +2119,8 @@ class _Specializations:
         local.global_environment = globals_at_call
         local.global_names = names
         local.source_unit = self.source_unit
+        local.type_analysis=self.type_analysis
+        local.constraint_facts=self.type_analysis.scope(function.node,kinds) if self.type_analysis is not None else None
         local.trusted_imports = self.trusted_imports
         environment = {name: value for name, value in globals_at_call.items()
                        if name not in function.local_names}
@@ -2377,12 +2241,16 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
                                specializations=specializations, string_mode=string_mode)
         generator.trusted_imports = trusted_imports
         generator.source_unit=unit
+        from .native_constraints import analyze
+        generator.type_analysis=specializations.type_analysis=analyze(unit)
+        generator.constraint_facts=generator.type_analysis.scope()
         if function_input:
             generator.has_input = generator.needs_integer_runtime = True
         if wrapper:
             generator.return_label = "native_entrypoint"
             generator.entry_scope = wrapper[0]
             entry=next(node for node in tree.body if isinstance(node,ast.FunctionDef)and node.name==wrapper[0])
+            generator.constraint_facts=generator.type_analysis.scope(entry,())
             generator.entry_local_names={symbol.name for symbol in unit.scope_for(entry).symbols
                                          if symbol.has("local")or symbol.has("parameter")}
             generator.global_names=frozenset({wrapper[0]})
@@ -2390,11 +2258,11 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         function_sources = specializations.sources
         for local in specializations.generators:generator.union_types.update(local.union_types)
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
-    except (SyntaxError, _Unsupported, RecursionError) as error:
+    except (SyntaxError, _Unsupported, RecursionError, ConstraintFailure) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source, filename, error, unit=unit))
         return None
@@ -2459,6 +2327,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_native_modules:
         from .native_module_calls import HELPERS as MODULE_HELPERS
         result.append(MODULE_HELPERS)
+    if generator.has_empty_type:
+        from .native_constraint_lowering import EMPTY_HELPERS
+        result.append(EMPTY_HELPERS)
     if generator.union_types:
         from .native_unions import render_types
         result.append(render_types(generator.union_types))

@@ -31,6 +31,13 @@ class BuiltinIdentity:
 
 
 @dataclass(frozen=True)
+class DequeConstructor:
+    """A constructor resolved from the trusted collections module."""
+    name: str
+    _native_reference=True
+
+
+@dataclass(frozen=True)
 class UnboundReference:
     name: str
     local: bool

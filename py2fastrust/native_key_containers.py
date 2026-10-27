@@ -54,7 +54,8 @@ impl std::hash::Hash for Int {
 
 
 def key_kind(kind):
-    return (kind in {"int","bool","int_bool","str"} or
+    from .native_types import EmptyType
+    return (isinstance(kind,EmptyType) or kind in {"int","bool","int_bool","str"} or
             isinstance(kind,TupleType) and all(key_kind(field) for field in kind.fields))
 
 
@@ -74,6 +75,8 @@ def _join(values):
 
 
 def canonical(generator,value):
+    from .native_types import EmptyType
+    if isinstance(value.kind,EmptyType):return f"match {value.code} {{}}"
     if value.kind in {"int","bool","int_bool"}:
         return f"({generator.number(value)}).clone()"
     if value.kind=="str":return f"({value.code}).clone()"
@@ -112,8 +115,9 @@ def _repr(generator,value):
     return f"({value.code}).to_string()"
 
 
-def _construct(generator,keys,values,node):
-    if not keys:
+def _construct(generator,keys,values,node,*,kind=None):
+    if kind is not None:pass
+    elif not keys:
         kind=SetType(TupleType(())) if values is None else DictType(TupleType(()),"int")
     else:
         key=_join(keys)
@@ -166,14 +170,20 @@ def try_expression(generator,node,environment):
             if node.keywords:raise _Unsupported
             if method=="copy" and not node.args:
                 return _Expression(f"({value.code}).clone()",value.kind,length=value.length,nonempty=value.nonempty)
-            if not isinstance(value.kind,DictType) or method!="get" or len(node.args)!=2:raise _Unsupported
-            key=generator.expression(node.args[0],environment);default=generator.expression(node.args[1],environment)
+            if not isinstance(value.kind,DictType) or method!="get" or not 1<=len(node.args)<=2:raise _Unsupported
+            key=generator.expression(node.args[0],environment);default=generator.expression(node.args[1],environment) if len(node.args)==2 else _Expression("()","none")
+            kind=join_types(value.kind.value,default.kind)
+            if kind is None or not immutable(kind):raise _Unsupported
+            generator.register_type(kind)
             owner,keyname,fallback=generator.temporary(),generator.temporary(),generator.temporary()
             receiver=value.code if value.owned else f"&({value.code})"
             lines=[f"let {owner}={receiver};",f"let {keyname}={_lookup_key(generator,key,value.kind.key)};",
-                   f"let {fallback}={_value(generator,default,value.kind.value)};"]
+                   f"let {fallback}={_value(generator,default,kind)};"]
             number=canonical(generator,_Expression(keyname,key.kind))
-            return _Expression("{"+" ".join(lines)+f"{owner}.get(&({number})).cloned().unwrap_or({fallback})}}",value.kind.value)
+            from .native_types import EmptyType
+            lookup=f"None::<{rust_type(value.kind.value)}>" if isinstance(value.kind.key,EmptyType) else f"{owner}.get(&({number})).cloned()"
+            converted=generator.coerce(_Expression("native_dict_value",value.kind.value),kind)
+            return _Expression("{"+" ".join(lines)+f"({lookup}).map(|native_dict_value|{converted}).unwrap_or({fallback})}}",kind)
     if isinstance(node,ast.Subscript) and not isinstance(node.slice,ast.Slice):
         owner=generator.expression(node.value,environment)
         if not isinstance(owner.kind,DictType):return None
@@ -182,14 +192,17 @@ def try_expression(generator,node,environment):
         start=f"let {receiver}={owner.code if owner.owned else '&('+owner.code+')'};let {keyname}={_lookup_key(generator,key,owner.kind.key)};"
         keyvalue=_Expression(keyname,key.kind)
         error=_repr(generator,keyvalue)
-        lookup=f'{receiver}.get(&({canonical(generator,keyvalue)})).cloned().ok_or_else(||format!("KeyError: {{}}",{error}))'
+        from .native_types import EmptyType
+        found=f"None::<{rust_type(owner.kind.value)}>" if isinstance(owner.kind.key,EmptyType) else f'{receiver}.get(&({canonical(generator,keyvalue)})).cloned()'
+        lookup=f'{found}.ok_or_else(||format!("KeyError: {{}}",{error}))'
         return _Expression("{"+start+generator.at(lookup,node)+"}",owner.kind.value)
     if isinstance(node,ast.Compare) and len(node.ops)==1 and isinstance(node.ops[0],(ast.In,ast.NotIn)):
         key=generator.expression(node.left,environment);owner=generator.expression(node.comparators[0],environment)
         if not isinstance(owner.kind,(SetType,DictType)):return None
         receiver,keyname=generator.temporary(),generator.temporary()
         start=f"let {keyname}={_lookup_key(generator,key,owner.kind.key)};let {receiver}={owner.code if owner.owned else '&('+owner.code+')'};"
-        check=f"{receiver}.contains(&({canonical(generator,_Expression(keyname,key.kind))}))"
+        from .native_types import EmptyType
+        check="false" if isinstance(owner.kind.key,EmptyType) else f"{receiver}.contains(&({canonical(generator,_Expression(keyname,key.kind))}))"
         if isinstance(node.ops[0],ast.NotIn):check="!"+check
         return _Expression("{"+start+check+"}","bool")
     return None

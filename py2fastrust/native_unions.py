@@ -54,16 +54,17 @@ def coerce_union(value,target,coerce):
     # Moving an owned enum preserves unique mutable payload ownership. Cloning
     # is permitted only for recursively immutable alternatives.
     code=value.code
-    if not value.owned:
-        if not immutable(source):raise _Unsupported
+    if immutable(source):
         code=f"({code}).clone()"
+    elif not value.owned:raise _Unsupported
     def inject(kind,inner):
         expression=_Expression(inner,kind)
         if isinstance(target,NullableType):
             if kind=="none":return f"{{let _={inner};None}}"
             return f"Some({coerce(expression,target.value)})"
         if isinstance(target,UnionType):
-            candidates=[part for part in target.alternatives if part==kind or part=="int_bool" and kind in {"int","bool"}]
+            from .native_constraints import canonical_kind
+            candidates=[part for part in target.alternatives if canonical_kind(part)==canonical_kind(kind) or part=="int_bool" and kind in {"int","bool"}]
             if len(candidates)!=1:raise _Unsupported
             part=candidates[0]
             return f"{union_variant(target,part)}({coerce(expression,part)})"

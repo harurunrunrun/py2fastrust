@@ -4,6 +4,14 @@ from hashlib import sha256
 
 
 @dataclass(frozen=True)
+class EmptyType:
+    """Bottom element type: no source value can inhabit an unconstrained field."""
+
+
+EMPTY=EmptyType()
+
+
+@dataclass(frozen=True)
 class TupleType:
     fields: tuple[object, ...]
 
@@ -42,7 +50,8 @@ def union_type(*kinds):
     values=set()
     for kind in kinds:
         values.update(alternatives(kind))
-    if not values:return None
+    values={kind for kind in values if not isinstance(kind,EmptyType)}
+    if not values:return EMPTY if kinds else None
     if "int_bool" in values or {"int","bool"} <= values:
         values.difference_update({"int","bool"})
         values.add("int_bool")
@@ -100,14 +109,29 @@ def tuple_field(code,index):
 
 
 def rust_type(kind):
+    return render_type(kind)
+
+
+def render_type(kind, leaf_override=None):
+    """Render canonical types, optionally overriding storage for selected leaves.
+
+    The callback receives (kind, recurse) and returns None to retain the shared
+    representation. This permits shared handles without redefining tuple, union,
+    nullable or unbound value semantics.
+    """
+    def recurse(value):return render_type(value,leaf_override)
+    if leaf_override is not None:
+        replacement=leaf_override(kind,recurse)
+        if replacement is not None:return replacement
+    if isinstance(kind,EmptyType):return "NativeEmpty"
     if is_maybe(kind):
-        return "Option<"+rust_type(unmaybe(kind))+">"
-    if isinstance(kind,NullableType):return "Option<"+rust_type(kind.value)+">"
+        return "Option<"+recurse(unmaybe(kind))+">"
+    if isinstance(kind,NullableType):return "Option<"+recurse(kind.value)+">"
     if isinstance(kind,UnionType):return union_name(kind)
     if isinstance(kind,TupleType):
-        return tuple_code(rust_type(field) for field in kind.fields)
+        return tuple_code(recurse(field) for field in kind.fields)
     if isinstance(kind,ListType):
-        return "Vec<"+rust_type(kind.element)+">"
+        return "Vec<"+recurse(kind.element)+">"
     if getattr(kind,"_key_container",False):
         from .native_key_types import container_type
         return container_type(kind)
@@ -118,6 +142,8 @@ def rust_type(kind):
 
 
 def kind_tag(kind):
+    if isinstance(kind,EmptyType):return "empty"
+    if hasattr(kind,"_native_kind_tag"):return kind._native_kind_tag
     if is_maybe(kind):
         return "maybe_"+kind_tag(unmaybe(kind))
     if isinstance(kind,NullableType):return "nullable_"+kind_tag(kind.value)+"_end"
@@ -132,13 +158,16 @@ def kind_tag(kind):
 
 
 def immutable(kind):
-    return (isinstance(kind,UnionType) and all(immutable(value) for value in kind.alternatives)
+    return (isinstance(kind,EmptyType)
+            or isinstance(kind,UnionType) and all(immutable(value) for value in kind.alternatives)
             or isinstance(kind,NullableType) and immutable(kind.value)
             or isinstance(kind,TupleType) and all(immutable(field) for field in kind.fields)
             or kind in {"int","bool","int_bool","str","bytes","float","none"})
 
 
 def join_types(left,right):
+    if isinstance(left,EmptyType):return right
+    if isinstance(right,EmptyType):return left
     if left==right:
         return left
     if left in {"int","bool","int_bool"} and right in {"int","bool","int_bool"}:

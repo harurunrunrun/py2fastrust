@@ -81,16 +81,30 @@ unbound name remain distinct. Joined return types come from typed return records
 including a reachable implicit `None` return. Truth, Python-style output, equality,
 and identity checks against `None` dispatch over the actual alternatives.
 Uniquely owned mutable alternatives can move across proved branches and returns;
-creating shared mutable aliases still requires implementation. General loop-header
-constraints, arithmetic/ordering on finite alternatives, and the class adapter
-to this shared representation remain unfinished.
+creating shared mutable aliases still requires implementation. Arithmetic/ordering
+on general finite alternatives and the class adapter to this representation
+remain unfinished.
 
 Proved immutable tuple keys use structurally typed Rust sets and dictionaries
 in every integer mode. Numeric keys preserve Python's bool/int equality while
 retaining the original key, and dictionaries retain insertion order. BigInt
 integer keys use the same typed containers. Mutable values, observable set
-iteration, general container aliases, and empty-container inference across
-loop headers remain unfinished.
+iteration, and general container aliases remain unfinished.
+
+A shared semantic constraint graph supplies ordinary function allocation shapes
+and loop-header binding types to the fixed-width and BigInt emitters. Empty
+list/set/dict fields start as type variables; proven insertions, indexing,
+iteration, copies, and function results constrain them before Rust generation.
+Branch joins and loop back edges, including continue paths, reach a fixed point;
+break-only values join at the exit. Unconstrained empty fields use an uninhabited
+Rust type, rather than guessing an integer element. Cleared uniquely owned
+containers receive a separate content epoch, preserving the former shape of
+existing copies. Maybe-unbound carriers remain distinct from a bound `None`.
+The solver never emits or executes source expressions. Edge transfers preserve
+zero-iteration values and move mutable payloads once. Mutable shape-changing
+loop exits without a proven shared carrier, recursive mutable object graphs,
+and the class allocation/field adapter still require implementation and produce
+`E006`; no alternate execution backend is selected.
 
 Immutable string/tuple list elements share `ListType(element)` metadata with
 literal, comprehension, stream materialization, indexing, append, copies,

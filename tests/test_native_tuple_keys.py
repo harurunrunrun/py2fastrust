@@ -187,8 +187,7 @@ for key,value in D.items():
                   "A=[]\nS={(A,)}\nprint(len(S))\n",
                   "D={(1,2):7}\nD[('x',2)]=8\n",
                   "S={(1,2)}\nfor key in S:\n print(key)\n",
-                  "D={(1,2):7}\nfor key in D:\n D[key]=8\n",
-                  "D={}\nfor i in range(3):\n D[(i,i)]=i\n"]
+                  "D={(1,2):7}\nfor key in D:\n D[key]=8\n"]
         for source in programs:
             for mode in ("i64","i128","bigint"):
                 with self.subTest(source=source,mode=mode):
