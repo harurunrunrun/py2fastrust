@@ -38,13 +38,23 @@ class BigIntText:
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and binding.kind == "str":
                 self.has_big_text = True
-                return _Expression(f"&{binding.slot}", "str", owned=False)
+                return _Expression(f"&{binding.slot}", "str", owned=False, stable_borrow=True)
         if isinstance(node, ast.Constant) and type(node.value) is str:
             from .literal_semantics import Literal
             literal=Literal.from_ast(node)
             if literal is None:raise _Unsupported
             self.has_big_text = True
-            return _Expression(_string(literal.value),literal.kind,owned=False)
+            return _Expression(_string(literal.value),literal.kind,owned=False,stable_borrow=True)
+        if (self.string_mode == "ascii" and isinstance(node,ast.Subscript)
+                and not isinstance(node.slice,ast.Slice)):
+            owner=self.read_expression(node.value,environment)
+            if owner.kind=="str" and owner.stable_borrow:
+                index=self.expression(node.slice,environment)
+                first,second=self.temporary(),self.temporary()
+                self.has_big_text=True
+                call=self.at(f"native_big_text_item_ref({first},&{second})",node)
+                code=f"{{ let {first}:&str={owner.code}; let {second}={self.number(index)}; {call} }}"
+                return _Expression(code,"str",owned=False,stable_borrow=True)
         value = self.expression(node, environment)
         return (_Expression(f"&({value.code})", "str", owned=False) if value.kind == "str" else value)
 
@@ -91,7 +101,8 @@ class BigIntText:
                 if value.kind == "str":
                     self.has_big_text = True
                     if name == "len":
-                        return _Expression(f"Int::from_i128(({value.code}).chars().count() as i128)", "int")
+                        length = "len()" if self.string_mode == "ascii" else "chars().count()"
+                        return _Expression(f"Int::from_i128(({value.code}).{length} as i128)", "int")
                     if name == "bool":
                         return _Expression(f"!({value.code}).is_empty()", "bool")
                     if name == "int":

@@ -48,6 +48,19 @@ Use `--int bigint` when you need Python's arbitrary-precision integer behavior.
 The generated file includes the BigInt runtime, so Cargo and additional crates are unnecessary.
 Range termination, indices, and allocation sizes use separate checked calculations.
 
+Strings default to ASCII mode for competitive-programming inputs. Their length,
+indices, slices, and `count` bounds use bytes without scanning the string to
+detect ASCII on each access. Use Unicode mode for non-ASCII text and Python's
+code-point indexing:
+
+```bash
+pytors main.py -o main.rs --string-mode unicode
+```
+
+The API setting is `TranspileOptions(string_mode="unicode")`; the browser
+provides the same selection. ASCII mode assumes that strings contain ASCII.
+It does not automatically switch models when non-ASCII input is encountered.
+
 ## Options in source comments
 
 Conversion options can be recorded in the initial comment block:
@@ -62,7 +75,7 @@ Source options take precedence over command-line and Python API settings.
 The parser reads blank lines and comments, including shebang and encoding comments,
 and stops at the first Python statement. Later directives have no effect.
 
-Allowed options are `--int`, `--license`, `--module-path`, `--include-module`,
+Allowed options are `--int`, `--string-mode`, `--license`, `--module-path`, `--include-module`,
 `--no-optimize`, `--optimize`, `-o`/`--output`, and `--check`.
 Input filenames, help, and version options are not accepted in directives.
 If a scalar option appears more than once, the last value wins.
@@ -141,14 +154,22 @@ rebinding, with separate specializations for the actual argument kinds and
 callable globals. Integer-list slices and `sorted` create independent lists.
 Python names can change type through distinct typed Rust slots. Compatible
 branches and loops merge proved kinds; finite boolean/integer unions use a
-small stack enum. Unicode string indexing counts code points, with an ASCII
-path. Integer modes preserve their documented wrapping policy.
+small stack enum. ASCII string indexing accesses bytes directly; opt-in Unicode
+indexing counts code points. Integer modes preserve their documented wrapping policy.
 
 Supported competitive-programming patterns include unpacked integer input,
 `list(map(int, input().split()))`, integer-list mutation and sorting, dictionary
 aggregation and insertion-order iteration, and owned adjacency-list BFS.
 Standard input is buffered and read on demand. Output flushes before a blocking
 input operation, including inside supported ordinary functions.
+Immediate iterator producers and consumers share immutable semantic plans.
+`for`, reductions, `list`, `sorted`, `next`, unpacking, and string `join` consume
+those plans, with callable identities and argument roles resolved before Rust
+loop generation. Statically captured builtin aliases use the same producer and
+consumer paths. Text and byte splitting share word-stream adapters; integer
+parsing is selected from their proved element conversion, rather than from a
+particular spelling of `input().split()`. Unpacking pulls at most one extra
+converted item and assigns targets only after validating the item count.
 Immediately consumed generator expressions use typed loops for reductions.
 All integer modes also support character-based string slicing,
 `strip`/`lstrip`/`rstrip`, `count`, and `join` over proved string streams.
@@ -176,7 +197,8 @@ public `transpile()` and `pytors` entry points never call that backend after a
 direct lowering fails. There is no fallback mode or switch that enables it.
 
 The benchmarks check that CPython, generated Rust, and handwritten Rust produce the same results.
-They cover arithmetic, I/O, arrays, sorting, dictionaries, sets, BFS, DP, and BigInt.
+They cover arithmetic, I/O, indexed ASCII strings, arrays, sorting, dictionaries,
+sets, BFS, DP, and BigInt.
 Pass `--pypy` to include PyPy in the comparison; this requires `pypy3` on PATH.
 
 ```bash

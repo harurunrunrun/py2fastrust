@@ -12,6 +12,9 @@ from typing import Callable
 
 from .native import _Binding, _DequeInfo, _Expression, _MaybeInfo, _Unsupported, _string
 from .native_types import TupleType, immutable, maybe_type, rust_type, tuple_code, tuple_field
+from .call_semantics import CallBindingError
+from .native_stream_plans import ConsumerKind, ProducerKind, consumer_plan, context
+from .references import BuiltinIdentity
 
 
 _REDUCTIONS = {"sum", "any", "all", "min", "max"}
@@ -93,6 +96,8 @@ class Stream:
     length: int | None = None
     nonempty: bool = False
     reversible: bool = True
+    words: object = None
+    integer_words: object = None
 
     def construct(self):
         return self.setup + "\n" + self.begin
@@ -130,21 +135,28 @@ class Planner:
                       iterator, tuple(fields), length, nonempty or length is not None and length > 0)
 
     def stream(self, node, environment, *, allow_set=False):
+        try:
+            plan=context(self.g,environment).producer(node)
+            return self.lower(plan,environment,allow_set=allow_set)
+        except CallBindingError as error:
+            raise _Unsupported from error
+
+    def lower(self,plan,environment,*,allow_set=False,captured_value=None):
         g = self.g
-        from .native_key_containers import stream as keyed_stream
-        keyed=keyed_stream(g,node,environment,self,allow_set)
-        if keyed is not None:return keyed
-        if isinstance(node, ast.GeneratorExp):
-            return self.generator(node, environment)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == "iter":
-                if len(node.args) != 1 or node.keywords:
-                    raise _Unsupported
-                result = self.stream(node.args[0],environment)
+        node=plan.node
+        if plan.kind is ProducerKind.GENERATOR:
+            return self.generator(plan, environment)
+        if plan.kind is ProducerKind.WORDS:
+            from .native_words import lower
+            return lower(g,plan,environment,self)
+        if plan.kind in {ProducerKind.ITER,ProducerKind.RANGE,ProducerKind.MAP,ProducerKind.FILTER,
+                         ProducerKind.ENUMERATE,ProducerKind.ZIP,ProducerKind.REVERSED}:
+            if plan.kind is ProducerKind.ITER:
+                result = self.lower(plan.sources[0],environment)
                 result.eager = True
                 return result
-            if node.func.id == "range":
-                setup, iterator, arguments = g.range_iterator(node, environment)
+            if plan.kind is ProducerKind.RANGE:
+                setup, iterator, arguments = g.range_iterator(plan, environment)
                 length = None
                 if all(argument.constant is not None for argument in arguments):
                     start, stop, step = (int(argument.constant) for argument in arguments)
@@ -160,24 +172,18 @@ class Planner:
                                    (("int", "@", True),), length=length)
                 result.reversible = g.bits != 0 and arguments[2].constant in {1, -1}
                 return result
-            if node.func.id == "map":
-                return self.map_stream(node, environment)
-            if node.func.id == "filter":
-                return self.filter_stream(node, environment)
-            if node.func.id == "enumerate":
-                return self.enumerate_stream(node, environment)
-            if node.func.id == "zip":
-                return self.zip_stream(node, environment)
-            if node.func.id == "reversed":
-                return self.reverse_stream(node, environment)
-        if g.input_words(node,environment):
-            g.has_input = g.needs_integer_runtime = True
-            text, cursor = g.temporary(), g.temporary()
-            setup = f"let {text} = {g.at('native_input.line(&mut native_output)', node)}.to_owned();"
-            begin = f"let {cursor} = {text}.split(native_space).filter(|word| !word.is_empty());"
-            return self.leaf(setup, begin, cursor, (("str", "@.to_owned()", True),))
-        if isinstance(node, (ast.List, ast.Tuple)):
-            values = [g.expression(value, environment) for value in node.elts]
+            if plan.kind is ProducerKind.MAP:
+                return self.map_stream(plan, environment)
+            if plan.kind is ProducerKind.FILTER:
+                return self.filter_stream(plan, environment)
+            if plan.kind is ProducerKind.ENUMERATE:
+                return self.enumerate_stream(plan, environment)
+            if plan.kind is ProducerKind.ZIP:
+                return self.zip_stream(plan, environment)
+            if plan.kind is ProducerKind.REVERSED:
+                return self.reverse_stream(plan, environment)
+        if plan.kind is ProducerKind.SEQUENCE:
+            values = [g.expression(value, environment) for value in plan.elements]
             kind = ("list_int" if values and all(value.kind == "list_int" and value.owned for value in values)
                     else g.scalar_kind(values) if values else "int")
             owner, cursor = g.temporary(), g.temporary()
@@ -185,8 +191,11 @@ class Planner:
             setup = f"let {owner}: [{rust_type(kind)}; {len(values)}] = [{code}];"
             return self.leaf(setup, f"let {cursor} = {owner}.into_iter();", cursor,
                              ((kind, "@", True),), length=len(values))
-        view = g.dict_view(node, environment)
-        value = view[0] if view else g.expression(node, environment)
+        from .native_key_containers import stream as keyed_stream
+        keyed=keyed_stream(g,node,environment,self,allow_set)
+        if keyed is not None:return keyed
+        view = g.dict_view(node, environment)if captured_value is None else None
+        value = (view[0] if view else g.expression(node, environment))if captured_value is None else captured_value
         from .native_typed_lists import stream as typed_stream
         typed = typed_stream(g,node,environment,self,value=value)
         if typed is not None:
@@ -208,7 +217,7 @@ class Planner:
             elif named:
                 setup = f"let {owner} = {environment[node.id].slot}.clone();"
             else:
-                value = g.read_expression(node, environment) if hasattr(g, "read_expression") else value
+                value = g.read_expression(node, environment) if captured_value is None and hasattr(g, "read_expression") else value
                 setup = f"let {owner} = {value.code};"
             length = len(node.value) if isinstance(node, ast.Constant) and type(node.value) is str else None
             begin = f"let {cursor} = {owner}.chars();"
@@ -283,20 +292,38 @@ class Planner:
             inside[target.id] = _Binding(value.code, self.g.binding(value))
         return inside
 
-    def generator(self, node, environment):
+    def generator(self, plan, environment):
         g = self.g
-        g.has_iterator_frames = True
-        trace_id = g.temporary()
+        node=plan.node
+        g.has_iterator_frames |= plan.frame is not None
+        trace_id = g.temporary() if plan.frame is not None else g.expression_trace_id
+        producer_scope=plan.frame or g.scope_name()
         if not node.generators or any(clause.is_async for clause in node.generators):
             raise _Unsupported
         clauses = []
         owners = set()
         # Only the first iterable is evaluated in the containing scope.
-        first = self.stream(node.generators[0].iter, environment)
+        first = self.lower(plan.clauses[0].source, environment)
         inside = self.bind_target(node.generators[0].target, first, environment)
+        # A typed unary projection of a word stream is the same producer
+        # whether expressed by map(), a generator or an eager comprehension.
+        if first.words is not None and len(plan.clauses)==1 and not plan.clauses[0].filters:
+            element=plan.element
+            if isinstance(element,ast.Call):
+                normalizer=context(g,inside)
+                invocation=normalizer.invocation(element)
+                if isinstance(invocation.identity,BuiltinIdentity) and invocation.identity.name=="int":
+                    from .call_semantics import FunctionSignature
+                    binding=normalizer.bind(invocation,FunctionSignature.declaration(("value",),positional_only=("value",)))
+                    argument=binding.binding["value"].expression
+                    if (isinstance(argument,ast.Name) and argument.id in inside
+                            and isinstance(inside[argument.id],_Binding)
+                            and inside[argument.id].slot==first.values[0].code):
+                        from .native_words import integer_map
+                        return integer_map(g,first,self,element,frame=plan.frame,inline=plan.frame is None)
         owners.update(first.owners)
         mutation_start = len(g.expression_mutations)
-        with _scope(g, "<genexpr>", trace_id):
+        with _scope(g, producer_scope, trace_id):
             guard_depth = len(g.iterating_lists)
             g.iterating_lists.extend(first.owners)
             try:
@@ -335,15 +362,16 @@ class Planner:
                 stream, filters = clauses[index]
                 for test in reversed(filters):
                     body = f"if {g.truth(test)} {{\n{body}\n}}"
-                body = stream.emit(body, TraceContext("<genexpr>", trace_id), node.elt.lineno,
+                body = stream.emit(body, TraceContext(producer_scope, trace_id), node.elt.lineno,
                                    continue_label if index == len(clauses)-1 else None)
                 if index:
                     body = stream.construct() + "\n" + body
             # Only producer operations use this context. A consumer callback
             # runs after the producer has yielded and keeps its own context.
             parent = f"{caller.trace_id}(error)" if caller.trace_id is not None else "error"
-            prefix = (f"let {trace_id} = |mut error: NativeError| {{ "
-                      f"error.frames.push(({line}, {_scope_code(caller.name)})); {parent} }};\n")
+            prefix = ((f"let {trace_id} = |mut error: NativeError| {{ "
+                       f"error.frames.push(({line}, {_scope_code(caller.name)})); {parent} }};\n")
+                      if plan.frame is not None else "")
             return prefix + body
 
         length = 0 if any(stream.length == 0 for stream,_ in clauses) else 1
@@ -356,23 +384,27 @@ class Planner:
         return Stream(first.construct(), "", output, frozenset(owners), emit, True,
                       isinstance(node.elt, ast.Tuple), length=length)
 
-    def map_stream(self, node, environment):
-        if len(node.args) != 2 or node.keywords or not isinstance(node.args[0], ast.Name):
-            raise _Unsupported
+    def map_stream(self, plan, environment):
+        node=plan.node
+        callback=plan.binding.binding["function"].expression
         g = self.g
-        source = self.stream(node.args[1], environment)
+        source = self.lower(plan.sources[0], environment)
+        if isinstance(plan.callback,BuiltinIdentity)and plan.callback.name=="int"and source.words is not None:
+            from .native_words import integer_map
+            return integer_map(g,source,self,node)
         source_value = stream_item(g,source)
         argument = "\0iterator_" + g.temporary()
         inside = environment.copy()
         inside[argument] = _Binding(source_value.code, g.binding(source_value))
-        call = ast.copy_location(ast.Call(func=node.args[0], args=[ast.Name(id=argument, ctx=ast.Load())], keywords=[]), node)
+        call = ast.copy_location(ast.Call(func=callback, args=[ast.Name(id=argument, ctx=ast.Load())], keywords=[]), node)
         ast.fix_missing_locations(call)
         scope = DeferredScope(g.temporary(), g.temporary())
         trace_id = g.temporary()
         g.iterating_lists.extend(source.owners)
         try:
             with _scope(g, scope, trace_id):
-                value = g.expression(call, inside)
+                from .native_builtin_values import unary
+                value = unary(g,plan.callback,source_value,node) if isinstance(plan.callback,BuiltinIdentity) else g.expression(call,inside)
         finally:
             if source.owners:
                 del g.iterating_lists[-len(source.owners):]
@@ -385,28 +417,30 @@ class Planner:
         return Stream(source.construct(), "", (_Expression(item, value.kind),), source.owners, emit,
                       True, length=source.length, nonempty=source.nonempty)
 
-    def filter_stream(self, node, environment):
-        if len(node.args) != 2 or node.keywords:
-            raise _Unsupported
+    def filter_stream(self, plan, environment):
+        node=plan.node
+        callback=plan.binding.binding["function"].expression
         g = self.g
-        source = self.stream(node.args[1], environment)
+        source = self.lower(plan.sources[0], environment)
         if not source.tupled and len(source.values) != 1:
             raise _Unsupported
         scope = DeferredScope(g.temporary(), g.temporary())
         trace_id = g.temporary()
-        if isinstance(node.args[0], ast.Constant) and node.args[0].value is None:
+        if isinstance(callback, ast.Constant) and callback.value is None:
             test = str(bool(source.values)).lower() if source.tupled else g.truth(source.values[0])
-        elif isinstance(node.args[0], ast.Name):
+        elif getattr(plan.callback,"_native_reference",False):
             source_value = stream_item(g,source,borrowed=True)
             argument = "\0iterator_" + g.temporary()
             inside = environment.copy()
             inside[argument] = _Binding(source_value.code, g.binding(source_value))
-            call = ast.copy_location(ast.Call(func=node.args[0], args=[ast.Name(id=argument, ctx=ast.Load())], keywords=[]), node)
+            call = ast.copy_location(ast.Call(func=callback, args=[ast.Name(id=argument, ctx=ast.Load())], keywords=[]), node)
             ast.fix_missing_locations(call)
             g.iterating_lists.extend(source.owners)
             try:
                 with _scope(g, scope, trace_id):
-                    test = g.truth(g.expression(call, inside))
+                    from .native_builtin_values import unary
+                    value = unary(g,plan.callback,source_value,node) if isinstance(plan.callback,BuiltinIdentity) else g.expression(call,inside)
+                    test = g.truth(value)
             finally:
                 if source.owners:
                     del g.iterating_lists[-len(source.owners):]
@@ -420,16 +454,11 @@ class Planner:
         return Stream(source.construct(), "", source.values, source.owners, emit,
                       True, source.tupled, length=0 if source.length == 0 else None)
 
-    def enumerate_stream(self, node, environment):
-        if not 1 <= len(node.args) <= 2:
-            raise _Unsupported
-        start_node = node.args[1] if len(node.args) == 2 else None
-        for keyword in node.keywords:
-            if keyword.arg != "start" or start_node is not None:
-                raise _Unsupported
-            start_node = keyword.value
+    def enumerate_stream(self, plan, environment):
+        node=plan.node
+        start_node=plan.binding.binding["start"].expression
         g = self.g
-        source = self.stream(node.args[0], environment)
+        source = self.lower(plan.sources[0], environment)
         source_value = stream_item(g,source)
         packed = g.temporary() if source.tupled else None
         g.iterating_lists.extend(source.owners)
@@ -451,10 +480,8 @@ class Planner:
         return Stream(setup, "", (_Expression(item, "int"), output), source.owners,
                       emit, True, True, length=source.length, nonempty=source.nonempty)
 
-    def reverse_stream(self, node, environment):
-        if len(node.args) != 1 or node.keywords:
-            raise _Unsupported
-        source = self.stream(node.args[0], environment)
+    def reverse_stream(self, plan, environment):
+        source = self.lower(plan.sources[0], environment)
         if source.eager or source.iterator is None or not source.reversible:
             raise _Unsupported
         cursor = self.g.temporary()
@@ -463,18 +490,17 @@ class Planner:
                          eager=True, tupled=source.tupled,
                          length=source.length, nonempty=source.nonempty)
 
-    def zip_stream(self, node, environment):
-        if node.keywords:
-            raise _Unsupported
+    def zip_stream(self, plan, environment):
+        node=plan.node
         g = self.g
-        if not node.args:
+        if not plan.sources:
             cursor = g.temporary()
             return self.leaf(f"let {cursor}=std::iter::empty::<()>();","",cursor,(),eager=True,tupled=True,length=0)
         children = []
         depth = len(g.iterating_lists)
         try:
-            for argument in node.args:
-                child = self.stream(argument,environment)
+            for argument in plan.sources:
+                child = self.lower(argument,environment)
                 children.append(child)
                 if child.eager:
                     g.iterating_lists.extend(child.owners)
@@ -524,34 +550,19 @@ class Planner:
 
 def try_reduction(generator, node, environment):
     """Return typed Rust for a supported consumer, or None for other syntax."""
-    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id in _REDUCTIONS):
-        return None
-    name = node.func.id
-    if name in {"min", "max"} and len(node.args) != 1:
-        return None
-    if name == "sum" and not 1 <= len(node.args) <= 2:
-        raise _Unsupported
-    if name in {"any", "all"} and (len(node.args) != 1 or node.keywords):
-        raise _Unsupported
-    if not node.args or any(isinstance(argument, ast.Starred) for argument in node.args):
-        raise _Unsupported
+    plan=consumer_plan(generator,node,environment,{ConsumerKind.SUM,ConsumerKind.ANY,ConsumerKind.ALL,ConsumerKind.MIN,ConsumerKind.MAX})
+    if plan is None:return None
+    name=plan.kind.value
     g = generator
-    stream = Planner(g).stream(node.args[0], environment, allow_set=True)
+    stream = Planner(g).lower(plan.source, environment, allow_set=True)
     value = stream_item(g,stream)
     setup = stream.setup + ("\n" + stream.begin if stream.eager else "")
-    arguments = []
-    if name == "sum" and len(node.args) == 2:
-        arguments.append(("start", node.args[1]))
-    for keyword in node.keywords:
-        if name == "sum" and keyword.arg == "start" and not arguments:
-            arguments.append(("start", keyword.value))
-        elif name in {"min", "max"} and keyword.arg == "default" and not any(key == "default" for key, _ in arguments):
-            arguments.append(("default", keyword.value))
-        elif name in {"min", "max"} and keyword.arg == "key" and isinstance(keyword.value, ast.Constant) and keyword.value.value is None:
-            pass
-        else:
-            raise _Unsupported
+    arguments=[]
+    for operand in plan.binding.explicit_order:
+        if operand.parameter=="iterable":continue
+        if operand.parameter=="key":
+            if not(isinstance(operand.expression,ast.Constant)and operand.expression.value is None):raise _Unsupported
+        else:arguments.append((operand.parameter,operand.expression))
     extra = None
     if stream.eager:
         g.iterating_lists.extend(stream.owners)
@@ -617,11 +628,12 @@ def try_for_loop(generator, node, environment):
     if not isinstance(node, ast.For):
         return None
     g = generator
+    plan=consumer_plan(g,node,environment,{ConsumerKind.FOR})
     written = {target.id for statement in node.body for target in ast.walk(statement)
                if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store)}
     written.update(target.id for target in ast.walk(node.target) if isinstance(target, ast.Name))
     planner = Planner(g, snapshot_strings=written)
-    stream = planner.stream(node.iter, environment)
+    stream = planner.lower(plan.source, environment)
     # Validate tuple shape independently of the function/module bindings.
     pairs = planner.target_values(node.target,stream)
     targets = [target for target,_ in pairs]

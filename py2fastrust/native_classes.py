@@ -131,8 +131,9 @@ class Model:
     DATA = {"int", "bool", "scalar", "str", "bytes", "float", "none", "object", "list", "tuple", "range"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
-    def __init__(self, tree, filename, integer, trusted_imports, unit=None):
+    def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
         self.tree, self.filename, self.integer = tree, filename, integer
+        self.string_mode = string_mode
         self.unit = unit
         self.trusted_imports = trusted_imports
         self.classes, self.functions = {}, {}
@@ -1249,7 +1250,8 @@ class Emitter:
         elif name == "len":
             value=arguments[0]
             if value.kind[0]=="list":length=f"{value.code}.borrow().len()"
-            elif value.kind[0]=="str":length=f"{value.code}.chars().count()"
+            elif value.kind[0]=="str":
+                length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"chars().count()")
             elif value.kind[0]=="bytes":length=f"{value.code}.len()"
             elif value.kind[0]=="tuple":length=str(len(value.kind)-1)
             else:raise ClassUnsupported(node)
@@ -1646,7 +1648,8 @@ def _class_layouts(model,emitter):
     return "\n".join(result)
 
 
-def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),prune_output=True,diagnostic_out=None,unit=None):
+def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),prune_output=True,diagnostic_out=None,unit=None,
+                         string_mode="ascii"):
     """Lower a proved closed class program to concrete Rust and compiled futures."""
     from .frontend import build_program, native_namespace_diagnostic
     from .diagnostics import CompilationError
@@ -1669,7 +1672,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     try:
         if integer not in {"i64","i128","bigint"}:raise ClassUnsupported(ast.Module(body=[],type_ignores=[]))
         tree=unit.tree
-        model=Model(tree,filename,integer,trusted_imports,unit=unit).run()
+        model=Model(tree,filename,integer,trusted_imports,unit=unit,string_mode=string_mode).run()
         emitters=[Emitter(model,plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
@@ -1701,7 +1704,10 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}",{_string(filename)},line,function);}}\n'
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);std::process::exit(1);}}}}')
     result="\n".join(pieces)
+    from .native_text_policy import apply_text_policy
+    result=apply_text_policy(result,string_mode)
     if prune_output:
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)
-    return result
+    from .native_notices import retain_native_notices
+    return retain_native_notices(result)

@@ -30,10 +30,11 @@ impl NativeInput {
 
 
 SCALAR_HELPERS = r'''
-// Quotient/remainder adaptation: CPython 3.14 Objects/floatobject.c,
-// _float_div_mod, Copyright Python Software Foundation, PSF License Version 2.
-// The complete PSF and Unicode licenses accompany this generated source.
 fn native_float_divmod(a: f64, b: f64) -> Result<(f64, f64), String> {
+    // Quotient/remainder adaptation: CPython 3.14 Objects/floatobject.c,
+    // _float_div_mod, Copyright Python Software Foundation, PSF License Version 2.
+    // Modified to use Rust f64 and return Python errors through Result.
+    // The complete PSF license accompanies this generated source.
     if b == 0.0 { return Err("ZeroDivisionError: division by zero".into()); }
     let mut r = a % b;
     let mut q = (a - r) / b;
@@ -313,18 +314,28 @@ class ScalarGenerator(_Generator):
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and binding.kind == "str":
-                return _Expression(f"&{binding.slot}", "str", owned=False)
+                return _Expression(f"&{binding.slot}", "str", owned=False, stable_borrow=True)
         if isinstance(node, ast.Constant) and type(node.value) is str:
             from .literal_semantics import Literal
             literal=Literal.from_ast(node)
             if literal is None:raise _Unsupported
             self.has_extended_scalars = True
-            return _Expression(_string(literal.value),literal.kind,owned=False)
+            return _Expression(_string(literal.value),literal.kind,owned=False,stable_borrow=True)
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "str" and len(node.args) == 1 and not node.keywords):
             value = self.read_expression(node.args[0], environment)
             if value.kind == "str":
                 return value
+        if (self.string_mode == "ascii" and isinstance(node, ast.Subscript)
+                and not isinstance(node.slice, ast.Slice)):
+            owner = self.read_expression(node.value, environment)
+            if owner.kind == "str" and owner.stable_borrow:
+                index = self.expression(node.slice, environment)
+                first, second = self.temporary(), self.temporary()
+                self.has_extended_scalars = True
+                call = self.at(f"native_string_item_ref({first},{second})", node)
+                code = f"{{ {self.read_binding(first,owner)} let {second}={self.number(index)}; {call} }}"
+                return _Expression(code,"str",owned=False,stable_borrow=True)
         value = self.expression(node, environment)
         if value.kind == "str":
             return _Expression(f"&({value.code})", "str", owned=False)
@@ -432,7 +443,8 @@ class ScalarGenerator(_Generator):
                     code = (f"native_float_integer({value.code})" if value.kind == "float" else f"native_scalar_integer(&({value.code}))")
                     return _Expression(self.at(code, node), "int")
                 if name == "len" and value.kind == "str":
-                    return _Expression(f"(({value.code}).chars().count() as NativeInt)", "int")
+                    length = "len()" if self.string_mode == "ascii" else "chars().count()"
+                    return _Expression(f"(({value.code}).{length} as NativeInt)", "int")
                 if name == "abs" and value.kind == "float":
                     return _Expression(f"({value.code}).abs()", "float")
         return super().expression(node, environment)

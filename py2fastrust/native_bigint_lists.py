@@ -54,10 +54,6 @@ fn native_big_list_copy(values:&[Int])->Result<Vec<Int>,String> {
 
 
 class BigIntLists:
-    def integer_input_list(self, node):
-        self.has_input = self.has_lists = True
-        return _Expression(self.at("native_input.integers(&mut native_output)", node), "list_int")
-
     def list_copy(self, value, node):
         if value.kind != "list_int":
             raise _Unsupported
@@ -72,11 +68,6 @@ class BigIntLists:
                 raise _Unsupported
             generator = node.generators[0]
             target = generator.target.id
-            if (not generator.ifs and self.input_words(generator.iter,environment) and isinstance(node.elt, ast.Call)
-                    and isinstance(node.elt.func, ast.Name) and node.elt.func.id == "int"
-                    and len(node.elt.args) == 1 and not node.elt.keywords
-                    and isinstance(node.elt.args[0],ast.Name) and node.elt.args[0].id == target):
-                return self.integer_input_list(node)
             setup, iterator, arguments = self.range_iterator(generator.iter, environment)
             item, result = self.temporary(), self.temporary()
             inside = environment.copy()
@@ -125,8 +116,6 @@ class BigIntLists:
             if len(node.args) != 1:
                 raise _Unsupported
             source = node.args[0]
-            if self.input_map(source,environment):
-                return self.integer_input_list(node)
             if (isinstance(source,ast.Call) and isinstance(source.func,ast.Name) and source.func.id == "range"):
                 setup, iterator, _ = self.range_iterator(source, environment)
                 item, result = self.temporary(), self.temporary()

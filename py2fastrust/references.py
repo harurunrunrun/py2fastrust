@@ -148,3 +148,19 @@ def callable_reference(generator,node,environment):
                     and name==result.name and name not in environment and name not in globals_at_call
                     and global_names is not None and name not in global_names):absent.add(name)
     return result
+
+
+def capture_builtin_assignment(generator,node,environment):
+    """Bind a proved identity; a source name alone never denotes a builtin."""
+    if not (isinstance(node,ast.Assign) and isinstance(node.value,(ast.Name,ast.Attribute))):
+        return None
+    value=callable_reference(generator,node.value,environment)
+    if not isinstance(value,BuiltinIdentity):
+        return None
+    from .native import _Unsupported
+    if not all(isinstance(target,ast.Name) and target.id not in CORE_BUILTINS
+               and target.id not in generator.iterating_lists for target in node.targets):
+        raise _Unsupported
+    for target in node.targets:
+        environment[target.id]=value
+    return "",environment

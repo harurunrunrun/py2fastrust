@@ -68,30 +68,6 @@ fn native_io_parse_text(value:&str)->Result<Int,String> {
     Int::parse(value,10)
 }
 fn native_io_number(value:Int)->NativeInt {__NATIVE_NUMBER__}
-fn native_io_check_unpack(length:usize,count:Option<usize>)->Result<(),String> {
-    if let Some(count)=count {if length<count {
-        return Err(format!("ValueError: not enough values to unpack (expected {}, got {})",count,length));
-    }}
-    Ok(())
-}
-fn native_io_integers_text(value:&str,count:Option<usize>)->Result<Vec<NativeInt>,String> {
-    let mut output=Vec::new();
-    for word in value.split(native_space).filter(|word|!word.is_empty()) {
-        let number=native_io_number(native_io_parse_text(word)?);
-        if count==Some(output.len()){return Err(format!("ValueError: too many values to unpack (expected {})",output.len()));}
-        output.try_reserve(1).map_err(|_|"MemoryError".to_string())?;output.push(number);
-    }
-    native_io_check_unpack(output.len(),count)?;Ok(output)
-}
-fn native_io_integers_bytes(value:&[u8],count:Option<usize>)->Result<Vec<NativeInt>,String> {
-    let mut output=Vec::new();
-    for word in value.split(|byte|native_bytes_space(*byte)).filter(|word|!word.is_empty()) {
-        let number=native_io_number(native_io_parse_bytes(word)?);
-        if count==Some(output.len()){return Err(format!("ValueError: too many values to unpack (expected {})",output.len()));}
-        output.try_reserve(1).map_err(|_|"MemoryError".to_string())?;output.push(number);
-    }
-    native_io_check_unpack(output.len(),count)?;Ok(output)
-}
 fn native_bytes_decode(value:&[u8])->Result<String,String> {
     std::str::from_utf8(value).map(str::to_owned).map_err(|_|"UnicodeDecodeError: bytes are not valid UTF-8".to_string())
 }
@@ -142,35 +118,31 @@ def _size_number(generator,value):
     return number if not generator.bits else f"Int::from_i128(({number}) as i128)"
 
 
-def _int_map(generator,node,environment):
-    if not (isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id == "map"
-            and len(node.args) == 2 and not node.keywords and isinstance(node.args[0],ast.Name)
-            and node.args[0].id == "int"):
-        return None
-    split=node.args[1]
-    if not (isinstance(split,ast.Call) and isinstance(split.func,ast.Attribute)
-            and split.func.attr == "split" and not split.args and not split.keywords):
-        return None
-    source=split.func.value
-    # The normal input().split() fast path keeps its distinct EOF semantics.
-    if (isinstance(source,ast.Call) and isinstance(source.func,ast.Name)
-            and source.func.id == "input" and "input" not in environment):
-        return None
-    value=generator.expression(source,environment)
-    return value if value.kind in {"str","bytes"} else None
 
 
-def _integer_list(generator,value,node,count=None):
-    _enable(generator)
-    generator.has_lists=True
-    name=generator.temporary()
-    limit="None" if count is None else f"Some({count})"
-    kind="bytes" if value.kind == "bytes" else "text"
-    call=generator.at(f"native_io_integers_{kind}(&{name},{limit})",node)
-    return _Expression(f"{{let {name}={value.code}; {call}}}","list_int")
 
 
 def try_expression(generator,node,environment):
+    from .native_builtin_values import try_expression as builtin_value
+    canonical=builtin_value(generator,node,environment)
+    if canonical is not None:return canonical
+    if isinstance(node,ast.Call):
+        from .references import BuiltinIdentity,callable_reference
+        target=callable_reference(generator,node.func,environment)
+        if isinstance(target,BuiltinIdentity)and target.name=="input":
+            from .call_semantics import FunctionSignature
+            from .native_stream_plans import context
+            normalizer=context(generator,environment)
+            signature=FunctionSignature.declaration()
+            from .call_semantics import CallBindingError
+            try:
+                normalizer.bind(normalizer.invocation(node),signature)
+            except CallBindingError as error:
+                raise _Unsupported from error
+            generator.has_input=True
+            if generator.bits:generator.has_extended_scalars=True
+            else:generator.has_big_text=True
+            return _Expression(f"({generator.at('native_input.line(&mut native_output)',node)}).to_owned()","str")
     local_names=generator.function.local_names if generator.function is not None else generator.entry_local_names
     direct_input=(isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id == "input")
     wrapped_input=(isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id == "int"
@@ -213,19 +185,16 @@ def try_expression(generator,node,environment):
             kind="bytes" if reader.binary else "text"
             call=generator.at(f"native_stdin_read_{kind}(&mut native_input.reader,{count},{str(reader.line).lower()})",node)
             return _Expression(f"{{{setup} {call}}}","bytes" if reader.binary else "str")
-        if isinstance(node.func,ast.Name) and node.func.id == "list" and len(node.args)==1 and not node.keywords:
-            value=_int_map(generator,node.args[0],environment)
-            if value is not None:
-                return _integer_list(generator,value,node)
         if isinstance(node.func,ast.Name) and node.func.id in {"int","len","bool"} and len(node.args)==1 and not node.keywords:
             argument=node.args[0]
             if (isinstance(argument,ast.Call) and isinstance(argument.func,ast.Name)
                     and argument.func.id == "input" and "input" not in environment):
                 return None
-            value=generator.expression(argument,environment)
+            value=getattr(generator,"read_expression",generator.expression)(argument,environment)
             if value.kind in {"str","bytes"}:
                 if node.func.id == "len":
-                    length=f"({value.code}).len()" if value.kind == "bytes" else f"({value.code}).chars().count()"
+                    length=(f"({value.code}).len()" if value.kind == "bytes" or generator.string_mode=="ascii"
+                            else f"({value.code}).chars().count()")
                     code=f"Int::from_i128(({length}) as i128)" if not generator.bits else f"(({length}) as NativeInt)"
                     return _Expression(code,"int",value.length)
                 if node.func.id == "bool":
@@ -279,6 +248,9 @@ def try_expression(generator,node,environment):
 
 
 def try_statement(generator,node,environment):
+    from .references import capture_builtin_assignment
+    captured=capture_builtin_assignment(generator,node,environment)
+    if captured is not None:return captured
     if isinstance(node,(ast.Import,ast.ImportFrom)):
         if isinstance(node,ast.Import):
             if any(alias.name != "sys" for alias in node.names):
@@ -309,19 +281,6 @@ def try_statement(generator,node,environment):
             return "",environment
         if isinstance(node.value,ast.Name) and isinstance(environment.get(node.value.id),_Function):
             return None
-        if len(node.targets)==1 and isinstance(node.targets[0],(ast.Tuple,ast.List)):
-            value=_int_map(generator,node.value,environment)
-            if value is not None:
-                targets=node.targets[0].elts
-                if not all(isinstance(target,ast.Name) and target.id not in generator.iterating_lists for target in targets):
-                    raise _Unsupported
-                result=_integer_list(generator,value,node,len(targets))
-                name=generator.temporary()
-                lines=[f"let {name}={result.code};"]
-                for index,target in enumerate(targets):
-                    item=_Expression(f"{name}[{index}]","int")
-                    lines.append(f"{generator.bind(target.id,'int',environment)}={generator.coerce(item,'int')};")
-                return "\n".join(lines),environment
         if all(isinstance(target,ast.Name) for target in node.targets):
             value=generator.expression(node.value,environment)
             if value.kind == "bytes":

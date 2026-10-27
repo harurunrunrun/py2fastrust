@@ -52,8 +52,28 @@ fn native_text_join(separator:&str,values:Vec<String>)->Result<String,String> {
 
 
 def try_text_method(generator, node, environment):
+    from .native_stream_plans import ConsumerKind, consumer_plan
+    join_plan=consumer_plan(generator,node,environment,{ConsumerKind.JOIN})
+    if join_plan is not None:
+        g=generator
+        from .native_iterators import Planner, TraceContext
+        receiver=g.temporary()
+        lines=[f"let {receiver}=&({join_plan.method.receiver.captured.code});"]
+        stream=Planner(g).lower(join_plan.source,environment)
+        g.has_text_methods=True
+        values=g.temporary()
+        lines.append(stream.construct())
+        lines.append(f"let mut {values}=Vec::<String>::new();")
+        if stream.length==0:
+            action='unreachable!("proved empty join source yielded");'
+        else:
+            if stream.tupled or len(stream.values)!=1 or stream.values[0].kind!="str":raise _Unsupported
+            action=g.at(f"native_text_join_push(&mut {values},{stream.values[0].code})",node)+";"
+        lines.append(stream.emit(action,TraceContext(g.scope_name(),g.expression_trace_id),g.line_code(node)))
+        result=g.at(f"native_text_join({receiver},{values})",node)
+        return _Expression("{ "+" ".join(lines)+f" {result} }}","str")
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"strip", "lstrip", "rstrip", "count", "join"}):
+            and node.func.attr in {"strip", "lstrip", "rstrip", "count"}):
         return None
     g = generator
     owner = g.read_expression(node.func.value, environment)
@@ -101,24 +121,4 @@ def try_text_method(generator, node, environment):
         count = f"native_text_count({receiver},{pattern},{','.join(bounds)})"
         expression = f"{count} as NativeInt" if g.bits else f"Int::from_i128({count} as i128)"
         kind = "int"
-    else:
-        if len(node.args) != 1:
-            raise _Unsupported
-        from .native_iterators import Planner
-        source = node.args[0]
-        if isinstance(source, (ast.List, ast.Tuple)) and not source.elts:
-            expression = "String::new()"
-        else:
-            stream = Planner(g).stream(source, environment)
-            if stream.tupled or len(stream.values) != 1 or stream.values[0].kind != "str":
-                raise _Unsupported
-            values = g.temporary()
-            # Python join() exhausts its iterable before constructing the
-            # result. Retain that timing for generator errors and side effects.
-            lines.append(stream.construct())
-            lines.append(f"let mut {values}=Vec::<String>::new();")
-            push = g.at(f"native_text_join_push(&mut {values},{stream.values[0].code})", node) + ";"
-            lines.append(stream.emit(push, g.scope_name(), node.lineno))
-            expression = g.at(f"native_text_join({receiver},{values})", node)
-        kind = "str"
     return _Expression("{ " + " ".join(lines) + f" {expression} }}", kind)

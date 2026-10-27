@@ -72,28 +72,6 @@ impl NativeInput {
         Ok(&self.line)
     }
     fn integer(&mut self,output:&mut String)->Result<Int,String> {Int::parse(self.line(output)?,10)}
-    fn integers(&mut self,output:&mut String)->Result<Vec<Int>,String> {
-        let mut result=Vec::new();
-        for word in self.line(output)?.split(native_space).filter(|word|!word.is_empty()) {
-            let value=Int::parse(word,10)?;
-            native_big_list_push(&mut result,value)?;
-        }
-        Ok(result)
-    }
-    fn unpack_integers(&mut self,count:usize,output:&mut String)->Result<Vec<Int>,String> {
-        let mut words=self.line(output)?.split(native_space).filter(|word|!word.is_empty());
-        let mut result=Vec::with_capacity(count);
-        for index in 0..count {
-            let word=words.next().ok_or_else(||format!("ValueError: not enough values to unpack (expected {}, got {})",count,index))?;
-            result.push(Int::parse(word,10)?);
-        }
-        if let Some(word)=words.next(){
-            // A lazy map converts exactly one excess item before unpack fails.
-            Int::parse(word,10)?;
-            return Err(format!("ValueError: too many values to unpack (expected {})",count));
-        }
-        Ok(result)
-    }
 }
 fn native_space(character:char)->bool {character.is_whitespace()||('\u{1c}'..='\u{1f}').contains(&character)}
 '''
@@ -386,16 +364,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return _Expression(f"{{{setup} let mut {best}={names[0]}; {updates} {best}}}",kind)
 
     def range_iterator(self, node, environment):
-        if not (isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id == "range" and not node.keywords and 1<=len(node.args)<=3):
-            raise _Unsupported
-        arguments = [self.expression(value,environment) for value in node.args]
-        if len(arguments)==1:
-            arguments.insert(0,_Expression(self.literal(0),"int",0))
-        if len(arguments)==2:
-            arguments.append(_Expression(self.literal(1),"int",1))
-        names = [self.temporary() for _ in arguments]
-        setup = "\n".join(f"let {name}={self.number(value)};" for name,value in zip(names,arguments))
-        return setup,self.at(f"NativeRange::new({','.join(names)})",node),arguments
+        from .native_stream_lowering import integer_range
+        return integer_range(self,node,environment)
 
     def finish_loop(self, node, entry, header, context, body, remaining, nonempty, may_repeat, zero=False):
         # The shared CFG proof uses moves for fixed-width Copy values. BigInt
@@ -483,36 +453,6 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         if result is not None:
             return result
         if isinstance(node,ast.Assign):
-            if len(node.targets)==1 and isinstance(node.targets[0],(ast.Tuple,ast.List)):
-                targets = node.targets[0].elts
-                if not all(isinstance(target,ast.Name) and target.id not in self.iterating_lists for target in targets):
-                    raise _Unsupported
-                name = self.temporary()
-                if self.input_map(node.value,environment):
-                    self.has_input = True
-                    value = self.at(f"native_input.unpack_integers({len(targets)},&mut native_output)",node)
-                    lines = [f"let {name}={value};"]
-                    for index,target in enumerate(targets):
-                        lines.append(f"{self.bind(target.id,'int',environment)}={name}[{index}].clone();")
-                    return "\n".join(lines),environment
-                if isinstance(node.value,(ast.Tuple,ast.List)) and len(node.value.elts)==len(targets):
-                    values = [self.expression(value,environment) for value in node.value.elts]
-                    if any(list_type(value.kind) for value in values):
-                        raise _Unsupported
-                    names = [self.temporary() for _ in values]
-                    lines = [f"let {name}={value.code};" for name,value in zip(names,values)]
-                    for target,name,value in zip(targets,names,values):
-                        lines.append(f"{self.bind(target.id,value,environment)}={name};")
-                    return "\n".join(lines),environment
-                value = self.expression(node.value,environment)
-                if value.kind != "list_int":
-                    raise _Unsupported
-                lines = [f"let {name}={value.code if value.owned else '&'+value.code};"]
-                check = f'native_big_unpack_length({name}.len(),{len(targets)})'
-                lines.append(self.at(check,node)+";")
-                for index,target in enumerate(targets):
-                    lines.append(f"{self.bind(target.id,'int',environment)}={name}[{index}].clone();")
-                return "\n".join(lines),environment
             if not all(isinstance(target,ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
             value = self.expression(node.value,environment)
@@ -538,7 +478,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         raise _Unsupported
 
 
-def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None,trusted_imports=frozenset(),unit=None):
+def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None,trusted_imports=frozenset(),unit=None,
+                        string_mode="ascii"):
     """Return a complete direct-Rust program only after a full scalar proof."""
     from .frontend import build_program, native_namespace_diagnostic
     from .diagnostics import CompilationError
@@ -565,10 +506,11 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
                 raise _Unsupported
         functions = _function_plans(tree,table,0,BigIntGenerator,unit=unit)
         function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree)))
-        specializations = _Specializations(0,functions,{},function_input,BigIntGenerator)
+        specializations = _Specializations(0,functions,{},function_input,BigIntGenerator,string_mode=string_mode)
         specializations.trusted_imports=trusted_imports
         specializations.source_unit=unit
         generator = BigIntGenerator(functions=functions,function_input=function_input,specializations=specializations)
+        generator.string_mode=string_mode
         generator.trusted_imports=trusted_imports
         generator.source_unit=unit
         body,_ = generator.statements(tree.body,{})
@@ -583,6 +525,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_tuples |= any(local.has_tuples for local in specializations.generators)
         generator.has_key_containers |= any(local.has_key_containers for local in specializations.generators)
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
+        generator.has_native_words |= any(local.has_native_words for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
@@ -616,6 +559,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.has_typed_lists:
         from .native_typed_lists import HELPERS as TYPED_LIST_HELPERS
         result.append(TYPED_LIST_HELPERS)
+    if generator.has_native_words:
+        from .native_words import HELPERS as WORD_HELPERS
+        result.append(WORD_HELPERS)
     if generator.has_stdio:
         from .native_stdio import render_helpers
         result.append(render_helpers(0))
@@ -639,7 +585,10 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
                f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);\n'
                "std::process::exit(1);\n}\n}\n"]
     source = "\n".join(result)
+    from .native_text_policy import apply_text_policy
+    source = apply_text_policy(source,string_mode)
     if prune_output:
         from .rust_pruning import prune_rust_source
         source = prune_rust_source(source)
-    return source
+    from .native_notices import retain_native_notices
+    return retain_native_notices(source)

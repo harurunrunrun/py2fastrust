@@ -41,6 +41,16 @@ Docstring indentation handling in `py2fastrust/compiler.py` and
 These routines retain blank lines while removing common indentation and use
 the same bundled PSF license.
 
+Native generated output includes the PSF license when its retained helpers
+contain the CPython-derived `native_float_divmod` implementation. It includes
+the Unicode license when retained number-parser or string-representation
+tables contain Unicode data. Notice selection follows Rust helper pruning;
+`--no-optimize` therefore retains notices for unused components that remain
+in the output. Using the official `ast` and `symtable` APIs in the compiler
+does not by itself embed Python code in a generated program.
+The selected license for translated program logic does not replace notices
+required for bundled components.
+
 The compiler uses the host Python's official `ast` and `symtable` APIs.
 The Rust PEG engine and tokenizer are independent implementations. Its grammar
 tables are generated from CPython 3.14.4's unmodified `Grammar/python.gram` and

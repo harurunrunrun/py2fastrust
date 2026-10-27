@@ -19,6 +19,7 @@ class TranspileOptions:
     include_modules: tuple[str, ...] = ()
     optimize: bool = True
     license: str = "CC0-1.0"
+    string_mode: str = "ascii"
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,8 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
         options = apply_source_options(options, source_directives(source, options.filename))
         if options.integer not in {"i64", "i128", "bigint"}:
             return TranspileResult(None, (Diagnostic("integer must be i64, i128, or bigint", options.filename, code="E004"),))
+        if options.string_mode not in ("ascii", "unicode"):
+            return TranspileResult(None, (Diagnostic("string_mode must be ascii or unicode", options.filename, code="E004"),))
         try:
             options = replace(options, license=license_name(options.license))
         except ValueError as exc:
@@ -51,7 +54,8 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
         diagnostics = []
         native = try_generate_native(source, options.filename, options.integer,
                                      unit=program.main,
-                                     prune_output=options.optimize, diagnostic_out=diagnostics)
+                                     prune_output=options.optimize, diagnostic_out=diagnostics,
+                                     string_mode=options.string_mode)
         if native is None:
             return TranspileResult(None, tuple(diagnostics) or (Diagnostic(
                 "direct Rust generation is not implemented for this program",

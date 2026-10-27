@@ -33,9 +33,10 @@ class NativeIteratorReductionTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.directory.cleanup()
 
-    def compile(self, source, mode="i64", release=True, prune=True):
+    def compile(self, source, mode="i64", release=True, prune=True, string_mode="ascii"):
         source = textwrap.dedent(source)
-        result = transpile(source, TranspileOptions(integer=mode, filename="case.py", optimize=prune))
+        result = transpile(source, TranspileOptions(integer=mode, filename="case.py", optimize=prune,
+                                                   string_mode=string_mode))
         self.assertTrue(result.success, result.diagnostics)
         self.assertEqual(result.backend, "native", source)
         rust = result.rust_source
@@ -65,9 +66,9 @@ class NativeIteratorReductionTests(unittest.TestCase):
                 pattern = r'File "[^"]+", line (\d+), in ([^\n]+)'
                 self.assertEqual(re.findall(pattern, actual.stderr), re.findall(pattern, expected.stderr))
 
-    def differential(self, source, inputs=("",), modes=("i64", "i128"), **options):
+    def differential(self, source, inputs=("",), modes=("i64", "i128"), string_mode="ascii", **options):
         for mode in modes:
-            compiled = self.compile(source, mode)
+            compiled = self.compile(source, mode, string_mode=string_mode)
             for data in inputs:
                 with self.subTest(mode=mode, data=data):
                     self.compare(compiled, data, mode=mode, **options)

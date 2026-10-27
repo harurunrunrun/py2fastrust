@@ -58,6 +58,7 @@ class _Expression:
     owned: bool = True
     length: int | None = None
     nonempty: bool = False
+    stable_borrow: bool = False
 
 
 @dataclass(frozen=True)
@@ -255,40 +256,6 @@ impl NativeInput {
     fn integer(&mut self,output:&mut String) -> Result<NativeInt, String> {
         native_parse_integer(self.line(output)?)
     }
-    fn integers(&mut self,output:&mut String) -> Result<Vec<NativeInt>, String> {
-        self.line(output)?.split(native_space).filter(|word| !word.is_empty())
-            .map(native_parse_integer).collect()
-    }
-    fn unpack_integers_vec(&mut self, count: usize,output:&mut String) -> Result<Vec<NativeInt>, String> {
-        let mut words = self.line(output)?.split(native_space).filter(|word| !word.is_empty());
-        let mut result = Vec::with_capacity(count);
-        for index in 0..count {
-            let word = words.next().ok_or_else(|| format!("ValueError: not enough values to unpack (expected {}, got {})", count, index))?;
-            result.push(native_parse_integer(word)?);
-        }
-        if let Some(word) = words.next() {
-            native_parse_integer(word)?;
-            return Err(format!("ValueError: too many values to unpack (expected {})", count));
-        }
-        Ok(result)
-    }
-    fn unpack_integers<const N: usize>(&mut self,output:&mut String) -> Result<[NativeInt; N], String> {
-        let mut words = self.line(output)?.split(native_space).filter(|word| !word.is_empty());
-        // The target count is a compile-time fact. No heap allocation is
-        // needed for each edge's a,b input tuple, including error paths.
-        let mut result = [0; N];
-        for index in 0..N {
-            let word = words.next().ok_or_else(|| format!("ValueError: not enough values to unpack (expected {}, got {})", N, index))?;
-            result[index] = native_parse_integer(word)?;
-        }
-        if let Some(word) = words.next() {
-            // Unpacking asks a lazy map for precisely one extra item. Later
-            // invalid tokens must not replace the too-many-values error.
-            native_parse_integer(word)?;
-            return Err(format!("ValueError: too many values to unpack (expected {})", N));
-        }
-        Ok(result)
-    }
 }
 fn native_space(character: char) -> bool {
     character.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&character)
@@ -448,8 +415,10 @@ impl std::fmt::Display for NativeScalar {
 class _Generator:
     BUILTINS = {"int", "input", "print", "range", "reversed", "abs", "pow", "len", "sum", "any", "all", "min", "max", "list", "map", "filter", "enumerate", "zip", "dict", "set", "sorted", "iter", "next"}
 
-    def __init__(self, bits, functions=None, function=None, function_input=False, constructors=None, specializations=None):
+    def __init__(self, bits, functions=None, function=None, function_input=False, constructors=None, specializations=None,
+                 string_mode="ascii"):
         self.bits = bits
+        self.string_mode = string_mode
         self.bindings = {}
         self.counter = 0
         self.loops = []
@@ -483,6 +452,7 @@ class _Generator:
         self.has_key_containers = False
         self.has_tuples = False
         self.has_typed_lists = False
+        self.has_native_words = False
         self.has_stdio = False
         self.has_native_modules = False
         self.borrowed_slots = set()
@@ -599,7 +569,11 @@ class _Generator:
         finite=coerce_union(expression,kind,_Generator.coerce)
         if finite is not None:return finite
         if is_maybe(kind):
-            if expression.kind==kind:return f"({expression.code}).clone()"
+            if expression.kind==kind:
+                # Fixed scalar Option slots are Copy; they need no clone at
+                # loop joins. The BigInt backend keeps its owning override.
+                if unmaybe(kind) in {"int","bool","int_bool","float"}:return expression.code
+                return f"({expression.code}).clone()"
             if is_maybe(expression.kind):
                 item=_Expression("native_optional.clone()",unmaybe(expression.kind))
                 return f"({expression.code}).as_ref().map(|native_optional|{_Generator.coerce(item,unmaybe(kind))})"
@@ -678,29 +652,6 @@ class _Generator:
         scope = self.scope_name()
         return scope.line_code if hasattr(scope, "line_code") else node.lineno
 
-    def input_words(self,node, environment=None):
-        if not (isinstance(node, ast.Call) and not node.args and not node.keywords
-                and isinstance(node.func, ast.Attribute) and node.func.attr == "split"):
-            return False
-        source = node.func.value
-        local_names=self.function.local_names if self.function is not None else self.entry_local_names
-        if (environment is not None and "input" in local_names and "input" not in environment
-                and isinstance(source,ast.Call) and isinstance(source.func,ast.Name) and source.func.id=="input"):
-            raise _Unsupported
-        return (isinstance(source, ast.Call) and isinstance(source.func, ast.Name)
-                and source.func.id == "input" and not source.args and not source.keywords
-                and (environment is None or "input" not in environment))
-
-    def input_map(self, node, environment=None):
-        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "map" and len(node.args) == 2 and not node.keywords
-                and isinstance(node.args[0], ast.Name) and node.args[0].id == "int"
-                and self.input_words(node.args[1],environment))
-
-    def integer_input_list(self, node):
-        self.needs_integer_runtime = self.has_input = self.has_lists = True
-        return _Expression(self.at("native_input.integers(&mut native_output)", node), "list_int")
-
     def dict_view(self, node, environment):
         """Recognize an immediate view consumer; views never become variables."""
         if (not isinstance(node, ast.Call) or node.args or node.keywords
@@ -718,30 +669,18 @@ class _Generator:
         General set iteration remains unsupported: these consumers cannot
         observe order, invoke user code, or mutate their input during iteration.
         """
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "range"):
-            setup, iterator, _ = self.range_iterator(node, environment)
-            return setup, iterator
-        if isinstance(node, (ast.List, ast.Tuple)):
-            values = [self.expression(value, environment) for value in node.elts]
-            if any(value.kind != "int" for value in values):
-                raise _Unsupported
-            name = self.temporary()
-            # The ephemeral sequence never escapes. A stack array preserves
-            # argument evaluation before mutation without allocating a Vec.
-            setup = f"let {name}: [NativeInt; {len(values)}] = [" + ", ".join(value.code for value in values) + "];"
-            return setup, f"{name}.into_iter()"
-        value = self.expression(node, environment)
-        if value.kind not in {"list_int", "set_int", "dict_int"}:
+        from .native_iterators import Planner, stream_item
+        from .native_typed_lists import _collect
+        from .native_stream_plans import context
+        plan = context(self, environment).producer(node)
+        source = Planner(self).lower(plan, environment, allow_set=True)
+        if stream_item(self, source).kind != "int":
             raise _Unsupported
-        name = self.temporary()
-        binding = value.code if value.owned else f"&({value.code})"
-        setup = f"let {name} = {binding};"
-        if value.kind == "dict_int":
-            iterator = f"{name}.entries.iter().map(|&(key, _)| key)"
-        else:
-            iterator = f"{name}.iter().copied()"
-        return setup, iterator
+        if source.fields == (("int", "@", True),):
+            return source.construct(), source.iterator
+        value = _collect(self, source, node)
+        owner = self.temporary()
+        return f"let {owner}={value.code};", f"{owner}.into_iter()"
 
     def extremum(self, node, environment):
         """Lower exact scalar extrema without introducing runtime objects."""
@@ -787,7 +726,7 @@ class _Generator:
                 iterator = local
             else:
                 view = self.dict_view(source, environment)
-                value = self.integer_input_list(source) if self.input_map(source,environment) else (view[0] if view else self.expression(source, environment))
+                value = view[0] if view else self.expression(source, environment)
                 if value.kind not in {"list_int", "set_int", "dict_int", "deque_int"} or view and view[1] == "items":
                     raise _Unsupported
                 local = self.temporary()
@@ -1082,15 +1021,6 @@ class _Generator:
                 return _Expression(f"{{ let {dictionary} = {binding}; let {key} = {index.code}; {lookup} }}", "int")
             return _Expression(self.at(f"native_get(&({values.code}), {self.number(index)})", node), "int")
         if isinstance(node, ast.ListComp):
-            if len(node.generators) == 1:
-                gen = node.generators[0]
-                if (not gen.is_async and not gen.ifs and isinstance(gen.target, ast.Name)
-                        and self.input_words(gen.iter,environment) and isinstance(node.elt, ast.Call)
-                        and isinstance(node.elt.func, ast.Name) and node.elt.func.id == "int"
-                        and not node.elt.keywords and len(node.elt.args) == 1
-                        and isinstance(node.elt.args[0], ast.Name)
-                        and node.elt.args[0].id == gen.target.id):
-                    return self.integer_input_list(node)
             if len(node.generators) != 1 or node.generators[0].is_async or not isinstance(node.generators[0].target, ast.Name):
                 raise _Unsupported
             comprehension = node.generators[0]
@@ -1196,8 +1126,6 @@ class _Generator:
             if name == "list" and not node.args:
                 self.has_lists = True
                 return _Expression("Vec::<NativeInt>::new()", "list_int", length=0)
-            if name == "list" and len(node.args) == 1 and self.input_map(node.args[0],environment):
-                return self.integer_input_list(node)
             if name == "int" and not node.args:
                 return _Expression(self.literal(0), "int", 0)
             if name == "int" and len(node.args) == 1:
@@ -1343,22 +1271,8 @@ class _Generator:
         return _Expression(code, "int", constant)
 
     def range_iterator(self, node, environment):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "range" or node.keywords or not 1 <= len(node.args) <= 3:
-            raise _Unsupported
-        arguments = [self.expression(value, environment) for value in node.args]
-        if len(arguments) == 1:
-            arguments.insert(0, _Expression(self.literal(0), "int", 0))
-        if len(arguments) == 2:
-            arguments.append(_Expression(self.literal(1), "int", 1))
-        names = [self.temporary() for _ in arguments]
-        setup = "\n".join(f"let {name} = {self.number(argument)};" for name, argument in zip(names, arguments))
-        if arguments[2].constant == 1:
-            iterator = f"({names[0]}..{names[1]})"
-        elif arguments[2].constant == -1:
-            iterator = f"({names[1]}..{names[0]}).rev().map(|native_descending_value: NativeInt| native_descending_value.wrapping_add(1))"
-        else:
-            iterator = self.at(f"NativeRange::new({', '.join(names)})", node)
-        return setup, iterator, arguments
+        from .native_stream_lowering import integer_range
+        return integer_range(self,node,environment)
 
     def statements(self, statements, environment):
         environment = environment.copy()
@@ -1756,31 +1670,6 @@ class _Generator:
         if isinstance(node, ast.Pass):
             return ";", environment
         if isinstance(node, ast.Assign):
-            if len(node.targets) == 1 and isinstance(node.targets[0], (ast.Tuple, ast.List)):
-                targets = node.targets[0].elts
-                if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in targets):
-                    raise _Unsupported
-                count = len(targets)
-                name = self.temporary()
-                if self.input_map(node.value,environment):
-                    self.needs_integer_runtime = self.has_input = True
-                    # Keep unusually large unpackings off the Rust stack.
-                    unpack = (f"native_input.unpack_integers::<{count}>(&mut native_output)" if count <= 32 else
-                              f"native_input.unpack_integers_vec({count}, &mut native_output)")
-                    value_code = self.at(unpack, node)
-                    lines = [f"let {name} = {value_code};"]
-                else:
-                    value = self.expression(node.value, environment)
-                    if value.kind != "list_int":
-                        raise _Unsupported
-                    lines = [f"let {name} = {value.code if value.owned else '&' + value.code};"]
-                    check = f'native_unpack_length({name}.len(), {count})'
-                    lines.append(f"{self.at(check, node)};")
-                # Check all cardinality/conversion errors before binding any
-                # target. Scalar copies cannot introduce list aliases.
-                for index, target in enumerate(targets):
-                    lines.append(f"{self.bind(target.id, 'int', environment)} = {name}[{index}];")
-                return "\n".join(lines), environment
             value = self.expression(node.value, environment)
             if len(node.targets) == 1 and isinstance(node.targets[0], ast.Subscript):
                 target = node.targets[0]
@@ -2301,8 +2190,10 @@ def _function_plans(tree, table, bits, generator_type=_Generator, unit=None):
 class _Specializations:
     """Prove and emit only the exact argument-kind variants actually called."""
 
-    def __init__(self, bits, functions, constructors, function_input, generator_type=_Generator):
+    def __init__(self, bits, functions, constructors, function_input, generator_type=_Generator,
+                 string_mode="ascii"):
         self.bits = bits
+        self.string_mode = string_mode
         self.functions = functions
         self.constructors = constructors
         self.function_input = function_input
@@ -2362,6 +2253,7 @@ class _Specializations:
                           global_bindings=globals_at_call,global_names=names,absent_globals=set())
         local = self.generator_type(self.bits, self.functions, variant, self.function_input,
                            self.constructors, self)
+        local.string_mode = self.string_mode
         local.global_environment = globals_at_call
         local.global_names = names
         local.source_unit = self.source_unit
@@ -2417,7 +2309,7 @@ def _declarations(generator):
 
 
 def try_generate_native(source: str, filename: str, integer: str, *, trusted_imports=frozenset(),
-                        prune_output=True, diagnostic_out=None, unit=None) -> str | None:
+                        prune_output=True, diagnostic_out=None, unit=None, string_mode="ascii") -> str | None:
     """Return direct Rust, or None with an optional positioned diagnostic.
 
     Fixed-width modes use native Rust integers; BigInt selects the owned
@@ -2447,11 +2339,13 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if has_classes:
         from .native_classes import try_generate_classes
         return try_generate_classes(source, filename, integer, trusted_imports=trusted_imports,
-                                    prune_output=prune_output, diagnostic_out=diagnostic_out, unit=unit)
+                                    prune_output=prune_output, diagnostic_out=diagnostic_out, unit=unit,
+                                    string_mode=string_mode)
     if integer == "bigint":
         from .native_bigint import try_generate_bigint
         return try_generate_bigint(source, filename, prune_output=prune_output,
-                                   diagnostic_out=diagnostic_out,trusted_imports=trusted_imports,unit=unit)
+                                   diagnostic_out=diagnostic_out,trusted_imports=trusted_imports,unit=unit,
+                                   string_mode=string_mode)
     if integer not in {"i64", "i128"}:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source, filename, unit=unit))
@@ -2475,11 +2369,12 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         statements, wrapper = _main_wrapper(tree)
         functions = {} if wrapper else _function_plans(tree, table, bits, ScalarGenerator, unit=unit)
         function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node, ast.Name) and node.id == "input" for node in ast.walk(tree)))
-        specializations = _Specializations(bits, functions, constructors, function_input, ScalarGenerator)
+        specializations = _Specializations(bits, functions, constructors, function_input, ScalarGenerator,
+                                          string_mode=string_mode)
         specializations.trusted_imports = trusted_imports
         specializations.source_unit=unit
         generator = ScalarGenerator(bits, functions, function_input=function_input, constructors=constructors,
-                               specializations=specializations)
+                               specializations=specializations, string_mode=string_mode)
         generator.trusted_imports = trusted_imports
         generator.source_unit=unit
         if function_input:
@@ -2495,7 +2390,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         function_sources = specializations.sources
         for local in specializations.generators:generator.union_types.update(local.union_types)
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2534,6 +2429,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_typed_lists:
         from .native_typed_lists import HELPERS as TYPED_LIST_HELPERS
         result.append(TYPED_LIST_HELPERS)
+    if generator.has_native_words:
+        from .native_words import HELPERS as WORD_HELPERS
+        result.append(WORD_HELPERS)
     if generator.has_stdio:
         from .native_stdio import render_helpers
         result.append(render_helpers(generator.bits))
@@ -2595,7 +2493,10 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
                       f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {{}}, in <module>\\n{{}}", {_string(filename)}, error.line, error.message);\n'
                       "std::process::exit(1);\n}\n}\n")
     source = "\n".join(result)
+    from .native_text_policy import apply_text_policy
+    source = apply_text_policy(source, string_mode)
     if prune_output:
         from .rust_pruning import prune_rust_source
         source = prune_rust_source(source)
-    return source
+    from .native_notices import retain_native_notices
+    return retain_native_notices(source)

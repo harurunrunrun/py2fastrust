@@ -17,6 +17,18 @@ dynamic execution, general imports
 and many mixed-type/alias cases still require direct lowering. An `E006`
 diagnostic makes that gap explicit; it does not satisfy the missing feature.
 
+Immediate `for`, reduction, `list`, `sorted`, `next`, unpacking, and string
+`join` consumers use the same normalized producer plans. Core builtin aliases
+are resolved from definite lexical bindings; a spelling alone does not prove
+builtin identity. An alias absent on a branch or loop edge is not treated as a
+definitely bound callable. Splitting text or bytes uses a common source adapter,
+and proved integer projections share a parser for `map`, generators, and eager
+comprehensions. Lazy unpacking converts exactly the first excess item before
+raising a cardinality error, while eager comprehensions finish before unpacking.
+Producer conversion errors and consumer cardinality errors retain their own
+source frames. General dynamic callable values and conflicting core-name
+rebinding still require direct implementation.
+
 Generator expressions consumed by `sum`, `any`, `all`, `min`, or `max` lower to
 typed Rust loops, including proved nested clauses, filters, and
 `map`/`filter`/`enumerate`/`zip` adapters. Construction and iteration keep their
@@ -33,8 +45,11 @@ All integer modes support uniquely owned flat integer lists, indexed reads and
 updates, copied lists, ordinary list operations, `sorted` without a custom key,
 and slicing with positive or negative steps. Slices make independent lists.
 Shared mutable list aliases and shallow slices of nested mutable rows are not
-yet implemented on this path. String slicing uses character indices in all
-integer modes.
+yet implemented on this path. In all integer modes, strings default to ASCII:
+lengths, indices, slices, and `count` bounds use bytes without per-access ASCII
+detection. `--string-mode unicode` selects Python code-point semantics. The
+source-comment directive overrides CLI/API settings. Non-ASCII strings require
+Unicode mode; ASCII mode does not detect and switch automatically.
 
 Concatenation and repetition of proved flat lists share one operation plan in
 fixed-width and BigInt modes, including immutable bool/string/tuple elements.
@@ -43,7 +58,7 @@ Repetition counts use checked index-sized conversion even for empty lists, and
 allocation sizes use checked structural arithmetic.
 
 String methods include `strip`/`lstrip`/`rstrip` with an optional
-character set, `count` with character-based bounds, and `join` over a proved
+character set, `count` with bounds in the selected string model, and `join` over a proved
 string iterable. Joining exhausts generator inputs before constructing its
 result. Unicode whitespace includes Python's additional U+001C–U+001F range.
 BigInt-mode strings are ordinary Rust `String` values, with borrowing for

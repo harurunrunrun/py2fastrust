@@ -30,7 +30,8 @@ def main(argv=None):
             source = stream.read()
         directives = source_directives(source, str(args.source))
         options = TranspileOptions(args.integer, str(args.source), tuple(args.module_path or ()) or (args.source.resolve().parent,),
-                                   tuple(args.include_module or ()), args.optimize, args.license)
+                                   tuple(args.include_module or ()), args.optimize, args.license,
+                                   string_mode=args.string_mode)
         result = transpile(source, options)
         if not result.success:
             for diagnostic in result.diagnostics:

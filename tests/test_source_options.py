@@ -77,8 +77,9 @@ class SourceOptionsTests(unittest.TestCase):
                     self.assertIn("// " + line + "\n", before)
                 self.assertNotIn("// import sys\n", generated)
                 runtime_notice = files("py2fastrust").joinpath("runtime", "NOTICE.txt").read_text()
-                self.assertTrue(runtime_notice in generated, "runtime license notice must remain intact")
-                self.assertTrue("PYTHON SOFTWARE FOUNDATION LICENSE" in generated)
+                mit_notice = runtime_notice.split("\nDictionary copy and merge paths", 1)[0].rstrip()
+                self.assertIn(mit_notice, generated, "the original runtime MIT notice must remain intact")
+                self.assertNotIn("PYTHON SOFTWARE FOUNDATION LICENSE", generated)
         self.assertTrue(transpile('print(1)').rust_source.startswith('// LICENSE: CC0-1.0\n'))
 
     def test_source_module_paths_and_includes_replace_command_line_lists(self):

@@ -18,7 +18,8 @@ class NativeSliceTests(unittest.TestCase):
             root = Path(directory)
             for mode, release in itertools.product(modes, profiles):
                 with self.subTest(integer=mode, release=release):
-                    result = transpile(source, TranspileOptions(integer=mode, filename="slices.py"))
+                    result = transpile(source, TranspileOptions(integer=mode, filename="slices.py",
+                                                               string_mode="unicode"))
                     self.assertTrue(result.success, result.diagnostics)
                     self.assertEqual(result.backend, "native")
                     self.assertLess(len(result.rust_source.encode()), 512 * 1024)
@@ -131,12 +132,14 @@ print(*sorted([],reverse=True))
 
     def test_unsupported_shallow_matrix_or_custom_key_stays_diagnostic(self):
         for source in ("a=[[1],[2]]\nb=a[:]\nb[0].append(3)\nprint(a)\n",
-                       "a=[2,1]\nprint(sorted(a,key=abs))\n",
                        "sorted=3\na=[2,1]\nprint(sorted(a))\n"):
             for mode in ("i64", "i128", "bigint"):
                 result = transpile(source, TranspileOptions(integer=mode))
                 self.assertFalse(result.success)
                 self.assertEqual(result.diagnostics[0].code,"E006")
+
+    def test_sorted_proved_abs_callback(self):
+        self.compare('a=[-3,2,-1]\nprint(sorted(a,key=abs))\n')
 
 
 if __name__ == "__main__":

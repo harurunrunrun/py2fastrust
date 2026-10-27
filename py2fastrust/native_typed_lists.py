@@ -4,6 +4,8 @@ import ast
 
 from .native import _Binding, _DequeInfo, _Expression, _ListInfo, _Unsupported, _string
 from .native_types import ListType, TupleType, TypedListInfo, immutable, join_types, rust_type, tuple_code
+from .call_semantics import FunctionSignature
+from .native_stream_plans import ConsumerKind, ConsumerPlan, consumer_plan, context
 
 
 HELPERS = r'''
@@ -21,45 +23,6 @@ fn native_typed_copy<T:Clone>(values:&[T])->Result<Vec<T>,String> {
     let mut result=Vec::new();
     native_typed_reserve(&mut result,values.len())?;
     result.extend(values.iter().cloned());
-    Ok(result)
-}
-fn native_typed_whitespace(character:char)->bool {
-    character.is_whitespace()||('\u{1c}'..='\u{1f}').contains(&character)
-}
-fn native_typed_split(text:&str,separator:Option<&str>,maximum:i128)->Result<Vec<String>,String> {
-    let maximum=isize::try_from(maximum).map_err(|_|"OverflowError: Python int too large to convert to C ssize_t".to_string())?;
-    let mut result=Vec::new();
-    if let Some(separator)=separator {
-        if separator.is_empty(){return Err("ValueError: empty separator".into());}
-        if maximum<0 {
-            for word in text.split(separator){native_typed_push(&mut result,word.to_owned())?;}
-        }else{
-            for word in text.splitn(maximum as usize+1,separator){native_typed_push(&mut result,word.to_owned())?;}
-        }
-        return Ok(result);
-    }
-    let mut cursor=0;
-    let mut remaining=maximum;
-    loop {
-        while cursor<text.len() {
-            let character=text[cursor..].chars().next().unwrap();
-            if !native_typed_whitespace(character){break;}
-            cursor+=character.len_utf8();
-        }
-        if cursor==text.len(){break;}
-        if remaining==0 {
-            native_typed_push(&mut result,text[cursor..].to_owned())?;
-            break;
-        }
-        let start=cursor;
-        while cursor<text.len() {
-            let character=text[cursor..].chars().next().unwrap();
-            if native_typed_whitespace(character){break;}
-            cursor+=character.len_utf8();
-        }
-        native_typed_push(&mut result,text[start..cursor].to_owned())?;
-        if remaining>0{remaining-=1;}
-    }
     Ok(result)
 }
 '''
@@ -104,16 +67,24 @@ def _ordering(g,left,right,node):
 
 def _sort_options(g,node,environment,owners=()):
     reverse,key = "false",None
-    lines,seen = [],set()
+    lines=[]
+    if isinstance(node,ConsumerPlan):
+        bound=node.binding
+    else:
+        normalizer=context(g,environment)
+        signature=FunctionSignature.declaration(keyword_only=("key","reverse"),default_names=("key","reverse"))
+        from .call_semantics import CallBindingError
+        try:
+            bound=normalizer.bind(normalizer.invocation(node),signature,(("key",None),("reverse",False)))
+        except CallBindingError as error:
+            raise _Unsupported from error
     depth = len(g.iterating_lists)
     g.iterating_lists.extend(owners)
     try:
-        for keyword in node.keywords:
-            if keyword.arg not in {"reverse","key"} or keyword.arg in seen:
-                raise _Unsupported
-            seen.add(keyword.arg)
-            value = keyword.value
-            if keyword.arg == "key":
+        for operand in bound.explicit_order:
+            if operand.parameter=="iterable":continue
+            value=operand.expression
+            if operand.parameter == "key":
                 if isinstance(value,ast.Constant) and value.value is None:
                     continue
                 if not isinstance(value,ast.Name):
@@ -156,6 +127,10 @@ def _sort_code(g,owner,element,node,environment,reverse,key):
 
 def _collect(g,source,node,*,constructed=False):
     from .native_iterators import TraceContext, _owned
+    if source.integer_words is not None:
+        prefix=""if constructed else source.construct()
+        call=source.integer_words.call(g,TraceContext(g.scope_name(),g.expression_trace_id),g.line_code(node))
+        return _Expression("{\n"+prefix+"\n"+call+"\n}","list_int",length=source.length)
     if source.tupled:
         element = TupleType(tuple(value.kind for value in source.values))
         code = tuple_code(_owned(g,value,value.kind) for value in source.values)
@@ -165,9 +140,9 @@ def _collect(g,source,node,*,constructed=False):
         element = value.kind
     else:
         raise _Unsupported
-    if not immutable(element):
+    if not immutable(element) and not (element == "list_int" and value.owned):
         raise _Unsupported
-    kind = "list_int" if element == "int" else ListType(element)
+    kind = ("list_int" if element == "int" else "matrix_int" if element == "list_int" else ListType(element))
     g.register_type(kind)
     _enable(g)
     result = g.temporary()
@@ -175,90 +150,6 @@ def _collect(g,source,node,*,constructed=False):
     body = source.emit(action,TraceContext(g.scope_name(),g.expression_trace_id),g.line_code(node))
     code = ("" if constructed else source.construct()) + f"\nlet mut {result}:{rust_type(kind)}=Vec::new();\n" + body + f"\n{result}"
     return _Expression("{\n" + code + "\n}",kind,length=source.length)
-
-
-def _split(g, node, environment):
-    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "split"):
-        return None
-    owner = g.expression(node.func.value, environment)
-    if owner.kind != "str":
-        return None
-    if len(node.args) > 2 or any(isinstance(arg, ast.Starred) for arg in node.args):
-        raise _Unsupported
-    text = g.temporary()
-    lines = [f"let {text}={owner.code};"]
-    values = {}
-    for name, argument in zip(("sep", "maxsplit"), node.args):
-        values[name] = argument
-    ordered = [(name, argument) for name, argument in zip(("sep", "maxsplit"), node.args)]
-    for keyword in node.keywords:
-        if keyword.arg not in {"sep", "maxsplit"} or keyword.arg in values:
-            raise _Unsupported
-        values[keyword.arg] = keyword.value
-        ordered.append((keyword.arg, keyword.value))
-    separator, maximum = "None", "-1_i128"
-    for name, argument in ordered:
-        if name == "sep" and isinstance(argument, ast.Constant) and argument.value is None:
-            continue
-        value = g.expression(argument, environment)
-        temporary = g.temporary()
-        if name == "sep":
-            if value.kind != "str":
-                raise _Unsupported
-            lines.append(f"let {temporary}={value.code};")
-            separator = f"Some({temporary}.as_str())"
-        else:
-            number = g.number(value)
-            lines.append(f"let {temporary}={number};")
-            maximum = (f"({temporary}) as i128" if g.bits else
-                       f"{temporary}.to_i128().unwrap_or_else(||if {temporary}.is_negative(){{i128::MIN}}else{{i128::MAX}})")
-    _enable(g)
-    call = g.at(f"native_typed_split(&{text},{separator},{maximum})", node)
-    return _Expression("{ " + " ".join(lines) + f" {call} }}", ListType("str"))
-
-
-def _comprehension(g, node, environment):
-    from .native_iterators import Planner, TraceContext
-    if not node.generators or any(clause.is_async for clause in node.generators):
-        raise _Unsupported
-    planner = Planner(g)
-    inside = environment
-    clauses = []
-    owners = set()
-    guard_depth = len(g.iterating_lists)
-    mutation_start = len(g.expression_mutations)
-    try:
-        for clause in node.generators:
-            source = planner.stream(clause.iter, inside)
-            inside = planner.bind_target(clause.target, source, inside)
-            owners.update(source.owners)
-            g.iterating_lists.extend(source.owners)
-            filters = [g.expression(condition, inside) for condition in clause.ifs]
-            clauses.append((source, filters))
-        element = g.expression(node.elt, inside)
-    finally:
-        del g.iterating_lists[guard_depth:]
-    if clauses[0][0].length != 0:
-        changed = {id(binding) for binding in g.expression_mutations[mutation_start:]}
-        for name,binding in list(environment.items()):
-            if id(binding) in changed and isinstance(binding.info,_DequeInfo):
-                g.update_info(environment,name,_DequeInfo(None))
-    if not immutable(element.kind):
-        # Mutable nested elements need shared identity, even if every source
-        # expression is new. The integer matrix backend handles its own proof.
-        return None
-    kind = "list_int" if element.kind == "int" else ListType(element.kind)
-    g.register_type(kind)
-    result = g.temporary()
-    body = g.at(f"native_typed_push(&mut {result},{_clone(g,element,element.kind)})", node.elt) + ";"
-    for source, filters in reversed(clauses):
-        for condition in reversed(filters):
-            body = f"if {g.truth(condition)} {{\n{body}\n}}"
-        body = source.emit(body, TraceContext(g.scope_name(),g.expression_trace_id),g.line_code(node))
-        if source is not clauses[0][0]:
-            body = source.construct() + "\n" + body
-    _enable(g)
-    return _Expression("{ " + clauses[0][0].construct() + f"\nlet mut {result}:{rust_type(kind)}=Vec::new();\n{body}\n{result} }}", kind)
 
 
 def _slice(g, node, owner, environment):
@@ -297,11 +188,22 @@ def try_expression(g, node, environment):
         if isinstance(binding,_Binding) and isinstance(binding.info,TypedListInfo):
             return _Expression(binding.slot,binding.info.kind,owned=False,length=binding.info.length)
         return None
-    split = _split(g,node,environment)
-    if split is not None:
-        return split
-    if isinstance(node,ast.ListComp):
-        return _comprehension(g,node,environment)
+    plan=consumer_plan(g,node,environment,{ConsumerKind.LIST,ConsumerKind.SORTED})
+    if plan is not None:
+        from .native_iterators import Planner
+        source=Planner(g).lower(plan.source,environment)
+        if plan.kind is ConsumerKind.LIST:
+            return _collect(g,source,node)
+        result=_collect(g,source,node,constructed=True)
+        lines=[source.setup+("\n"+source.begin if source.eager else "")]
+        options,reverse,key=_sort_options(g,plan,environment,source.owners if source.eager else ())
+        lines.extend(options)
+        if not source.eager:lines.append(source.begin)
+        owner=g.temporary()
+        lines.append(f"let mut {owner}={result.code};")
+        element="int"if result.kind=="list_int"else result.kind.element
+        lines.append(_sort_code(g,owner,element,node,environment,reverse,key))
+        return _Expression("{\n"+"\n".join(lines)+f"\n{owner}\n}}",result.kind,length=result.length)
     if isinstance(node,ast.List) and node.elts:
         values = [g.expression(value,environment) for value in node.elts]
         element = values[0].kind
@@ -327,29 +229,6 @@ def try_expression(g, node, environment):
         return _Expression(f"{{ let {container}=&({owner.code}); let {index}={g.number(value)}; {container}[{checked}].clone() }}",owner.kind.element)
     if not isinstance(node,ast.Call):
         return None
-    if isinstance(node.func,ast.Name) and node.func.id == "sorted":
-        if len(node.args) != 1 or any(isinstance(argument,ast.Starred) for argument in node.args):
-            raise _Unsupported
-        from .native_iterators import Planner
-        source = Planner(g).stream(node.args[0],environment)
-        result = _collect(g,source,node,constructed=True)
-        iterable_syntax = (isinstance(node.args[0],ast.GeneratorExp) or isinstance(node.args[0],ast.Call)
-                           and isinstance(node.args[0].func,ast.Name)
-                           and node.args[0].func.id in {"range","iter","map","filter","zip","enumerate","reversed"})
-        if result.kind == "list_int" and not iterable_syntax:
-            # Preserve the established arithmetic/list backend for native
-            # integer sequences; structural lists use this generic path.
-            return None
-        lines = [source.setup + ("\n"+source.begin if source.eager else "")]
-        options,reverse,key = _sort_options(g,node,environment,source.owners if source.eager else ())
-        lines.extend(options)
-        if not source.eager:
-            lines.append(source.begin)
-        owner = g.temporary()
-        lines.append(f"let mut {owner}={result.code};")
-        element = "int" if result.kind == "list_int" else result.kind.element
-        lines.append(_sort_code(g,owner,element,node,environment,reverse,key))
-        return _Expression("{\n"+"\n".join(lines)+f"\n{owner}\n}}",result.kind,length=result.length)
     if isinstance(node.func,ast.Name) and node.func.id == "len" and len(node.args) == 1 and not node.keywords:
         value = g.expression(node.args[0],environment)
         if isinstance(value.kind,ListType):
@@ -359,11 +238,6 @@ def try_expression(g, node, environment):
         if isinstance(value.kind,ListType):
             _enable(g)
             return _Expression(g.at(f"native_typed_copy(&({value.code}))",node),value.kind,length=value.length)
-    if isinstance(node.func,ast.Name) and node.func.id == "list" and len(node.args) == 1 and not node.keywords:
-        if g.input_map(node.args[0],environment):
-            return None
-        from .native_iterators import Planner
-        return _collect(g,Planner(g).stream(node.args[0],environment),node)
     return None
 
 
@@ -371,33 +245,9 @@ def try_statement(g,node,environment):
     printed = _print(g,node,environment)
     if printed is not None:
         return printed
-    if isinstance(node,ast.Assign) and any(isinstance(target,(ast.Tuple,ast.List)) for target in node.targets):
-        if g.input_map(node.value,environment):
-            # The established unpack consumer converts at most N+1 values;
-            # materializing a map here would change surplus-item errors.
-            return None
-        value = g.expression(node.value,environment)
-        if isinstance(value.kind,ListType):
-            if any(not isinstance(target,(ast.Tuple,ast.List)) for target in node.targets):
-                raise _Unsupported
-            from .native_iterators import Planner, Stream
-            _enable(g)
-            owner = g.temporary()
-            code = value.code if value.owned else f"&({value.code})"
-            lines = [f"let {owner}={code};"]
-            for target in node.targets:
-                count = len(target.elts)
-                check = (f"native_big_unpack_length({owner}.len(),{count})" if not g.bits else
-                         f"native_unpack_length({owner}.len(),{count})")
-                lines.append(g.at(check,node)+";")
-                values = tuple(_Expression(f"{owner}[{index}].clone()",value.kind.element)
-                               for index in range(count))
-                source = Stream("","",values,frozenset(),lambda *_:"",tupled=True)
-                for name,item in Planner(g).target_values(target,source):
-                    if name.id in g.iterating_lists:
-                        raise _Unsupported
-                    lines.append(f"{g.bind(name.id,item,environment)}={_clone(g,item,item.kind)};")
-            return "\n".join(lines),environment
+    from .native_unpack import try_statement as unpack_statement
+    unpacked=unpack_statement(g,node,environment)
+    if unpacked is not None:return unpacked
     if isinstance(node,ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0],ast.Subscript):
         target = node.targets[0]
         if not isinstance(target.value,ast.Name) or isinstance(target.slice,ast.Slice):

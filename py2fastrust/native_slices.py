@@ -98,9 +98,12 @@ def try_slice(generator, node, environment):
     length = f"{container}.len()"
     ascii_name = None
     if owner.kind == "str":
-        ascii_name = generator.temporary()
-        lines.append(f"let {ascii_name}={container}.is_ascii();")
-        length = f"if {ascii_name} {{{container}.len()}}else{{{container}.chars().count()}}"
+        if generator.string_mode == "ascii":
+            ascii_name = "true"
+        else:
+            ascii_name = generator.temporary()
+            lines.append(f"let {ascii_name}={container}.is_ascii();")
+            length = f"if {ascii_name} {{{container}.len()}}else{{{container}.chars().count()}}"
     plan = generator.temporary()
     call = generator.at(f"native_slice_indices({length},{','.join(bounds)})", node)
     lines.append(f"let {plan}={call};")

@@ -24,8 +24,8 @@ class NativeStdioTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def compile(self,source,mode,release=True):
-        result=transpile(source,TranspileOptions(integer=mode,filename="stdio.py"))
+    def compile(self,source,mode,release=True,string_mode="ascii"):
+        result=transpile(source,TranspileOptions(integer=mode,filename="stdio.py",string_mode=string_mode))
         self.assertTrue(result.success,result.diagnostics)
         self.assertEqual(result.backend,"native")
         self.assertLess(len(result.rust_source.encode()),512*1024)
@@ -40,12 +40,12 @@ class NativeStdioTests(unittest.TestCase):
         self.assertEqual(build.returncode,0,build.stderr+"\n"+source)
         return binary
 
-    def differential(self,source,inputs=(b"",),modes=("i64","i128","bigint"),profiles=(True,)):
+    def differential(self,source,inputs=(b"",),modes=("i64","i128","bigint"),profiles=(True,),string_mode="ascii"):
         expected=[subprocess.run([sys.executable,"-c",source],input=data,capture_output=True,
                                  env=self.environment,timeout=5) for data in inputs]
         for mode in modes:
             for release in profiles:
-                binary=self.compile(source,mode,release)
+                binary=self.compile(source,mode,release,string_mode=string_mode)
                 for data,reference in zip(inputs,expected):
                     with self.subTest(mode=mode,release=release,data=data):
                         actual=subprocess.run([str(binary)],input=data,capture_output=True,timeout=5,
@@ -78,7 +78,7 @@ print(len(A),sum(A))
 print(reader(),end='!')
 '''
         self.differential(source,[b"hello\r\n1 2 3\nlast",b"\n\n", "é𝄞\n١\u20032\u00853\n".encode(),
-                                  b"x\n1\x1c2\n",b""],profiles=(False,True))
+                                  b"x\n1\x1c2\n",b""],profiles=(False,True),string_mode="unicode")
 
     def test_module_stream_callable_alias_chains_capture_originals(self):
         source='''import sys as module

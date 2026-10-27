@@ -27,6 +27,9 @@ def add_conversion_arguments(parser, *, defaults=True):
     default = {} if defaults else {"default": argparse.SUPPRESS}
     parser.add_argument("--int", dest="integer", choices=("i64", "i128", "bigint"),
                         **({"default": "i64"} if defaults else default))
+    parser.add_argument("--string-mode", choices=("ascii", "unicode"),
+                        help="string indexing model (default: ascii)",
+                        **({"default": "ascii"} if defaults else default))
     parser.add_argument("--license", type=license_name, metavar="LICENSE",
                         help="generated program license (default: CC0-1.0); see --list-licenses",
                         **({"default": "CC0-1.0"} if defaults else default))
@@ -75,7 +78,7 @@ def source_directives(source, filename):
 
 
 def apply_source_options(options, values):
-    updates = {key: values[key] for key in ("integer", "license", "optimize") if key in values}
+    updates = {key: values[key] for key in ("integer", "license", "optimize", "string_mode") if key in values}
     base = Path(options.filename).resolve().parent
     if "module_path" in values:
         updates["module_paths"] = tuple(path if path.is_absolute() else base / path

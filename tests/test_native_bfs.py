@@ -280,7 +280,7 @@ print(len(rows))
         self.assertRegex(rust, r"let mut native_var_\d+: std::collections::VecDeque<NativeInt>;")
         main = rust[rust.rfind("fn main()") :]
         self.assertNotRegex(main, r"\b(?:Value|Runtime)\b|obj_value|Box::|Rc::")
-        self.assertIn(".iter().copied()", main)
+        self.assertRegex(main, r"for native_temp_\d+ in [^\n{]+\.iter\(\)")
         self.assertNotIn("clone()", main)
 
 

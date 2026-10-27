@@ -4,6 +4,8 @@ from test_native import NativeTests
 
 
 class NativeStringBorrowTests(NativeTests):
+    string_mode = "unicode"
+
     def test_unicode_reads_and_comparisons_do_not_clone_in_a_loop(self):
         source = '''
 s = input()

@@ -8,6 +8,8 @@ from py2fastrust.native import try_generate_native
 
 
 class NativeTextFloatTests(NativeTests):
+    string_mode = "unicode"
+
     # Reuse the compile/differential harness without rerunning its test cases.
     def test_native_string_assignments_unicode_and_type_changes(self):
         self.differential('''

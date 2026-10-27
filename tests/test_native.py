@@ -16,6 +16,8 @@ from py2fastrust import TranspileOptions, transpile
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
 class NativeTests(unittest.TestCase):
+    string_mode = "ascii"
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix="py2fastrust-native-")
@@ -26,7 +28,7 @@ class NativeTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def compile(self, source, integer="i64"):
-        rust = try_generate_native(source, "native_input.py", integer)
+        rust = try_generate_native(source, "native_input.py", integer, string_mode=self.string_mode)
         self.assertIsNotNone(rust, source)
         self.assertNotIn("enum Value", rust)
         self.assertNotIn("enum Op", rust)

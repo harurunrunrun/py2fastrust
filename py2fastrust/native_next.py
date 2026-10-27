@@ -4,15 +4,14 @@ import ast
 
 from .native import _Expression, _Unsupported
 from .native_types import TupleType, immutable, join_types, rust_type, tuple_code
+from .native_stream_plans import ConsumerKind, consumer_plan
 
 
 def try_expression(g,node,environment):
-    if not (isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id == "next"):
-        return None
-    if not 1 <= len(node.args) <= 2 or node.keywords or any(isinstance(argument,ast.Starred) for argument in node.args):
-        raise _Unsupported
+    plan=consumer_plan(g,node,environment,{ConsumerKind.NEXT})
+    if plan is None:return None
     from .native_iterators import Planner, TraceContext, _owned, stream_item
-    source = Planner(g).stream(node.args[0],environment)
+    source = Planner(g).lower(plan.source,environment)
     if not source.eager:
         # Containers and range are iterable but have no next method. Their
         # explicit iter(...) adapters are supported separately by the planner.
@@ -23,11 +22,11 @@ def try_expression(g,node,environment):
         raise _Unsupported
     lines = [source.construct()]
     default = None
-    if len(node.args) == 2:
+    if "default" in plan.binding.binding.explicit:
         depth = len(g.iterating_lists)
         g.iterating_lists.extend(source.owners)
         try:
-            default = g.expression(node.args[1],environment)
+            default = g.expression(plan.binding.binding["default"].expression,environment)
         finally:
             del g.iterating_lists[depth:]
         kind = default.kind if source.length == 0 else join_types(kind,default.kind)

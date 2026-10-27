@@ -229,7 +229,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             print(pairs)
             print(sorted(pairs,key=str,reverse=True))
             print(sorted(x*x for x in range(4)))
-        ''',modes=("i64","i128","bigint"))
+        ''',modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_sort_key_once_and_sorted_keyword_order_before_iteration(self):
         self.differential('''
