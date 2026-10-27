@@ -99,7 +99,7 @@ class BridgeTests(unittest.TestCase):
         source = '# pytors: --int i128 --license Unlicense --no-optimize\nprint(2**70)\n'
         result = self.assert_api_parity(source, integer="i64", license="MIT", optimize=True)
         self.assertTrue(result["rust_source"].startswith("// LICENSE: Unlicense\n"))
-        self.assertIn("// Integer mode: i128; backend: aot.", result["rust_source"])
+        self.assertIn("// Integer mode: i128; backend: native.", result["rust_source"])
         self.assertIn("// " + source.split("\n")[0] + "\n", result["rust_source"])
 
     def test_submitted_source_is_never_executed_or_written(self):
