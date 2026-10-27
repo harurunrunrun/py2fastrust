@@ -461,6 +461,8 @@ enum FrameExit {
 struct Runtime {
     annotation_namespaces: HashMap<usize, usize>,
     scope_cells: HashMap<usize, HashMap<String, Value>>,
+    closure_bindings: HashMap<usize, HashMap<String, usize>>,
+    function_closures: HashMap<usize, usize>,
     typing_alias_cache: Vec<TypingAliasCacheEntry>,
     template_metadata: HashMap<String, Value>,
     assoc_layouts: HashMap<usize, AssocLayout>,
@@ -1250,6 +1252,8 @@ impl Runtime {
         let mut rt = Self {
             annotation_namespaces: HashMap::new(),
             scope_cells: HashMap::new(),
+            closure_bindings: HashMap::new(),
+            function_closures: HashMap::new(),
             typing_alias_cache: Vec::new(),
             template_metadata: HashMap::new(),
             assoc_layouts: HashMap::new(),
@@ -1439,6 +1443,8 @@ impl Runtime {
             self.dictionary_hashes.remove(&i);
             self.annotation_namespaces.remove(&i);
             self.scope_cells.remove(&i);
+            self.closure_bindings.remove(&i);
+            self.function_closures.remove(&i);
             self.scope_bindings.remove(&i);
             self.scope_comprehension_bindings.remove(&i);
             self.scope_parents.remove(&i);
@@ -1464,6 +1470,9 @@ impl Runtime {
         Value::Obj(self.alloc(o))
     }
     fn ns_get(&self, i: usize, name: &str) -> Option<Value> {
+        if let Some(cell)=self.closure_bindings.get(&i).and_then(|cells|cells.get(name)) {
+            return match self.heap.get(*cell).and_then(Option::as_ref) {Some(Object::Cell(value))=>value.clone(),_=>None};
+        }
         match self.heap.get(i).and_then(|o| o.as_ref()) {
             Some(Object::BuiltinInstance {payload:Value::Obj(index),..})=>self.ns_get(*index,name),
             Some(Object::Namespace(m, _)) => m.get(name).cloned(),
@@ -1475,6 +1484,9 @@ impl Runtime {
         }
     }
     fn ns_set(&mut self, i: usize, name: String, v: Value) {
+        if let Some(cell)=self.closure_bindings.get(&i).and_then(|cells|cells.get(&name)).copied() {
+            self.heap[cell]=Some(Object::Cell(Some(v)));return;
+        }
         let interned = self.intern_keyword(&name);
         if let Some(Object::BuiltinInstance{payload:Value::Obj(index),..})=self.heap.get(i).and_then(Option::as_ref){let index=*index;self.ns_set(index,name,v);return;}
         let mut inserted=None;
@@ -1494,6 +1506,10 @@ impl Runtime {
         if let Some(key)=inserted {self.assoc_inserted(i,key);}
     }
     fn ns_del(&mut self,i:usize,name:&str)->bool{
+        if let Some(cell)=self.closure_bindings.get(&i).and_then(|cells|cells.get(name)).copied() {
+            let bound=matches!(self.heap.get(cell).and_then(Option::as_ref),Some(Object::Cell(Some(_))));
+            self.heap[cell]=Some(Object::Cell(None));return bound;
+        }
         if let Some(Object::BuiltinInstance{payload:Value::Obj(index),..})=self.heap.get(i).and_then(Option::as_ref){let index=*index;return self.ns_del(index,name);}
         let mut removed=None;let mut removed_position=None;
         match self.heap.get_mut(i).and_then(Option::as_mut){
@@ -1520,6 +1536,7 @@ impl Runtime {
     fn find_nonlocal(&self, mut p: Option<usize>, name: &str) -> Option<usize> {
         while let Some(i) = p {
             if self.ns_get(i, name).is_some()
+                || self.closure_bindings.get(&i).is_some_and(|cells|cells.contains_key(name))
                 || self
                     .scope_bindings
                     .get(&i)
@@ -2773,6 +2790,9 @@ impl Runtime {
             for kind in ["Template","Interpolation"] {self.ns_set(attrs,kind.into(),Value::Builtin(format!("string.templatelib.{}",kind)));}
         }
         if name=="types" {
+            self.ns_set(attrs,"CellType".into(),Value::Builtin("cell".into()));
+            self.ns_set(attrs,"FunctionType".into(),Value::Builtin("function".into()));
+            self.ns_set(attrs,"LambdaType".into(),Value::Builtin("function".into()));
             self.ns_set(attrs,"GenericAlias".into(),Value::Builtin("GenericAlias".into()));
             self.ns_set(attrs,"UnionType".into(),Value::Builtin("typing.Union".into()));
         }
@@ -3306,6 +3326,8 @@ impl Runtime {
             }
             if let Some(namespace)=self.annotation_namespaces.get(&i){pending.push(Value::Obj(*namespace));}
             if let Some(cells)=self.scope_cells.get(&i){pending.extend(cells.values().cloned());}
+            if let Some(cells)=self.closure_bindings.get(&i){pending.extend(cells.values().map(|index|Value::Obj(*index)));}
+            if let Some(tuple)=self.function_closures.get(&i){pending.push(Value::Obj(*tuple));}
             let obj = match self.heap[i].as_ref() {
                 Some(o) => o,
                 None => continue,
@@ -3496,6 +3518,8 @@ impl Runtime {
             if !live && self.heap[i].is_some() {
                 if let Some(Object::Code(code))=&self.heap[i]{self.code_objects.remove(code);}
                 self.heap[i] = None;
+                self.closure_bindings.remove(&i);
+                self.function_closures.remove(&i);
                 self.scope_bindings.remove(&i);
             self.scope_comprehension_bindings.remove(&i);
                 self.scope_parents.remove(&i);
@@ -4764,6 +4788,8 @@ impl Runtime {
                 }))
             }
             "float" => self.scalar_float_constructor(args,kwargs),
+            "cell" => self.cell_constructor(args,kwargs),
+            "function" => self.function_constructor(args,kwargs),
             "bool" => Ok(Value::Bool(if args.is_empty() {
                 false
             } else {
@@ -5264,7 +5290,8 @@ impl Runtime {
                             Object::List(_)
                             | Object::Dict(_)
                             | Object::Set(_)
-                            | Object::Namespace(_, _),
+                            | Object::Namespace(_, _)
+                            | Object::Cell(_),
                         ) => {
                             return Err(pyerr(
                                 "TypeError",
@@ -5315,7 +5342,7 @@ impl Runtime {
                         .map(|(n, _)| n)
                         .collect::<Vec<_>>()
                 } else if let Some(f) = caller {
-                    let namespace=if f.comprehensions.is_empty(){Value::Obj(f.locals)}else{self.locals_snapshot(f)?};
+                    let namespace=if f.comprehensions.is_empty() && matches!(self.codes[f.code].kind,ScopeKind::Module|ScopeKind::Class){Value::Obj(f.locals)}else{self.locals_snapshot(f)?};
                     self.keyword_items(namespace)?
                         .into_iter()
                         .map(|(n, _)| n.spelling)
@@ -5365,18 +5392,19 @@ impl Runtime {
                     else{frame.locals}
                 }else{globals};
                 let root=self.roots.len();
-                self.roots.push(vec![source.clone(),Value::Obj(globals),Value::Obj(locals)]);
+                self.roots.push(vec![source.clone(),Value::Obj(globals),Value::Obj(locals),parameters[3].clone()]);
                 let result=(||{
                 self.execution_ensure_builtins(globals)?;
-                if !matches!(parameters[3],Value::None){
-                    return Err(pyerr("TypeError",if matches!(&source,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Code(_)))){"cannot use a closure with this code object"}else{"closure can only be used when source is a code object"}));
-                }
                 let precompiled=match &source{Value::Obj(index)=>match self.heap.get(*index).and_then(Option::as_ref){Some(Object::Code(code))=>Some(*code),_=>None},_=>None};
-                if let Some(code)=precompiled {
-                    if !self.codes[code].frees.is_empty() {
-                        return Err(pyerr("TypeError",if name=="eval" {"code object passed to eval() may not contain free variables".to_owned()} else {format!("code object requires a closure of exactly length {}",self.codes[code].frees.len())}));
-                    }
-                }
+                let closure=if let Some(code)=precompiled {
+                    if name=="eval" {
+                        if !self.codes[code].frees.is_empty(){return Err(pyerr("TypeError","code object passed to eval() may not contain free variables"));}
+                        None
+                    }else{self.execution_closure_cells(code,&parameters[3])?}
+                }else{
+                    if !matches!(parameters[3],Value::None){return Err(pyerr("TypeError","closure can only be used when source is a code object"));}
+                    None
+                };
                 let code = if let Some(code)=precompiled { code
                 } else {
                     let src = self.execution_text(source.clone(),name)?;
@@ -5398,7 +5426,7 @@ impl Runtime {
                     offset
                 };
                 if precompiled.is_none() {self.execution_ensure_builtins(globals)?;}
-                self.execution_run_code(code,globals,locals,name=="exec")
+                self.execution_run_code(code,globals,locals,name=="exec",closure)
                 })();
                 self.roots.truncate(root);
                 result
@@ -6095,7 +6123,7 @@ impl Runtime {
         }
         let needs_cell = self.codes[code].kind==ScopeKind::Class && methods.iter().any(|i| self.code_needs_class_cell(*i, 0));
         let classcell = if needs_cell {
-            let cell = self.alloc(Object::Cell(None));
+            let cell = self.closure_cell(Some(env),"__class__")?;
             self.mapping_set(namespace, "__classcell__".into(), Value::Obj(cell))?;
             Some(cell)
         } else {
@@ -8503,6 +8531,7 @@ impl Runtime {
             match self.object(i)? {
                 Object::Code(code) => match name {
                     "co_name" => return self.code_constant(code,Const::Str(self.codes[code].name.clone())),
+                    "co_freevars" => {let names=self.closure_names(code).into_iter().map(|name|Value::Str(self.intern_keyword(&name))).collect();return Ok(self.obj_value(Object::Tuple(names)));},
                     "co_qualname" => return self.code_constant(code,Const::Str(self.codes[code].qualname.clone())),
                     "co_flags" => return Ok(Value::Int(Int::from_i128(self.codes[code].future_flags as i128).into())),
                     _ => {},
@@ -8790,6 +8819,7 @@ impl Runtime {
                     "__globals__" => return Ok(Value::Obj(fun.globals)),
                     "__builtins__" => return Ok(fun.builtins),
                     "__code__" => return Ok(self.code_object(fun.code)),
+                    "__closure__" => return self.function_closure(i,&fun),
                     "__defaults__" => {
                         return Ok(if !fun.defaults_set {
                             Value::None
@@ -9247,7 +9277,7 @@ impl Runtime {
                 }
                 Object::Function(mut fun) => {
                     match name {
-                        "__builtins__" => return Err(pyerr("AttributeError","readonly attribute")),
+                        "__builtins__" | "__closure__" | "__globals__" => return Err(pyerr("AttributeError","readonly attribute")),
                         "__name__" | "__qualname__" => {
                             if !matches!(self.native_payload(&value).unwrap_or_else(||value.clone()),Value::Str(_)) {
                                 return Err(pyerr("TypeError",format!("{} must be set to a string object",name)));
@@ -9308,7 +9338,7 @@ impl Runtime {
                         "__code__" => {
                             if let Value::Obj(ci) = value {
                                 if let Object::Code(code) = self.object(ci)? {
-                                    fun.code = code
+                                    self.set_function_code(i,&mut fun,code)?;
                                 } else {
                                     return Err(pyerr(
                                         "TypeError",
@@ -9495,12 +9525,13 @@ impl Runtime {
                     if error.dict.is_some_and(|attrs|self.ns_del(attrs,name)){self.heap[i]=Some(Object::Exception(error));return Ok(());}
                     return Err(pyerr("AttributeError",name));
                 }
+                Object::Cell(_) if name=="cell_contents"=>{self.heap[i]=Some(Object::Cell(None));return Ok(());},
                 Object::Generator(_) => {
                     if matches!(name,"__name__"|"__qualname__"){return Err(pyerr("TypeError",format!("{} must be set to a string object",name)));}
                     return Err(pyerr("AttributeError",if name=="gi_code"{"attribute 'gi_code' of 'generator' objects is not writable".to_owned()}else{format!("'generator' object has no attribute '{}'",name)}));
                 }
                 Object::Function(fun) => {
-                    if name=="__builtins__" {return Err(pyerr("AttributeError","readonly attribute"));}
+                    if matches!(name,"__builtins__"|"__closure__"|"__globals__"){return Err(pyerr("AttributeError","readonly attribute"));}
                     if matches!(name,"__name__"|"__qualname__"){return Err(pyerr("TypeError",format!("{} must be set to a string object",name)));}
                     Some(fun.attrs)
                 }

@@ -265,8 +265,11 @@ impl Runtime {
         }
         Ok(())
     }
-    fn execution_run_code(&mut self,code:usize,globals:usize,locals:usize,discard:bool)->PyResult<Value> {
-        self.view_rooted(vec![Value::Obj(globals),Value::Obj(locals)],|runtime,root|{
+    fn execution_run_code(&mut self,code:usize,globals:usize,locals:usize,discard:bool,cells:Option<Vec<Value>>)->PyResult<Value> {
+        let mut roots=vec![Value::Obj(globals),Value::Obj(locals)];roots.extend(cells.iter().flatten().cloned());
+        self.view_rooted(roots,|runtime,root|{
+            let closure=cells.as_ref().map(|cells|runtime.closure_namespace(code,cells));
+            runtime.roots[root].extend(closure.map(Value::Obj));
             let builtins=runtime.capture_builtins(globals,runtime.active_builtins.clone())?;
             runtime.roots[root].push(builtins.clone());
             let module=runtime.global_name_get(globals,"__name__")?.unwrap_or(Value::None);
@@ -278,7 +281,7 @@ impl Runtime {
                 attrs:runtime.alloc(Object::Dict(Vec::new())),
                 name:Value::Str(runtime.codes[code].name.clone().into()),qualname:Value::Str(runtime.codes[code].qualname.clone().into()),
                 module,doc:Value::None,annotations:Value::None,type_params:Value::None,
-                code,globals,builtins:builtins.clone(),closure:None,
+                code,globals,builtins:builtins.clone(),closure,
                 defaults:Vec::new(),defaults_set:false,kwdefaults:HashMap::new(),
             };
             let owner=runtime.obj_value(Object::Function(function.clone()));
@@ -291,7 +294,7 @@ impl Runtime {
                 Frame {
                     function:Some(owner),generator_names:None,code_handle:runtime.code_object_index(code),code,pc:0,locals,
                     temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
-                    globals,builtins,closure:None,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
+                    globals,builtins,closure,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
                     exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),
                     next_call:None,cache_returns:Vec::new(),protocol:None,comprehensions:Vec::new(),resume_value:None,injected_exception:None,finally_regions:Vec::new(),
                 }

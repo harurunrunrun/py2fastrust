@@ -10,7 +10,7 @@ they do not imply compatibility with all CPython internals or the entire standar
 | Values | `None`, `bool`, integers in the selected mode, `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`, `slice`, `range`, live dictionary views and `mappingproxy`, GenericAlias, union types, Template, Interpolation |
 | Variables | Type changes, shared references, chained and unpacking assignments, `global`/`nonlocal`, unbound-name errors |
 | Control flow | `if`, `while`, `for`, `break`/`continue`, loop `else`, short-circuit operators, chained comparisons |
-| Functions | Defaults, positional-only and keyword-only arguments, variadic arguments, recursion, lambdas, closures, type parameters with lazy bounds and defaults |
+| Functions | Defaults, positional-only and keyword-only arguments, variadic arguments, recursion, lambdas, closures with shared writable `cell_contents`, read-only `__closure__`, type parameters with lazy bounds and defaults |
 | Container expressions | Comprehensions, generator expressions, unpacking, negative indices, slicing |
 | Exceptions | `raise`, `except`, `except*`, exception-group splitting and merging, `else`, `finally`, `assert`, original `args`, cause/context/notes, exception-target cleanup, source information in tracebacks |
 | Classes | Inheritance, C3 MRO, descriptors, `property`, `staticmethod`/`classmethod`, `super`, metaclasses, `__slots__`, subclasses of `list`/`tuple`/`dict`/`set`/`frozenset`/`str`/`bytes`/`int`/`float`/`complex` |
@@ -81,7 +81,6 @@ See [API_SUPPORT.md](API_SUPPORT.md) for individual API names.
 - Runtime syntax validation and instruction generation use the syntax tree from a PEG generated from the official grammar. Execution of some syntax, including async constructs, remains unsupported.
 - Not all `annotationlib` formats or `typing` APIs are implemented. TypeVar, ParamSpec, TypeVarTuple, type aliases, GenericAlias parameter substitution, and union types are provided.
 - AST input/output for `compile()`, top-level await, and incomplete-input flags are unsupported.
-- Executing existing code objects with explicit closure cells is unsupported. Closures created by ordinary and dynamically compiled source are supported.
 - Imports whose names are determined at runtime, external C extensions, networking, threads, `asyncio`, and CPython-specific internal APIs are out of scope.
 - Unlisted standard-module APIs, including `inspect`, `pickle`, and `weakref`, are not provided.
 - In one CPython 3.14.4 bug case, a captured comprehension iteration variable shadows a free variable of the enclosing function and the interpreter retains the new cell. Generated code instead restores the original enclosing cell as [PEP 709](https://peps.python.org/pep-0709/) specifies. AST and dynamic compilation agree on that restoration.
@@ -109,3 +108,8 @@ Integer results from these methods follow the selected integer normalization pol
 internal calculations for binary64 conversion retain the precision needed for correct rounding.
 Float floor division, remainder, and `divmod` share sign and quotient correction,
 including signed zero and values close to an integral quotient.
+
+Existing code objects can be executed with `exec(code, globals, locals, closure=cells)`.
+The exact tuple of cells must match `co_freevars`; `eval` rejects code with free variables.
+`types.CellType`, `types.FunctionType`, and `types.LambdaType` support constructing shared closures.
+Replacing `function.__code__` checks the free-variable count and preserves closure cells by position.
