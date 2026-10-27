@@ -2,6 +2,7 @@
 // access. Owned-member names and descriptor categories follow Python 3.14;
 // the override-only class_lookup remains separate for payload proof checks.
 fn native_attribute_kind(owner: &str, name: &str) -> Option<&'static str> {
+    if let Some(kind)=stdlib_attribute_kind(owner,name) {return Some(kind);}
     match (owner, name) {
         ("dict", "__new__") => Some("new"),
         (
@@ -449,6 +450,7 @@ impl Runtime {
                     let payload = self
                         .native_payload(&instance)
                         .unwrap_or_else(|| instance.clone());
+                    if let Some(result)=self.stdlib_member(&owner,&instance,&name) {return result;}
                     match (owner.as_str(), name.as_str(), &payload) {
                         ("complex", "real", Value::Complex(number)) => {
                             Ok(Value::Float(number.real.into()))
@@ -540,7 +542,7 @@ impl Runtime {
                     .unwrap_or_default()
                     .iter()
                     .any(|base| {
-                        matches!(base,Value::Builtin(name)if ["tuple","list","dict","set","frozenset","str","int","complex","float","bytes","bool","type"].contains(&name.as_str()))
+                        matches!(base,Value::Builtin(name)if ["tuple","list","dict","set","frozenset","str","int","complex","float","bytes","bool","type"].contains(&name.as_str()) || stdlib_type_name(name))
                             || matches!(base, Value::Type(_))
                     });
                 if native {
@@ -566,6 +568,10 @@ impl Runtime {
             }
             if owner == "type" {
                 return self.construct_class(class, args[1..].to_vec(), kwargs);
+            }
+            if stdlib_type_name(&owner) {
+                if !self.is_subclass(&class,&Value::Builtin(owner.clone()))? {return Err(pyerr("TypeError","__new__ requires a subtype"));}
+                return self.stdlib_instance_new(&owner,class,args[1..].to_vec(),kwargs);
             }
             return self.builtin_instance_new(&owner, class, args[1..].to_vec(), kwargs);
         }
@@ -598,6 +604,11 @@ impl Runtime {
                         return Err(pyerr("TypeError", "__prepare__ needs name and bases"));
                     }
                     return Ok(self.obj_value(Object::Dict(Vec::new())));
+                }
+                "from_iterable" if owner == "itertools.chain" => {
+                    if args.len()!=2 || !kwargs.is_empty() {return Err(pyerr("TypeError","from_iterable takes one argument"));}
+                    let payload=self.itertools_call("chain.from_iterable",args[1..].to_vec(),kwargs)?;
+                    return self.stdlib_wrap_instance(class,payload);
                 }
                 "from_number" if owner == "complex" => {
                     return self.complex_from_number(args, kwargs)
@@ -637,6 +648,7 @@ impl Runtime {
         })?;
         self.native_validate_receiver(&owner, &receiver)?;
         let rest = args[1..].to_vec();
+        if stdlib_type_name(&owner) {return self.stdlib_method(&owner,&name,receiver,rest,kwargs).unwrap();}
         if name == "__init__" {
             if ["list", "dict", "set"].contains(&owner.as_str()) {
                 return self.builtin_instance_init(&owner, receiver, rest, kwargs);

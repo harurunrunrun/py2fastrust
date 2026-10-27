@@ -7,7 +7,7 @@ enum ToolsState {
     Chain { outer: Value, inner: Option<Value>, done: bool },
     Combinations { pool: Vec<Value>, indices: Vec<usize>, size: usize, replacement: bool, started: bool, done: bool },
     Compress { data: Value, selectors: Value },
-    Count { current: Value, step: Value, started: bool },
+    Count { current: Value, step: Value, fast: bool },
     Cycle { iter: Option<Value>, cache: Vec<Value>, index: usize },
     DropWhile { predicate: Value, iter: Value, dropping: bool },
     FilterFalse { predicate: Value, iter: Value },
@@ -28,6 +28,17 @@ struct ToolsGroup { iter: Value, function: Value, current: Option<(Value, Value)
 #[derive(Clone, Debug)]
 struct ToolsTee { iter: Value, buffer: std::collections::VecDeque<Value>, base: usize, cursors: Vec<std::rc::Weak<std::cell::Cell<usize>>>, exhausted: bool }
 impl ToolsState {
+    fn type_name(&self) -> &'static str {
+        match self {
+            Self::Accumulate{..}=>"accumulate",Self::Batched{..}=>"batched",Self::Chain{..}=>"chain",
+            Self::Combinations{replacement:true,..}=>"combinations_with_replacement",Self::Combinations{..}=>"combinations",
+            Self::Compress{..}=>"compress",Self::Count{..}=>"count",Self::Cycle{..}=>"cycle",
+            Self::DropWhile{..}=>"dropwhile",Self::FilterFalse{..}=>"filterfalse",Self::GroupBy(..)=>"groupby",Self::Group{..}=>"_grouper",
+            Self::ISlice{..}=>"islice",Self::Pairwise{..}=>"pairwise",Self::Permutations{..}=>"permutations",
+            Self::Product{..}=>"product",Self::Repeat{..}=>"repeat",Self::StarMap{..}=>"starmap",
+            Self::TakeWhile{..}=>"takewhile",Self::Tee{..}=>"_tee",Self::ZipLongest{..}=>"zip_longest",
+        }
+    }
     fn roots(&self) -> Vec<Value> {
         let mut out = Vec::new();
         match self {
@@ -113,9 +124,12 @@ impl Runtime {
             "compress" => { let mut a = self.tools_arguments(name,args,kwargs,&["data","selectors"],2,0,2)?; let data = self.iter(a[0].take().unwrap())?; self.tools_keep(root,data.clone()); let selectors = self.iter(a[1].take().unwrap())?; ToolsState::Compress { data,selectors } }
             "count" => {
                 let mut a = self.tools_arguments(name,args,kwargs,&["start","step"],2,0,0)?; let mut current = a[0].take().unwrap_or_else(zero); let step = a[1].take().unwrap_or_else(one);
-                if !matches!(current,Value::Int(_) | Value::Float(_) | Value::Bool(_)) || !matches!(step,Value::Int(_) | Value::Float(_) | Value::Bool(_)) { return Err(pyerr("TypeError","a number is required")); }
-                if matches!(&step,Value::Int(value) if *value==Int::from_i128(1)) || matches!(step,Value::Bool(true)) { if let Value::Bool(value)=current { current=Value::Int(Int::from_i128(if value{1}else{0}).into()); } }
-                ToolsState::Count { current,step,started:false }
+                if !self.tools_is_number(&current) || !self.tools_is_number(&step) { return Err(pyerr("TypeError","a number is required")); }
+                let start_payload=self.native_payload(&current).unwrap_or_else(||current.clone());
+                let step_payload=self.native_payload(&step).unwrap_or_else(||step.clone());
+                let fast=matches!(start_payload,Value::Int(_)|Value::Bool(_)) && (matches!(&step_payload,Value::Int(value) if *value==Int::from_i128(1)) || matches!(step_payload,Value::Bool(true)));
+                if fast {current=match start_payload {Value::Bool(value)=>Value::Int(Int::from_i128(if value{1}else{0}).into()),value=>value};}
+                ToolsState::Count { current,step,fast }
             }
             "cycle" => { let mut a = self.tools_arguments(name,args,kwargs,&["iterable"],1,1,1)?; ToolsState::Cycle { iter:Some(self.iter(a[0].take().unwrap())?),cache:Vec::new(),index:0 } }
             "dropwhile" | "filterfalse" | "takewhile" => {
@@ -212,7 +226,11 @@ impl Runtime {
                 let value=match self.next(data.clone())?{Some(value)=>self.tools_keep(root,value),None=>return Ok(None)};
                 let selector=match self.next(selectors.clone())?{Some(value)=>self.tools_keep(root,value),None=>return Ok(None)};if self.truth(&selector)?{return Ok(Some(value))}
             },
-            ToolsState::Count { current,step,started } => {if *started{*current=self.binary("+",current.clone(),step.clone())?;}else{*started=true;}Ok(Some(current.clone()))},
+            ToolsState::Count { current,step,fast } => {
+                let result=current.clone();
+                *current=self.binary("+",current.clone(),if *fast {Value::Int(Int::from_i128(1).into())}else{step.clone()})?;
+                Ok(Some(result))
+            },
             ToolsState::Cycle { iter,cache,index } => {
                 if let Some(source)=iter {if let Some(value)=self.next(source.clone())?{cache.push(value.clone());return Ok(Some(value));}*iter=None;}
                 if cache.is_empty(){Ok(None)}else{let value=cache[*index].clone();*index=(*index+1)%cache.len();Ok(Some(value))}

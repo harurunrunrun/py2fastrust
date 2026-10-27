@@ -167,7 +167,7 @@ impl Runtime {
                 if keyword_names.len() != keyword_patterns.len() { return Err(pyerr("SyntaxError", "invalid class pattern")); }
                 let class = self.pattern_path(frame, path, root)?;
                 let type_valid = match &class {
-                    Value::Builtin(name) => template_type_name(name) || ["bool","bytearray","bytes","complex","dict","float","frozenset","int","list","object","range","set","slice","str","tuple","type","NoneType"].contains(&name.as_str()),
+                    Value::Builtin(name) => template_type_name(name) || stdlib_type_name(name) || ["bool","bytearray","bytes","complex","dict","float","frozenset","int","list","object","range","set","slice","str","tuple","type","NoneType"].contains(&name.as_str()),
                     Value::Type(_) => true,
                     Value::Obj(index) => matches!(self.object(*index)?, Object::Class(_)),
                     _ => false,

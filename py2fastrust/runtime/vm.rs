@@ -678,7 +678,7 @@ impl Runtime {
             Value::Obj(index) => {
                 matches!(self.heap.get(*index).and_then(Option::as_ref), Some(Object::Class(class)) if class.dict_allowed)
             }
-            Value::Builtin(name) if name == "super" || name == "type" => true,
+            Value::Builtin(name) if name == "super" || name == "type" || name == "functools.partial" => true,
             Value::Type(_) => true,
             _ => false,
         }
@@ -708,7 +708,7 @@ impl Runtime {
         for base in self.class_mro(class, 0)? {
             match &base {
                 Value::Builtin(name)
-                    if ["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&name.as_str()) =>
+                    if ["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&name.as_str()) || stdlib_type_name(name) =>
                 {
                     return Some(base)
                 }
@@ -860,6 +860,7 @@ impl Runtime {
         Ok(Value::Bool(self.compare_default(op, a, b)?))
     }
     fn object_class(&self, v: &Value) -> Option<Value> {
+        if let Some(class)=self.stdlib_instance_class(v) {return Some(class);}
         if let Value::Obj(i) = v {
             match self.heap.get(*i).and_then(|o| o.as_ref()) {
                 Some(Object::Instance { class, .. } | Object::BuiltinInstance { class, .. }) => {
@@ -2768,15 +2769,9 @@ impl Runtime {
             self.ns_set(
                 attrs,
                 (*fun).into(),
-                Value::Builtin(format!(
-                    "module:{}:{}",
-                    if name == "_py2fastrust_functools" {
-                        "functools"
-                    } else {
-                        name
-                    },
-                    fun
-                )),
+                {let module=if name=="_py2fastrust_functools" {"functools"}else{name};
+                    let qualified=format!("{module}.{fun}");
+                    Value::Builtin(if stdlib_type_name(&qualified) {qualified}else{format!("module:{module}:{fun}")})},
             )
         }
         if name=="string.templatelib" {
@@ -3078,9 +3073,10 @@ impl Runtime {
                         ));
                     }
                     let mut function = args[0].clone();
+                    if !self.stdlib_callable(&function) {return Err(pyerr("TypeError","the first argument must be callable"));}
                     let mut stored = args[1..].to_vec();
                     let mut kw = kwargs;
-                    if let Value::Obj(i) = function.clone() {
+                    if let Value::Obj(i) = self.native_payload(&function).unwrap_or_else(||function.clone()) {
                         if let Object::Partial {
                             function: base,
                             args: old,
@@ -4410,6 +4406,7 @@ impl Runtime {
         kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if stdlib_type_name(name) {let (module,member)=name.split_once('.').unwrap();return self.module_call(&format!("module:{module}:{member}"),args,kwargs);}
         if let Some(slot)=name.strip_prefix("implicit_native:"){return self.implicit_native_call(slot,args,kwargs);}
         if name.starts_with("native_attr:") {return self.native_attribute_call(Value::Builtin(name.into()),args,kwargs);}
         if name=="native_attr_bind" {
@@ -5502,6 +5499,7 @@ impl Runtime {
         }
     }
     fn is_subclass(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
+        if matches!(a,Value::Builtin(name)if name=="module:itertools:tee") || matches!(b,Value::Builtin(name)if name=="module:itertools:tee") {return Err(pyerr("TypeError","argument must be a type"));}
         if self.type_parameter_kind(b).is_some() || matches!(b,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::TypeAlias{..}|Object::ParamSpecMarker{..}|Object::ForwardRef{..}|Object::TypeUnpack(_)))) {
             return Err(pyerr("TypeError","isinstance() arg 2 must be a type, a tuple of types, or a union"));
         }
@@ -5656,6 +5654,12 @@ impl Runtime {
                     match self.execute(frame)?.0 {
                         FrameExit::Return(v) | FrameExit::Yield(v) => Ok(v),
                     }
+                }
+                Object::BuiltinInstance {class,payload,..} => {
+                    if let Some(method)=self.slot_override(&class,"__call__",0) {
+                        let bound=self.bind_descriptor(method,Some(fun),class)?;
+                        self.call(bound,args,kwargs,caller)
+                    } else {self.call(payload,args,kwargs,caller)}
                 }
                 Object::Class(class) => {
                     if self.is_subclass(&fun,&Value::Type("BaseException".into()))? {return self.exception_subclass_call(fun,args,kwargs,caller);}
@@ -6423,7 +6427,7 @@ impl Runtime {
                 Ok(s)
             }
             Value::Builtin(n) => {
-                if template_type_name(n){return Ok(format!("<class '{}'>",n));}
+                if template_type_name(n) || stdlib_type_name(n){return Ok(format!("<class '{}'>",n));}
                 if n=="typing.NoDefault" {return Ok("typing.NoDefault".into());}
                 if n=="typing.Unpack" {return Ok("typing.Unpack".into());}
                 if n=="NoneType" {return Ok("<class 'NoneType'>".into());}
@@ -6626,7 +6630,7 @@ impl Runtime {
             Value::Str(_) => "str".into(),
             Value::Bytes(_) => "bytes".into(),
             Value::Builtin(n) => {
-                if template_type_name(n){return "type".into();}
+                if template_type_name(n) || stdlib_type_name(n){return "type".into();}
                 if n=="typing.NoDefault" {return "NoDefaultType".into();}
                 if typing_type_name(n) || n=="NoneType" {return "type".into();}
                 if n == "Ellipsis" {
@@ -6672,6 +6676,8 @@ impl Runtime {
                 Some(Object::Set(_)) => "set".into(),
                 Some(Object::FrozenSet{..})=>"frozenset".into(),
                 Some(Object::Function(_)) => "function".into(),
+                Some(Object::Partial{..})=>"partial".into(),
+                Some(Object::Iterator(IteratorState::Tools(state)))=>state.type_name().into(),
                 Some(Object::Class(_)) => "type".into(),
                 Some(Object::Instance {
                     class: Value::Obj(c),
@@ -7525,7 +7531,7 @@ impl Runtime {
         self.view_rooted(vec![obj.clone(),key.clone()],|runtime,_|runtime.getitem_inner(obj,key))
     }
     fn getitem_inner(&mut self, obj: Value, key: Value) -> PyResult<Value> {
-        if matches!(&obj,Value::Builtin(name)if template_type_name(name)){return self.generic_alias(obj,key);}
+        if matches!(&obj,Value::Builtin(name)if template_type_name(name) || matches!(name.as_str(),"itertools.chain"|"functools.partial")){return self.generic_alias(obj,key);}
         if self.is_typing_value(&obj){if let Some(result)=self.typing_getitem(obj.clone(),key.clone()){return result;}}
         if self.generic_parts(&obj).is_some() {return self.generic_method(obj,"__getitem__",vec![key],Vec::new()).unwrap();}
         if matches!(&obj,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) {return self.generic_alias(obj,key);}
@@ -7925,6 +7931,7 @@ impl Runtime {
                     }
                 }
                 if self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen){return self.frozen_iterator(v);}
+                if matches!(&payload,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Iterator(IteratorState::Tools(_))))) {return Ok(v);}
                 let result=self.iter(payload)?;return Ok(self.collection_keep(result,v));
             }
         }
@@ -8044,6 +8051,10 @@ impl Runtime {
         }
         if let Value::Obj(i) = it.clone() {
             match self.object(i)? {
+                Object::BuiltinInstance {class,payload,..} => {
+                    if let Some(method)=self.slot_override(&class,"__next__",0) {let bound=self.bind_descriptor(method,Some(it),class)?;return self.call(bound,Vec::new(),Vec::new(),None).map(Some);}
+                    return self.next_raw(payload);
+                },
                 Object::Iterator(state) => match state {
                     IteratorState::Template(owner,mut position) => {
                         let result=self.template_next(owner,&mut position);
@@ -8321,6 +8332,10 @@ impl Runtime {
         class: Value,
     ) -> PyResult<Value> {
         if let Some(result)=self.bind_native_attribute(v.clone(),instance.clone(),class.clone()){return result;}
+        if self.stdlib_partial_payload(&v).is_some() {
+            if let Some(actual)=self.object_class(&v) {if let Some(method)=self.slot_override(&actual,"__get__",0) {let bound=self.obj_value(Object::Bound(method,v));return self.call(bound,vec![instance.unwrap_or(Value::None),class],Vec::new(),None);}}
+            return Ok(if let Some(instance)=instance {self.obj_value(Object::Bound(v,instance))}else{v});
+        }
         if matches!(&v,Value::Builtin(name)if name.starts_with("exception_type:")&&!name.ends_with(":__new__")) {
             return Ok(if let Some(instance)=instance{self.obj_value(Object::Bound(v,instance))}else{v});
         }
@@ -8364,6 +8379,9 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if let Some(result)=self.stdlib_type_attribute(&v,name) {return result;}
+        if name=="__class__" {if let Some(class)=self.stdlib_instance_class(&v) {return Ok(class);}}
+        if let Some(class)=self.stdlib_instance_class(&v) {if let Some(member)=self.class_attribute_lookup(&class,name) {return self.bind_descriptor(member,Some(v),class);}}
         if let Some(result)=self.native_attribute_meta(v.clone(),name){return result;}
         if ["__and__","__rand__","__or__","__ror__","__xor__","__rxor__"].contains(&name)
             && (matches!(&v,Value::Bool(_)|Value::Int(_)) || matches!(&v,Value::Builtin(owner)if owner=="bool")) {
