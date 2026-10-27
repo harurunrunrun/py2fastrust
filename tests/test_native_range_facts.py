@@ -1,5 +1,7 @@
 """Pure shared graph proofs for captured range regions and immutable owners."""
 import random
+from dataclasses import dataclass,replace
+from types import MappingProxyType
 import unittest
 from unittest.mock import patch
 
@@ -176,6 +178,114 @@ class RangeFactTests(unittest.TestCase):
                     self.assertTrue(all(0<=value<length for value in values))
                     self.assertEqual(values,list(range(values[0],values[0]+len(values))))
         self.assertGreater(accepted,100)
+
+    def opaque_operand_facts(self,statement,kind):
+        source='n=int(input())\ns=input()\npayload=[1]\nfor i in range(n):\n '+statement+'\n print(s[i])\n'
+        return self.with_payload_kind(source,kind)
+
+    def with_payload_kind(self,source,kind):
+        unit=build_program(source,"opaque.py").main
+        analysis=analyze(unit);facts=analysis.scope();kinds=dict(facts.expressions)
+        for site,term in analysis.graph.expressions.items():
+            if term.operation=="name" and term.data=="payload":kinds[site]=kind
+        return derive_regions(analysis,replace(facts,expressions=MappingProxyType(kinds)),64)
+
+    def test_builtin_conversion_and_formatting_reject_opaque_protocols(self):
+        @dataclass(frozen=True)
+        class Opaque:
+            _native_kind_tag="opaque_instance"
+        for statement in ('unused=bool(payload)','unused=len(payload)','unused=int(payload)',
+                          'unused=float(payload)','unused=str(payload)','unused=repr(payload)',
+                          'unused=ord(payload)','unused=abs(payload)','unused=pow(payload,2)',
+                          'unused=list(payload)','unused=tuple(payload)','unused=set(payload)',
+                          'unused=dict(payload)','print(payload)','unused=input(payload)',
+                          'print(1,file=payload)','print(1,flush=payload)','unused=s.count(payload)'):
+            with self.subTest(statement=statement):
+                self.assertEqual(dict(self.opaque_operand_facts(statement,Opaque())),{})
+
+    def test_nested_container_formatting_checks_every_opaque_leaf(self):
+        from py2fastrust.native_types import TupleType,ListType,NullableType,UnionType
+        from py2fastrust.native_key_types import SetType,DictType
+        @dataclass(frozen=True)
+        class Opaque:
+            _native_kind_tag="opaque_nested_instance"
+        leaf=Opaque()
+        for kind in (ListType(leaf),TupleType(("int",leaf)),SetType(leaf),DictType("str",leaf),
+                     ListType(TupleType(("str",ListType(leaf)))),NullableType(leaf),UnionType(("int",leaf))):
+            for statement in ('print(payload)','unused=str(payload)','unused=repr(payload)','unused=input(payload)'):
+                with self.subTest(kind=kind,statement=statement):
+                    self.assertEqual(dict(self.opaque_operand_facts(statement,kind)),{})
+
+    def test_exact_builtin_container_len_and_bool_do_not_inspect_elements(self):
+        from py2fastrust.native_types import TupleType,ListType
+        from py2fastrust.native_key_types import SetType,DictType
+        @dataclass(frozen=True)
+        class Opaque:
+            _native_kind_tag="opaque_container_element"
+        for kind in (ListType(Opaque()),TupleType((Opaque(),)),SetType(Opaque()),DictType("str",Opaque())):
+            for statement in ('unused=len(payload)','unused=bool(payload)'):
+                with self.subTest(kind=kind,statement=statement):
+                    facts=self.opaque_operand_facts(statement,kind)
+                    self.assertEqual(len(facts),1)
+                    self.assertEqual(len(next(iter(facts.values())).accesses),1)
+
+    def test_implicit_protocols_are_not_mistaken_for_pure_name_reads(self):
+        @dataclass(frozen=True)
+        class Opaque:
+            _native_kind_tag="opaque_implicit_protocol"
+        statements=('if payload:pass','while payload:break','unused=not payload',
+                    'unused=payload and 1','unused=1 if payload else 2','unused=-payload',
+                    'unused=payload+1','payload+=1','unused=payload==1','unused=payload<1',
+                    'unused=1 in payload','unused=payload[0]','unused=payload[:]',
+                    'unused=s[payload]','unused=s[:payload]','left,right=payload',
+                    'for value in payload:pass','unused={payload:1}','unused={payload}')
+        for statement in statements:
+            with self.subTest(statement=statement):self.assertEqual(dict(self.opaque_operand_facts(statement,Opaque())),{})
+
+    def test_builtin_truth_and_identity_do_not_call_opaque_elements(self):
+        from py2fastrust.native_types import ListType
+        @dataclass(frozen=True)
+        class Opaque:
+            _native_kind_tag="opaque_truth_and_identity"
+        for statement in ('if payload:pass','unused=not payload','unused=payload and 1','print(1,flush=payload)'):
+            self.assertEqual(len(self.opaque_operand_facts(statement,ListType(Opaque()))),1)
+        self.assertEqual(len(self.opaque_operand_facts('unused=payload is None',Opaque())),1)
+        self.assertEqual(len(self.opaque_operand_facts('unused=payload is not None',Opaque())),1)
+
+    def test_builtin_getitem_does_not_call_elements_but_opaque_keys_can(self):
+        from py2fastrust.native_types import ListType
+        from py2fastrust.native_key_types import DictType
+        @dataclass(frozen=True)
+        class Opaque:
+            _native_kind_tag="opaque_index_protocol"
+        self.assertEqual(len(self.opaque_operand_facts('unused=payload[0]',ListType(Opaque()))),1)
+        self.assertEqual(dict(self.opaque_operand_facts('unused=payload[0]',DictType(Opaque(),"int"))),{})
+        self.assertEqual(len(self.opaque_operand_facts('unused=payload[0]',DictType("int",Opaque()))),1)
+
+    def test_generator_iteration_and_filters_require_callback_free_context(self):
+        @dataclass(frozen=True)
+        class Opaque:
+            _native_kind_tag="opaque_iteration_protocol"
+        sources=('n=int(input())\ns=input()\npayload=[1]\nfor i in payload:print(s[0])\n',
+                 'n=int(input())\ns=input()\npayload=[1]\nanswer=sum(s[j] for j in payload)\n',
+                 'n=int(input())\ns=input()\npayload=[1]\nanswer=sum(s[j] for j in range(n) if payload)\n')
+        for source in sources:self.assertEqual(dict(self.with_payload_kind(source,Opaque())),{})
+        for source in ('n=int(input())\ns=input()\ng=(s[j] for j in range(n))\n',
+                       'n=int(input())\ns=input()\nfor ch in (s[j] for j in range(n)):s="new"\n',
+                       'def consume(g):return 1\nn=int(input())\ns=input()\nanswer=consume(s[j] for j in range(n))\n'):
+            self.assertEqual(dict(self.analyze(source)[2]),{})
+        source='n=int(input())\ns=input()\npayload=[1]\nanswer=sum(payload for j in range(n) if s[j]!="x")\n'
+        self.assertEqual(dict(self.with_payload_kind(source,Opaque())),{})
+
+    def test_hidden_repr_callback_is_a_concrete_future_class_counterexample(self):
+        source='s="abc"\nclass Change:\n def __repr__(self):\n  global s\n  s="xyz"\n  return "item"\nitems=[Change()]\nfor i in range(3):\n str(items)\n print(s[i])\n'
+        self.assertEqual(dict(self.analyze(source)[2]),{})
+
+    def test_structural_container_len_in_canonical_range_construction_is_proved(self):
+        source='items=["a","b"]\ns=input()\nfor i in range(len(items)):\n print(s[i])\n'
+        _,_,fact=self.ordinary(source)
+        self.assertIsNotNone(fact.domain)
+        self.assertEqual(len(fact.accesses),1)
 
     def test_facts_are_derived_without_an_emitter_or_source_execution(self):
         from py2fastrust.native import _Generator

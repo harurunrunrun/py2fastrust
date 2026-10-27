@@ -10,6 +10,8 @@ from types import MappingProxyType
 from .literal_semantics import integer_policy
 from .native_constraints import target_names,MethodValue,FunctionValue
 from .references import BuiltinIdentity
+from .native_types import TupleType,ListType,UnionType,NullableType,EmptyType
+from .native_key_types import SetType,DictType
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,37 @@ class RegionAnalysis:
             return AffineTerm(term.data,(a,b),term.site),coefficient,names|other
         return None
 
+    @staticmethod
+    def exact_container(kind):
+        return (kind in {"str","bytes","list_int","dict_int","set_int","matrix_int","deque_int"}
+                or isinstance(kind,(TupleType,ListType,SetType,DictType)))
+
+    @classmethod
+    def primitive_value(cls,kind):
+        """Formatting/copying nested values must not invoke opaque protocols."""
+        if kind in {"str","bytes","int","bool","int_bool","float","none","list_int","dict_int","set_int","matrix_int","deque_int"}:return True
+        if isinstance(kind,EmptyType):return True
+        if isinstance(kind,TupleType):return all(cls.primitive_value(field) for field in kind.fields)
+        if isinstance(kind,ListType):return cls.primitive_value(kind.element)
+        if isinstance(kind,SetType):return cls.primitive_value(kind.key)
+        if isinstance(kind,DictType):return cls.primitive_value(kind.key) and cls.primitive_value(kind.value)
+        if isinstance(kind,UnionType):return all(cls.primitive_value(value) for value in kind.alternatives)
+        if isinstance(kind,NullableType):return cls.primitive_value(kind.value)
+        return False
+
+    @classmethod
+    def primitive_truth(cls,kind):
+        # Exact builtin container truth/length never examines its elements.
+        if cls.exact_container(kind):return True
+        if isinstance(kind,UnionType):return all(cls.primitive_truth(value) for value in kind.alternatives)
+        if isinstance(kind,NullableType):return cls.primitive_truth(kind.value)
+        return kind in {"int","bool","int_bool","float","none"} or isinstance(kind,EmptyType)
+
+    def argument_kinds(self,term):
+        _,arguments,keywords=term.operands
+        return (tuple(self.facts.expressions.get(item.site) for item in arguments),
+                tuple((name,self.facts.expressions.get(item.site)) for name,item in keywords))
+
     def call_effect(self,term):
         call=self.facts.calls.get(term.site)
         if call is None or call.identity.unknown or call.identity.unbound or len(call.identity.alternatives)!=1:
@@ -176,38 +209,123 @@ class RegionAnalysis:
         identity=next(iter(call.identity.alternatives))
         if isinstance(identity,FunctionValue):return EffectFact(term.site,"unknown",reason="user callback has no region effect summary")
         if isinstance(identity,BuiltinIdentity):
-            if identity.name in {"print","input"}:return EffectFact(term.site,"io",may_raise=True)
+            args,keywords=self.argument_kinds(term)
+            if identity.name=="print":
+                safe=(all(self.primitive_value(kind) for kind in args)
+                      and all(name in {"sep","end","flush","file"} and
+                              (kind=="none" if name=="file" else kind in {"str","none"} if name in {"sep","end"} else self.primitive_truth(kind))
+                              for name,kind in keywords))
+                return EffectFact(term.site,"io",may_raise=True) if safe else EffectFact(term.site,"unknown",reason="print may call opaque formatting/output protocols")
+            if identity.name=="input":
+                safe=len(args)<=1 and not keywords and all(self.primitive_value(kind) for kind in args)
+                return EffectFact(term.site,"io",may_raise=True) if safe else EffectFact(term.site,"unknown",reason="input prompt may call opaque formatting protocols")
             if identity.name=="len":
-                args=term.operands[1]
-                if len(args)==1 and not term.operands[2] and self.facts.expressions.get(args[0].site) in {"str","bytes","list_int","dict_int","set_int","matrix_int","deque_int"}:
-                    return EffectFact(term.site,"pure")
-            if identity.name in {"range","int","str","bool","float","ord","chr","abs","pow","tuple","list","set","dict"}:
-                return EffectFact(term.site,"pure",may_raise=True)
-            return EffectFact(term.site,"unknown",reason="callback-capable or unsummarized builtin")
+                if len(args)==1 and not keywords and self.exact_container(args[0]):return EffectFact(term.site,"pure")
+                return EffectFact(term.site,"unknown",reason="len operand has no exact builtin-container proof")
+            if identity.name=="bool":
+                if len(args)<=1 and not keywords and all(self.primitive_truth(kind) for kind in args):return EffectFact(term.site,"pure")
+                return EffectFact(term.site,"unknown",reason="bool operand may invoke a user protocol")
+            if identity.name=="range":
+                safe=1<=len(args)<=3 and not keywords and all(kind in {"int","bool","int_bool"} for kind in args)
+            elif identity.name in {"str","repr"}:
+                safe=len(args)<=1 and not keywords and all(self.primitive_value(kind) for kind in args)
+            elif identity.name in {"int","float","ord","chr","abs","pow","tuple","list","set","dict"}:
+                safe=all(self.primitive_value(kind) for kind in (*args,*(kind for _,kind in keywords)))
+            else:safe=False
+            if safe:return EffectFact(term.site,"pure",may_raise=True)
+            return EffectFact(term.site,"unknown",reason="builtin operands may invoke opaque or unsummarized protocols")
         if isinstance(identity,MethodValue):
             kinds=identity.receiver.alternatives
             callee=term.operands[0]
             owner=callee.operands[0] if callee.operation=="attribute" else None
             names=frozenset({owner.data}) if owner is not None and owner.operation=="name" else frozenset()
             if kinds==frozenset({"str"}) and identity.name in {"count","find","index","strip","lstrip","rstrip","join","split","startswith","endswith"}:
-                return EffectFact(term.site,"pure",may_raise=True)
+                args,keywords=self.argument_kinds(term)
+                if all(self.primitive_value(kind) for kind in (*args,*(kind for _,kind in keywords))):
+                    return EffectFact(term.site,"pure",may_raise=True)
+                return EffectFact(term.site,"unknown",names,reason="string method operands may invoke opaque protocols")
             if identity.name in {"append","appendleft","extend","extendleft","add","clear","update","pop","popleft","remove","reverse","rotate","sort","setdefault"}:
                 return EffectFact(term.site,"mutation",names,True,"mutable method")
             return EffectFact(term.site,"unknown",names,reason="unsummarized method")
         if getattr(identity,"name",None)=="reader" and hasattr(identity,"binary"):
-            return EffectFact(term.site,"io",may_raise=True)
+            args,keywords=self.argument_kinds(term)
+            if all(self.primitive_value(kind) for kind in (*args,*(kind for _,kind in keywords))):
+                return EffectFact(term.site,"io",may_raise=True)
+            return EffectFact(term.site,"unknown",reason="reader size may invoke an opaque indexing protocol")
         return EffectFact(term.site,"unknown",reason="unsummarized module or stream callable")
+
+    def truth_effect(self,term,effects):
+        if not self.primitive_truth(self.facts.expressions.get(term.site)):
+            effects.append(EffectFact(term.site,"unknown",reason="implicit truth may invoke an opaque protocol"))
+
+    @staticmethod
+    def numeric_kind(kind):return kind in {"int","bool","int_bool","float"} or isinstance(kind,EmptyType)
+
+    def binary_protocol(self,left,right,operator,effects,site):
+        a=self.facts.expressions.get(left.site);b=self.facts.expressions.get(right.site)
+        safe=self.primitive_value(a) and self.primitive_value(b)
+        list_kind=lambda kind:kind in {"list_int","matrix_int"} or isinstance(kind,ListType)
+        if operator=="Add" and (list_kind(a) and list_kind(b) or isinstance(a,TupleType) and isinstance(b,TupleType)):safe=True
+        if operator=="Mult" and ((list_kind(a) or isinstance(a,TupleType)) and b in {"int","bool","int_bool"}
+                                or (list_kind(b) or isinstance(b,TupleType)) and a in {"int","bool","int_bool"}):safe=True
+        if not safe:effects.append(EffectFact(site,"unknown",reason="arithmetic may invoke an opaque protocol"))
+
+    def index_protocol(self,term,effects):
+        owner,index=term.operands;kind=self.facts.expressions.get(owner.site);key=self.facts.expressions.get(index.site)
+        if isinstance(kind,DictType):safe=self.primitive_value(kind.key) and self.primitive_value(key)
+        elif kind=="dict_int":safe=self.primitive_value(key)
+        else:
+            sequence=kind in {"str","bytes","list_int","matrix_int","deque_int"} or isinstance(kind,(TupleType,ListType))
+            safe=sequence and (key in {"int","bool","int_bool"} or isinstance(key,EmptyType))
+        if not safe:effects.append(EffectFact(term.site,"unknown",reason="indexing may invoke an opaque protocol"))
+
+    @classmethod
+    def hashable_primitive(cls,kind):
+        if kind in {"int","bool","int_bool","float","none","str","bytes"}:return True
+        if isinstance(kind,EmptyType):return True
+        if isinstance(kind,TupleType):return all(cls.hashable_primitive(field) for field in kind.fields)
+        return False
+
+    def comparison_protocol(self,term,effects):
+        operators=term.data or ("unknown",)*(len(term.operands)-1)
+        for operator,left,right in zip(operators,term.operands,term.operands[1:]):
+            if operator in {"Is","IsNot"}:continue
+            a=self.facts.expressions.get(left.site);b=self.facts.expressions.get(right.site)
+            if not self.primitive_value(a) or not self.primitive_value(b):
+                effects.append(EffectFact(term.site,"unknown",reason="comparison/membership may invoke opaque protocols"))
+                continue
+            safe=operator in {"Eq","NotEq"}
+            if operator in {"Lt","LtE","Gt","GtE"}:
+                safe=self.numeric_kind(a) and self.numeric_kind(b) or a==b and a in {"str","bytes"}
+            elif operator in {"In","NotIn"}:
+                if b=="str":safe=a=="str"
+                elif b=="bytes":safe=a=="bytes"
+                elif isinstance(b,(SetType,DictType)) or b in {"dict_int","set_int"}:safe=self.hashable_primitive(a)
+                else:safe=b in {"list_int","matrix_int","deque_int"} or isinstance(b,(ListType,TupleType))
+            elif operator=="unknown":safe=a==b=="str"
+            if not safe:effects.append(EffectFact(term.site,"pure",may_raise=True,reason="potentially raising builtin comparison"))
+
+    def stable_iterable(self,term):
+        if self.exact_container(self.facts.expressions.get(term.site)):return True
+        if term.operation=="call" and self.callable(term.site,"range"):return self.call_effect(term).kind=="pure"
+        if term.operation=="comprehension":return all(self.stable_iterable(source) for _,source,_ in term.operands[0])
+        return False
 
     def expression_info(self,term,reads,effects,*,nested=False):
         if term.operation=="comprehension":
             clauses,items=term.operands
             for _,source,filters in clauses:
                 self.expression_info(source,[],effects,nested=True)
-                for condition in filters:self.expression_info(condition,[],effects,nested=True)
+                if not self.stable_iterable(source):effects.append(EffectFact(source.site,"unknown",reason="iteration may invoke opaque callbacks"))
+                for condition in filters:
+                    self.expression_info(condition,[],effects,nested=True)
+                    self.truth_effect(condition,effects)
             for item in items:self.expression_info(item,[],effects,nested=True)
+            self.comprehension_insertion(term,effects)
             return
         for child in self.children(term):self.expression_info(child,reads,effects,nested=nested)
         if term.operation=="index":
+            self.index_protocol(term,effects)
             if not nested:reads.append(term)
             effects.append(EffectFact(term.site,"index",may_raise=True))
         elif term.operation=="call":effects.append(self.call_effect(term))
@@ -220,25 +338,62 @@ class RegionAnalysis:
                 effects.append(EffectFact(term.site,"pure",may_raise=True,reason="primitive attribute lookup"))
             elif not trusted:
                 effects.append(EffectFact(term.site,"unknown",reason="unproved attribute/descriptor effect"))
+        elif term.operation=="name":
+            item=self.facts.values.get(term.site)
+            if item is not None and (item.unbound or item.unknown):
+                effects.append(EffectFact(term.site,"pure",may_raise=True,reason="unproved or possibly unbound name read"))
+        elif term.operation=="unary":
+            child=term.operands[0]
+            if term.data=="Not":self.truth_effect(child,effects)
+            elif not self.numeric_kind(self.facts.expressions.get(child.site)):
+                effects.append(EffectFact(term.site,"unknown",reason="unary arithmetic may invoke an opaque protocol"))
+        elif term.operation=="binary":
+            self.binary_protocol(*term.operands,term.data,effects,term.site)
+            if not all(self.facts.expressions.get(child.site) in {"int","bool","int_bool"} for child in term.operands) or term.data not in {"Add","Sub","Mult","BitAnd","BitOr","BitXor"}:
+                effects.append(EffectFact(term.site,"pure",may_raise=True,reason="allocating or potentially raising arithmetic"))
+        elif term.operation=="compare":self.comparison_protocol(term,effects)
+        elif term.operation=="join":
+            for child in term.operands[:-1]:self.truth_effect(child,effects)
+        elif term.operation=="conditional":self.truth_effect(term.operands[0],effects)
         elif term.operation=="unknown":effects.append(EffectFact(term.site,"unknown",reason="unsupported semantic expression"))
-        elif term.operation in {"list","set","dict","slice"} or term.operation=="binary" and self.facts.expressions.get(term.site)=="str":
+        elif term.operation in {"list","set","dict","slice"}:
             effects.append(EffectFact(term.site,"pure",may_raise=True,reason="allocating value operation"))
-        elif term.operation=="binary" and term.data not in {"Add","Sub","Mult","BitAnd","BitOr","BitXor"}:
-            effects.append(EffectFact(term.site,"pure",may_raise=True,reason="potentially raising arithmetic"))
+            if term.operation in {"set","dict"}:
+                keys=term.operands if term.operation=="set" else tuple(key for key,_ in term.operands)
+                if any(not self.hashable_primitive(self.facts.expressions.get(key.site)) for key in keys):
+                    effects.append(EffectFact(term.site,"unknown",reason="container insertion may invoke opaque hashing/equality"))
+            if term.operation=="slice":
+                owner,bounds=term.operands;kind=self.facts.expressions.get(owner.site)
+                sequence=kind in {"str","bytes","list_int","matrix_int"} or isinstance(kind,(TupleType,ListType))
+                if not sequence or any(self.facts.expressions.get(bound.site) not in {"int","bool","int_bool","none"} for bound in bounds):
+                    effects.append(EffectFact(term.site,"unknown",reason="slicing may invoke an opaque protocol"))
 
     def block_info(self,operations,reads,effects,written,*,nested=False):
         for operation in operations:
             op=operation.operation
             for term in operation.operands:self.expression_info(term,reads,effects,nested=nested)
+            if op in {"branch","while"}:self.truth_effect(operation.operands[0],effects)
             if op in {"assign","augment"}:
                 targets=operation.data if op=="assign" else (operation.data[0],)
+                if op=="augment":
+                    self.binary_protocol(*operation.operands,operation.data[1],effects,operation.site)
+                    kind=self.facts.expressions.get(operation.operands[0].site)
+                    if kind in {"list_int","matrix_int","dict_int","set_int","deque_int"} or isinstance(kind,(ListType,SetType,DictType)):
+                        effects.append(EffectFact(operation.site,"mutation",reason="in-place container operation"))
+                elif any(target[0]=="unpack" for target in targets):
+                    source=operation.operands[0]
+                    nested_unpack=any(child[0]=="unpack" for target in targets if target[0]=="unpack" for child in target[1])
+                    if not self.stable_iterable(source) or nested_unpack and not self.primitive_value(self.facts.expressions.get(source.site)):
+                        effects.append(EffectFact(operation.site,"unknown",reason="unpacking may invoke opaque iteration"))
                 for target in targets:
                     written|=target_names(target)
                     if target[0] in {"index","attribute"}:
                         owner=target[1]
                         names=frozenset({owner.data}) if owner.operation=="name" else frozenset()
                         effects.append(EffectFact(operation.site,"mutation",names,True,"container or namespace assignment"))
-            elif op=="for":written|=target_names(operation.data)
+            elif op=="for":
+                written|=target_names(operation.data)
+                if not self.stable_iterable(operation.operands[0]):effects.append(EffectFact(operation.site,"unknown",reason="nested iteration may invoke opaque callbacks"))
             elif op in {"break","continue","return"}:
                 effects.append(EffectFact(operation.site,"control",reason="ordered control transfer"))
             elif op in {"definition","import","unknown"}:
@@ -275,17 +430,46 @@ class RegionAnalysis:
     def stable_construction(self,term):
         effects=[]
         self.expression_info(term,[],effects,nested=True)
-        return not any(effect.kind in {"unknown","mutation"} for effect in effects)
+        return self.stable_iterable(term) and not any(effect.kind in {"unknown","mutation"} for effect in effects)
 
-    def visit_expression(self,term):
+    def immediate_generator_consumer(self,term):
+        """Prove no opaque callback can run between direct generator yields."""
+        if term.operation!="call":return None
+        call=self.facts.calls.get(term.site)
+        if call is None or call.identity.unbound or call.identity.unknown or len(call.identity.alternatives)!=1:return None
+        identity=next(iter(call.identity.alternatives));_,arguments,keywords=term.operands
+        if not arguments:return None
+        first=arguments[0]
+        if first.operation!="comprehension" or first.data!="iterator":return None
+        allowed=isinstance(identity,BuiltinIdentity) and identity.name in {"sum","any","all","min","max","list","tuple","set","dict","sorted"}
+        allowed|=isinstance(identity,MethodValue) and identity.name=="join" and identity.receiver.alternatives==frozenset({"str"})
+        if not allowed:return None
+        if not all(self.primitive_value(self.facts.expressions.get(item.site)) for item in arguments[1:]):return None
+        for name,item in keywords:
+            kind=self.facts.expressions.get(item.site)
+            if name=="key" and kind!="none":return None
+            if not self.primitive_value(kind):return None
+        if not all(self.primitive_value(self.facts.expressions.get(item.site)) for item in first.operands[1]):return None
+        return first.site
+
+    def comprehension_insertion(self,term,effects):
+        if term.data in {"set","dict"}:
+            key=term.operands[1][0]
+            if not self.hashable_primitive(self.facts.expressions.get(key.site)):
+                effects.append(EffectFact(term.site,"unknown",reason="container insertion may invoke opaque hashing/equality"))
+
+    def visit_expression(self,term,generator_allowed=False):
         if term.operation=="comprehension":
             clauses,items=term.operands
-            if len(clauses)==1:
+            if len(clauses)==1 and (term.data!="iterator" or generator_allowed):
                 target,source,filters=clauses[0];reads=[];effects=[];written=set()
                 for item in (*filters,*items):self.expression_info(item,reads,effects)
+                for condition in filters:self.truth_effect(condition,effects)
+                self.comprehension_insertion(term,effects)
                 if self.stable_construction(source):
                     self.region((term.site,0),self.domain(source,target),reads,effects,written)
-        for child in self.children(term):self.visit_expression(child)
+        allowed=self.immediate_generator_consumer(term)
+        for child in self.children(term):self.visit_expression(child,generator_allowed=child.site==allowed)
 
     def visit_block(self,operations):
         for operation in operations:

@@ -210,7 +210,7 @@ class SemanticGraph:
             args=(self.expression(node.value),tuple(self.expression(bound) for bound in (node.slice.lower,node.slice.upper,node.slice.step) if bound is not None)) if op=="slice" else (self.expression(node.value),self.expression(node.slice))
         elif isinstance(node,ast.BinOp):op="binary";args=(self.expression(node.left),self.expression(node.right));data=type(node.op).__name__
         elif isinstance(node,ast.UnaryOp):op="unary";args=(self.expression(node.operand),);data=type(node.op).__name__
-        elif isinstance(node,ast.Compare):op="compare";args=tuple(self.expression(item) for item in (node.left,*node.comparators))
+        elif isinstance(node,ast.Compare):op="compare";args=tuple(self.expression(item) for item in (node.left,*node.comparators));data=tuple(type(operator).__name__ for operator in node.ops)
         elif isinstance(node,ast.BoolOp):op="join";args=tuple(self.expression(item) for item in node.values)
         elif isinstance(node,ast.IfExp):op="conditional";args=tuple(self.expression(item) for item in (node.test,node.body,node.orelse))
         elif isinstance(node,(ast.ListComp,ast.SetComp,ast.DictComp,ast.GeneratorExp)):
