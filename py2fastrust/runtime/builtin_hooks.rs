@@ -8,7 +8,8 @@ impl Runtime {
         let attrs=self.alloc(Object::Dict(Vec::new()));
         let annotations=self.obj_value(Object::Dict(Vec::new()));
         let type_params=self.obj_value(Object::Tuple(Vec::new()));
-        let name=match self.code_constant(code,Const::Str(self.codes[code].name.clone()))?{Value::Str(name)=>name,_=>unreachable!()};
+        let name=self.code_constant(code,Const::Str(self.codes[code].name.clone()))?;
+        let qualname=self.code_constant(code,Const::Str(self.codes[code].qualname.clone()))?;
         let doc=match self.codes[code].docstring.clone(){Some(value)=>self.code_constant(code,Const::Str(value))?,_=>Value::None};
         let mut roots=defs.clone();roots.extend(kwvals.iter().cloned());
         roots.extend([Value::Obj(attrs),annotations.clone(),type_params.clone(),doc.clone(),Value::Obj(f.globals),f.builtins.clone()]);
@@ -18,7 +19,7 @@ impl Runtime {
             runtime.roots[root].push(module.clone());
             let builtins=runtime.capture_builtins(f.globals,f.builtins.clone())?;
             Ok(runtime.obj_value(Object::Function(Function{
-                annotate:None,annotations_evaluated:false,attrs,name:name.clone(),qualname:name,module,doc,annotations,type_params,
+                annotate:None,annotations_evaluated:false,attrs,name,qualname,module,doc,annotations,type_params,
                 code,globals:f.globals,builtins,closure,defaults:defs,defaults_set,kwdefaults:kwdefaults.into_iter().zip(kwvals).collect(),
             })))
         })

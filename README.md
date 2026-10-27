@@ -111,8 +111,9 @@ Shared rows, container aliases, and mutation during active iteration use the gen
 Programs that cannot be specialized also use the shared dynamic runtime.
 The optimizer follows proved type changes and combines compatible branch and loop states.
 Unproved combinations use the general runtime.
-Ordinary user functions with proved integer parameters and results can also become Rust functions,
-including positional and keyword arguments, constant defaults, and calls between functions.
+Ordinary user functions get separate Rust versions for proved integer, boolean, and read-only integer-list arguments.
+Scalar results retain their integer or boolean type; positional and keyword arguments, constant defaults, and calls between functions are supported.
+Integer lists are borrowed without copying; functions that mutate or expose those argument lists use the general runtime.
 Recursion and functions with dynamic global or closure state use the general runtime.
 For simple module-level code, the optimizer also proves whether dynamic compilation is unreachable.
 When that proof succeeds, the general backend omits the runtime parser and its Unicode name tables.

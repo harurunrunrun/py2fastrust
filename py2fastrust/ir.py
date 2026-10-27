@@ -41,6 +41,8 @@ class Code:
     is_generator: bool = False
     future_flags: int = 0
     docstring: str | None = None
+    # Immutable lexical metadata, independent of mutable Function attributes.
+    qualname: str | None = None
     # Assignment versions are analysis metadata, separate from Python names.
     bindings: dict[str, int] = field(default_factory=dict)
 

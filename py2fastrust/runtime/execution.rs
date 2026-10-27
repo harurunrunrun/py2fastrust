@@ -276,7 +276,7 @@ impl Runtime {
             let function=Function {
                 annotate:None,annotations_evaluated:true,
                 attrs:runtime.alloc(Object::Dict(Vec::new())),
-                name:runtime.codes[code].name.clone().into(),qualname:runtime.codes[code].name.clone().into(),
+                name:Value::Str(runtime.codes[code].name.clone().into()),qualname:Value::Str(runtime.codes[code].qualname.clone().into()),
                 module,doc:Value::None,annotations:Value::None,type_params:Value::None,
                 code,globals,builtins:builtins.clone(),closure:None,
                 defaults:Vec::new(),defaults_set:false,kwdefaults:HashMap::new(),
@@ -285,11 +285,11 @@ impl Runtime {
             runtime.roots[root].push(owner.clone());
             // A code object carries no defaults. Use ordinary argument binding
             // for fresh fast locals and empty *args/**kwargs in function code.
-            let frame=if runtime.codes[code].kind==ScopeKind::Function {
+            let frame=if matches!(runtime.codes[code].kind,ScopeKind::Function|ScopeKind::Comprehension) {
                 runtime.bind_function(&function,owner,Vec::new(),Vec::new())?
             }else{
                 Frame {
-                    function:Some(owner),code,pc:0,locals,
+                    function:Some(owner),generator_names:None,code_handle:runtime.code_object_index(code),code,pc:0,locals,
                     temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
                     globals,builtins,closure:None,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
                     exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),
@@ -419,7 +419,7 @@ impl Runtime {
         };
         let custom = self
             .object_class(&value)
-            .and_then(|class| self.class_lookup(&class, "__getitem__", 0))
+            .and_then(|class| self.slot_override(&class, "__getitem__", 0))
             .is_some();
         if native || custom {
             return Ok(match value {

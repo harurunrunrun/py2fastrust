@@ -350,7 +350,7 @@ impl Runtime {
         let payload = if let Some(payload) = self.native_payload(value) {
             if self
                 .object_class(value)
-                .and_then(|class| self.class_lookup(&class, "__iter__", 0))
+                .and_then(|class| self.slot_override(&class, "__iter__", 0))
                 .is_some()
             {
                 return None;

@@ -657,7 +657,7 @@ impl Runtime {
                 },
                 _ => None,
             }?;
-            if self.class_lookup(&class, name, 0).is_some() {
+            if self.slot_override(&class, name, 0).is_some() {
                 return None;
             }
             match self.is_subclass(&class, &Value::Builtin("complex".into())) {

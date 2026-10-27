@@ -417,8 +417,8 @@ impl Runtime {
                 return true;
             }
             if let Some(class) = self.object_class(value) {
-                return self.class_lookup(&class, "__set__", 0).is_some()
-                    || self.class_lookup(&class, "__delete__", 0).is_some();
+                return self.slot_override(&class, "__set__", 0).is_some()
+                    || self.slot_override(&class, "__delete__", 0).is_some();
             }
         }
         false

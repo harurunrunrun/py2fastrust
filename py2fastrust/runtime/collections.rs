@@ -48,7 +48,7 @@ impl Runtime {
                 return Ok(runtime.assoc_entries(owner)?[index].1.clone());
             }
             if let Some(class) = runtime.object_class(&receiver) {
-                if let Some(method) = runtime.class_lookup(&class, "__missing__", 0) {
+                if let Some(method) = runtime.slot_override(&class, "__missing__", 0) {
                     let method = runtime.bind_descriptor(method, Some(receiver), class)?;
                     return runtime.call(method, vec![key], Vec::new(), None);
                 }

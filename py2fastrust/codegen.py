@@ -136,7 +136,7 @@ def generate(program: Program, integer="i64", *, include_dynamic=True):
         "dynamic.rs", "cst_lower.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs",
         "unicode_names.rs", "unicode_names_tables.rs",
     }
-    for name in ("stdio.rs", "streaming_io.rs", "integer.rs", "complex.rs", "frozenset.rs", "vm.rs", "identity.rs", "keywords.rs", "comprehensions.rs", "dynamic.rs", "cst_lower.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "native_attributes.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "execution.rs", "builtin_hooks.rs", "namespace.rs", "globals.rs", "dict_views.rs", "collections.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "unicode_names.rs", "unicode_names_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
+    for name in ("stdio.rs", "streaming_io.rs", "integer.rs", "complex.rs", "frozenset.rs", "vm.rs", "identity.rs", "keywords.rs", "comprehensions.rs", "dynamic.rs", "cst_lower.rs", "patterns.rs", "math.rs", "itertools.rs", "builtin_instances.rs", "native_attributes.rs", "implicit_slots.rs", "text.rs", "traceback.rs", "range.rs", "codec.rs", "execution.rs", "builtin_hooks.rs", "namespace.rs", "globals.rs", "dict_views.rs", "collections.rs", "generic_alias.rs", "peg.rs", "peg_tables.rs", "peg_tokenizer.rs", "normalization.rs", "normalization_tables.rs", "unicode_names.rs", "unicode_names_tables.rs", "type_parameters.rs", "templates.rs", "exception_groups.rs"):
         if not include_dynamic and name in dynamic_components:
             continue
         parts.append(files("py2fastrust").joinpath("runtime", name).read_text(encoding="utf-8"))
@@ -146,7 +146,7 @@ def generate(program: Program, integer="i64", *, include_dynamic=True):
     source_map = []
     for code_id, code in enumerate(program.codes):
         p = code.params
-        parts.append(f"Code {{ name:{string(code.name)},filename:{string(code.filename)},kind:ScopeKind::{code.kind},"
+        parts.append(f"Code {{ name:{string(code.name)},qualname:{string(code.qualname if code.qualname is not None else code.name)},filename:{string(code.filename)},kind:ScopeKind::{code.kind},"
                      f"locals:{strings(code.locals)},comp_locals:{strings(code.comp_locals)},globals:{strings(code.globals)},nonlocals:{strings(code.nonlocals)},frees:{strings(code.frees)},"
                      f"params:Params {{ posonly:{p.posonly},positional:{strings(p.positional)},kwonly:{strings(p.kwonly)},"
                      f"vararg:{optional(p.vararg)},kwarg:{optional(p.kwarg)} }},"

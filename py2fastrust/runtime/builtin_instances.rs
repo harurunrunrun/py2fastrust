@@ -92,7 +92,7 @@ impl Runtime {
             }
         };
         let payload = match type_name {
-            "frozenset"=>{if Self::same_type(&class,&Value::Builtin("frozenset".into())){self.frozen_constructor(args,kwargs)?}else{if args.len()>1||(!kwargs.is_empty()&&self.class_lookup(&class,"__init__",0).is_none()){return Err(pyerr("TypeError","frozenset expected one positional argument"));}let entries=if let Some(source)=args.first(){self.frozen_collect(source.clone())?}else{Vec::new()};self.frozen_make(entries,true)}},
+            "frozenset"=>{if Self::same_type(&class,&Value::Builtin("frozenset".into())){self.frozen_constructor(args,kwargs)?}else{if args.len()>1||(!kwargs.is_empty()&&self.slot_override(&class,"__init__",0).is_none()){return Err(pyerr("TypeError","frozenset expected one positional argument"));}let entries=if let Some(source)=args.first(){self.frozen_collect(source.clone())?}else{Vec::new()};self.frozen_make(entries,true)}},
             "complex"=>self.complex_constructor(args,kwargs)?,
             "list" => self.obj_value(Object::List(Vec::new())),
             "dict" => self.obj_value(Object::Dict(Vec::new())),

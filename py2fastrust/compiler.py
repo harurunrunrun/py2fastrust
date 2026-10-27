@@ -143,7 +143,8 @@ class Compiler:
         if kind == "Comprehension":
             for generator in getattr(node, "generators", ()):
                 own_targets.update(target.id for target in ast.walk(generator.target) if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store))
-        code = Code(name, filename, kind,
+        code = Code("<module>" if kind == "Module" else name, filename, kind,
+                    qualname="<module>" if kind == "Module" else name,
                     locals=local_names,
                     comp_locals=[s.get_name() for s in symbols if s.is_local() and s.is_comp_iter() and s.get_name() not in own_targets],
                     globals=[s.get_name() for s in symbols if s.is_declared_global()],
@@ -276,6 +277,8 @@ class Emitter:
         self.scope_owner = self
         self.loops = []
         self.enclosing = None
+        self.lexical_prefix = ""
+        self.definition_prefix = ""
         self.private_class = None
         self.annotation_setup_pending = False
         self.scope_annotations = []
@@ -326,6 +329,7 @@ class Emitter:
                 owner.used_scopes.add(table.get_id())
                 child = self.compiler.scope(node, table, name, kind, self.code.filename)
                 child.enclosing = self
+                self.qualify_child(child, name, kind)
                 child.set_private(node.name if kind == "Class" or kind == "TypeParameters" and isinstance(node, ast.ClassDef) else self.private_class)
                 self.inherit_child_frees(child)
                 return child
@@ -334,10 +338,30 @@ class Emitter:
             owner.used_scopes.add(table.get_id())
             child = self.compiler.scope(node, table, name, kind, self.code.filename)
             child.enclosing = self
+            self.qualify_child(child, name, kind)
             child.set_private(node.name if kind == "Class" or kind == "TypeParameters" and isinstance(node, ast.ClassDef) else self.private_class)
             self.inherit_child_frees(child)
             return child
         self.fail(node, f"could not associate the official symbol table with {name}")
+
+    def qualify_child(self, child, name, kind):
+        display = {"lambda": "<lambda>", "genexpr": "<genexpr>"}.get(name, name)
+        prefix = self.lexical_prefix
+        if self.mangle(name) in self.code.globals:
+            prefix = ""
+        elif self.code.kind == "TypeParameters" and kind in {"Function", "Class", "Annotation"}:
+            prefix = self.definition_prefix
+        if kind == "TypeParameters":
+            display = f"<generic parameters of {name}>"
+        child.code.name = display
+        child.code.qualname = prefix + display
+        child.definition_prefix = prefix
+        if kind == "Function":
+            child.lexical_prefix = child.code.qualname + ".<locals>."
+        elif kind in {"Class", "TypeParameters", "Comprehension"}:
+            child.lexical_prefix = child.code.qualname + "."
+        else:
+            child.lexical_prefix = self.lexical_prefix
 
     def inherit_child_frees(self, child):
         # Inlined comprehensions share their lexical owner's official child
@@ -981,6 +1005,8 @@ class Emitter:
             self.compiler.program.codes.append(Code("__annotate__", self.code.filename, "Annotation",
                                                     future_flags=self.code.future_flags))
             annotate = Emitter(self.compiler, code_id, self.table)
+            annotate.enclosing = self
+            self.qualify_child(annotate, "__annotate__", "Annotation")
         else:
             annotate = self.child(node, "__annotate__", "Annotation")
         annotate.code.params = Parameters(posonly=1, positional=[".format"])
@@ -1069,7 +1095,7 @@ class Emitter:
         self.code.ops[prepare].args=(emitter.code_id,)
         emitter.emit("Load", "__name__", node=node)
         emitter.emit("Store", "__module__", node=node)
-        emitter.emit("Const", node.name, node=node)
+        emitter.emit("Const", emitter.code.qualname, node=node)
         emitter.emit("Store", "__qualname__", node=node)
         first_line = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
         emitter.emit("Const", first_line, node=node)
@@ -1321,6 +1347,9 @@ class Emitter:
                          if t.get_name() == "genexpr")
             emitter = self.compiler.scope(node, table, name, "Comprehension", self.code.filename)
             emitter.enclosing = self
+            emitter.lexical_prefix = self.lexical_prefix
+            emitter.code.name = f"<{name}>"
+            emitter.code.qualname = self.lexical_prefix + emitter.code.name
             emitter.scope_owner = self.scope_owner
             emitter.set_private(self.private_class)
             emitter.code.globals = [name for name in emitter.code.globals

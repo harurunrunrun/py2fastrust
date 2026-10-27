@@ -19,6 +19,7 @@ struct Params {
 #[derive(Clone, Debug)]
 struct Code {
     name: String,
+    qualname: String,
     filename: String,
     kind: ScopeKind,
     locals: Vec<String>,
@@ -267,8 +268,8 @@ struct Function {
     annotate: Option<Value>,
     annotations_evaluated: bool,
     attrs: usize,
-    name: Ident<String>,
-    qualname: Ident<String>,
+    name: Value,
+    qualname: Value,
     module: Value,
     doc: Value,
     annotations: Value,
@@ -284,6 +285,7 @@ struct Function {
 #[derive(Clone, Debug)]
 struct Class {
     name: Ident<String>,
+    name_value: Value,
     bases: Vec<Value>,
     attrs: usize,
     metaclass: Value,
@@ -427,6 +429,8 @@ struct Handler {
 #[derive(Clone, Debug)]
 struct Frame {
     function: Option<Value>,
+    generator_names: Option<usize>,
+    code_handle: usize,
     code: usize,
     pc: usize,
     locals: usize,
@@ -464,6 +468,7 @@ struct Runtime {
     frozen_reprs:std::collections::HashSet<usize>,
     keyword_intern_pool: HashMap<String,Ident<String>>,
     literal_pools: HashMap<usize, HashMap<LiteralKey, Value>>,
+    code_objects: HashMap<usize,usize>,
     identity_builtins: HashMap<String, u64>,
     identity_types: HashMap<String, u64>,
     codes: Vec<Code>,
@@ -850,7 +855,7 @@ impl Runtime {
         }
         for (obj, arg, name) in pairs {
             if let Some(class) = self.object_class(obj) {
-                if let Some(method) = self.class_lookup(&class, name, 0) {
+                if let Some(method) = self.slot_override(&class, name, 0) {
                     let callable = self.bind_descriptor(method, Some(obj.clone()), class)?;
                     let value = self.call(callable, vec![arg.clone()], Vec::new(), None)?;
                     if !matches!(&value,Value::Builtin(n)if n=="NotImplemented") {
@@ -900,8 +905,13 @@ impl Runtime {
     }
     fn special_method(&mut self, v: Value, name: &str) -> PyResult<Value> {
         if let Some(class) = self.object_class(&v) {
-            if let Some(method) = self.class_lookup(&class, name, 0) {
+            if let Some(method) = self.slot_override(&class, name, 0) {
                 return self.bind_descriptor(method, Some(v), class);
+            }
+            let native=self.slot_definition(&class,name,0);
+            let native_bridge=matches!(&native,Some(SlotDefinition::Native(value))if ["__bool__","__contains__","__reversed__"].contains(&name)||(name=="__str__"&&matches!(native_attribute_parts(value),Some((_,"str",_)))));
+            if self.native_payload(&v).is_some()&&native_bridge {
+                return Ok(self.obj_value(Object::Bound(Value::Builtin(format!("implicit_native:{name}")),v)));
             }
             if let Some(payload) = self.native_payload(&v) {
                 if ["__repr__","__str__"].contains(&name) && self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen) {if let Some(result)=self.frozen_attr(v.clone(),name){return result;}}
@@ -916,16 +926,16 @@ impl Runtime {
     }
     fn missing_special_method(&self,value:&Value,name:&str,error:&PyException)->bool{
         self.exception_has_native_class(error,"AttributeError")
-            && self.object_class(value).and_then(|class|self.class_lookup(&class,name,0)).is_none()
+            && self.object_class(value).and_then(|class|self.slot_override(&class,name,0)).is_none()
     }
     fn getattr(&mut self, v: Value, name: &str) -> PyResult<Value> {
         if let Some(class) = self.object_class(&v) {
-            if let Some(method) = self.class_lookup(&class, "__getattribute__", 0) {
+            if let Some(method) = self.slot_override(&class, "__getattribute__", 0) {
                 let bound = self.obj_value(Object::Bound(method, v.clone()));
                 match self.call(bound, vec![Value::Str(name.into())], Vec::new(), None) {
                     Ok(value) => return Ok(value),
                     Err(e) if self.exception_has_native_class(&e, "AttributeError") => {
-                        if let Some(method) = self.class_lookup(&class, "__getattr__", 0) {
+                        if let Some(method) = self.slot_override(&class, "__getattr__", 0) {
                             let bound = self.obj_value(Object::Bound(method, v));
                             return self.call(
                                 bound,
@@ -944,7 +954,7 @@ impl Runtime {
     }
     fn setattr(&mut self, obj: Value, name: &str, value: Value) -> PyResult<()> {
         if let Some(class) = self.object_class(&obj) {
-            if let Some(method) = self.class_lookup(&class, "__setattr__", 0) {
+            if let Some(method) = self.slot_override(&class, "__setattr__", 0) {
                 let bound = self.obj_value(Object::Bound(method, obj));
                 self.call(
                     bound,
@@ -959,7 +969,7 @@ impl Runtime {
     }
     fn delattr(&mut self, obj: Value, name: &str) -> PyResult<()> {
         if let Some(class) = self.object_class(&obj) {
-            if let Some(method) = self.class_lookup(&class, "__delattr__", 0) {
+            if let Some(method) = self.slot_override(&class, "__delattr__", 0) {
                 let bound = self.obj_value(Object::Bound(method, obj));
                 self.call(bound, vec![Value::Str(name.into())], Vec::new(), None)?;
                 return Ok(());
@@ -1276,6 +1286,7 @@ impl Runtime {
             frozen_reprs:std::collections::HashSet::new(),
             keyword_intern_pool: HashMap::new(),
             literal_pools: HashMap::new(),
+            code_objects: HashMap::new(),
             identity_builtins: HashMap::new(),
             identity_types: HashMap::new(),
             codes,
@@ -1646,6 +1657,8 @@ impl Runtime {
     fn run(&mut self) -> PyResult<Value> {
         let f = Frame {
             function: None,
+            generator_names: None,
+            code_handle: self.code_object_index(0),
             code: 0,
             pc: 0,
             locals: self.globals,
@@ -1747,7 +1760,9 @@ impl Runtime {
         })
     }
     fn frame_roots(frame: &Frame, out: &mut Vec<Value>) {
+        out.push(Value::Obj(frame.code_handle));
         out.extend(frame.function.iter().cloned());
+        if let Some(names)=frame.generator_names {out.push(Value::Obj(names));}
         out.extend(frame.stack.iter().cloned());
         out.extend(frame.comprehensions.iter().map(|scope|Value::Obj(scope.namespace)));
         for pending in &frame.cache_returns {
@@ -2846,6 +2861,8 @@ impl Runtime {
             let builtins=self.capture_builtins(attrs,self.active_builtins.clone())?;
             let frame = Frame {
                 function: None,
+            generator_names: None,
+                code_handle: self.code_object_index(code),
                 code,
                 pc: 0,
                 locals: attrs,
@@ -3276,6 +3293,7 @@ impl Runtime {
     }
     fn gc_marks(&self, extra: &[Value]) -> Vec<bool> {
         let mut marked = vec![false; self.heap.len()];
+        let mut code_seen=std::collections::HashSet::new();
         let mut pending = vec![Value::Obj(self.builtins), Value::Obj(self.globals)];
         pending.push(self.active_builtins.clone());
         pending.extend(self.literal_pools.values().flat_map(|pool|pool.values().cloned()));
@@ -3346,6 +3364,8 @@ impl Runtime {
                     }
                 }
                 Object::Function(f) => {
+                    self.code_roots(f.code,&mut code_seen,&mut pending);
+                    pending.extend([f.name.clone(),f.qualname.clone()]);
                     pending.push(Value::Obj(f.attrs));
                     pending.extend(f.annotate.iter().cloned());
                     pending.extend([
@@ -3363,6 +3383,7 @@ impl Runtime {
                     pending.extend(f.kwdefaults.values().cloned())
                 }
                 Object::Class(c) => {
+                    pending.push(c.name_value.clone());
                     pending.push(Value::Obj(c.attrs));
                     pending.extend(c.bases.iter().cloned());
                     pending.push(c.metaclass.clone())
@@ -3421,6 +3442,7 @@ impl Runtime {
                     pending.extend(del.iter().cloned())
                 }
                 Object::Generator(f) => Self::frame_roots(f, &mut pending),
+                Object::Code(code)=>self.code_roots(*code,&mut code_seen,&mut pending),
                 Object::Iterator(it) => match it {
                     IteratorState::Template(owner,_) => pending.push(Value::Obj(*owner)),
                     IteratorState::Associative(state) => {if let Some(owner)=state.owner {pending.push(Value::Obj(owner));}if let Some(keeper)=&state.keeper{pending.push(keeper.clone());}},
@@ -3459,7 +3481,7 @@ impl Runtime {
                 {
                     candidates.push(i);
                 } else if let Some(class) = self.object_class(&Value::Obj(i)) {
-                    if self.class_lookup(&class, "__del__", 0).is_some() {
+                    if self.slot_override(&class, "__del__", 0).is_some() {
                         candidates.push(i)
                     }
                 }
@@ -3487,6 +3509,7 @@ impl Runtime {
         let mut count = 0;
         for (i, live) in marked.into_iter().enumerate() {
             if !live && self.heap[i].is_some() {
+                if let Some(Object::Code(code))=&self.heap[i]{self.code_objects.remove(code);}
                 self.heap[i] = None;
                 self.scope_bindings.remove(&i);
             self.scope_comprehension_bindings.remove(&i);
@@ -4393,6 +4416,7 @@ impl Runtime {
         kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
+        if let Some(slot)=name.strip_prefix("implicit_native:"){return self.implicit_native_call(slot,args,kwargs);}
         if name.starts_with("native_attr:") {return self.native_attribute_call(Value::Builtin(name.into()),args,kwargs);}
         if name=="native_attr_bind" {
             if !(2..=3).contains(&args.len())||!kwargs.is_empty(){return Err(pyerr("TypeError","descriptor __get__ takes one or two arguments"));}
@@ -4806,7 +4830,7 @@ impl Runtime {
                 let mut vs = if args.is_empty() {
                     Vec::new()
                 } else {
-                    self.to_vec(args[0].clone())?
+                    if name=="list"{self.list_collect(args[0].clone())?}else{self.to_vec(args[0].clone())?}
                 };
                 if name == "set" || name == "frozenset" {
                     let mut unique = Vec::new();
@@ -4881,9 +4905,10 @@ impl Runtime {
                         Object::Range(a, b, s) => range_length(&a, &b, &s).map_err(int_error)?,
                         _ => {
                             let fun = self.special_method(v.clone(), "__len__").map_err(|error| {
-                                if error.kind=="AttributeError" && self.object_class(&v).and_then(|class|self.class_lookup(&class,"__len__",0)).is_none() {pyerr("TypeError",format!("object of type '{}' has no len()",self.typename(&v)))}else{error}
+                                if error.kind=="AttributeError" && self.object_class(&v).and_then(|class|self.slot_override(&class,"__len__",0)).is_none() {pyerr("TypeError",format!("object of type '{}' has no len()",self.typename(&v)))}else{error}
                             })?;
-                            return self.call(fun, Vec::new(), Vec::new(), caller);
+                            let value=self.call(fun,Vec::new(),Vec::new(),caller)?;
+                            return Ok(Value::Int(Int::from_i128(self.protocol_length(&value)? as i128).into()));
                         }
                     },
                     _ => return Err(pyerr("TypeError", "object has no len()")),
@@ -5010,7 +5035,7 @@ impl Runtime {
                 })
             }
             "sorted" => {
-                let values = self.to_vec(arg(0)?)?;
+                let values = self.list_collect(arg(0)?)?;
                 let reverse = kw("reverse")
                     .map(|v| self.truth(&v))
                     .transpose()?
@@ -5022,7 +5047,7 @@ impl Runtime {
                 if args.len()!=1 || !kwargs.is_empty() {return Err(pyerr("TypeError","reversed() takes exactly one argument"));}
                 let value=arg(0)?;
                 if let Some(class)=self.object_class(&value) {
-                    if self.class_lookup(&class,"__reversed__",0).is_some(){
+                    if self.slot_definition(&class,"__reversed__",0).is_some(){
                         let method=self.special_method(value,"__reversed__")?;
                         return self.call(method,Vec::new(),Vec::new(),caller);
                     }
@@ -5044,7 +5069,7 @@ impl Runtime {
                 }
                 let length=self.builtin("len",vec![value.clone()],Vec::new(),caller)?;
                 let length=self.as_int(&length)?.to_usize().filter(|size|*size<=isize::MAX as usize).ok_or_else(||pyerr("OverflowError","sequence is too large to reverse"))?;
-                if !matches!(&value,Value::Str(_)|Value::Bytes(_)) && !matches!(&value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_)|Object::Tuple(_)))) && self.object_class(&value).and_then(|class|self.class_lookup(&class,"__getitem__",0)).is_none(){
+                if !matches!(&value,Value::Str(_)|Value::Bytes(_)) && !matches!(&value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::List(_)|Object::Tuple(_)))) && self.object_class(&value).and_then(|class|self.slot_definition(&class,"__getitem__",0)).is_none(){
                     return Err(pyerr("TypeError",format!("'{}' object is not reversible",self.typename(&value))));
                 }
                 Ok(self.obj_value(Object::Iterator(IteratorState::Reversed(value,length as isize-1))))
@@ -5060,7 +5085,7 @@ impl Runtime {
                     v => {
                         match self.special_method(v.clone(),"__abs__") {
                             Ok(fun)=>self.call(fun,Vec::new(),Vec::new(),caller),
-                            Err(error) if error.kind=="AttributeError"=>if let Some(payload)=self.native_payload(&v){self.builtin("abs",vec![payload.fresh_primitive()],Vec::new(),caller)}else{Err(error)},
+                            Err(error) if self.missing_special_method(&v,"__abs__",&error)=>if let Some(payload)=self.native_payload(&v){self.builtin("abs",vec![payload.fresh_primitive()],Vec::new(),caller)}else{Err(error)},
                             Err(error)=>Err(error),
                         }
                     }
@@ -5102,7 +5127,9 @@ impl Runtime {
                     }else{Ok(Value::Int(Int::from_f64(number.round_ties_even()).map_err(int_error)?.into()))},
                     value=>match self.special_method(value.clone(),"__round__") {
                         Ok(fun)=>self.call(fun,digits.into_iter().collect(),Vec::new(),caller),
-                        Err(error) if error.kind=="AttributeError"=>if let Some(payload)=self.native_payload(&value){
+                        Err(error) if self.exception_has_native_class(&error,"AttributeError")=>if self.slot_override(&self.native_receiver_class(&value),"__round__",0).is_some(){
+                            Err(pyerr("TypeError","type doesn't define __round__ method"))
+                        }else if let Some(payload)=self.native_payload(&value){
                             let mut arguments=vec![payload.fresh_primitive()];arguments.extend(digits);self.builtin("round",arguments,Vec::new(),caller)
                         }else{Err(pyerr("TypeError","type doesn't define __round__ method"))},
                         Err(error)=>Err(error),
@@ -5246,14 +5273,14 @@ impl Runtime {
                     }
                 }
                 if let Some(class) = self.object_class(&v) {
-                    if let Some(method) = self.class_lookup(&class, "__hash__", 0) {
+                    if let Some(method) = self.slot_override(&class, "__hash__", 0) {
                         if matches!(method, Value::None) {
                             return Err(pyerr(
                                 "TypeError",
                                 format!("unhashable type: '{}'", self.typename(&v)),
                             ));
                         }
-                        let method = self.obj_value(Object::Bound(method, v.clone()));
+                        let method = self.bind_descriptor(method,Some(v.clone()),class).map_err(|error|if self.exception_has_native_class(&error,"AttributeError"){pyerr("TypeError",format!("unhashable type: '{}'",self.typename(&v)))}else{error})?;
                         let result = self.call(method, Vec::new(), Vec::new(), None)?;
                         let number=match result {
                             Value::Int(number)=>number.into_inner(),Value::Bool(value)=>Int::from_i128(if value{1}else{0}),
@@ -5359,7 +5386,7 @@ impl Runtime {
                 let offset=self.codes.len();
                 let codes=compile_dynamic_optimized(&src,&filename,&mode,offset,flags,optimize.max(0) as u8).map_err(int_error)?;
                 self.codes.extend(codes);
-                Ok(self.obj_value(Object::Code(offset)))
+                Ok(self.code_object(offset))
             }
             "eval" | "exec" => {
                 let parameters=self.execution_parameters(name,&args,&kwargs)?;
@@ -5659,7 +5686,7 @@ impl Runtime {
                     Ok(obj)
                 }
                 Object::Instance { class, .. } => {
-                    if let Some(method) = self.class_lookup(&class, "__call__", 0) {
+                    if let Some(method) = self.slot_override(&class, "__call__", 0) {
                         let bound = self.obj_value(Object::Bound(method, fun));
                         self.call(bound, args, kwargs, caller)
                     } else {
@@ -5688,10 +5715,12 @@ impl Runtime {
         if args.len() < 3 {
             return Err(pyerr("TypeError", "type() takes 1 or 3 arguments"));
         }
-        let name = match &args[0] {
-            Value::Str(name) => name.clone(),
+        let name_value=args[0].clone();
+        let name = match self.native_payload(&name_value).unwrap_or_else(||name_value.clone()) {
+            Value::Str(name) => name,
             _ => return Err(pyerr("TypeError", "type() argument 1 must be str")),
         };
+        if name.contains('\0'){return Err(pyerr("ValueError","type name must not contain null characters"));}
         let mut bases = self.to_vec(args[1].clone())?;
         if bases.iter().any(|base|!matches!(base,Value::Builtin(_)|Value::Type(_)) && !matches!(base,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))){return Err(pyerr("TypeError","bases must be types"));}
         for base in &bases {if matches!(base,Value::Builtin(name)if template_type_name(name)){return Err(pyerr("TypeError",format!("type '{}' is not an acceptable base type",self.class_name(base))));}}
@@ -5742,6 +5771,14 @@ impl Runtime {
                 .any(|(key, _)| matches!(key, Value::Str(name) if name == "__hash__"))
         {
             items.push((Value::Str("__hash__".into()), Value::None));
+        }
+        if !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__qualname__")) {
+            items.push((Value::Str("__qualname__".into()),name_value.clone()));
+        }
+        if let Some((_,qualname))=items.iter().find(|(key,_)|matches!(key,Value::Str(name)if name=="__qualname__")) {
+            if !matches!(self.native_payload(qualname).unwrap_or_else(||qualname.clone()),Value::Str(_)) {
+                return Err(pyerr("TypeError",format!("type __qualname__ must be a str, not {}",self.typename(qualname))));
+            }
         }
         let classcell = items.iter().find_map(|(k, v)| {
             if matches!(k,Value::Str(s)if s=="__classcell__") {
@@ -5844,6 +5881,7 @@ impl Runtime {
         let ns = self.alloc(Object::Dict(items));
         let out = self.obj_value(Object::Class(Class {
             name,
+            name_value,
             bases,
             attrs: ns,
             metaclass,
@@ -5923,7 +5961,7 @@ impl Runtime {
             let out=left;runtime.roots[root].push(out.clone());
             let Value::Obj(owner)=out else{unreachable!()};
             let payload=if let Some(payload)=runtime.native_payload(&right){
-                if runtime.object_class(&right).and_then(|class|runtime.class_lookup(&class,"__iter__",0)).is_none(){payload}else{right.clone()}
+                if runtime.object_class(&right).and_then(|class|runtime.slot_override(&class,"__iter__",0)).is_none(){payload}else{right.clone()}
             }else{right.clone()};
             let direct=if let Value::Obj(index)=payload{
                 match runtime.object(index)?{Object::Dict(items)=>Some((index,items)),Object::Namespace(items,_)=>Some((index,items.ident_items())),_=>None}
@@ -6037,6 +6075,8 @@ impl Runtime {
         }else{
         let frame = Frame {
             function: Some(owner),
+            generator_names: None,
+            code_handle: self.code_object_index(code),
             code,
             pc: 0,
             locals: namespace,
@@ -6201,7 +6241,7 @@ impl Runtime {
             }
             Value::Obj(i) => match self.object(*i)? {
                 Object::Exception(e) => {
-                    if let Some(class)=&e.class {if let Some(method)=self.class_lookup(class,"__str__",0){let method=self.bind_descriptor(method,Some(v.clone()),class.clone())?;let result=self.call(method,Vec::new(),Vec::new(),None)?;if let Value::Str(text)=result{return Ok(text.to_string());}return Err(pyerr("TypeError","__str__ returned non-string"));}}
+                    if let Some(class)=&e.class {if let Some(method)=self.slot_override(class,"__str__",0){let method=self.bind_descriptor(method,Some(v.clone()),class.clone())?;let result=self.call(method,Vec::new(),Vec::new(),None)?;if let Value::Str(text)=result{return Ok(text.to_string());}return Err(pyerr("TypeError","__str__ returned non-string"));}}
                     self.exception_object_message(&e)
                 },
                 Object::Instance { .. } | Object::BuiltinInstance { .. } => {
@@ -6214,7 +6254,7 @@ impl Runtime {
                     }
                     if let Some(payload) = self.native_payload(v) {
                         if let Some(class) = self.object_class(v) {
-                            if self.class_lookup(&class, "__repr__", 0).is_some() {
+                            if self.slot_override(&class, "__repr__", 0).is_some() {
                                 return self.repr(v);
                             }
                         }
@@ -6296,11 +6336,14 @@ impl Runtime {
                         }
                         format!("{{{}}}", ss.join(", "))
                     }
-                    Object::Function(fun) => format!("<function {}>", fun.qualname),
+                    Object::Function(fun) => {
+                        let name=match self.native_payload(&fun.qualname).unwrap_or(fun.qualname){Value::Str(name)=>name,_=>unreachable!("validated function qualname")};
+                        format!("<function {}>",name)
+                    },
                     Object::Class(c) => format!("<class '{}'>", c.name),
                     Object::Module { name, .. } => format!("<module '{}'>", name),
                     Object::Exception(e) => {
-                        if let Some(class)=&e.class {if let Some(method)=self.class_lookup(class,"__repr__",0){let method=self.bind_descriptor(method,Some(v.clone()),class.clone())?;let result=self.call(method,Vec::new(),Vec::new(),None)?;if let Value::Str(text)=result{return Ok(text.to_string());}return Err(pyerr("TypeError","__repr__ returned non-string"));}}
+                        if let Some(class)=&e.class {if let Some(method)=self.slot_override(class,"__repr__",0){let method=self.bind_descriptor(method,Some(v.clone()),class.clone())?;let result=self.call(method,Vec::new(),Vec::new(),None)?;if let Value::Str(text)=result{return Ok(text.to_string());}return Err(pyerr("TypeError","__repr__ returned non-string"));}}
                         if e.group.is_some() {self.exception_group_repr(&e,seen)?}else{
                         let mut args = Vec::new();
                         for argument in &e.args {
@@ -6310,7 +6353,7 @@ impl Runtime {
                         }
                     }
                     Object::BuiltinInstance { payload, .. } => {
-                        if self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen) && self.object_class(v).and_then(|class|self.class_lookup(&class,"__repr__",0)).is_none(){self.frozen_repr(v,seen)?}else{
+                        if self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen) && self.object_class(v).and_then(|class|self.slot_override(&class,"__repr__",0)).is_none(){self.frozen_repr(v,seen)?}else{
                         if let Ok(fun) = self.special_method(v.clone(), "__repr__") {
                             let result = self.call(fun, Vec::new(), Vec::new(), None)?;
                             self.str_value(&result)?
@@ -6665,6 +6708,9 @@ impl Runtime {
         }
     }
     fn as_int(&mut self, v: &Value) -> PyResult<Int> {
+        // PyLong subclasses already provide their integer value for structural
+        // __index__ conversions; a Python __index__ does not replace it.
+        if let Some(Value::Int(number))=self.native_payload(v){return Ok(number.into_inner());}
         match v {
             Value::Int(n) => Ok(n.inner().clone()),
             Value::Bool(b) => Ok(Int::from_i128(if *b { 1 } else { 0 })),
@@ -6742,21 +6788,14 @@ impl Runtime {
                 Object::Namespace(v, _) => !v.is_empty(),
                 Object::Range(a, b, step) => range_nonempty(&a, &b, &step),
                 Object::Instance { .. } | Object::BuiltinInstance { .. } => {
-                    if let Ok(fun) = self.special_method(v.clone(), "__bool__") {
-                        let r = self.call(fun, Vec::new(), Vec::new(), None)?;
-                        match r {
-                            Value::Bool(b) => b,
-                            _ => return Err(pyerr("TypeError", "__bool__ should return bool")),
-                        }
-                    } else if let Ok(fun) = self.special_method(v.clone(), "__len__") {
-                        let r = self.call(fun, Vec::new(), Vec::new(), None)?;
-                        !self.as_int(&r)?.is_zero()
-                    } else {
-                        if let Some(payload) = self.native_payload(v) {
-                            self.truth(&payload)?
-                        } else {
-                            true
-                        }
+                    match self.special_method(v.clone(),"__bool__") {
+                        Ok(fun)=>match self.call(fun,Vec::new(),Vec::new(),None)? {Value::Bool(value)=>value,_=>return Err(pyerr("TypeError","__bool__ should return bool"))},
+                        Err(error) if self.exception_has_native_class(&error,"AttributeError")=>match self.special_method(v.clone(),"__len__") {
+                            Ok(fun)=>{let value=self.call(fun,Vec::new(),Vec::new(),None)?;self.protocol_length(&value)?!=0},
+                            Err(error) if self.missing_special_method(v,"__len__",&error)=>true,
+                            Err(error)=>return Err(error),
+                        },
+                        Err(error)=>return Err(error),
                     }
                 }
                 _ => true,
@@ -6966,12 +7005,10 @@ impl Runtime {
                 let yes = match (a, b) {
                     (Value::Str(x), Value::Str(y)) => y.contains(x.as_str()),
                     _ => {
-                        if let Ok(fun) = self.special_method(b.clone(), "__contains__") {
-                            let v = self.call(fun, vec![a.clone()], Vec::new(), None)?;
-                            self.truth(&v)?
-                        } else {
-                            let xs = self.to_vec(b.clone())?;
-                            self.contains_vec(&xs, a)?
+                        match self.special_method(b.clone(),"__contains__") {
+                            Ok(fun)=>{let value=self.call(fun,vec![a.clone()],Vec::new(),None)?;self.truth(&value)?},
+                            Err(error) if self.exception_has_native_class(&error,"AttributeError")=>{let values=self.to_vec(b.clone())?;self.contains_vec(&values,a)?},
+                            Err(error)=>return Err(error),
                         }
                     }
                 };
@@ -7032,13 +7069,10 @@ impl Runtime {
                 };
                 match self.special_method(a.clone(), name) {
                     Ok(fun) => self.call(fun, Vec::new(), Vec::new(), None),
-                    Err(error) => {
-                        if let Some(payload) = self.native_payload(&a) {
-                            self.unary(op, if op=="+"{payload.fresh_primitive()}else{payload})
-                        } else {
-                            Err(error)
-                        }
-                    }
+                    Err(error) if self.missing_special_method(&a,name,&error)=>{
+                        if let Some(payload)=self.native_payload(&a){self.unary(op,if op=="+"{payload.fresh_primitive()}else{payload})}else{Err(error)}
+                    },
+                    Err(error)=>Err(error),
                 }
             }
         }
@@ -7085,7 +7119,7 @@ impl Runtime {
                 _ => "",
             };
             if let Some(class) = self.object_class(&a) {
-                if let Some(fun) = self.class_lookup(&class, method, 0) {
+                if let Some(fun) = self.slot_override(&class, method, 0) {
                     let fun = self.bind_descriptor(fun, Some(a.clone()), class)?;
                     let result = self.call(fun, vec![b.clone()], Vec::new(), None)?;
                     if !matches!(&result,Value::Builtin(n)if n=="NotImplemented") {
@@ -7115,7 +7149,7 @@ impl Runtime {
                 && ["+", "+="].contains(&op)
             {
                 if let Some(class) = self.object_class(&b) {
-                    if let Some(fun) = self.class_lookup(&class, "__radd__", 0) {
+                    if let Some(fun) = self.slot_override(&class, "__radd__", 0) {
                         let fun = self.bind_descriptor(fun, Some(b.clone()), class)?;
                         let value = self.call(fun, vec![a.clone()], Vec::new(), None)?;
                         if !matches!(&value,Value::Builtin(n)if n=="NotImplemented") {
@@ -7149,7 +7183,7 @@ impl Runtime {
                     .object_class(&a)
                     .unwrap_or_else(|| Value::Builtin(self.typename(&a)));
                 if !Self::same_type(&ac, &bc) && self.is_subclass(&bc, &ac)? {
-                    if let Some(method) = self.class_lookup(&bc, &format!("__r{}__", stem), 0) {
+                    if let Some(method) = self.slot_override(&bc, &format!("__r{}__", stem), 0) {
                         reflected_first = true;
                         let fun = self.bind_descriptor(method, Some(b.clone()), bc)?;
                         let value = self.call(fun, vec![a.clone()], Vec::new(), None)?;
@@ -7394,11 +7428,10 @@ impl Runtime {
             if index == 1 && reflected_first {
                 continue;
             }
-            if let Ok(fun) = self.special_method(obj, &name) {
-                let v = self.call(fun, vec![arg], Vec::new(), None)?;
-                if !matches!(&v,Value::Builtin(n) if n=="NotImplemented") {
-                    return Ok(v);
-                }
+            match self.special_method(obj.clone(),&name) {
+                Ok(fun)=>{let value=self.call(fun,vec![arg],Vec::new(),None)?;if !matches!(&value,Value::Builtin(name)if name=="NotImplemented"){return Ok(value);}},
+                Err(error) if self.exception_has_native_class(&error,"AttributeError")=>{},
+                Err(error)=>return Err(error),
             }
         }
         let ap = self.native_payload(&a);
@@ -7492,7 +7525,7 @@ impl Runtime {
         if matches!(&obj,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) {return self.generic_alias(obj,key);}
         if let Value::Obj(index)=&obj {
             if let Object::Class(class)=self.object(*index)? {
-                if self.class_lookup(&class.metaclass,"__getitem__",0).is_some() {
+                if self.slot_override(&class.metaclass,"__getitem__",0).is_some() {
                     let method=self.special_method(obj,"__getitem__")?;return self.call(method,vec![key],Vec::new(),None);
                 }
                 match self.getattr(obj.clone(),"__class_getitem__") {
@@ -7509,7 +7542,7 @@ impl Runtime {
         }
         if let Value::Obj(i) = &obj {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*i)? {
-                if self.class_lookup(&class, "__getitem__", 0).is_some() {
+                if self.slot_override(&class, "__getitem__", 0).is_some() {
                     let fun = self.special_method(obj, "__getitem__").map_err(|e| {
                         if e.kind == "AttributeError" {
                             pyerr("TypeError", "object is not subscriptable")
@@ -7623,7 +7656,7 @@ impl Runtime {
     fn setitem_inner(&mut self, obj: Value, key: Value, value: Value) -> PyResult<()> {
         if let Value::Obj(index) = &obj {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*index)? {
-                if let Some(method) = self.class_lookup(&class, "__setitem__", 0) {
+                if let Some(method) = self.slot_override(&class, "__setitem__", 0) {
                     let method = self.bind_descriptor(method, Some(obj), class)?;
                     self.call(method, vec![key, value], Vec::new(), None)?;
                     return Ok(());
@@ -7719,7 +7752,7 @@ impl Runtime {
     fn delitem_inner(&mut self, obj: Value, key: Value) -> PyResult<()> {
         if let Value::Obj(index) = &obj {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*index)? {
-                if let Some(method) = self.class_lookup(&class, "__delitem__", 0) {
+                if let Some(method) = self.slot_override(&class, "__delitem__", 0) {
                     let method = self.bind_descriptor(method, Some(obj), class)?;
                     self.call(method, vec![key], Vec::new(), None)?;
                     return Ok(());
@@ -7797,7 +7830,7 @@ impl Runtime {
     fn dict_items(&mut self, v: Value) -> PyResult<Vec<(Value, Value)>> {
         if let Value::Obj(index)=&v {
             if let Object::BuiltinInstance { class, payload, .. }=self.object(*index)? {
-                if self.class_lookup(&class,"__iter__",0).is_none() && matches!(&payload,Value::Obj(owner)if matches!(self.heap.get(*owner).and_then(Option::as_ref),Some(Object::Dict(_)))) {return self.dict_items(payload);}
+                if self.slot_override(&class,"__iter__",0).is_none() && matches!(&payload,Value::Obj(owner)if matches!(self.heap.get(*owner).and_then(Option::as_ref),Some(Object::Dict(_)))) {return self.dict_items(payload);}
             }
         }
         if let Value::Obj(i) = v.clone() {
@@ -7875,9 +7908,15 @@ impl Runtime {
         }
         if let Value::Obj(i) = &v {
             if let Object::BuiltinInstance { class, payload, .. } = self.object(*i)? {
-                if self.class_lookup(&class, "__iter__", 0).is_some() {
-                    let fun = self.special_method(v, "__iter__")?;
-                    return self.call(fun, Vec::new(), Vec::new(), None);
+                if self.slot_override(&class,"__iter__",0).is_some() {
+                    match self.special_method(v.clone(),"__iter__") {
+                        Ok(fun)=>return self.call(fun,Vec::new(),Vec::new(),None),
+                        Err(error) if self.exception_has_native_class(&error,"AttributeError")=>{
+                            if self.slot_definition(&class,"__getitem__",0).is_some(){return Ok(self.obj_value(Object::Iterator(IteratorState::Reversed(v,-2))));}
+                            return Err(pyerr("TypeError","object is not iterable"));
+                        },
+                        Err(error)=>return Err(error),
+                    }
                 }
                 if self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen){return self.frozen_iterator(v);}
                 let result=self.iter(payload)?;return Ok(self.collection_keep(result,v));
@@ -7913,9 +7952,12 @@ impl Runtime {
                 Object::MappingProxy { owner } => {if let Some(keeper)=self.collection_keepers.get(&i).cloned(){return self.iter(keeper);}let result=self.assoc_iterator(owner,DictViewKind::Keys,false)?;return Ok(self.collection_inherit_keeper(result,&v));},
                 Object::Iterator(_) | Object::Generator(_) => return Ok(v),
                 Object::Instance { .. } => {
-                    if let Ok(fun) = self.special_method(v.clone(), "__iter__") {
-                        return self.call(fun, Vec::new(), Vec::new(), None);
+                    match self.special_method(v.clone(),"__iter__") {
+                        Ok(fun)=>return self.call(fun,Vec::new(),Vec::new(),None),
+                        Err(error) if self.exception_has_native_class(&error,"AttributeError")=>{},
+                        Err(error)=>return Err(error),
                     }
+                    if self.object_class(&v).and_then(|class|self.slot_definition(&class,"__getitem__",0)).is_none(){return Err(pyerr("TypeError","object is not iterable"));}
                     return Ok(self.obj_value(Object::Iterator(IteratorState::Reversed(v, -2))));
                 }
                 _ => return Err(pyerr("TypeError", "object is not iterable")),
@@ -8300,7 +8342,7 @@ impl Runtime {
                     }
                 }
                 Object::Instance { class: c, .. } => {
-                    if let Some(fun) = self.class_lookup(&c, "__get__", 0) {
+                    if let Some(fun) = self.slot_override(&c, "__get__", 0) {
                         let fun = self.obj_value(Object::Bound(fun, v));
                         return self.call(
                             fun,
@@ -8327,13 +8369,13 @@ impl Runtime {
         if self.is_template_value(&v){if let Some(result)=self.template_attr(v.clone(),name){return result;}}
         if name=="__class__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::GenericAlias{typing:true,..}))) {return Ok(Value::Builtin("typing._GenericAlias".into()));}
         if self.is_typing_value(&v){if let Some(result)=self.typing_attr(v.clone(),name){return result;}}
-        if name=="__class_getitem__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) && self.class_lookup(&v,name,0).is_none() && self.typing_class_uses_typing(&v) {
+        if name=="__class_getitem__" && matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) && self.slot_override(&v,name,0).is_none() && self.typing_class_uses_typing(&v) {
             return Ok(self.obj_value(Object::Bound(Value::Builtin("method:__class_getitem__".into()),v)));
         }
         if matches!(&v,Value::Builtin(value)if value=="GenericAlias") && name=="__module__" {return Ok(Value::Str("types".into()));}
         if let Some(result)=self.dictview_attr(v.clone(),name) {return result;}
         if let Some(result)=self.generic_attr(v.clone(),name) {return result;}
-        if name=="__class_getitem__" && (matches!(&v,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) || (matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) && self.class_lookup(&v,name,0).is_none() && self.class_mro(&v,0).unwrap_or_default().iter().any(|base|matches!(base,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str()))))) {
+        if name=="__class_getitem__" && (matches!(&v,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str())) || (matches!(&v,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) && self.slot_override(&v,name,0).is_none() && self.class_mro(&v,0).unwrap_or_default().iter().any(|base|matches!(base,Value::Builtin(name)if ["list","dict","tuple","set","frozenset","type"].contains(&name.as_str()))))) {
             return Ok(self.obj_value(Object::Bound(Value::Builtin("method:__class_getitem__".into()),v)));
         }
         if name == "__len__" && matches!(v, Value::Str(_) | Value::Bytes(_)) {
@@ -8464,6 +8506,8 @@ impl Runtime {
         if let Value::Obj(i) = v.clone() {
             match self.object(i)? {
                 Object::Code(code) => match name {
+                    "co_name" => return self.code_constant(code,Const::Str(self.codes[code].name.clone())),
+                    "co_qualname" => return self.code_constant(code,Const::Str(self.codes[code].qualname.clone())),
                     "co_flags" => return Ok(Value::Int(Int::from_i128(self.codes[code].future_flags as i128).into())),
                     _ => {},
                 },
@@ -8634,7 +8678,7 @@ impl Runtime {
                         }
                         return Err(pyerr("AttributeError", name));
                     }
-                    if name == "__dict__" && self.class_lookup(&class,name,0).is_none() {
+                    if name == "__dict__" && self.slot_override(&class,name,0).is_none() {
                         if !self.instance_allows_dict(i) {
                             return Err(pyerr("AttributeError", "object has no __dict__"));
                         }
@@ -8668,7 +8712,7 @@ impl Runtime {
                             });
                         }
                     }
-                    if let Some(x) = self.class_lookup(&class, "__getattr__", 0) {
+                    if let Some(x) = self.slot_override(&class, "__getattr__", 0) {
                         let fun = self.obj_value(Object::Bound(x, v));
                         return self.call(fun, vec![Value::Str(name.into())], Vec::new(), None);
                     }
@@ -8695,12 +8739,12 @@ impl Runtime {
                         return Ok(self.obj_value(Object::Tuple(mro)));
                     }
                     if name == "__name__" {
-                        return Ok(Value::Str(c.name.into()));
+                        return Ok(c.name_value.clone());
                     }
                     if name == "__qualname__" {
                         return Ok(self
                             .ns_get(c.attrs, "__qualname__")
-                            .unwrap_or(Value::Str(c.name.into())));
+                            .unwrap_or(c.name_value));
                     }
                     if name == "__dict__" {
                         return Ok(self.obj_value(Object::MappingProxy { owner: c.attrs }));
@@ -8713,8 +8757,8 @@ impl Runtime {
                     if name=="__annotate__" {return Ok(Value::None);}
                 }
                 Object::Function(fun) => match name {
-                    "__name__" => return Ok(Value::Str(fun.name.into())),
-                    "__qualname__" => return Ok(Value::Str(fun.qualname.into())),
+                    "__name__" => return Ok(fun.name),
+                    "__qualname__" => return Ok(fun.qualname),
                     "__module__" => return Ok(fun.module),
                     "__doc__" => return Ok(fun.doc),
                     "__annotations__" => {
@@ -8749,7 +8793,7 @@ impl Runtime {
                     "__dict__" => return Ok(Value::Obj(fun.attrs)),
                     "__globals__" => return Ok(Value::Obj(fun.globals)),
                     "__builtins__" => return Ok(fun.builtins),
-                    "__code__" => return Ok(self.obj_value(Object::Code(fun.code))),
+                    "__code__" => return Ok(self.code_object(fun.code)),
                     "__defaults__" => {
                         return Ok(if !fun.defaults_set {
                             Value::None
@@ -8804,6 +8848,11 @@ impl Runtime {
                         }
                         _ => {}
                     }
+                }
+                Object::Generator(frame) if matches!(name,"__name__"|"__qualname__"|"gi_code") => {
+                    if name=="gi_code" {return Ok(self.code_object(frame.code));}
+                    let names=match self.object(frame.generator_names.expect("generator names"))?{Object::Tuple(names)=>names,_=>unreachable!()};
+                    return Ok(names[usize::from(name=="__qualname__")].clone());
                 }
                 Object::List(_)
                 | Object::Tuple(_)
@@ -9064,7 +9113,7 @@ impl Runtime {
             }
             _ => {}
         }
-        if self.is_exception_value(&v){if let Some(class)=self.object_class(&v){if let Some(method)=self.class_lookup(&class,"__getattr__",0){let bound=self.bind_descriptor(method,Some(v),class)?;return self.call(bound,vec![Value::Str(name.into())],Vec::new(),None);}}}
+        if self.is_exception_value(&v){if let Some(class)=self.object_class(&v){if let Some(method)=self.slot_override(&class,"__getattr__",0){let bound=self.bind_descriptor(method,Some(v),class)?;return self.call(bound,vec![Value::Str(name.into())],Vec::new(),None);}}}
         Err(pyerr(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", self.typename(&v), name),
@@ -9081,7 +9130,7 @@ impl Runtime {
         }
         if self.is_exception_value(&obj) {
             if let Some(class)=self.object_class(&obj) {
-                if let Some(descriptor)=self.class_lookup(&class,name,0) {
+                if let Some(descriptor)=self.slot_override(&class,name,0) {
                     if let Value::Obj(index)=&descriptor {
                         match self.object(*index)? {
                             Object::Slot{..}=>{self.slot_access(descriptor,obj,Some(value),false)?;return Ok(());}
@@ -9186,19 +9235,31 @@ impl Runtime {
                     self.heap[i] = Some(Object::Cached(cache));
                     return Ok(());
                 }
+                Object::Generator(frame) => {
+                    if matches!(name,"__name__"|"__qualname__") {
+                        if !matches!(self.native_payload(&value).unwrap_or_else(||value.clone()),Value::Str(_)) {
+                            return Err(pyerr("TypeError",format!("{} must be set to a string object",name)));
+                        }
+                        let metadata=frame.generator_names.expect("generator names");
+                        match self.heap[metadata].as_mut().expect("live generator names") {
+                            Object::Tuple(names)=>names[usize::from(name=="__qualname__")]=value,
+                            _=>unreachable!(),
+                        }
+                        return Ok(());
+                    }
+                    return Err(pyerr("AttributeError",if name=="gi_code"{"attribute 'gi_code' of 'generator' objects is not writable".to_owned()}else{format!("'generator' object has no attribute '{}'",name)}));
+                }
                 Object::Function(mut fun) => {
                     match name {
                         "__builtins__" => return Err(pyerr("AttributeError","readonly attribute")),
                         "__name__" | "__qualname__" => {
-                            let text = if let Value::Str(s) = value {
-                                s
-                            } else {
-                                return Err(pyerr("TypeError", "function name must be a string"));
-                            };
+                            if !matches!(self.native_payload(&value).unwrap_or_else(||value.clone()),Value::Str(_)) {
+                                return Err(pyerr("TypeError",format!("{} must be set to a string object",name)));
+                            }
                             if name == "__name__" {
-                                fun.name = text
+                                fun.name = value
                             } else {
-                                fun.qualname = text
+                                fun.qualname = value
                             }
                         }
                         "__module__" => fun.module = value,
@@ -9353,14 +9414,15 @@ impl Runtime {
                         self.ns_set(c.attrs,"__annotate_func__".into(),value);return Ok(());
                     }
                     if name == "__name__" {
-                        if let Value::Str(text) = value {
+                        if let Value::Str(text) = self.native_payload(&value).unwrap_or_else(||value.clone()) {
                             c.name = text;
+                            c.name_value = value;
                             self.heap[i] = Some(Object::Class(c));
                             return Ok(());
                         }
                         return Err(pyerr("TypeError", "can only assign string to __name__"));
                     }
-                    if name == "__qualname__" && !matches!(value, Value::Str(_)) {
+                    if name == "__qualname__" && !matches!(self.native_payload(&value).unwrap_or_else(||value.clone()), Value::Str(_)) {
                         return Err(pyerr("TypeError", "can only assign string to __qualname__"));
                     }
                     self.ns_set(c.attrs, name.into(), value);
@@ -9403,7 +9465,7 @@ impl Runtime {
     }
     fn delattr_default(&mut self, obj: Value, name: &str) -> PyResult<()> {
         if let Some(class) = self.object_class(&obj) {
-            let descriptor=if matches!(&obj,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Instance{..}|Object::BuiltinInstance{..}))){self.class_attribute_lookup(&class,name)}else{self.class_lookup(&class,name,0)};
+            let descriptor=if matches!(&obj,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Instance{..}|Object::BuiltinInstance{..}))){self.class_attribute_lookup(&class,name)}else{self.slot_override(&class,name,0)};
             if let Some(descriptor) = descriptor {
                 if let Value::Obj(index) = &descriptor {
                     if let Object::Property { del, .. } = self.object(*index)? {
@@ -9437,13 +9499,21 @@ impl Runtime {
                     if error.dict.is_some_and(|attrs|self.ns_del(attrs,name)){self.heap[i]=Some(Object::Exception(error));return Ok(());}
                     return Err(pyerr("AttributeError",name));
                 }
+                Object::Generator(_) => {
+                    if matches!(name,"__name__"|"__qualname__"){return Err(pyerr("TypeError",format!("{} must be set to a string object",name)));}
+                    return Err(pyerr("AttributeError",if name=="gi_code"{"attribute 'gi_code' of 'generator' objects is not writable".to_owned()}else{format!("'generator' object has no attribute '{}'",name)}));
+                }
                 Object::Function(fun) => {
                     if name=="__builtins__" {return Err(pyerr("AttributeError","readonly attribute"));}
+                    if matches!(name,"__name__"|"__qualname__"){return Err(pyerr("TypeError",format!("{} must be set to a string object",name)));}
                     Some(fun.attrs)
                 }
                 Object::Instance { attrs, .. }
                 | Object::BuiltinInstance { attrs, .. } => Some(attrs),
-                Object::Class(c) => Some(c.attrs),
+                Object::Class(c) => {
+                    if matches!(name,"__name__"|"__qualname__"){return Err(pyerr("TypeError",format!("cannot delete '{}' attribute of immutable type '{}'",name,c.name)));}
+                    Some(c.attrs)
+                },
                 _ => None,
             };
             if let Some(a) = attrs {
@@ -9475,11 +9545,12 @@ impl Runtime {
         args: Vec<Value>,
         kwargs: KeywordArgs,
     ) -> PyResult<Frame> {
-        let mut roots=args.clone();roots.push(owner.clone());
+        let code_handle=self.code_object_index(function.code);
+        let mut roots=args.clone();roots.extend([owner.clone(),Value::Obj(code_handle)]);
         roots.extend(kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         roots.extend(function.defaults.iter().cloned());
         roots.extend(function.kwdefaults.values().cloned());
-        roots.extend([Value::Obj(function.globals),Value::Obj(function.attrs),function.builtins.clone()]);
+        roots.extend([Value::Obj(function.globals),Value::Obj(function.attrs),function.builtins.clone(),function.name.clone(),function.qualname.clone()]);
         roots.extend(function.closure.map(Value::Obj));
         self.view_rooted(roots,|runtime,root|{
             let code=&runtime.codes[function.code];
@@ -9530,8 +9601,15 @@ impl Runtime {
                 let value=function.kwdefaults.get(name).cloned().ok_or_else(||pyerr("TypeError",format!("missing keyword-only argument: '{}'",name)))?;
                 runtime.ns_set(ns,name.clone(),value);
             }
+            // Keyword comparisons may rename the function during binding.
+            // A generator snapshots the current names after those callbacks.
+            let generator_names=if runtime.codes[function.code].is_generator {
+                let current=match &owner {Value::Obj(index)=>runtime.heap.get(*index).and_then(Option::as_ref),_=>None};
+                let (name,qualname)=match current {Some(Object::Function(current))=>(current.name.clone(),current.qualname.clone()),_=>(function.name.clone(),function.qualname.clone())};
+                Some(runtime.alloc(Object::Tuple(vec![name,qualname])))
+            }else{None};
             Ok(Frame{
-                function:Some(owner),
+                function:Some(owner),generator_names,code_handle,
                 code:function.code,pc:0,locals:ns,
                 temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
                 globals:function.globals,builtins:function.builtins.clone(),closure:function.closure,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),

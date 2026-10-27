@@ -129,7 +129,7 @@ impl Runtime {
             Value::Obj(index) => match self.heap.get(index).and_then(Option::as_ref) {
                 Some(Object::List(_) | Object::Tuple(_) | Object::Range(..)) => true,
                 Some(Object::Instance { class, .. } | Object::BuiltinInstance { class, .. }) => {
-                    self.class_lookup(class, "__getitem__", 0).is_some()
+                    self.slot_override(class, "__getitem__", 0).is_some()
                 }
                 _ => false,
             },
@@ -343,7 +343,7 @@ impl Runtime {
         kwargs: KeywordArgs,
         caller: Option<&Frame>,
     ) -> PyResult<Value> {
-        let object = if let Some(new) = self.class_lookup(&class, "__new__", 0) {
+        let object = if let Some(new) = self.slot_override(&class, "__new__", 0) {
             let new=self.bind_descriptor(new,None,class.clone())?;
             let mut positional = vec![class.clone()];
             positional.extend(args.clone());
@@ -368,7 +368,7 @@ impl Runtime {
                 .or_else(|| self.object_class(&object))
                 .unwrap_or_else(|| Value::Builtin(self.typename(&object)));
             if self.is_subclass(&actual, &class)? {
-                if let Some(init) = self.class_lookup(&class, "__init__", 0) {
+                if let Some(init) = self.slot_override(&class, "__init__", 0) {
                     let bound = self.bind_descriptor(init, Some(object.clone()), class.clone())?;
                     let value = self.call(bound, args, kwargs, caller)?;
                     if !matches!(value, Value::None) {
@@ -515,12 +515,12 @@ impl Runtime {
         }
         let error = self.exception_data(&value)?;
         if let Some(class) = &error.class {
-            if let Some(method) = self.class_lookup(class, name, 0) {
+            if let Some(method) = self.slot_override(class, name, 0) {
                 let data = match &method {
                     Value::Obj(index) => match self.heap.get(*index).and_then(Option::as_ref) {
                         Some(Object::Property { .. } | Object::Slot { .. }) => true,
                         Some(Object::Instance { class, .. }) => {
-                            self.class_lookup(class, "__set__", 0).is_some()
+                            self.slot_override(class, "__set__", 0).is_some()
                         }
                         _ => false,
                     },

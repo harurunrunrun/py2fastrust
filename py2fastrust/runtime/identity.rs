@@ -205,6 +205,29 @@ impl Value {
     }
 }
 impl Runtime {
+    // Weak canonical handles: live functions/frames/code constants provide
+    // ownership, and the collector evicts entries before arena-slot reuse.
+    fn code_object_index(&mut self,code:usize)->usize {
+        if let Some(index)=self.code_objects.get(&code).copied() {
+            if matches!(self.heap.get(index).and_then(Option::as_ref),Some(Object::Code(found))if *found==code){return index;}
+        }
+        let index=self.alloc(Object::Code(code));self.code_objects.insert(code,index);index
+    }
+    fn code_object(&mut self,code:usize)->Value {Value::Obj(self.code_object_index(code))}
+    fn code_roots(&self,code:usize,seen:&mut std::collections::HashSet<usize>,roots:&mut Vec<Value>) {
+        let mut pending=vec![code];
+        while let Some(code)=pending.pop() {
+            if !seen.insert(code){continue;}
+            if let Some(index)=self.code_objects.get(&code){roots.push(Value::Obj(*index));}
+            for instruction in &self.codes[code].ops {
+                match &instruction.op {
+                    Op::MakeFunction{code,..}|Op::PrepareClass(code)|Op::MakeClass{code,..}|Op::MakeClassEx{code,..}=>pending.push(*code),
+                    _=>{},
+                }
+            }
+        }
+    }
+
     fn index_identity(&mut self, value: &Value) -> PyResult<Ident<Int>> {
         match value {
             Value::Int(number) => Ok(number.clone()),

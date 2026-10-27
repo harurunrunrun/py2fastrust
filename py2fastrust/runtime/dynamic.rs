@@ -578,7 +578,7 @@ impl DSymbols {
 }
 
 struct DLoop { start: usize, breaks: Vec<usize>, continues: Vec<usize> }
-struct DCtx { index: usize, loops: Vec<DLoop>, scopes: Vec<(ScopeKind,Vec<String>,Vec<String>)>, comp_locals:Vec<Vec<String>>, private: Option<String> }
+struct DCtx { index: usize, loops: Vec<DLoop>, scopes: Vec<(ScopeKind,Vec<String>,Vec<String>)>, comp_locals:Vec<Vec<String>>, private: Option<String>, lexical_prefix:String, definition_prefix:String }
 fn d_lexical_scope_binds(ctx:&DCtx,name:&str)->bool {
     for (index,(kind,locals,globals)) in ctx.scopes.iter().enumerate().rev() {
         if *kind==ScopeKind::Class {if name=="__class__"{return true;}continue;}
@@ -686,6 +686,21 @@ impl DCompiler {
             _ => unreachable!("not a branch instruction"),
         }
     }
+    // Lexical names are compiled once and never consult mutable function metadata.
+    fn qualify_child(&self,enclosing:&DCtx,name:&str,kind:&ScopeKind)->(String,String,String) {
+        let parent=&self.codes[enclosing.index];
+        let declaration=name.strip_prefix("<generic parameters of ").and_then(|name|name.strip_suffix('>')).unwrap_or(name);
+        let mut prefix=enclosing.lexical_prefix.clone();
+        if parent.globals.contains(&d_mangle(&enclosing.private,declaration)){prefix.clear();}
+        else if parent.kind==ScopeKind::TypeParameters && matches!(kind,ScopeKind::Function|ScopeKind::Class|ScopeKind::Annotation){prefix=enclosing.definition_prefix.clone();}
+        let qualname=format!("{prefix}{name}");
+        let nested=match kind {
+            ScopeKind::Function=>format!("{qualname}.<locals>."),
+            ScopeKind::Class|ScopeKind::TypeParameters=>format!("{qualname}."),
+            _=>enclosing.lexical_prefix.clone(),
+        };
+        (qualname,nested,prefix)
+    }
     fn code(&mut self, name: &str, kind: ScopeKind, params: &DParams, body: &[DStmt], enclosing: &DCtx, definition_line: usize) -> Result<usize,String> {
         let private=if kind == ScopeKind::Class { Some(name.to_owned()) } else { enclosing.private.clone() };
         let mut symbols = DSymbols { private:private.clone(),separate_comprehensions:matches!(kind,ScopeKind::Annotation|ScopeKind::TypeParameters) && d_annotation_class_scope(&enclosing.scopes),..DSymbols::default() }; symbols.block(body);
@@ -733,15 +748,16 @@ impl DCompiler {
         if symbols.generator && kind == ScopeKind::Class { return Err(self.error(1,"yield outside function")); }
         let index = self.codes.len();
         let docstring=if self.optimize<2 && kind==ScopeKind::Function{body.first().and_then(d_docstring).map(|value|d_clean_doc(value))}else{None};
-        self.codes.push(Code { name:name.to_owned(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator,future_flags:self.future_flags,docstring });
+        let (qualname,lexical_prefix,definition_prefix)=self.qualify_child(enclosing,name,&kind);
+        self.codes.push(Code { name:name.to_owned(),qualname:qualname.clone(),filename:self.filename.clone(),kind:kind.clone(),locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:symbols.nonlocals,frees,params:parameters,ops:Vec::new(),is_generator:symbols.generator,future_flags:self.future_flags,docstring });
         let is_class = kind == ScopeKind::Class;
         let mut scopes = enclosing.scopes.clone(); scopes.push((kind,symbols.locals,symbols.globals));
         let mut comp_scopes=enclosing.comp_locals.clone();comp_scopes.push(comp_locals);
-        let mut ctx = DCtx { index,loops:Vec::new(),scopes,comp_locals:comp_scopes,private };
+        let mut ctx = DCtx { index,loops:Vec::new(),scopes,comp_locals:comp_scopes,private,lexical_prefix,definition_prefix };
         let mut body_start = 0;
         if is_class {
             self.emit(&ctx,Op::Load("__name__".to_owned()),definition_line,0);self.emit(&ctx,Op::Store("__module__".to_owned()),definition_line,0);
-            self.emit(&ctx,Op::Const(Const::Str(name.to_owned())),definition_line,0);self.emit(&ctx,Op::Store("__qualname__".to_owned()),definition_line,0);
+            self.emit(&ctx,Op::Const(Const::Str(qualname)),definition_line,0);self.emit(&ctx,Op::Store("__qualname__".to_owned()),definition_line,0);
             self.emit(&ctx,Op::Const(Const::Int(definition_line.to_string())),definition_line,0); self.emit(&ctx,Op::Store("__firstlineno__".to_owned()),definition_line,0);
             if generic_class {self.emit(&ctx,Op::Load(".type_params".to_owned()),definition_line,0);self.emit(&ctx,Op::Store("__type_params__".to_owned()),definition_line,0);}
             if self.future_flags & D_FUTURE_ANNOTATIONS != 0 && d_has_annotations(body) { self.emit(&ctx,Op::SetupAnnotations,definition_line,0); }
@@ -1092,7 +1108,7 @@ impl DCompiler {
         let tuple=make(DExprKind::Tuple(parameters.iter().map(|parameter|make(DExprKind::Name(parameter.name.clone()))).collect()));
         body.push(DStmt{kind:DStmtKind::Assign(vec![make(DExprKind::Name(".type_params".to_owned()))],tuple),line,column});
         body.push(DStmt{kind:DStmtKind::TypeDefinition(Box::new(inner)),line,column});
-        let enclosing=DCtx{index:ctx.index,loops:Vec::new(),scopes:ctx.scopes.clone(),comp_locals:ctx.comp_locals.clone(),private};
+        let enclosing=DCtx{index:ctx.index,loops:Vec::new(),scopes:ctx.scopes.clone(),comp_locals:ctx.comp_locals.clone(),private,lexical_prefix:ctx.lexical_prefix.clone(),definition_prefix:ctx.definition_prefix.clone()};
         let code=self.code(&format!("<generic parameters of {name}>"),ScopeKind::TypeParameters,&wrapper_params,&body,&enclosing,line)?;
         self.emit(ctx,Op::MakeFunction{code:self.offset+code,defaults:0,kwdefaults:Vec::new()},line,column);
         for argument in &arguments{self.expr(ctx,argument)?;}
@@ -1332,8 +1348,11 @@ impl DCompiler {
         for name in &named.uses { if !symbols.locals.contains(name) && !globals.contains(name) && d_lexical_scope_binds(outer,name) { d_push_name(&mut frees,name); } }
         if named.uses.iter().any(|name|name=="__class__" || name=="super") && outer.scopes.iter().any(|(kind,_,_)|*kind==ScopeKind::Class) { d_push_name(&mut frees,"__class__"); }
         let index = self.codes.len(); let mut params = Params::default(); params.positional.push(".0".to_owned());
-        self.codes.push(Code { name:format!("<{kind}comp>"),filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator",future_flags:self.future_flags,docstring:None });
-        let mut scopes = outer.scopes.clone(); scopes.push((ScopeKind::Comprehension,symbols.locals,globals));let mut comp_scopes=outer.comp_locals.clone();comp_scopes.push(comp_locals); let mut ctx = DCtx { index,loops:Vec::new(),scopes,comp_locals:comp_scopes,private:outer.private.clone() };
+        let name=if kind=="generator"{"<genexpr>".to_owned()}else{format!("<{kind}comp>")};
+        let qualname=format!("{}{name}",outer.lexical_prefix);
+        let lexical_prefix=if kind=="generator"{format!("{qualname}.")}else{outer.lexical_prefix.clone()};
+        self.codes.push(Code { name,qualname,filename:self.filename.clone(),kind:ScopeKind::Comprehension,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:globals.clone(),nonlocals,frees,params,ops:Vec::new(),is_generator:kind=="generator",future_flags:self.future_flags,docstring:None });
+        let mut scopes = outer.scopes.clone(); scopes.push((ScopeKind::Comprehension,symbols.locals,globals)); let mut comp_scopes=outer.comp_locals.clone();comp_scopes.push(comp_locals); let mut ctx = DCtx { index,loops:Vec::new(),scopes,comp_locals:comp_scopes,private:outer.private.clone(),lexical_prefix,definition_prefix:outer.lexical_prefix.clone() };
         let result = if kind == "generator" { None } else { let tmp = self.temporary(&ctx); self.emit(&ctx,match kind { "list"=>Op::BuildList(0),"set"=>Op::BuildSet(0),_=>Op::BuildDict(0) },line,col); self.emit(&ctx,Op::Store(tmp.clone()),line,col); Some(tmp) };
         self.comprehension_loop(&mut ctx,kind,element,value,generators,0,result.as_deref(),inline,line,col)?;
         if let Some(result) = result { self.emit(&ctx,Op::Load(result),line,col); } else { self.emit(&ctx,Op::Const(Const::None),line,col); }
@@ -1384,9 +1403,9 @@ fn compile_dynamic_optimized(source: &str, filename: &str, mode: &str, code_offs
     let comp_locals=symbols.finish_comprehensions();
     if let Some(error) = symbols.error { return Err(error); }
     if !symbols.nonlocals.is_empty() { return Err(format!("SyntaxError: nonlocal declaration not allowed at module level ({filename}:1)")); }
-    let code = Code { name:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags,docstring:None };
+    let code = Code { name:"<module>".to_owned(),qualname:"<module>".to_owned(),filename:filename.to_owned(),kind:ScopeKind::Module,locals:symbols.locals.clone(),comp_locals:comp_locals.clone(),globals:symbols.globals.clone(),nonlocals:Vec::new(),frees:Vec::new(),params:Params::default(),ops:Vec::new(),is_generator:false,future_flags,docstring:None };
     let mut compiler = DCompiler { codes:vec![code],filename:filename.to_owned(),offset:code_offset,temporary:0,interactive:mode=="single",future_flags,scope_annotations:HashMap::new(),stringized_annotation:false,optimize };
-    let mut ctx = DCtx { index:0,loops:Vec::new(),scopes:vec![(ScopeKind::Module,symbols.locals,symbols.globals)],comp_locals:vec![comp_locals],private:None };
+    let mut ctx = DCtx { index:0,loops:Vec::new(),scopes:vec![(ScopeKind::Module,symbols.locals,symbols.globals)],comp_locals:vec![comp_locals],private:None,lexical_prefix:String::new(),definition_prefix:String::new() };
     if mode == "eval" {
         if let DStmtKind::Expr(value) = &body[0].kind { compiler.expr(&mut ctx,value)?; }
     } else {
