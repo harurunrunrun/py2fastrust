@@ -26,16 +26,29 @@ impl Runtime {
                 current=self.ns_parent(owner);
             }
         }
-        let owner = self.find_nonlocal(namespace, name).or_else(|| {
+        let mut private_owner=None;
+        let mut current=namespace;
+        while let Some(owner)=current {
+            if self.scope_cells.get(&owner).is_some_and(|cells|cells.contains_key(name)) {
+                private_owner=Some(owner);break;
+            }
+            current=self.ns_parent(owner);
+        }
+        let owner = private_owner.or_else(||self.find_nonlocal(namespace, name)).or_else(|| {
             if name == "__class__" { namespace } else { None }
         }).ok_or_else(|| pyerr("NameError", format!("no binding for free variable '{name}'")))?;
         if let Some(cell) = self.closure_bindings.get(&owner).and_then(|cells| cells.get(name)) {
             return Ok(*cell);
         }
-        let contents = self.ns_get(owner, name);
+        let private=self.scope_cells.get_mut(&owner).and_then(|cells|cells.remove(name));
+        let contents = if private.is_some(){private}else{
+            let value=self.ns_get(owner,name);
+            // Private annotation cells coexist with arbitrary class mapping
+            // entries of the same spelling; do not remove those entries.
+            self.ns_del(owner,name);value
+        };
         // Promoted bindings live only in cells, so an overwritten captured
         // value is not retained by an obsolete namespace entry.
-        self.ns_del(owner, name);
         let cell = self.alloc(Object::Cell(contents));
         self.closure_bindings.entry(owner).or_default().insert(name.to_owned(), cell);
         Ok(cell)

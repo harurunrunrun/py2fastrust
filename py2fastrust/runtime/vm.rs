@@ -2057,11 +2057,16 @@ impl Runtime {
             }
             Op::StoreCell(name) => {
                 let value=Self::pop(f)?;
-                self.scope_cells.entry(f.locals).or_default().insert(name,value);
+                if let Some(cell)=self.closure_bindings.get(&f.locals).and_then(|cells|cells.get(&name)).copied() {
+                    self.heap[cell]=Some(Object::Cell(Some(value)));
+                } else {self.scope_cells.entry(f.locals).or_default().insert(name,value);}
             }
             Op::LoadCell(name) => {
                 let mut namespace=Some(f.locals);let mut value=None;
                 while let Some(index)=namespace {
+                    if let Some(cell)=self.closure_bindings.get(&index).and_then(|cells|cells.get(&name)) {
+                        value=match self.heap.get(*cell).and_then(Option::as_ref){Some(Object::Cell(value))=>value.clone(),_=>None};break;
+                    }
                     if let Some(found)=self.scope_cells.get(&index).and_then(|cells|cells.get(&name)){value=Some(found.clone());break;}
                     namespace=if index==f.locals{f.closure}else{self.ns_parent(index)};
                 }

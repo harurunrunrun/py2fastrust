@@ -26,6 +26,11 @@ subscription, attribute access, unary/binary operators, and rich comparisons use
 Return validation runs after the Python callback has returned, in its caller's exception scope.
 Some internal built-in callback paths still reenter through Rust calls and need further continuation adapters.
 
+Functions retain shared cells for their free variables without retaining unrelated enclosing locals.
+Acyclic captured buffer exports can be released with automatic cyclic GC disabled;
+recursive cell cycles remain exported until collection. Class annotation dictionary
+and conditional annotation cells share the public closure-cell storage.
+
 `sys.setrecursionlimit` controls Python frame depth. Finite native list/tuple comparison nesting does not
 consume that budget. Pending native protocol actions have a separate 64 MiB storage bound, counting
 inline action records and boxed native operation records; exhaustion raises `RecursionError` in the caller.

@@ -656,10 +656,10 @@ impl DCompiler {
         for name in self.codes[child].frees.clone() {
             let parent=&mut self.codes[enclosing.index];
             if parent.kind==ScopeKind::Class {
-                // This class creates its own __class__ cell. Other closures
-                // pass through class namespaces even when a class name/global
-                // declaration has the same spelling.
-                if name!="__class__" { d_push_name(&mut parent.frees,&name); }
+                // A class creates its own class and annotation-dictionary
+                // cells. Other closures pass through class namespaces even
+                // when a class name/global declaration has the same spelling.
+                if name!="__class__" && name!="__classdict__" { d_push_name(&mut parent.frees,&name); }
             } else if !parent.locals.contains(&name) && !parent.globals.contains(&name) {
                 d_push_name(&mut parent.frees,&name);
             }

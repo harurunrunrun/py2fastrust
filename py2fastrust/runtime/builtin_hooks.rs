@@ -15,6 +15,20 @@ impl Runtime {
         roots.extend([Value::Obj(attrs),annotations.clone(),type_params.clone(),doc.clone(),Value::Obj(f.globals),f.builtins.clone()]);
         roots.extend(closure.map(Value::Obj));
         self.view_rooted(roots,|runtime,root|{
+            // Retain exactly the shared free-variable cells, rather than the
+            // enclosing namespace and every unrelated local it contains.
+            // Otherwise a namespace's own function binding manufactures a
+            // reference cycle and keeps acyclic buffer exports alive.
+            let names=runtime.closure_names(code);
+            let closure=if names.is_empty(){None}else{
+                let mut cells=Vec::with_capacity(names.len());
+                for name in names {
+                    let cell=Value::Obj(runtime.closure_cell(closure,&name)?);
+                    runtime.roots[root].push(cell.clone());cells.push(cell);
+                }
+                let namespace=runtime.closure_namespace(code,&cells);
+                runtime.roots[root].push(Value::Obj(namespace));Some(namespace)
+            };
             let module=runtime.global_name_get(f.globals,"__name__")?.unwrap_or(Value::None);
             runtime.roots[root].push(module.clone());
             let builtins=runtime.capture_builtins(f.globals,f.builtins.clone())?;
