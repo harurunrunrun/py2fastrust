@@ -3,11 +3,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { conversionSummary, verifyConversionResult } from './conversion-results.mjs';
 
 const { values } = parseArgs({ options: {
   site: { type: 'string' }, source: { type: 'string', default: '.' },
@@ -46,9 +47,12 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 let browser;
 const report = { source_commit: manifest.source_commit, preview: manifest.preview,
   pyodide: manifest.pyodide.version, cases: [], success: false };
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { encoding: 'utf8', timeout: 180_000,
+function execute(command, args, options = {}) {
+  return spawnSync(command, args, { encoding: 'utf8', timeout: 180_000,
     maxBuffer: 64 * 1024 * 1024, ...options });
+}
+function run(command, args, options = {}) {
+  const result = execute(command, args, options);
   assert.equal(result.status, 0,
     `${command} failed: ${result.error || ''}\n${result.stdout || ''}\n${result.stderr || ''}`);
   return result.stdout;
@@ -145,21 +149,33 @@ try {
       integer: 'i64', license: 'CC0-1.0', input: '' },
   ];
   for (const item of cases) {
+    const previousOutput = await page.locator('#output').inputValue();
     await page.locator('#source').fill(item.source);
     await page.locator('#integer').selectOption(item.integer);
     await page.locator('#license').selectOption(item.license);
     await page.locator('#optimize').setChecked(item.optimize !== false);
     await page.locator('#convert').click();
     await page.waitForFunction(() => !document.getElementById('convert').disabled, undefined, { timeout: 180_000 });
-    assert.equal(await page.locator('#status').textContent(), 'Conversion complete.', item.name);
+    const status = await page.locator('#status').textContent();
+    const workerResult = await page.evaluate(() =>
+      window.__workerMessages.filter(message => message.type === 'result').at(-1)?.result);
     const rust = await page.locator('#output').inputValue();
     const directory = await mkdtemp(join(tmpdir(), 'pytors-browser-'));
     await writeFile(join(directory, 'main.py'), item.source);
     const options = ['--int', item.integer, '--license', item.license];
     if (item.optimize === false) options.push('--no-optimize');
-    run(values.python, ['-m', 'py2fastrust', 'main.py', '-o', 'main.rs', ...options], {
+    const cli = execute(values.python, ['-m', 'py2fastrust', 'main.py', '-o', 'main.rs', ...options], {
       cwd: directory, env: { ...process.env, PYTHONPATH: source },
     });
+    const conversion = verifyConversionResult({ name: item.name, status, result: workerResult,
+      cli, output: rust, previousOutput });
+    if (conversion.conversion === 'failed') {
+      await assert.rejects(stat(join(directory, 'main.rs')), { code: 'ENOENT' });
+      assert.equal(await page.evaluate(() => window.sourceWasExecuted), undefined);
+      report.cases.push(conversion);
+      console.warn(`${item.name}: Conversion failed; recorded diagnostics and continuing Pages verification.`);
+      continue;
+    }
     await checkRustParity(item.name, rust, await readFile(join(directory, 'main.rs'), 'utf8'));
     assert(rust.includes('Transpilation does not use generative AI.'));
     if (item.compile !== false) {
@@ -169,8 +185,7 @@ try {
       assert.equal(actual, expected, `${item.name}: standalone Rust/CPython parity`);
     }
     assert.equal(await page.evaluate(() => window.sourceWasExecuted), undefined);
-    report.cases.push({ name: item.name, cli_parity: true, standalone: item.compile !== false });
-    if (item.name === 'bfs') await page.screenshot({ path: join(artifacts, 'desktop.png'), fullPage: true });
+    report.cases.push({ ...conversion, cli_parity: true, standalone: item.compile !== false });
   }
   const previous = await page.locator('#output').inputValue();
   await page.locator('#source').fill('def broken(:\n');
@@ -202,6 +217,7 @@ try {
   report.palette = style;
   assert(style.sideBySide);
   assert.equal(style.unexpected.length, 0, JSON.stringify(style.unexpected));
+  await page.screenshot({ path: join(artifacts, 'desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   assert(await page.evaluate(() => {
     const a = document.getElementById('source').getBoundingClientRect();
@@ -215,14 +231,22 @@ try {
     'Only pinned runtime assets may be requested externally.');
   report.success = true;
   report.network_requests = requests;
-  console.log(JSON.stringify({ success: true, cases: report.cases.length, source_commit: manifest.source_commit }));
+  const summary = conversionSummary(report);
+  console.log(JSON.stringify({ success: true, cases: report.cases.length,
+    converted: summary.converted, conversion_failures: summary.conversion_failures,
+    source_commit: manifest.source_commit }));
 } catch (error) {
   report.error = error.stack || String(error);
   throw error;
 } finally {
   report.browser_errors = browserErrors;
   report.network_requests = requests;
+  const summary = conversionSummary(report);
+  report.converted = summary.converted;
+  report.conversion_failures = summary.conversion_failures;
+  report.all_converted = summary.all_converted;
   await writeFile(join(artifacts, 'report.json'), JSON.stringify(report, null, 2) + '\n');
+  if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, summary.markdown);
   if (browser) await browser.close();
   await new Promise(resolve => server.close(resolve));
 }

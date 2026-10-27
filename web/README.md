@@ -85,6 +85,7 @@ comparing source bytes.
 python -m unittest discover -s tests/web -p 'test_*.py' -v
 node tests/web/ui.test.mjs
 node tests/web/worker.test.mjs
+node tests/web/conversion-results.test.mjs
 npm install --no-save --ignore-scripts playwright@1.62.1
 npx playwright install chromium
 node tests/web/browser.mjs --site dist/web --source .
@@ -98,6 +99,13 @@ diagnostics and keyboard input, and saves desktop/mobile screenshots. After
 initialization, new network requests are blocked during conversion. This test
 requires permission to start a local server and Chromium, and network access to
 the pinned runtime assets. A UI mock test does not replace this gate.
+
+A rejected Python example is recorded with its browser/CLI diagnostics and is
+skipped for Rust compilation. Verification continues with the next example;
+previous output is checked for preservation and is never compiled as the failed
+example. These conversion failures appear in `report.json` and the Actions job
+summary, and do not block the Pages upload or deployment. Browser initialization,
+diagnostic/parity mismatches, and Rust build/runtime failures still fail verification.
 
 ## GitHub Pages
 

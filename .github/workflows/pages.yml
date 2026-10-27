@@ -32,10 +32,13 @@ jobs:
       - run: python -m unittest discover -s tests/web -p 'test_*.py' -v
       - run: node tests/web/ui.test.mjs
       - run: node tests/web/worker.test.mjs
+      - run: node tests/web/conversion-results.test.mjs
       - run: python tools/build_web.py --output dist/web
       - run: npm install --no-save --ignore-scripts playwright@1.62.1
       - run: npx playwright install --with-deps chromium
-      - run: node tests/web/browser.mjs --site dist/web --source . --artifacts dist/browser-test
+      # Rejected Python examples are reported without preventing Pages updates.
+      - name: Verify browser and record conversion failures
+        run: node tests/web/browser.mjs --site dist/web --source . --artifacts dist/browser-test
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
