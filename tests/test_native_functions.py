@@ -180,8 +180,6 @@ print(accumulate(int(input()),int(input()),int(input())))
             "def f(x=[]): return len(x)\nprint(f())",
             "def f(x): return x\nprint(f.__defaults__)",
             "def f(x): return x\nprint(f([1]))",
-            "def f(x): return [x]\nprint(f(1))",
-            "def f(x):\n if x: return 1\nprint(f(0))",
             "def f(x): return x\nprint(f())",
             "def f(x): return x\nprint(f(1,2))",
             "def f(x): return x\nprint(f(1,x=2))",
@@ -199,7 +197,6 @@ print(accumulate(int(input()),int(input()),int(input())))
             "def f(x): return x\n__builtins__=0\nprint(f(1))",
             "def f(x): return x\n__name__=3\nif __name__=='__main__': print(f(1))",
             "def f(len): return len+1\nprint(f(1))",
-            "def f(x): pass\ny=f(1)\nprint(y)",
             "def f(x):\n print(x)\n return\n yield 2\nf(1)",
             "def f(x):\n return x\n yield from [2]\nprint(f(1))",
         ]

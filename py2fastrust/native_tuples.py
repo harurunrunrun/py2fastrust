@@ -74,11 +74,19 @@ def _mark(generator,kind):
 
 
 def _scalar(kind):
+    from .native_types import UnionType,NullableType
+    if isinstance(kind,UnionType):return all(_scalar(value) for value in kind.alternatives)
+    if isinstance(kind,NullableType):return _scalar(kind.value)
     return (all(_scalar(field) for field in kind.fields) if isinstance(kind,TupleType) else
-            kind in {"int","bool","int_bool","str"})
+            kind in {"int","bool","int_bool","str","none"})
 
 
 def _equal(generator,left,right):
+    from .native_unions import union_kind,project
+    if union_kind(left.kind) or union_kind(right.kind):
+        return project(left.kind,left.code,lambda a,x:project(right.kind,right.code,
+            lambda b,y:_equal(generator,_Expression(x,a,owned=False),_Expression(y,b,owned=False))))
+    if left.kind=="none" or right.kind=="none":return str(left.kind==right.kind).lower()
     if isinstance(left.kind,TupleType) or isinstance(right.kind,TupleType):
         return tuple_compare(generator,left,right,ast.Eq(),None)
     if left.kind in {"int","bool","int_bool"} and right.kind in {"int","bool","int_bool"}:
@@ -89,6 +97,10 @@ def _equal(generator,left,right):
 
 
 def _order(generator,left,right,operator,node):
+    from .native_unions import union_kind,project
+    if union_kind(left.kind) or union_kind(right.kind):
+        return project(left.kind,left.code,lambda a,x:project(right.kind,right.code,
+            lambda b,y:_order(generator,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)))
     if isinstance(left.kind,TupleType) or isinstance(right.kind,TupleType):
         operation={"<":ast.Lt,">":ast.Gt,"<=":ast.LtE,">=":ast.GtE}[operator]
         return tuple_compare(generator,left,right,operation(),node)
@@ -155,7 +167,12 @@ def tuple_repr(generator,value):
     for index,kind in enumerate(value.kind.fields):
         if index:lines.append(f'{result}.push_str(", ");')
         item=f"{name}.{index}"
-        if isinstance(kind,TupleType):
+        from .native_unions import union_kind
+        if union_kind(kind) or kind=="none":
+            from .native_typed_lists import _representation
+            nested=_representation(generator,_Expression(item,kind,owned=False),quoted=True)
+            lines.append(f"{result}.push_str(&({nested}));")
+        elif isinstance(kind,TupleType):
             nested=tuple_repr(generator,_Expression(item,kind,owned=False))
             lines.append(f"{result}.push_str(&({nested}));")
         elif kind=="str":lines.append(f"{result}.push_str(&native_tuple_repr_str(&{item}));")
@@ -212,19 +229,21 @@ def try_expression(generator,node,environment):
         if constant is not None and -len(value.kind.fields)<=int(constant)<len(value.kind.fields):
             index=int(constant)%len(value.kind.fields)
             kind=value.kind.fields[index]
-            result=generator.coerce(_Expression(f"{owner}.{index}",kind),kind)
+            result=generator.coerce(_Expression(f"{owner}.{index}",kind,owned=False),kind)
         else:
             kind=None
             for field in value.kind.fields:
                 kind=field if kind is None else join_types(kind,field)
                 if kind is None:raise _Unsupported
             kind=kind or "int"
-            arms=",".join(f"{index}=>{generator.coerce(_Expression(f'{owner}.{index}',field),kind)}" for index,field in enumerate(value.kind.fields))
+            arms=",".join(f"{index}=>{generator.coerce(_Expression(f'{owner}.{index}',field,owned=False),kind)}" for index,field in enumerate(value.kind.fields))
             result=f"match {checked}{{{arms}{',' if arms else ''}_=>unreachable!()}}"
-            if kind=="int_bool":generator.has_scalar_union=True
+            generator.register_type(kind)
         return _Expression("{"+setup+result+"}",kind)
     if isinstance(node,ast.Compare):
         expressions=[generator.expression(value,environment) for value in [node.left,*node.comparators]]
+        from .native_unions import union_kind
+        if any(union_kind(value.kind) or value.kind=="none" for value in expressions):return None
         if not any(isinstance(value.kind,TupleType) for value in expressions):return None
         if any(type(operator) not in {ast.Eq,ast.NotEq,ast.Lt,ast.LtE,ast.Gt,ast.GtE} for operator in node.ops):
             raise _Unsupported

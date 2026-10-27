@@ -166,7 +166,6 @@ print(read(int(input()),int(input())),int(input()))
                        'def a(x):return b(x)\ndef b(x):return a(x)\nprint(a(1))\n',
                        'def f(x=[]):return x\nprint(f())\n',
                        'x=7\ndef f():return x\nprint(f())\n',
-                       'def f(x):\n global value\n value=x\nf(1)\n',
-                       'def f(x):\n return x if x else False\nprint(f(7))\n']:
+                       'def f(x):\n global value\n value=x\nf(1)\n']:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source,"main.py","bigint"))

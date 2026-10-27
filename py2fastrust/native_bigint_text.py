@@ -119,6 +119,9 @@ class BigIntText:
         return None
 
     def text_compare(self, node, values):
+        from .native_unions import compare
+        finite=compare(self,node,values)
+        if finite is not None:return finite
         operators = {ast.Eq:"==",ast.NotEq:"!=",ast.Lt:"<",ast.LtE:"<=",ast.Gt:">",ast.GtE:">="}
         names = [self.temporary() for _ in values]
         tail = "true"

@@ -285,6 +285,9 @@ class ScalarGenerator(_Generator):
 
     @staticmethod
     def truth(value):
+        from .native_unions import truth
+        finite=truth(value,ScalarGenerator.truth)
+        if finite is not None:return finite
         if value.kind == "str":
             return f"!({value.code}).is_empty()"
         if value.kind == "float":
@@ -333,6 +336,9 @@ class ScalarGenerator(_Generator):
         return f"let {name}{kind} = {value.code};"
 
     def expression(self, node, environment):
+        from .native_unions import leaf_expression
+        leaf=leaf_expression(self,node,environment)
+        if leaf is not None:return leaf
         from .native_stdio import try_expression
         stdio=try_expression(self,node,environment)
         if stdio is not None:
@@ -371,6 +377,9 @@ class ScalarGenerator(_Generator):
                 raise _Unsupported
         if isinstance(node, ast.Compare):
             values = [self.read_expression(n, environment) for n in [node.left, *node.comparators]]
+            from .native_unions import compare
+            finite=compare(self,node,values)
+            if finite is not None:return finite
             if any(value.kind in {"str", "float"} for value in values):
                 return self.compare(node, values)
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):

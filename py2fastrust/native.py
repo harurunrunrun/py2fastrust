@@ -9,7 +9,8 @@ the public API; it never selects a general execution backend.
 
 import ast
 from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
-                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value)
+                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value,
+                           UnionType,NullableType,join_types)
 from dataclasses import dataclass, field, replace
 from importlib.resources import files
 import symtable
@@ -468,6 +469,8 @@ class _Generator:
         self.constructors = constructors or {}
         self.specializations = specializations
         self.return_kinds = set()
+        self.return_values = {}
+        self.union_types = set()
         self.expression_scopes = []
         self.expression_trace_id = None
         self.expression_mutations = []
@@ -499,7 +502,7 @@ class _Generator:
 
     def slot(self, kind):
         inner=unmaybe(kind)
-        if isinstance(inner,(TupleType,ListType)) or getattr(inner,"_key_container",False):
+        if isinstance(inner,(TupleType,ListType,UnionType,NullableType)) or getattr(inner,"_key_container",False):
             self.register_type(inner)
             if is_maybe(kind) and not immutable(inner):raise _Unsupported
             slot=f"native_var_{len(self.bindings)}"
@@ -507,7 +510,7 @@ class _Generator:
             return slot
         if is_maybe(kind):
             inner = unmaybe(kind)
-            if inner not in {"int", "bool", "int_bool", "float", "str", "bytes"}:
+            if inner not in {"int", "bool", "int_bool", "float", "str", "bytes", "none"}:
                 raise _Unsupported
             # Register scalar helper requirements through the ordinary slot
             # factory without retaining an extra user-value binding.
@@ -515,7 +518,7 @@ class _Generator:
             del self.bindings[probe]
             self.bindings[probe] = kind
             return probe
-        if kind not in {"int", "bool", "int_bool", "list_int", "dict_int", "set_int", "matrix_int", "deque_int", "bytes"}:
+        if kind not in {"int", "bool", "int_bool", "list_int", "dict_int", "set_int", "matrix_int", "deque_int", "bytes", "none"}:
             raise _Unsupported
         if kind == "int_bool":
             self.has_scalar_union = True
@@ -525,7 +528,11 @@ class _Generator:
 
     def register_type(self,kind):
         kind=unmaybe(kind)
-        if getattr(kind,"_key_container",False):
+        if isinstance(kind,UnionType):
+            self.union_types.add(kind)
+            for value in kind.alternatives:self.register_type(value)
+        elif isinstance(kind,NullableType):self.register_type(kind.value)
+        elif getattr(kind,"_key_container",False):
             self.has_key_containers=True
             self.register_type(kind.key)
             if kind._key_container=="dict":self.register_type(kind.value)
@@ -586,6 +593,9 @@ class _Generator:
     @staticmethod
     def coerce(expression, kind):
         from .native_tuples import coerce_structural
+        from .native_unions import coerce_union
+        finite=coerce_union(expression,kind,_Generator.coerce)
+        if finite is not None:return finite
         if is_maybe(kind):
             if expression.kind==kind:return f"({expression.code}).clone()"
             if is_maybe(expression.kind):
@@ -602,23 +612,13 @@ class _Generator:
         raise _Unsupported
 
     def scalar_kind(self, expressions):
-        if expressions and any(isinstance(value.kind,(TupleType,ListType)) for value in expressions):
-            from .native_types import join_types
-            kind=expressions[0].kind
-            for value in expressions[1:]:
-                kind=join_types(kind,value.kind)
-                if kind is None:raise _Unsupported
-            if not immutable(kind):raise _Unsupported
-            self.register_type(kind)
-            return kind
-        types = TypeSet()
+        kind=None
         for value in expressions:
-            if value.kind not in {"int", "bool", "int_bool"}:
-                raise _Unsupported
-            types = types.join(TypeSet.from_kind(value.kind))
-        if types.native_kind == "int_bool":
-            self.has_scalar_union = True
-        return types.native_kind
+            kind=value.kind if kind is None else join_types(kind,value.kind)
+            if kind is None:raise _Unsupported
+        if kind is None or not immutable(kind):raise _Unsupported
+        self.register_type(kind)
+        return kind
 
     @staticmethod
     def truth(expression):
@@ -824,7 +824,7 @@ class _Generator:
         # into Rust's fixed signature. Defaults are proved pure constants.
         def argument_value(argument):
             value = self.expression(argument, environment)
-            if value.kind not in {"int", "bool", "list_int", "float", "str", "bytes"} and not isinstance(value.kind,(TupleType,ListType)):
+            if value.kind not in {"int", "bool", "int_bool", "none", "list_int", "float", "str", "bytes"} and not isinstance(value.kind,(TupleType,ListType,UnionType,NullableType)):
                 raise _Unsupported
             if list_type(value.kind) and not value.owned:
                 # Reading an ordinary binding has no side effect. Delay the
@@ -836,7 +836,7 @@ class _Generator:
                     raise _Unsupported
                 return value
             name = self.temporary()
-            code=self.coerce(value,value.kind) if isinstance(value.kind,TupleType) and not value.owned else value.code
+            code=self.coerce(value,value.kind) if isinstance(value.kind,(TupleType,UnionType,NullableType)) and not value.owned else value.code
             lines.append(f"let {name} = {code};")
             return _Expression(name, value.kind, owned=value.owned)
 
@@ -946,6 +946,9 @@ class _Generator:
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        from .native_unions import leaf_expression
+        leaf=leaf_expression(self,node,environment)
+        if leaf is not None:return leaf
         from .native_module_calls import try_expression as module_expression
         module=module_expression(self,node,environment)
         if module is not None:return module
@@ -1148,6 +1151,9 @@ class _Generator:
             return _Expression(code, kind)
         if isinstance(node, ast.Compare):
             values = [self.expression(value, environment) for value in [node.left, *node.comparators]]
+            from .native_unions import compare
+            finite=compare(self,node,values)
+            if finite is not None:return finite
             if len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn)):
                 if values[1].kind not in {"dict_int", "set_int"}:
                     raise _Unsupported
@@ -1409,7 +1415,7 @@ class _Generator:
                 info = _MaybeInfo(kind, owner)
                 kind = maybe_type(kind)
             else:
-                info = kind if kind == "int_bool" or isinstance(kind,TupleType) else infos[0]
+                info = kind if kind == "int_bool" or isinstance(kind,(TupleType,UnionType,NullableType)) else infos[0]
                 if isinstance(kind,ListType):
                     lengths=[info.length for info in infos if isinstance(info,TypedListInfo)]
                     info=TypedListInfo(kind,lengths[0] if lengths and all(length==lengths[0] for length in lengths) else None)
@@ -1730,21 +1736,17 @@ class _Generator:
             environment[node.name] = function
             return "", environment
         if isinstance(node, ast.Return) and self.function is not None:
-            if self.function.return_kind == "none":
-                if node.value is not None and not (isinstance(node.value, ast.Constant) and node.value.value is None):
-                    raise _Unsupported
-                return "return Ok(());", None
-            if node.value is None:
-                raise _Unsupported
-            value = self.expression(node.value, environment)
-            if isinstance(value.kind,ListType) and not value.owned:
+            value = self.expression(node.value, environment) if node.value is not None else _Expression("()","none")
+            if not immutable(value.kind):
                 binding=environment.get(node.value.id) if isinstance(node.value,ast.Name) else None
-                if not isinstance(binding,_Binding) or binding.slot not in self.bindings:
+                if not value.owned and (not isinstance(binding,_Binding) or binding.slot not in self.bindings):
                     raise _Unsupported
-            if value.kind not in {"int", "bool", "float", "str", "bytes"} and not isinstance(value.kind,(TupleType,ListType)):
-                raise _Unsupported
+            self.register_type(value.kind)
             self.return_kinds.add(value.kind)
-            return f"return Ok({value.code});", None
+            marker="// "+self.temporary()+"_typed_return"
+            if not immutable(value.kind) and not value.owned:value=replace(value,owned=True)
+            self.return_values[marker]=(node,value)
+            return marker,None
         if isinstance(node, ast.Return) and self.return_label is not None:
             lines = []
             if node.value is not None and not isinstance(node.value, ast.Constant):
@@ -1818,12 +1820,14 @@ class _Generator:
                 return f"let {result} = {value.code};\nlet {offset} = {self.number(index)};\n{setter};", environment
             if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
-            if (value.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"} or isinstance(value.kind,ListType)) and (not value.owned or len(node.targets) != 1):
+            if not immutable(value.kind) and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported
             name = self.temporary()
-            lines = [f"let {name} = {value.code};"]
-            for target in node.targets:
-                lines.append(f"{self.bind(target.id, value, environment)} = {name};")
+            assigned=self.coerce(value,value.kind) if isinstance(value.kind,(UnionType,NullableType)) and not value.owned else value.code
+            lines = [f"let {name} = {assigned};"]
+            for index,target in enumerate(node.targets):
+                item=self.coerce(_Expression(name,value.kind),value.kind) if index+1<len(node.targets) else name
+                lines.append(f"{self.bind(target.id, value, environment)} = {item};")
             return "\n".join(lines), environment
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Subscript):
             target = node.target
@@ -2257,6 +2261,9 @@ def _function_plans(tree, table, bits, generator_type=_Generator):
                     return field
                 defaults[name]=tuple_default(value)
                 continue
+            if isinstance(value,ast.Constant) and value.value is None:
+                defaults[name]=_Expression("()","none")
+                continue
             literal = value.operand if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)) else value
             if isinstance(literal, ast.Constant) and type(literal.value) in {str, float}:
                 if literal is not value and type(literal.value) is not float:
@@ -2344,7 +2351,7 @@ class _Specializations:
         # Further specialization growth needs a direct-generation implementation.
         if len(self.variants) + len(self.active) >= 128:
             raise _Unsupported
-        if any(kind not in {"int", "bool", "list_int", "float", "str", "bytes"} and not isinstance(kind,(TupleType,ListType)) for kind in kinds):
+        if any(kind not in {"int", "bool", "int_bool", "none", "list_int", "float", "str", "bytes"} and not isinstance(kind,(TupleType,ListType,UnionType,NullableType)) for kind in kinds):
             raise _Unsupported
         self.active.add(id(function.node))
         rust_name = function.rust_name + "_" + ("_".join(kind_tag(kind) for kind in kinds) or "void")
@@ -2381,11 +2388,18 @@ class _Specializations:
             signature.append("mut native_input: &mut NativeInput")
         signature.append("mut native_output: &mut String")
         body, remaining = local.statements(function.node.body, environment)
-        if variant.return_kind != "none":
-            if remaining is not None or len(local.return_kinds) != 1:
-                raise _Unsupported
-            variant.return_kind = next(iter(local.return_kinds))
-        tail = "\nOk(())" if variant.return_kind == "none" and remaining is not None else ""
+        if remaining is not None:local.return_kinds.add("none")
+        result=None
+        for kind in sorted(local.return_kinds,key=kind_tag):
+            result=kind if result is None else join_types(result,kind)
+            if result is None:raise _Unsupported
+        variant.return_kind=result or "none"
+        local.register_type(variant.return_kind)
+        resolved={}
+        for marker,(node,value) in local.return_values.items():
+            resolved[marker]=f"return Ok({local.coerce(value,variant.return_kind)});"
+        body="\n".join(resolved.get(line,line) for line in body.split("\n"))
+        tail=("\nOk("+local.coerce(_Expression("()","none"),variant.return_kind)+")") if remaining is not None else ""
         variant.required.update(variant.imports)
         return_type = rust_type(variant.return_kind)
         source = (f"#[inline]\nfn {variant.rust_name}({', '.join(signature)}) -> Result<{return_type}, NativeError> {{\n"
@@ -2479,6 +2493,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             generator.global_names=frozenset({wrapper[0]})
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
+        for local in specializations.generators:generator.union_types.update(local.union_types)
         for local in specializations.generators:
             for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
@@ -2546,6 +2561,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_native_modules:
         from .native_module_calls import HELPERS as MODULE_HELPERS
         result.append(MODULE_HELPERS)
+    if generator.union_types:
+        from .native_unions import render_types
+        result.append(render_types(generator.union_types))
     result.extend(function_sources)
     result.append("fn main() {\nuse std::fmt::Write as _;\nuse std::io::Write as _;\n"
                   "let mut native_output = String::new();\n"

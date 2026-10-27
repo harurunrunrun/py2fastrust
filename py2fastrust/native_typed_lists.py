@@ -465,6 +465,9 @@ def try_statement(g,node,environment):
 
 
 def _representation(g,value,*,quoted=False):
+    from .native_unions import representation
+    finite=representation(g,value,_representation,quoted)
+    if finite is not None:return finite
     kind,code = value.kind,value.code
     if kind == "str":
         if quoted:
@@ -511,7 +514,8 @@ def _print(g,node,environment):
     call = node.value
     values = [(isinstance(argument,ast.Starred),g.expression(argument.value if isinstance(argument,ast.Starred) else argument,environment))
               for argument in call.args]
-    if not any(isinstance(value.kind,(ListType,TupleType)) or not star and value.kind == "list_int" for star,value in values):
+    from .native_unions import union_kind
+    if not any(isinstance(value.kind,(ListType,TupleType)) or union_kind(value.kind) or value.kind=="none" or not star and value.kind == "list_int" for star,value in values):
         return None
     separator,end,flush = " ","\n",False
     seen = set()
@@ -535,7 +539,7 @@ def _print(g,node,environment):
     arguments = []
     for star,value in values:
         temporary = g.temporary()
-        code = f"&({value.code})" if (isinstance(value.kind,(ListType,TupleType)) or value.kind == "list_int") and not value.owned else value.code
+        code = f"&({value.code})" if (isinstance(value.kind,(ListType,TupleType)) or union_kind(value.kind) or value.kind == "list_int") and not value.owned else value.code
         lines.append(f"let {temporary}={code};")
         arguments.append((star,_Expression(temporary,value.kind)))
     first = g.temporary()

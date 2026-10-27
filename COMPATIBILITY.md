@@ -55,8 +55,20 @@ function signatures, and tuple operations. Fixed tuples of immutable scalar
 values use ordinary Rust tuples and support aliases, unpacking, indexing,
 comparisons, Python-style printing, and typed function arguments/results.
 Possibly unbound tuple bindings use `Option<TupleType>` storage. Mutable tuple
-elements, arbitrary shape unions, and general tuple iteration still require
-shared container/iteration lowering.
+elements and remaining general tuple iteration require shared container/iteration
+lowering.
+
+Proved finite value alternatives share canonical types across ordinary binding
+joins, function arguments/results, and immutable container fields. Each shape
+uses its own typed Rust enum; nullable values use `Option<T>`. An unbound name
+has a separate outer binding state, so bound `None`, an empty tuple, and an
+unbound name remain distinct. Joined return types come from typed return records,
+including a reachable implicit `None` return. Truth, Python-style output, equality,
+and identity checks against `None` dispatch over the actual alternatives.
+Uniquely owned mutable alternatives can move across proved branches and returns;
+creating shared mutable aliases still requires implementation. General loop-header
+constraints, arithmetic/ordering on finite alternatives, and the class adapter
+to this shared representation remain unfinished.
 
 Proved immutable tuple keys use structurally typed Rust sets and dictionaries
 in every integer mode. Numeric keys preserve Python's bool/int equality while
@@ -71,7 +83,8 @@ slices, and Python-style output. Proved owned list results can cross function
 boundaries. Typed sorting is stable and computes a supported key once per
 element. `next` immediately consumes a typed iterator with construction/default
 evaluation before its first pull and a positioned `StopIteration` on exhaustion.
-Escaping iterators, nullable defaults, unproved aliases and remaining sequence
+Nullable `next` defaults retain the distinction between exhaustion and a yielded
+`None`. Escaping iterators, unproved aliases and remaining sequence
 methods are still required work. Producer/consumer normalization is being
 unified further; these operations do not establish full Python compatibility.
 

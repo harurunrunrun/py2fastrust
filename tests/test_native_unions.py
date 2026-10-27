@@ -112,7 +112,7 @@ print(a&b,a|b,a^b,a&1,1|a,a^3)
 print((a&b)^True,not a,a<b,a==b)
 ''', ("0\n", "1\n", "2\n", "3\n", "6\n"))
 
-    def test_unsupported_container_unions_keep_general_backend(self):
+    def test_container_unions_use_direct_backend(self):
         for source in (
             "if int(input()):x=[1]\nelse:x=True\nprint(x)",
             "n=int(input())\nx=True if n else 2\na=[x]\nprint(a)",
@@ -120,7 +120,7 @@ print((a&b)^True,not a,a<b,a==b)
             with self.subTest(source=source):
                 result = transpile(source)
                 self.assertTrue(result.success, result.diagnostics)
-                self.assertEqual(result.backend, "aot")
+                self.assertEqual(result.backend, "native")
 
     def test_union_numeric_operations_preserve_fixed_width_normalization(self):
         self.compare('''

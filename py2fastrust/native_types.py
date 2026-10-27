@@ -1,5 +1,6 @@
 """Hashable structural types shared by direct Rust lowering layers."""
 from dataclasses import dataclass
+from hashlib import sha256
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,58 @@ class ListType:
 @dataclass(frozen=True)
 class MaybeType:
     value: object
+
+
+@dataclass(frozen=True)
+class NullableType:
+    """A Python value that is None or value; distinct from an unbound name."""
+    value: object
+
+
+@dataclass(frozen=True)
+class UnionType:
+    """Canonical finite alternatives, each with its own concrete Rust type."""
+    alternatives: tuple[object, ...]
+
+
+def alternatives(kind):
+    if isinstance(kind,UnionType):
+        return kind.alternatives
+    if isinstance(kind,NullableType):
+        return ("none",)+alternatives(kind.value)
+    return (kind,)
+
+
+def union_type(*kinds):
+    values=set()
+    for kind in kinds:
+        values.update(alternatives(kind))
+    if not values:return None
+    if "int_bool" in values or {"int","bool"} <= values:
+        values.difference_update({"int","bool"})
+        values.add("int_bool")
+    nullable="none" in values and len(values)>1
+    if nullable:values.remove("none")
+    ordered=tuple(sorted(values,key=kind_tag))
+    result=ordered[0] if len(ordered)==1 else UnionType(ordered)
+    return NullableType(result) if nullable else result
+
+
+def union_name(kind):
+    assert isinstance(kind,UnionType)
+    return "NativeUnion"+sha256(kind_tag(kind).encode()).hexdigest()[:16]
+
+
+def union_variant(kind,alternative):
+    return union_name(kind)+"::V"+str(kind.alternatives.index(alternative))
+
+
+def union_declaration(kind,render=None,clone=True):
+    """Pure adapter boundary: class emitters may supply their leaf renderer."""
+    render=rust_type if render is None else render
+    derive="#[derive(Clone)]\n" if clone else ""
+    fields=",".join(f"V{index}({render(value)})" for index,value in enumerate(kind.alternatives))
+    return derive+f"enum {union_name(kind)} {{{fields}}}"
 
 
 @dataclass(frozen=True)
@@ -49,6 +102,8 @@ def tuple_field(code,index):
 def rust_type(kind):
     if is_maybe(kind):
         return "Option<"+rust_type(unmaybe(kind))+">"
+    if isinstance(kind,NullableType):return "Option<"+rust_type(kind.value)+">"
+    if isinstance(kind,UnionType):return union_name(kind)
     if isinstance(kind,TupleType):
         return tuple_code(rust_type(field) for field in kind.fields)
     if isinstance(kind,ListType):
@@ -65,6 +120,8 @@ def rust_type(kind):
 def kind_tag(kind):
     if is_maybe(kind):
         return "maybe_"+kind_tag(unmaybe(kind))
+    if isinstance(kind,NullableType):return "nullable_"+kind_tag(kind.value)+"_end"
+    if isinstance(kind,UnionType):return "union_"+"_".join(kind_tag(value) for value in kind.alternatives)+"_end"
     if isinstance(kind,TupleType):
         return "tuple"+str(len(kind.fields))+"_"+"_".join(kind_tag(field) for field in kind.fields)+"_end"
     if isinstance(kind,ListType):
@@ -75,7 +132,9 @@ def kind_tag(kind):
 
 
 def immutable(kind):
-    return (isinstance(kind,TupleType) and all(immutable(field) for field in kind.fields)
+    return (isinstance(kind,UnionType) and all(immutable(value) for value in kind.alternatives)
+            or isinstance(kind,NullableType) and immutable(kind.value)
+            or isinstance(kind,TupleType) and all(immutable(field) for field in kind.fields)
             or kind in {"int","bool","int_bool","str","bytes","float","none"})
 
 
@@ -90,7 +149,8 @@ def join_types(left,right):
     if isinstance(left,ListType) and isinstance(right,ListType):
         element=join_types(left.element,right.element)
         return None if element is None else ListType(element)
-    return None
+    if is_maybe(left) or is_maybe(right):return None
+    return union_type(left,right)
 
 
 def list_type(kind):
@@ -99,10 +159,14 @@ def list_type(kind):
 
 def default_value(kind,zero):
     if is_maybe(kind):return "None"
+    if isinstance(kind,NullableType):return "None"
+    if isinstance(kind,UnionType):
+        value=kind.alternatives[0]
+        return f"{union_variant(kind,value)}({default_value(value,zero)})"
     if isinstance(kind,TupleType):return tuple_code(default_value(field,zero) for field in kind.fields)
     if isinstance(kind,ListType):return "Vec::new()"
     if getattr(kind,"_key_container",False):return "NativeKeySet::new()" if kind._key_container=="set" else "NativeKeyDict::new()"
-    return {"int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"String::new()",
+    return {"none":"()","int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"String::new()",
             "bytes":"Vec::<u8>::new()","float":"0.0_f64","list_int":"Vec::new()",
             "matrix_int":"Vec::new()","set_int":"NativeSet::new()","dict_int":"NativeDict::new()",
             "deque_int":"std::collections::VecDeque::new()"}[kind]

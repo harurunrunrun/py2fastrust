@@ -8,7 +8,7 @@ Missing direct lowering produces a positioned diagnostic in the public API.
 
 import ast
 from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
-                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value)
+                           is_maybe,unmaybe,maybe_type,immutable,list_type,default_value,UnionType,NullableType)
 from importlib.resources import files
 import symtable
 
@@ -114,13 +114,13 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return integer_policy(0).rust_literal(value,_string)
 
     def slot(self, kind):
-        if isinstance(unmaybe(kind),(TupleType,ListType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
+        if isinstance(unmaybe(kind),(TupleType,ListType,UnionType,NullableType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
         if kind == "str":
             self.has_big_text = True
             slot = f"native_var_{len(self.bindings)}"
             self.bindings[slot] = kind
             return slot
-        if unmaybe(kind) not in {"int", "bool", "int_bool", "list_int", "str", "bytes"}:
+        if unmaybe(kind) not in {"int", "bool", "int_bool", "list_int", "str", "bytes", "none"}:
             raise _Unsupported
         return super().slot(kind)
 
@@ -137,6 +137,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
     @staticmethod
     def coerce(expression, kind):
         from .native_tuples import coerce_structural
+        from .native_unions import coerce_union
+        finite=coerce_union(expression,kind,BigIntGenerator.coerce)
+        if finite is not None:return finite
         if is_maybe(kind):
             if expression.kind==kind:return f"({expression.code}).clone()"
             if is_maybe(expression.kind):
@@ -155,6 +158,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def truth(expression):
+        from .native_unions import truth
+        finite=truth(expression,BigIntGenerator.truth)
+        if finite is not None:return finite
         if isinstance(expression.kind,(TupleType,ListType)) or getattr(expression.kind,"_key_container",False):return _Generator.truth(expression)
         if expression.kind in {"str","bytes"}:
             return f"!({expression.code}).is_empty()"
@@ -181,6 +187,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return _Expression(code, "int", constant)
 
     def expression(self, node, environment):
+        from .native_unions import leaf_expression
+        leaf=leaf_expression(self,node,environment)
+        if leaf is not None:return leaf
         from .native_module_calls import try_expression as module_expression
         module=module_expression(self,node,environment)
         if module is not None:return module
@@ -507,10 +516,12 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             if not all(isinstance(target,ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
             value = self.expression(node.value,environment)
-            if list_type(value.kind) and (not value.owned or len(node.targets) != 1):
+            if not immutable(value.kind) and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported
             name = self.temporary()
-            lines = [f"let {name}={value.code};"]
+            from .native_unions import union_kind
+            assigned=self.coerce(value,value.kind) if union_kind(value.kind) and not value.owned else value.code
+            lines = [f"let {name}={assigned};"]
             for index,target in enumerate(node.targets):
                 # Expressions already produce an owned immutable scalar. The
                 # final target can take that temporary; earlier chained targets
@@ -561,6 +572,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.trusted_imports=trusted_imports
         generator.source_unit=unit
         body,_ = generator.statements(tree.body,{})
+        for local in specializations.generators:generator.union_types.update(local.union_types)
+        generator.has_scalar_union |= any(local.has_scalar_union for local in specializations.generators)
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
         generator.has_slices |= any(local.has_slices for local in specializations.generators)
         generator.has_big_text |= any(local.has_big_text for local in specializations.generators)
@@ -609,6 +622,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.has_native_modules:
         from .native_module_calls import HELPERS as MODULE_HELPERS
         result.append(MODULE_HELPERS)
+    if generator.union_types:
+        from .native_unions import render_types
+        result.append(render_types(generator.union_types))
     result.extend(specializations.sources)
     result.append("fn main(){\nuse std::fmt::Write as _;\nuse std::io::Write as _;\nlet mut native_output=String::new();\nlet native_result=(||->Result<(),NativeError>{")
     if generator.has_input:

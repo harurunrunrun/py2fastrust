@@ -174,10 +174,9 @@ print(a==b,a!=b,a<b,a<=b,a>b,a>=b)
             cases.append(f"{a}\n{rng.choice(strings)}\n{rng.randrange(2)}\n{b}\n{rng.choice(strings)}\n{rng.randrange(2)}\n")
         self.differential(source,cases,profiles=(True,))
 
-    def test_unproved_mutable_tuple_fields_and_dynamic_shapes_reject(self):
+    def test_unproved_mutable_tuple_fields_reject(self):
         for source in ["A=[]\nt=(A,)\nA.append(1)\nprint(t)\n","t=([1],)\nprint(t)\n",
-                       "t=({'a':1},)\nprint(t)\n","t=(1,'x')\nprint(t[int(input())])\n",
-                       "if int(input()):\n t=(1,)\nelse:\n t=(1,2)\nprint(t)\n"]:
+                       "t=({'a':1},)\nprint(t)\n"]:
             for mode in ("i64","i128","bigint"):
                 result=transpile(source,TranspileOptions(integer=mode,filename="unsupported.py"))
                 self.assertFalse(result.success)
