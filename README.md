@@ -149,7 +149,7 @@ checks conversion without writing a Rust file.
 The converter uses Python's official `ast` and `symtable` APIs. Supported
 bindings, operators and control flow become Rust values, expressions, loops
 and functions. The current implementation covers proved integer and boolean
-operations, `String` and `f64` scalars, owned BigInt scalar operations, integer
+operations, shared immutable strings and `f64` scalars, owned BigInt scalar operations, integer
 lists and independent rows, dictionaries, sets and unbounded deques. It supports
 ordinary scalar functions with proved argument and return kinds, constant
 defaults, positional and keyword binding, and calls between those functions.
@@ -158,8 +158,11 @@ rebinding, with separate specializations for the actual argument kinds and
 callable globals. Integer-list slices and `sorted` create independent lists.
 Python names can change type through distinct typed Rust slots. Compatible
 branches and loops merge proved kinds; finite boolean/integer unions use a
-small stack enum. ASCII string indexing accesses bytes directly; opt-in Unicode
-indexing counts code points. Integer modes preserve their documented wrapping policy.
+small stack enum. ASCII string indexing accesses bytes directly. Opt-in Unicode
+indexing caches character lengths and lazily builds shared byte offsets for
+repeated reads. String snapshots share immutable storage, and proved fixed-width
+ASCII loops can use guarded byte spans. Integer modes preserve their documented
+wrapping policy.
 
 Supported competitive-programming patterns include unpacked integer input,
 `list(map(int, input().split()))`, integer-list mutation and sorting, dictionary
