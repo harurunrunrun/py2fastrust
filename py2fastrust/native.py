@@ -914,6 +914,15 @@ class _Generator:
         raise _Unsupported
 
     def binary(self, operator, left, right, node):
+        if isinstance(operator, (ast.BitAnd, ast.BitOr, ast.BitXor)) and left.kind == right.kind == "bool":
+            # bool's three bitwise operations retain a bool only when both
+            # operands are bool; mixed bool/int operations still return int.
+            symbol = {ast.BitAnd: "&", ast.BitOr: "|", ast.BitXor: "^"}[type(operator)]
+            constant = None
+            if left.constant is not None and right.constant is not None:
+                a, b = bool(left.constant), bool(right.constant)
+                constant = a & b if isinstance(operator, ast.BitAnd) else a | b if isinstance(operator, ast.BitOr) else a ^ b
+            return _Expression(f"(({left.code}) {symbol} ({right.code}))", "bool", constant)
         if isinstance(operator, ast.Mult) and "list_int" in (left.kind, right.kind):
             values, count = (left, right) if left.kind == "list_int" else (right, left)
             self.number(count)
