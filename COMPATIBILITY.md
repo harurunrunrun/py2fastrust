@@ -109,6 +109,16 @@ Function specializations preserve the presence of global names even when their
 values are not static callable references. This common reference context is
 also used when validating cached specializations and calls between functions.
 
+The frontend owns shared fixed-call signatures used by ordinary functions,
+class constructors/methods, and supported module calls. Explicit argument
+expressions retain source evaluation order before their values are projected
+onto positional-only, ordinary and keyword-only parameters. The binder consumes
+captured defaults without reevaluating their Python expressions. Class input
+aliases retain a bound flag, so reading an unset alias reports its Python
+name error before performing input or copying another alias.
+Dynamic argument expansion, emitted variadic functions, effectful/mutable
+defaults, and versioned mutable global namespaces remain unfinished.
+
 Ordinary class lowering currently supports concrete typed instance fields,
 constructors, fixed method lookup, tuple results, instance/list aliases, and
 recursive methods. Missing fields use typed optional storage. Compiled Rust

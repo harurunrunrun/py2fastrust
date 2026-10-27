@@ -13,6 +13,8 @@ from importlib.resources import files
 from types import SimpleNamespace
 
 from .native import _Expression, _Unsupported, _direct_diagnostic, _string
+from .call_semantics import FunctionSignature, CallBindingError, normalize_call
+from .references import CORE_BUILTINS, BuiltinIdentity, UnknownReference, resolve_static_callable
 
 
 class ClassUnsupported(_Unsupported):
@@ -96,12 +98,16 @@ class FunctionPlan:
     positional_only: set = field(default_factory=set)
     keyword_only: list = field(default_factory=list)
     defaults: dict = field(default_factory=dict)
+    default_cells: dict = field(default_factory=dict)
+    default_literals: dict = field(default_factory=dict)
+    signature: FunctionSignature | None = None
     arguments: dict = field(default_factory=dict)
     result: Cell = field(default_factory=Cell)
     locals: dict = field(default_factory=dict)
     declared: set = field(default_factory=set)
     reachable: bool = False
     visible_definitions: set | None = None
+    global_names: set | None = None
 
     @property
     def scope(self):
@@ -109,6 +115,14 @@ class FunctionPlan:
 
     def name(self, value):
         return mangle(value, self.owner.node.name if self.owner else None)
+
+
+class Environment(dict):
+    """Possible typed bindings plus names definitely assigned on this path."""
+    def __init__(self,values=(),*,definite=None):
+        super().__init__(values)
+        known=getattr(values,"definite",None)if definite is None else definite
+        self.definite=set(self)if known is None else set(known)
 
 
 class Model:
@@ -126,19 +140,33 @@ class Model:
         self.node_cells = {}
         self.records = {}
         self.augmented = {}
-        self.module = FunctionPlan(tree, 0, reachable=True, visible_definitions=set())
+        self.module = FunctionPlan(tree, 0, reachable=True, visible_definitions=set(),global_names=set())
         merge(self.module.result, Cell("none"), tree)
         self.plans.append(self.module)
         self.loop_depth = 0
         self.loop_edges = []
         self.final = False
         self.global_symbols = {}
+        # Global binding versions through loops are not represented yet.
+        # A possible module-owned write forbids assuming the default builtin,
+        # including a write reached only on a later loop iteration.
+        self.global_written_names=frozenset(binding.name for binding in unit.bindings
+            if binding.owner==0 and binding.role not in {"load","parameter"})if unit is not None else frozenset()
         self.discover()
 
     def resolved_name(self, plan, node):
         if self.unit is not None:return self.unit.name_for(node)
         raw=node.id if isinstance(node,ast.Name)else node.attr if isinstance(node,ast.Attribute)else node.arg
         return plan.name(raw)
+
+    def builtin_identity(self,plan,node,environment):
+        name=self.resolved_name(plan,node)
+        if name in self.classes or name in self.functions:
+            return UnknownReference(name,"name denotes a source definition")
+        return resolve_static_callable(node,environment,local_names=plan.declared,
+            global_bound_names=(set(plan.global_names or ())if plan is not self.module else set(environment))|self.global_written_names,
+            name_for=self.unit.name_for if self.unit is not None else None,
+            private_owner=plan.owner.node.name if plan.owner else None,function_scope=plan is not self.module)
 
     def cell(self, plan, node, tag=None, args=()):
         key = (plan.index, id(node))
@@ -169,26 +197,33 @@ class Model:
         if any(value.annotation is not None for value in arguments):
             raise ClassUnsupported(node)
         plan = FunctionPlan(node, len(self.plans), owner)
-        plan.parameters = [self.resolved_name(plan,value) for value in node.args.posonlyargs + node.args.args]
-        plan.positional_only = {self.resolved_name(plan,value) for value in node.args.posonlyargs}
-        plan.keyword_only = [self.resolved_name(plan,value) for value in node.args.kwonlyargs]
-        if owner and not plan.parameters:
-            raise ClassUnsupported(node)
-        for name in plan.parameters + plan.keyword_only:
-            plan.arguments[name] = Cell()
-        plan.declared = set(plan.arguments) | {self.resolved_name(plan,value) for value in ast.walk(node)
-                                             if isinstance(value, ast.Name) and isinstance(value.ctx, (ast.Store, ast.Del))}
         if self.unit is not None:
-            scope = self.unit.scope_for(node)
-            plan.declared = {symbol.name for symbol in scope.symbols
-                             if symbol.has("local") or symbol.has("parameter")}
-        defaults = list(zip(plan.parameters[len(plan.parameters)-len(node.args.defaults):], node.args.defaults))
-        defaults += [(self.resolved_name(plan,arg), value) for arg, value in zip(node.args.kwonlyargs, node.args.kw_defaults) if value is not None]
+            signature=self.unit.signature_for(node)
+        else:
+            locals_at_definition={self.resolved_name(plan,value)for value in ast.walk(node)
+                                  if isinstance(value,ast.Name)and isinstance(value.ctx,(ast.Store,ast.Del))}
+            locals_at_definition.update(self.resolved_name(plan,value)for value in arguments)
+            signature=FunctionSignature.from_ast(node,name_for=lambda arg:self.resolved_name(plan,arg),local_names=locals_at_definition)
+        plan.signature=signature
+        plan.parameters=list(signature.positional)
+        plan.positional_only=set(signature.positional_only)
+        plan.keyword_only=list(signature.keyword_only)
+        if owner and not plan.parameters:raise ClassUnsupported(node)
+        for name in signature.parameters:plan.arguments[name]=Cell()
+        plan.declared=set(signature.local_names)
+        defaults=[(slot.name,slot.expression)for slot in signature.defaults]
         for name, value in defaults:
             literal = value.operand if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)) else value
             if not isinstance(literal, ast.Constant) or type(literal.value) not in {int, bool, float, str, type(None)}:
                 raise ClassUnsupported(value)
             plan.defaults[name] = value
+            # These are total, immutable literal defaults. Capture their value
+            # once at definition planning, including unused methods.
+            plan.default_cells[name]=self.expression(plan,value,{})
+            captured=literal.value
+            if isinstance(value,ast.UnaryOp):
+                captured=-captured if isinstance(value.op,ast.USub)else +captured
+            plan.default_literals[name]=captured
         if owner:
             merge(plan.arguments[plan.parameters[0]], Cell("object", (owner.node.name,)), node)
         if not any(isinstance(value, ast.Return) and value.value is not None
@@ -203,7 +238,7 @@ class Model:
         names = set()
         for node in self.tree.body:
             if isinstance(node, ast.ClassDef):
-                if node.name in names or node.bases or node.keywords or node.decorator_list or node.type_params:
+                if node.name in names or node.name in self.global_symbols or node.bases or node.keywords or node.decorator_list or node.type_params:
                     raise ClassUnsupported(node)
                 owner = ClassPlan(node, len(self.classes))
                 self.classes[node.name] = owner
@@ -220,7 +255,7 @@ class Model:
                         raise ClassUnsupported(member)
                     owner.methods[name] = self.function(member, owner)
             elif isinstance(node, ast.FunctionDef):
-                if node.name in names:
+                if node.name in names or node.name in self.global_symbols:
                     raise ClassUnsupported(node)
                 self.functions[node.name] = self.function(node)
                 names.add(node.name)
@@ -228,6 +263,7 @@ class Model:
                 if effects or any(value.name != "sys" for value in node.names) or "sys" not in self.trusted_imports:
                     raise ClassUnsupported(node)
                 for value in node.names:
+                    if (value.asname or value.name)in names:raise ClassUnsupported(node)
                     self.global_symbols[value.asname or value.name] = Cell("sys")
             elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and type(node.value.value) is str:
                 continue
@@ -245,7 +281,7 @@ class Model:
             values.append(value)
 
     def snapshot(self):
-        return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
+        return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
                 tuple(sorted((key, shape(value)) for key, value in self.records.items())))
 
@@ -333,7 +369,11 @@ class Model:
         if isinstance(node, ast.Name):
             name = self.resolved_name(plan,node)
             if name in environment:
-                return self.remember(plan, node, environment[name])
+                value=environment[name]
+                if (plan is self.module and name in CORE_BUILTINS and value.root().tag in self.INTRINSICS
+                        and name not in getattr(environment,"definite",environment)):
+                    raise ClassUnsupported(node)
+                return self.remember(plan, node, value)
             if node.id == "__name__" and name not in plan.declared:
                 return self.cell(plan, node, "str")
             if name in plan.declared:
@@ -455,41 +495,44 @@ class Model:
             raise ClassUnsupported(node)
         return self.cell(plan,node,"int")
 
-    def bind_call(self, caller, node, callee, argument_cells, keyword_cells):
-        if any(isinstance(value,ast.Starred) for value in node.args) or any(value.arg is None for value in node.keywords):
-            raise ClassUnsupported(node)
+    def bind_call(self, caller, node, callee, argument_cells, keyword_cells, environment):
+        try:normalize_call(node)
+        except CallBindingError:raise ClassUnsupported(node)from None
+        names=(set(environment)|set(caller.visible_definitions or ()))if caller is self.module else caller.global_names
+        if names is None:raise ClassUnsupported(node)
+        if callee.global_names is None:callee.global_names=set(names)
+        else:callee.global_names.update(names)
         callee.reachable = True
         visible = set(caller.visible_definitions or ())
         if callee.visible_definitions is None:
             callee.visible_definitions = visible
         else:
             callee.visible_definitions.intersection_update(visible)
-        bound = {}
-        if len(argument_cells) > len(callee.parameters):
-            raise ClassUnsupported(node)
-        for name, value in zip(callee.parameters, argument_cells):
-            bound[name] = value
-        for name, value in keyword_cells:
-            if name not in callee.arguments or name in callee.positional_only or name in bound:
-                raise ClassUnsupported(node)
-            bound[name] = value
-        for name, value in callee.defaults.items():
-            if name not in bound:
-                bound[name] = self.expression(callee,value,{})
-        if bound.keys() != callee.arguments.keys():
-            raise ClassUnsupported(node)
+        try:
+            bound=callee.signature.bind(argument_cells,keyword_cells,callee.default_cells).by_name
+        except CallBindingError:
+            raise ClassUnsupported(node)from None
         for name, value in bound.items():
             merge(callee.arguments[name], value, node)
         return self.remember(caller, node, callee.result)
 
     def call(self, plan, node, environment):
         function = node.func
+        if (isinstance(function,ast.Name)and plan is self.module and function.id in CORE_BUILTINS
+                and function.id in environment and environment[function.id].root().tag in self.INTRINSICS
+                and function.id not in getattr(environment,"definite",environment)):
+            raise ClassUnsupported(function)
         if (isinstance(function,ast.Name) and plan is not self.module
                 and self.resolved_name(plan,function) in plan.declared and self.resolved_name(plan,function) not in environment):
             raise ClassUnsupported(node)
-        if (isinstance(function,ast.Name) and function.id == "map" and "map" not in environment
+        if (isinstance(function,ast.Name) and function.id in self.BUILTINS
+                and self.resolved_name(plan,function) not in environment
+                and function.id not in self.classes and function.id not in self.functions
+                and not isinstance(self.builtin_identity(plan,function,environment),BuiltinIdentity)):
+            raise ClassUnsupported(function)
+        if (isinstance(function,ast.Name) and self.builtin_identity(plan,function,environment)==BuiltinIdentity("map")
                 and len(node.args) == 2 and not node.keywords and isinstance(node.args[0],ast.Name)
-                and node.args[0].id == "int" and "int" not in environment):
+                and self.builtin_identity(plan,node.args[0],environment)==BuiltinIdentity("int")):
             words = self.expression(plan,node.args[1],environment)
             member = self.item(words,node).root()
             if member.tag not in {None,"str","bytes"}:
@@ -509,7 +552,7 @@ class Model:
                 result = self.cell(plan,node,"object",(owner.node.name,))
                 initializer = owner.methods.get("__init__")
                 if initializer:
-                    self.bind_call(plan,node,initializer,[result]+arguments,keywords)
+                    self.bind_call(plan,node,initializer,[result]+arguments,keywords,environment)
                     merge(initializer.result,Cell("none"),initializer.node)
                     return self.remember(plan,node,result)
                 if arguments or keywords:
@@ -518,7 +561,7 @@ class Model:
             if function.id in self.functions:
                 if function.id not in (plan.visible_definitions or ()):
                     raise ClassUnsupported(node)
-                return self.bind_call(plan,node,self.functions[function.id],arguments,keywords)
+                return self.bind_call(plan,node,self.functions[function.id],arguments,keywords,environment)
             name = function.id
             if name == "print":
                 if any(key not in {"sep","end","flush"} for key,_ in keywords):
@@ -567,7 +610,7 @@ class Model:
                 method = owner.methods.get(self.resolved_name(plan,function))
                 if method is None:
                     raise ClassUnsupported(function)
-                return self.bind_call(plan,node,method,[receiver]+arguments,keywords)
+                return self.bind_call(plan,node,method,[receiver]+arguments,keywords,environment)
             if receiver.tag == "list" and function.attr in {"append","extend","clear","copy","pop","reverse"}:
                 item = receiver.args[0]
                 if keywords:
@@ -633,6 +676,7 @@ class Model:
             if plan is self.module and name in self.global_symbols:
                 raise ClassUnsupported(node)
             environment[name] = value
+            environment.definite.add(name)
             self.canonical_local(plan,name,value)
             self.remember(plan,node,value)
             return
@@ -672,7 +716,7 @@ class Model:
             return right
         if right is None:
             return left
-        result = dict(left)
+        result = Environment(left,definite=left.definite&right.definite)
         for name,value in right.items():
             if name in result:
                 result[name] = merge(result[name],value,node)
@@ -681,7 +725,7 @@ class Model:
         return result
 
     def block(self, plan, statements, environment):
-        environment = dict(environment)
+        environment = Environment(environment)
         for node in statements:
             if environment is None:
                 break
@@ -703,7 +747,7 @@ class Model:
                 self.expression(plan,node.value,environment)
             elif isinstance(node,ast.Assign):
                 if (isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name)
-                        and node.value.func.id == "map" and "map" not in environment
+                        and self.builtin_identity(plan,node.value.func,environment)==BuiltinIdentity("map")
                         and len(node.value.args)==2 and not node.value.keywords
                         and isinstance(node.value.args[0],ast.Name) and node.value.args[0].id == "int" and "int" not in environment):
                     words = self.expression(plan,node.value.args[1],environment)
@@ -727,7 +771,7 @@ class Model:
             elif isinstance(node,(ast.For,ast.While)):
                 if node.orelse:
                     raise ClassUnsupported(node)
-                start = dict(environment)
+                start = Environment(environment)
                 if isinstance(node,ast.For):
                     value = self.expression(plan,node.iter,environment)
                     self.target(plan,node.target,self.item(value,node.iter),environment)
@@ -752,7 +796,7 @@ class Model:
             elif isinstance(node,(ast.Break,ast.Continue)):
                 if not self.loop_depth:
                     raise ClassUnsupported(node)
-                self.loop_edges[-1].append(dict(environment))
+                self.loop_edges[-1].append(Environment(environment))
                 environment = None
             else:
                 raise ClassUnsupported(node)
@@ -772,6 +816,7 @@ class Emitter:
         self.counter = 0
         self.loops = []
         self.slots = {}
+        self.reference_slots = {}
         if model.integer == "bigint":
             from .native_bigint import BigIntGenerator
             self.numeric = BigIntGenerator(function=SimpleNamespace(node=SimpleNamespace(name=plan.scope)))
@@ -782,8 +827,8 @@ class Emitter:
         for name, values in plan.locals.items():
             for value in values:
                 kind = shape(value)
-                if kind[0] in model.DATA:
-                    self.slot(name,kind)
+                if kind[0] in model.DATA:self.slot(name,kind)
+                elif kind[0] in model.INTRINSICS:self.reference_slot(name,kind)
 
     def fresh(self):
         self.counter += 1
@@ -816,6 +861,20 @@ class Emitter:
         if key not in self.slots:
             self.slots[key] = f"class_local_{len(self.slots)}"
         return self.slots[key]
+
+    def reference_slot(self,name,kind):
+        key=name,kind
+        if key not in self.reference_slots:self.reference_slots[key]=f"class_ref_{len(self.reference_slots)}"
+        return self.reference_slots[key]
+
+    def reference_read(self,name,kind,node):
+        if name in self.model.global_symbols and name not in self.plan.declared:return Expression("()",kind)
+        slot=self.reference_slot(name,kind)
+        error="NameError"if self.plan is self.model.module else"UnboundLocalError"
+        message=(f"name '{name}' is not defined"if error=="NameError"else
+                 f"cannot access local variable '{name}' where it is not associated with a value")
+        result=f"if {slot}{{Ok(())}}else{{Err({_string(error+': '+message)}.to_owned())}}"
+        return Expression(self.at(result,node),kind)
 
     def at(self, result, node):
         return f"native_at({result},{node.lineno},{_string(self.plan.scope)})?"
@@ -881,20 +940,26 @@ class Emitter:
             return f"ClassDisplay::class_{'repr' if representation else 'str'}(&({value.code}))"
         raise ClassUnsupported(node)
 
+    def literal_value(self,value,wanted,node):
+        from .literal_semantics import Literal
+        literal=Literal.from_value(value)
+        if literal is None:raise ClassUnsupported(node)
+        constant=(self.numeric.normalize(value)if literal.kind=="int"else value if literal.kind=="bool"else None)
+        code=literal.rust_atom(self.literal,_string)
+        return self.encoded(code,(literal.kind,),wanted,node,constant)
+
+    def captured_defaults(self,callee):
+        return {name:self.literal_value(value,shape(callee.default_cells[name]),callee.defaults[name])
+                for name,value in callee.default_literals.items()}
+
     def expression(self, node):
         wanted = self.kind(node)
         if isinstance(node,ast.Constant):
-            from .literal_semantics import Literal
-            literal=Literal.from_ast(node)
-            if literal is None:raise ClassUnsupported(node)
-            constant=(self.numeric.normalize(literal.value) if literal.kind=="int" else
-                      literal.value if literal.kind=="bool" else None)
-            code=literal.rust_atom(self.literal,_string)
-            return self.encoded(code,(literal.kind,),wanted,node,constant)
+            return self.literal_value(node.value,wanted,node)
         if isinstance(node,ast.Name):
             name = self.model.resolved_name(self.plan,node)
             if wanted[0] in self.model.INTRINSICS:
-                return Expression("()",wanted)
+                return self.reference_read(name,wanted,node)
             if node.id == "__name__" and name not in self.plan.locals:
                 return Expression('"__main__".to_owned()',("str",))
             slot = self.slot(name,wanted)
@@ -911,7 +976,8 @@ class Emitter:
             return Expression("class_list(vec!["+",".join(values)+"])",wanted)
         if isinstance(node,ast.Attribute):
             if wanted[0] in self.model.INTRINSICS:
-                return Expression("()",wanted)
+                receiver=self.expression(node.value)
+                return Expression("{let _="+receiver.code+";()}",wanted)
             receiver = self.expression(node.value)
             if receiver.kind[0] != "object":
                 raise ClassUnsupported(node)
@@ -1068,27 +1134,21 @@ class Emitter:
             before,receiver = self.capture(receiver)
             setup.append(before)
             arguments.append(receiver)
-        for value in node.args:
-            before,value = self.capture(self.expression(value))
-            setup.append(before)
-            arguments.append(value)
-        keywords = []
-        for keyword in node.keywords:
-            before,value = self.capture(self.expression(keyword.value))
-            setup.append(before)
-            keywords.append((keyword.arg,value))
-        if callee is None:
-            values = []
+        try:call_arguments=normalize_call(node)
+        except CallBindingError:raise ClassUnsupported(node)from None
+        if callee is None:values=[]
         else:
-            parameters = callee.parameters[1:] if constructor is not None else callee.parameters
-            bound = dict(zip(parameters,arguments))
-            bound.update(keywords)
-            default_emitter = Emitter(self.model,callee)
-            for name,value in callee.defaults.items():
-                if name not in bound:
-                    bound[name] = default_emitter.expression(value)
-            values = [self.coerce(bound[name],shape(callee.arguments[name]),node)
-                      for name in parameters+callee.keyword_only]
+            signature=callee.signature.without_receiver()if constructor is not None else callee.signature
+            default_emitter=Emitter(self.model,callee)
+            def argument_value(expression,parameter):
+                before,value=self.capture(self.expression(expression))
+                setup.append(before)
+                return value
+            try:
+                call_plan=signature.plan(call_arguments,implicit_count=len(arguments))
+                bound=call_plan.capture(argument_value,implicit=arguments,defaults=default_emitter.captured_defaults(callee))
+            except CallBindingError:raise ClassUnsupported(node)from None
+            values=[self.coerce(value,shape(callee.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
         # Constructor futures receive only explicit Python arguments. Their
         # internal __init__ future shares this logical call-stack entry.
@@ -1139,6 +1199,10 @@ class Emitter:
                 raise ClassUnsupported(node)
             return Expression(f"class_list({values})",wanted)
         setup,arguments = [],[]
+        alias=self.model.records.get((self.plan.index,id(function)))
+        if isinstance(function,ast.Name)and alias is not None and alias.root().tag in self.model.INTRINSICS:
+            before,ignored=self.capture(self.expression(function))
+            setup.append(before)
         if receiver is not None:
             before,receiver = self.capture(receiver)
             setup.append(before)
@@ -1323,12 +1387,14 @@ class Emitter:
     def assign(self, target, value):
         if isinstance(target,ast.Name):
             kind = self.kind(target)
-            if kind[0] in self.model.INTRINSICS:
-                return ""
-            name = self.model.resolved_name(self.plan,target)
-            slot = self.slot(name,kind)
-            clearing = "".join(f"{other}=None;" for (other_name,other_kind),other in self.slots.items()
-                               if other_name==name and other_kind!=kind)
+            name=self.model.resolved_name(self.plan,target)
+            clearing="".join(f"{other}=None;"for(other_name,other_kind),other in self.slots.items()
+                             if other_name==name and other_kind!=kind)
+            clearing+="".join(f"{other}=false;"for(other_name,other_kind),other in self.reference_slots.items()
+                              if other_name==name and other_kind!=kind)
+            if kind[0]in self.model.INTRINSICS:
+                return clearing+f"{self.reference_slot(name,kind)}=true;"
+            slot=self.slot(name,kind)
             return clearing+f"{slot}=Some({self.coerce(value,kind,target)});"
         if isinstance(target,(ast.Tuple,ast.List)):
             setup,source = self.capture(value)
@@ -1489,7 +1555,9 @@ class Emitter:
         return setup+prefix+before+binding+body+"}"
 
     def declaration(self):
-        return "\n".join(f"let mut {slot}:Option<{self.rust_type(kind)}>=None;"for(_,kind),slot in self.slots.items())
+        data=[f"let mut {slot}:Option<{self.rust_type(kind)}>=None;"for(_,kind),slot in self.slots.items()]
+        references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
+        return "\n".join(data+references)
 
     def generate(self):
         body=self.statements(self.plan.node.body)

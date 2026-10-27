@@ -152,6 +152,7 @@ class SourceUnit:
     node_ordinals: object
     definition_scopes: object
     resolved_names: object
+    function_signatures: object
 
     def ordinal(self, node):
         return self.node_ordinals[id(node)]
@@ -161,6 +162,9 @@ class SourceUnit:
 
     def name_for(self, node):
         return self.resolved_names[id(node)]
+
+    def signature_for(self, node):
+        return self.function_signatures[id(node)]
 
     def check_identity(self, source, filename):
         if self.source != source or self.filename != filename:
@@ -330,8 +334,12 @@ def parse_source(source, filename="<input>", *, name="__main__", package=False):
             getattr(error, "lineno", 1) or 1, getattr(error, "offset", 1) or 1, "E001")) from None
     scopes, _ = _scope_metadata(table)
     nodes, bindings, ordinals, definitions, names = _source_metadata(tree, scopes)
-    return SourceUnit(source, filename, name, package, _freeze_tree(tree), table,
-                      compiled.co_flags & _FUTURE_MASK, scopes, nodes, bindings, (), frozenset(), ordinals, definitions, names)
+    unit=SourceUnit(source, filename, name, package, _freeze_tree(tree), table,
+                      compiled.co_flags & _FUTURE_MASK, scopes, nodes, bindings, (), frozenset(), ordinals, definitions, names, MappingProxyType({}))
+    from .call_semantics import FunctionSignature
+    signatures={id(node):FunctionSignature.from_unit(node,unit) for node in ast.walk(unit.tree)
+                if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.Lambda))}
+    return replace(unit,function_signatures=MappingProxyType(signatures))
 
 
 class _Resolver:

@@ -17,6 +17,7 @@ import symtable
 
 from .typeflow import TypeSet
 from .diagnostics import Diagnostic
+from .call_semantics import FunctionSignature, CallBindingError, normalize_call
 
 
 class _Unsupported(Exception):
@@ -138,6 +139,7 @@ class _Function:
     required: set[str]
     imports: set[str]
     global_bindings: dict[str, object] = field(default_factory=dict)
+    signature: FunctionSignature | None = None
     global_names: frozenset[str] | None = None
     absent_globals: set[str] = field(default_factory=set)
 
@@ -815,11 +817,13 @@ class _Generator:
         return _Expression(f"{{ {setup} {result} }}", kind)
 
     def user_call(self, node, function, environment):
-        if any(isinstance(value, ast.Starred) for value in node.args):
-            raise _Unsupported
-        lines, bound = [], {}
-        if len(node.args) > len(function.positional):
-            raise _Unsupported
+        try:
+            call_arguments=normalize_call(node)
+        except CallBindingError:
+            raise _Unsupported from None
+        signature=getattr(function,"signature",None) or FunctionSignature.declaration(
+            function.positional,positional_only=function.posonly,keyword_only=function.kwonly,default_names=function.defaults)
+        lines=[]
         # Evaluate every explicit argument in source order before reordering
         # into Rust's fixed signature. Defaults are proved pure constants.
         def argument_value(argument):
@@ -840,19 +844,13 @@ class _Generator:
             lines.append(f"let {name} = {code};")
             return _Expression(name, value.kind, owned=value.owned)
 
-        for parameter, argument in zip(function.positional, node.args):
-            bound[parameter] = argument_value(argument)
-        for keyword in node.keywords:
-            parameter = keyword.arg
-            if (parameter is None or parameter in function.posonly or parameter in bound
-                    or parameter not in function.positional + function.kwonly):
-                raise _Unsupported
-            bound[parameter] = argument_value(keyword.value)
+        try:
+            call_plan=signature.plan(call_arguments)
+            bound=call_plan.capture(lambda expression,parameter:argument_value(expression),defaults=function.defaults)
+        except CallBindingError:
+            raise _Unsupported from None
         arguments, kinds = [], []
-        for parameter in function.positional + function.kwonly:
-            value = bound.get(parameter, function.defaults.get(parameter))
-            if value is None:
-                raise _Unsupported
+        for parameter,value in zip(bound.parameters,bound.values):
             kinds.append(value.kind)
             arguments.append(f"&({value.code})" if list_type(value.kind) else value.code)
         globals_at_call = environment if self.function is None else self.global_environment
@@ -2219,7 +2217,7 @@ def _main_wrapper(tree):
     return function.body, (function.name, invocation.lineno)
 
 
-def _function_plans(tree, table, bits, generator_type=_Generator):
+def _function_plans(tree, table, bits, generator_type=_Generator, unit=None):
     functions = _FunctionPlans()
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef):
@@ -2233,18 +2231,20 @@ def _function_plans(tree, table, bits, generator_type=_Generator):
                 or any(isinstance(value, (ast.Yield, ast.YieldFrom, ast.Await, ast.AsyncFor, ast.AsyncWith))
                        for value in ast.walk(node))):
             raise _Unsupported
-        matches = [child for child in table.get_children()
-                   if child.get_name() == node.name and child.get_lineno() == node.lineno]
-        if len(matches) != 1:
-            raise _Unsupported
-        local_names = {symbol.get_name() for symbol in matches[0].get_symbols()
-                       if symbol.is_local() or symbol.is_parameter()}
-        positional = [argument.arg for argument in parameters.posonlyargs + parameters.args]
-        defaults = {}
-        default_generator = generator_type(bits)
-        default_nodes = list(zip(positional[len(positional)-len(parameters.defaults):], parameters.defaults))
-        default_nodes += [(argument.arg, value) for argument, value in zip(parameters.kwonlyargs, parameters.kw_defaults)
-                          if value is not None]
+        if unit is not None:
+            signature=unit.signature_for(node)
+        else:
+            matches=[child for child in table.get_children()if child.get_name()==node.name and child.get_lineno()==node.lineno]
+            if len(matches)!=1:raise _Unsupported
+            local_names={symbol.get_name()for symbol in matches[0].get_symbols()if symbol.is_local()or symbol.is_parameter()}
+            signature=FunctionSignature.from_ast(node,local_names=local_names)
+        local_names=set(signature.local_names)
+        positional=list(signature.positional)
+        defaults={}
+        default_generator=generator_type(bits)
+        # Capture only proved immutable defaults during definition planning.
+        # The shared call binder consumes these values and never reevaluates AST.
+        default_nodes=[(slot.name,slot.expression)for slot in signature.defaults]
         for name, value in default_nodes:
             if isinstance(value,ast.Tuple):
                 if any(not isinstance(item,(ast.Tuple,ast.Load,ast.Constant,ast.BinOp,ast.UnaryOp,ast.operator,ast.unaryop))
@@ -2290,9 +2290,9 @@ def _function_plans(tree, table, bits, generator_type=_Generator):
                          and statement.value is not None
                          and not (isinstance(statement.value, ast.Constant) and statement.value.value is None)]
         function = _Function(node, f"native_function_{len(functions.definitions)}", positional,
-                                        {argument.arg for argument in parameters.posonlyargs},
-                                        [argument.arg for argument in parameters.kwonlyargs], defaults,
-                                        local_names, "int" if value_returns else "none", set(), set(), set())
+                                        set(signature.positional_only),
+                                        list(signature.keyword_only), defaults,
+                                        local_names, "int" if value_returns else "none", set(), set(), set(), signature=signature)
         functions[node.name] = function
         functions.definitions[node] = function
     return functions
@@ -2473,7 +2473,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
                             name = alias.asname or alias.name
                             constructors.setdefault(name, _DequeConstructor(name))
         statements, wrapper = _main_wrapper(tree)
-        functions = {} if wrapper else _function_plans(tree, table, bits, ScalarGenerator)
+        functions = {} if wrapper else _function_plans(tree, table, bits, ScalarGenerator, unit=unit)
         function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node, ast.Name) and node.id == "input" for node in ast.walk(tree)))
         specializations = _Specializations(bits, functions, constructors, function_input, ScalarGenerator)
         specializations.trusted_imports = trusted_imports

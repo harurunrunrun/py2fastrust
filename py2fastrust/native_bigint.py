@@ -563,7 +563,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         for node in ast.walk(tree):
             if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS-{"input"}:
                 raise _Unsupported
-        functions = _function_plans(tree,table,0,BigIntGenerator)
+        functions = _function_plans(tree,table,0,BigIntGenerator,unit=unit)
         function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree)))
         specializations = _Specializations(0,functions,{},function_input,BigIntGenerator)
         specializations.trusted_imports=trusted_imports

@@ -1,5 +1,6 @@
 """Resolve standard callables to typed operations, independent of source spelling."""
 import ast
+from .call_semantics import FunctionSignature, CallBindingError, normalize_call
 from dataclasses import dataclass
 
 from .native import _Binding, _Expression, _ListInfo, _Unsupported
@@ -149,30 +150,27 @@ def _result(g,code):
     return code if not g.bits else f"({code}).normalized().to_i128().unwrap()as NativeInt"
 
 
-def _bind(g,node,environment,parameters,*,minimum,defaults=(),kwonly=()):
-    if len(node.args)>len(parameters) or any(isinstance(arg,ast.Starred) for arg in node.args):raise _Unsupported
-    bound={};lines=[]
-    def save(name,value):
-        if name in bound:raise _Unsupported
-        if isinstance(value,ast.Constant) and value.value is None:
+def _bind(g,node,environment,parameters,*,minimum,defaults=(),kwonly=(),positional_only=()):
+    optional=tuple(dict.fromkeys((*parameters[minimum:],*defaults,*kwonly)))
+    signature=FunctionSignature.declaration(parameters,positional_only=positional_only,keyword_only=kwonly,default_names=optional)
+    lines=[]
+    def save(value,name):
+        if name=="key":
+            if not(isinstance(value,ast.Constant)and value.value is None):raise _Unsupported
+            return None
+        if isinstance(value,ast.Constant)and value.value is None:
             if name not in {"hi","k"}:raise _Unsupported
-            bound[name]=None
-            return
+            return None
         result=g.expression(value,environment)
         temporary=g.temporary()
         lines.append(f"let {temporary}={_exact(g,result)};")
-        bound[name]=temporary
-    for name,value in zip(parameters,node.args):save(name,value)
-    for keyword in node.keywords:
-        if keyword.arg not in (*parameters,*kwonly):raise _Unsupported
-        if keyword.arg=="key":
-            if not(isinstance(keyword.value,ast.Constant)and keyword.value.value is None):raise _Unsupported
-            if "key" in bound:raise _Unsupported
-            bound["key"]=None
-        else:save(keyword.arg,keyword.value)
-    if any(name not in bound for name in parameters[:minimum]):raise _Unsupported
-    for name in defaults:bound.setdefault(name,None)
-    return lines,bound
+        return temporary
+    try:
+        plan=signature.plan(normalize_call(node))
+        bound=plan.capture(save,defaults={name:None for name in optional})
+    except CallBindingError:
+        raise _Unsupported from None
+    return lines,bound.by_name
 
 
 def try_expression(g,node,environment):
@@ -184,17 +182,18 @@ def try_expression(g,node,environment):
     g.needs_integer_runtime=True
     name=function.name
     if function.module=="math":
-        if node.keywords:raise _Unsupported
         if name in {"gcd","lcm"}:
-            if node.keywords or any(isinstance(arg,ast.Starred)for arg in node.args):raise _Unsupported
-            values=[g.expression(arg,environment)for arg in node.args]
+            try:arguments=normalize_call(node)
+            except CallBindingError:raise _Unsupported from None
+            if arguments.keywords:raise _Unsupported
+            values=[g.expression(argument.expression,environment)for argument in arguments.positional]
             names=[g.temporary()for _ in values]
             lines=[f"let {name}={_exact(g,value)};"for name,value in zip(names,values)]
             code=f"native_math_{name}(&[{','.join(names)}])"
         else:
             params=("n","k")if name in {"comb","perm"}else("n",)
             minimum=2 if name=="comb"else 1
-            lines,args=_bind(g,node,environment,params,minimum=minimum,defaults=("k",)if name=="perm"else())
+            lines,args=_bind(g,node,environment,params,minimum=minimum,defaults=("k",)if name=="perm"else(),positional_only=params)
             if args.get("n") is None or name=="comb"and args.get("k") is None:raise _Unsupported
             values=[f"&{args['n']}"]
             if name=="comb":values.append(f"&{args['k']}")
