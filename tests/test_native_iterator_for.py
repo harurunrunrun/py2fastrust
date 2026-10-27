@@ -148,7 +148,7 @@ class NativeIteratorForTests(NativeIteratorReductionTests):
             print(i,ch)
             for ch in reversed("猫é"):
                 print(ch)
-        ''', ("猫🙂é\n", "\n", "abc\n"), modes=("i64","i128","bigint"))
+        ''', ("猫🙂é\n", "\n", "abc\n"), modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_string_rebinding_keeps_original_iterator_snapshot(self):
         self.differential('''
@@ -162,7 +162,7 @@ class NativeIteratorForTests(NativeIteratorReductionTests):
             for text in text:
                 print(text)
             print(text)
-        ''', modes=("i64","i128","bigint"))
+        ''', modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_reversed_lists_ranges_and_dictionary_items(self):
         self.differential('''
@@ -348,7 +348,7 @@ class NativeIteratorForTests(NativeIteratorReductionTests):
                 pass
             for character in letter:
                 print(character)
-        ''', ("\n", "日本語\n"), modes=("i64","i128","bigint"), trace=True)
+        ''', ("\n", "日本語\n"), modes=("i64","i128","bigint"), trace=True,string_mode="unicode")
 
     def test_optional_target_in_main_wrapper_retains_local_scope(self):
         self.differential('''

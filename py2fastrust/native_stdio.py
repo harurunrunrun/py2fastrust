@@ -193,12 +193,15 @@ def try_expression(generator,node,environment):
             value=getattr(generator,"read_expression",generator.expression)(argument,environment)
             if value.kind in {"str","bytes"}:
                 if node.func.id == "len":
+                    from .native_characters import length as character_length
+                    projected=character_length(generator,value)
+                    if projected is not None:return projected
                     from .native_cached_text import text_length
                     length=text_length(value,generator.string_mode)if value.kind=="str"else f"({value.code}).len()"
                     code=f"Int::from_i128(({length}) as i128)" if not generator.bits else f"(({length}) as NativeInt)"
                     return _Expression(code,"int",value.length)
                 if node.func.id == "bool":
-                    return _Expression(f"!({value.code}).is_empty()","bool")
+                    return _Expression(generator.truth(value),"bool")
                 _enable(generator)
                 kind="bytes" if value.kind == "bytes" else "text"
                 code=generator.at(f"native_io_parse_{kind}(&({value.code}))",node)

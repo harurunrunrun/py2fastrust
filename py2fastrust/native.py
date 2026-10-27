@@ -542,6 +542,12 @@ class _Generator:
             self.has_typed_lists=True
             self.register_type(kind.element)
 
+    def text_from_codepoint(self, code):
+        """Materialize a captured, valid Unicode scalar only when text escapes."""
+        self.register_type("str")
+        return _Expression(f'NativeText::from(char::from_u32({code}).expect("native character codepoint"))',
+                           "str", length=1, nonempty=True, char_code=code)
+
     def bind(self, name, value, environment):
         if name in self.BUILTINS:
             raise _Unsupported
@@ -847,6 +853,9 @@ class _Generator:
 
     @result_shapes
     def expression(self, node, environment):
+        from .native_characters import read_local
+        character=read_local(self,node,environment)
+        if character is not None:return character
         from .native_constraint_lowering import allocation_expression
         allocated=allocation_expression(self,node,environment)
         if allocated is not None:return allocated

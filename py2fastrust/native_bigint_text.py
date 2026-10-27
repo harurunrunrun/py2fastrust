@@ -34,6 +34,9 @@ fn native_big_text_item(text:&str,index:&Int)->Result<String,String> {
 
 class BigIntText:
     def read_expression(self, node, environment):
+        from .native_characters import read_local
+        character=read_local(self,node,environment,borrowed=True)
+        if character is not None:return character
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and binding.kind == "str":
@@ -116,13 +119,16 @@ class BigIntText:
                 if value.kind == "str":
                     self.has_big_text = True
                     if name == "len":
+                        from .native_characters import length as character_length
+                        projected=character_length(self,value)
+                        if projected is not None:return projected
                         from .native_cached_text import text_length
                         return _Expression(f"Int::from_i128(({text_length(value,self.string_mode)}) as i128)","int")
                     if name == "bool":
-                        return _Expression(f"!({value.code}).is_empty()", "bool")
+                        return _Expression(self.truth(value), "bool")
                     if name == "int":
                         return _Expression(self.at(f"Int::parse({value.code},10)",node), "int")
-                    return _text_expression(value.code)
+                    return _text_expression(value.code,char_code=value.char_code)
                 if name == "str" and value.kind in {"int", "bool", "int_bool"}:
                     self.has_big_text = True
                     result = (f'(if {value.code} {{"True"}}else{{"False"}}).to_owned()'

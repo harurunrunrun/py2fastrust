@@ -107,6 +107,27 @@ class Stream:
         return self.emit_body(action, caller_scope, line, continue_label)
 
 
+@dataclass(frozen=True)
+class ItemField:
+    """An iterator field plus an optional captured-codepoint projection."""
+    kind: object
+    raw: str
+    owned: bool
+    codepoint: str | None = None
+
+    def __iter__(self):
+        # Existing non-text producers describe ordinary fields as triples.
+        return iter((self.kind, self.raw, self.owned))
+
+    @classmethod
+    def from_field(cls, field):
+        return field if isinstance(field, cls) else cls(*field)
+
+    def project(self, path):
+        return ItemField(self.kind, self.raw.replace("@", path), self.owned,
+                         self.codepoint.replace("@", path) if self.codepoint is not None else None)
+
+
 class Planner:
     def __init__(self, generator, snapshot_strings=()):
         self.g = generator
@@ -116,23 +137,29 @@ class Planner:
              length=None, nonempty=False):
         """Build one loop; fields describe borrowed or owning iterator items."""
         g = self.g
+        fields = tuple(ItemField.from_field(field) for field in fields)
         item = g.temporary()
         names = [g.temporary() for _ in fields]
-        values = tuple(_Expression(name, kind, owned=kind != "list_int" or owned)
-                       for name, (kind, _, owned) in zip(names, fields))
+        values = []
         assignments = []
-        for name, (kind, raw, owned) in zip(names, fields):
+        for name, field in zip(names, fields):
+            kind, raw, owned = field
+            if field.codepoint is not None:
+                assignments.append(f"let {name}:u32={field.codepoint.replace('@',item)};")
+                values.append(g.text_from_codepoint(name))
+                continue
             code = raw.replace("@", item)
             if not owned and kind != "list_int":
                 code = g.coerce(_Expression(code, kind), kind)
             assignments.append(f"let {name} = {code};")
+            values.append(_Expression(name, kind, owned=kind != "list_int" or owned))
         prefix = "\n".join(assignments)
 
         def emit(action, _scope, _line, continue_label=None):
             label = f"'{continue_label}: " if continue_label else ""
             return f"{label}for {item} in {iterator} {{\n{prefix}\n{action}\n}}"
 
-        return Stream(setup, begin, values, frozenset(owners), emit, eager, tupled,
+        return Stream(setup, begin, tuple(values), frozenset(owners), emit, eager, tupled,
                       iterator, tuple(fields), length, nonempty or length is not None and length > 0)
 
     def stream(self, node, environment, *, allow_set=False):
@@ -220,11 +247,12 @@ class Planner:
             elif named:
                 setup = f"let {owner} = {environment[node.id].slot}.clone();"
             else:
-                value = g.read_expression(node, environment) if captured_value is None and hasattr(g, "read_expression") else value
                 setup = f"let {owner} = {value.code};"
             length = len(node.value) if isinstance(node, ast.Constant) and type(node.value) is str else None
-            begin = f"let {cursor} = {owner}.chars();"
-            return self.leaf(setup, begin, cursor, (("str", "NativeText::from(@)", True),),
+            traversal = "bytes" if g.string_mode == "ascii" else "chars"
+            begin = f"let {cursor} = {owner}.{traversal}();"
+            field = ItemField("str", "@", True, "(@ as u32)")
+            return self.leaf(setup, begin, cursor, (field,),
                              {node.id} if named and node.id not in self.snapshot_strings else (), length=length)
         if value.kind not in {"list_int", "matrix_int", "dict_int", "deque_int", "set_int"}:
             raise _Unsupported
@@ -292,7 +320,8 @@ class Planner:
         pairs = self.target_values(target,stream)
         inside = environment.copy()
         for target, value in pairs:
-            inside[target.id] = _Binding(value.code, self.g.binding(value))
+            from .native_characters import local_binding
+            inside[target.id] = local_binding(value) or _Binding(value.code, self.g.binding(value))
         return inside
 
     def generator(self, plan, environment):
@@ -354,11 +383,10 @@ class Planner:
             for name, binding in list(environment.items()):
                 if id(binding) in changed and isinstance(binding.info, _DequeInfo):
                     g.update_info(environment, name, _DequeInfo(None))
-        names = [g.temporary() for _ in values]
-        output = tuple(_Expression(name, value.kind, owned=value.owned,
-                                   length=value.length, nonempty=value.nonempty)
-                       for name, value in zip(names, values))
-        yielded = "\n".join(f"let {name} = {value.code};" for name, value in zip(names, values))
+        from .native_characters import capture
+        captures = [capture(g,value) for value in values]
+        output = tuple(value for _,value in captures)
+        yielded = "\n".join(code for code,_ in captures)
 
         def emit(action, caller_scope, line, continue_label=None):
             caller = _context(caller_scope)
@@ -401,7 +429,8 @@ class Planner:
         source_value = stream_item(g,source)
         argument = "\0iterator_" + g.temporary()
         inside = environment.copy()
-        inside[argument] = _Binding(source_value.code, g.binding(source_value))
+        from .native_characters import local_binding
+        inside[argument] = local_binding(source_value) or _Binding(source_value.code, g.binding(source_value))
         call = ast.copy_location(ast.Call(func=callback, args=[ast.Name(id=argument, ctx=ast.Load())], keywords=[]), node)
         ast.fix_missing_locations(call)
         scope = DeferredScope(g.temporary(), g.temporary())
@@ -414,13 +443,14 @@ class Planner:
         finally:
             if source.owners:
                 del g.iterating_lists[-len(source.owners):]
-        item = g.temporary()
+        from .native_characters import capture
+        captured, output = capture(g,value)
 
         def emit(action, caller_scope, line, continue_label=None):
             prefix = _deferred_prefix(scope, trace_id, caller_scope, line)
-            return prefix + source.emit(f"let {item} = {value.code};\n{action}", caller_scope, line, continue_label)
+            return prefix + source.emit(captured+"\n"+action, caller_scope, line, continue_label)
 
-        return Stream(source.construct(), "", (_Expression(item, value.kind),), source.owners, emit,
+        return Stream(source.construct(), "", (output,), source.owners, emit,
                       True, length=source.length, nonempty=source.nonempty)
 
     def filter_stream(self, plan, environment):
@@ -438,7 +468,8 @@ class Planner:
             source_value = stream_item(g,source,borrowed=True)
             argument = "\0iterator_" + g.temporary()
             inside = environment.copy()
-            inside[argument] = _Binding(source_value.code, g.binding(source_value))
+            from .native_characters import local_binding
+            inside[argument] = local_binding(source_value) or _Binding(source_value.code, g.binding(source_value))
             call = ast.copy_location(ast.Call(func=callback, args=[ast.Name(id=argument, ctx=ast.Load())], keywords=[]), node)
             ast.fix_missing_locations(call)
             g.iterating_lists.extend(source.owners)
@@ -533,12 +564,16 @@ class Planner:
             if child.tupled:
                 kind = TupleType(tuple(kind for kind,_,_ in child.fields))
                 g.register_type(kind)
-                raw = tuple_code(g.coerce(_Expression(raw.replace("@",path),kind),kind)
-                                 for kind,raw,_ in child.fields)
+                components=[]
+                for field in child.fields:
+                    projected=ItemField.from_field(field).project(path)
+                    value=(g.text_from_codepoint(projected.codepoint) if projected.codepoint is not None else
+                           _Expression(projected.raw,projected.kind,owned=projected.owned))
+                    components.append(_owned(g,value,value.kind))
+                raw = tuple_code(components)
                 fields.append((kind,raw,True))
             elif len(child.fields) == 1:
-                kind,raw,owned = child.fields[0]
-                fields.append((kind,raw.replace("@",path),owned))
+                fields.append(ItemField.from_field(child.fields[0]).project(path))
             else:
                 raise _Unsupported
         setup += f"\nlet {cursor} = {iterator};"

@@ -26,8 +26,11 @@ def unary(g, identity, value, node):
         code=(g.coerce(value,"str") if value.kind=="str" else
               f'(if {value.code} {{"True"}}else{{"False"}}).to_owned()' if value.kind=="bool" else
               f"({value.code}).to_string()")
-        return _text_expression(code)
+        return _text_expression(code,char_code=value.char_code if value.kind=="str"else None)
     if name == "len" and value.kind in {"str","bytes","list_int","matrix_int","dict_int","set_int","deque_int"}:
+        from .native_characters import length as character_length
+        projected=character_length(g,value)
+        if projected is not None:return projected
         from .native_cached_text import text_length
         length=text_length(value,g.string_mode)if value.kind=="str"else f"({value.code}).len()"
         code=f"({length}) as NativeInt"if g.bits else f"Int::from_i128(({length}) as i128)"

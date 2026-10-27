@@ -288,6 +288,9 @@ class ScalarGenerator(_Generator):
 
     @staticmethod
     def truth(value):
+        from .native_characters import truth as character_truth
+        character=character_truth(value)
+        if character is not None:return character
         from .native_unions import truth
         finite=truth(value,ScalarGenerator.truth)
         if finite is not None:return finite
@@ -313,6 +316,9 @@ class ScalarGenerator(_Generator):
         A borrowed fresh String is bound directly in a let initializer so
         Rust extends that temporary's lifetime through the consuming block.
         """
+        from .native_characters import read_local
+        character=read_local(self,node,environment,borrowed=True)
+        if character is not None:return character
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and binding.kind == "str":
@@ -358,6 +364,9 @@ class ScalarGenerator(_Generator):
 
     @result_shapes
     def expression(self, node, environment):
+        from .native_characters import read_local
+        character=read_local(self,node,environment)
+        if character is not None:return character
         from .native_constraint_lowering import allocation_expression
         allocated=allocation_expression(self,node,environment)
         if allocated is not None:return allocated
@@ -464,6 +473,9 @@ class ScalarGenerator(_Generator):
                     code = (f"native_float_integer({value.code})" if value.kind == "float" else f"native_scalar_integer(&({value.code}))")
                     return _Expression(self.at(code, node), "int")
                 if name == "len" and value.kind == "str":
+                    from .native_characters import length as character_length
+                    projected=character_length(self,value)
+                    if projected is not None:return projected
                     from .native_cached_text import text_length
                     return _Expression(f"({text_length(value,self.string_mode)} as NativeInt)","int")
                 if name == "abs" and value.kind == "float":

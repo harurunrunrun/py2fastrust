@@ -153,6 +153,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @staticmethod
     def truth(expression):
+        from .native_characters import truth as character_truth
+        character=character_truth(expression)
+        if character is not None:return character
         if isinstance(expression.kind,EmptyType):return f"native_empty::<bool>({expression.code})"
         from .native_unions import truth
         finite=truth(expression,BigIntGenerator.truth)
@@ -184,6 +187,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @result_shapes
     def expression(self, node, environment):
+        from .native_characters import read_local
+        character=read_local(self,node,environment)
+        if character is not None:return character
         from .native_constraint_lowering import allocation_expression
         allocated=allocation_expression(self,node,environment)
         if allocated is not None:return allocated
