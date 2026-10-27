@@ -19,7 +19,7 @@ from .references import BuiltinIdentity
 
 _REDUCTIONS = {"sum", "any", "all", "min", "max"}
 _TYPES = {"int": "NativeInt", "bool": "bool", "int_bool": "NativeScalar",
-          "float": "f64", "str": "String", "bytes": "Vec<u8>", "list_int": "Vec<NativeInt>"}
+          "float": "f64", "str": "NativeText", "bytes": "Vec<u8>", "list_int": "Vec<NativeInt>"}
 
 
 @contextmanager
@@ -224,7 +224,7 @@ class Planner:
                 setup = f"let {owner} = {value.code};"
             length = len(node.value) if isinstance(node, ast.Constant) and type(node.value) is str else None
             begin = f"let {cursor} = {owner}.chars();"
-            return self.leaf(setup, begin, cursor, (("str", "@.to_string()", True),),
+            return self.leaf(setup, begin, cursor, (("str", "NativeText::from(@)", True),),
                              {node.id} if named and node.id not in self.snapshot_strings else (), length=length)
         if value.kind not in {"list_int", "matrix_int", "dict_int", "deque_int", "set_int"}:
             raise _Unsupported

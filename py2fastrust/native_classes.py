@@ -811,6 +811,7 @@ class Expression:
     constant: object = None
 
 
+
 class Emitter:
     def __init__(self, model, plan):
         self.model, self.plan = model, plan
@@ -845,16 +846,13 @@ class Emitter:
         return result
 
     def rust_type(self, kind):
-        scalar = {"int":"NativeInt", "bool":"bool", "scalar":"NativeScalar", "float":"f64",
-                  "str":"String", "bytes":"Vec<u8>", "none":"()", "range":"ClassRange"}
-        if kind[0] in scalar:
-            return scalar[kind[0]]
-        if kind[0] == "object":
-            return f"ClassHandle_{self.model.classes[kind[1]].index}"
-        if kind[0] == "list":
-            return f"ClassList<{self.rust_type(kind[1])}>"
-        if kind[0] == "tuple":
-            return "(" + ",".join(self.rust_type(value) for value in kind[1:]) + ("," if len(kind)>1 else "") + ")"
+        from .native_types import rust_type,tuple_code
+        if kind[0]in self.model.DATA-{"object","list","tuple","range"}:
+            return rust_type("int_bool"if kind[0]=="scalar"else kind[0])
+        if kind[0]=="range":return "ClassRange"
+        if kind[0] == "object":return f"ClassHandle_{self.model.classes[kind[1]].index}"
+        if kind[0] == "list":return f"ClassList<{self.rust_type(kind[1])}>"
+        if kind[0] == "tuple":return tuple_code(self.rust_type(value)for value in kind[1:])
         raise ClassUnsupported(self.plan.node)
 
     def slot(self, name, kind):
@@ -962,7 +960,7 @@ class Emitter:
             if wanted[0] in self.model.INTRINSICS:
                 return self.reference_read(name,wanted,node)
             if node.id == "__name__" and name not in self.plan.locals:
-                return Expression('"__main__".to_owned()',("str",))
+                return Expression('NativeText::from("__main__")',("str",))
             slot = self.slot(name,wanted)
             kind = "NameError" if self.plan is self.model.module else "UnboundLocalError"
             message = (f"name '{name}' is not defined" if kind == "NameError" else
@@ -1068,7 +1066,7 @@ class Emitter:
             return Expression(self.at(f"class_string_add({left.code},&{right.code})",node),wanted)
         if "str" in {a,b} and isinstance(operator,ast.Mult):
             value,count = (left,right)if a=="str"else(right,left)
-            return Expression(self.at(f"class_string_repeat(&{value.code},&({self.number(count)}))",node),wanted)
+            return Expression("NativeText::from("+self.at(f"class_string_repeat(&{value.code},&({self.number(count)}))",node)+")",wanted)
         result = self.numeric.binary(operator,self.scalar(left),self.scalar(right),node)
         raw = {"int_bool":"scalar"}.get(result.kind,result.kind)
         return self.encoded(result.code,(raw,),wanted,node,result.constant)
@@ -1164,7 +1162,7 @@ class Emitter:
             raise ClassUnsupported(node)
         item = words.kind[1]
         if item == ("str",):
-            parser = "|value:&String|native_parse_integer(value)"
+            parser = "|value:&NativeText|native_parse_integer(value)"
         elif item == ("bytes",):
             parser = "|value:&Vec<u8>|class_parse_bytes(value)"
         else:
@@ -1251,7 +1249,7 @@ class Emitter:
             value=arguments[0]
             if value.kind[0]=="list":length=f"{value.code}.borrow().len()"
             elif value.kind[0]=="str":
-                length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"chars().count()")
+                length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"codepoint_len()")
             elif value.kind[0]=="bytes":length=f"{value.code}.len()"
             elif value.kind[0]=="tuple":length=str(len(value.kind)-1)
             else:raise ClassUnsupported(node)
@@ -1266,7 +1264,8 @@ class Emitter:
             elif arguments[0].kind==("float",):code=self.at(f"native_float_integer({arguments[0].code})",node)
             else:raise ClassUnsupported(node)
         elif name == "str":
-            code='String::new()'if not arguments else self.show(arguments[0],node)
+            code=('NativeText::new()'if not arguments else arguments[0].code+'.clone()'
+                  if arguments[0].kind==("str",)else self.show(arguments[0],node))
         elif name == "bool":
             code='false'if not arguments else self.truth(arguments[0])
             raw_kind=("bool",)
@@ -1383,6 +1382,7 @@ class Emitter:
             else:raise ClassUnsupported(node)
         if code is None:
             raise ClassUnsupported(node)
+        if raw_kind==("str",):code=f"NativeText::from({code})"
         result=self.encoded(code,raw_kind,wanted,node)
         return Expression("{"+"\n".join(setup)+"let class_value="+result.code+";class_value}",wanted,result.constant)
 
@@ -1706,6 +1706,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result="\n".join(pieces)
     from .native_text_policy import apply_text_policy
     result=apply_text_policy(result,string_mode)
+    from .native_cached_text import apply_cached_text
+    result=apply_cached_text(result,string_mode)
     if prune_output:
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)

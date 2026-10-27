@@ -61,7 +61,7 @@ class Literal:
         if self.kind=="int":return integer_literal(self.value)
         if self.kind=="bool":return str(self.value).lower()
         if self.kind=="float":return float_literal(self.value)
-        if self.kind=="str":return f"String::from({quote(self.value)})"
+        if self.kind=="str":return "{static NATIVE_LITERAL:NativeTextLiteral=NativeTextLiteral::new("+quote(self.value)+");NativeText::literal(&NATIVE_LITERAL)}"
         if self.kind=="bytes":return "vec!["+",".join(f"{byte}_u8"for byte in self.value)+"]"
         if self.kind=="none":return "()"
         raise ValueError("unsupported literal kind")

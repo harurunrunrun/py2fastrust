@@ -1,7 +1,7 @@
 """Proved Rust string operations and eager, typed string joining."""
 import ast
 
-from .native import _Expression, _Unsupported
+from .native import _Expression, _Unsupported, _text_expression
 
 
 HELPERS = r'''
@@ -30,11 +30,11 @@ fn native_text_count(text:&str,pattern:&str,start:Option<i128>,stop:Option<i128>
         Some(part)=>if pattern.is_empty(){part.chars().count()+1}else{part.matches(pattern).count()},
     }
 }
-fn native_text_join_push(values:&mut Vec<String>,value:String)->Result<(),String> {
+fn native_text_join_push(values:&mut Vec<NativeText>,value:NativeText)->Result<(),String> {
     values.try_reserve(1).map_err(|_|"MemoryError: string sequence is too large".to_owned())?;
     values.push(value);Ok(())
 }
-fn native_text_join(separator:&str,values:Vec<String>)->Result<String,String> {
+fn native_text_join(separator:&str,values:Vec<NativeText>)->Result<String,String> {
     let separators=values.len().saturating_sub(1).checked_mul(separator.len())
         .ok_or_else(||"OverflowError: join() result is too long for a Python string".to_owned())?;
     let length=values.iter().try_fold(separators,|total,value|total.checked_add(value.len()))
@@ -63,7 +63,7 @@ def try_text_method(generator, node, environment):
         g.has_text_methods=True
         values=g.temporary()
         lines.append(stream.construct())
-        lines.append(f"let mut {values}=Vec::<String>::new();")
+        lines.append(f"let mut {values}=Vec::<NativeText>::new();")
         if stream.length==0:
             action='unreachable!("proved empty join source yielded");'
         else:
@@ -71,7 +71,7 @@ def try_text_method(generator, node, environment):
             action=g.at(f"native_text_join_push(&mut {values},{stream.values[0].code})",node)+";"
         lines.append(stream.emit(action,TraceContext(g.scope_name(),g.expression_trace_id),g.line_code(node)))
         result=g.at(f"native_text_join({receiver},{values})",node)
-        return _Expression("{ "+" ".join(lines)+f" {result} }}","str")
+        return _text_expression("{ "+" ".join(lines)+f" {result} }}")
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             and node.func.attr in {"strip", "lstrip", "rstrip", "count"}):
         return None
@@ -83,7 +83,10 @@ def try_text_method(generator, node, environment):
         raise _Unsupported
     name = node.func.attr
     receiver = g.temporary()
-    lines = [f"let {receiver}:&str={owner.code};"]
+    if name=="count":
+        owner=g.expression(node.func.value,environment)
+        lines=[f"let {receiver}=&({owner.code});"]
+    else:lines=[f"let {receiver}:&str={owner.code};"]
     g.has_text_methods = True
     if name in {"strip", "lstrip", "rstrip"}:
         if len(node.args) > 1:
@@ -118,7 +121,7 @@ def try_text_method(generator, node, environment):
                           f"{name}.to_i128().unwrap_or_else(||if {name}.is_negative(){{i128::MIN}}else{{i128::MAX}})")
             bounds.append(f"Some({normalized})")
         bounds += ["None"] * (2-len(bounds))
-        count = f"native_text_count({receiver},{pattern},{','.join(bounds)})"
+        count = g.at(f"native_text_count({receiver},{pattern},{','.join(bounds)})",node)
         expression = f"{count} as NativeInt" if g.bits else f"Int::from_i128({count} as i128)"
         kind = "int"
-    return _Expression("{ " + " ".join(lines) + f" {expression} }}", kind)
+    return (_text_expression("{ "+" ".join(lines)+f" {expression} }}")if kind=="str"else _Expression("{ "+" ".join(lines)+f" {expression} }}",kind))

@@ -1,7 +1,7 @@
 """Ordinary Rust String values alongside owned arbitrary-precision integers."""
 import ast
 
-from .native import _Binding, _Expression, _Unsupported, _string
+from .native import _Binding, _Expression, _Unsupported, _string, _text_expression
 
 
 HELPERS = r'''
@@ -38,14 +38,16 @@ class BigIntText:
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and binding.kind == "str":
                 self.has_big_text = True
-                return _Expression(f"&{binding.slot}", "str", owned=False, stable_borrow=True)
+                from .native_regions import owner_view_for_slot
+                return _Expression(f"&{binding.slot}","str",owned=False,stable_borrow=True,
+                                   text_view=owner_view_for_slot(self,binding.slot))
         if isinstance(node, ast.Constant) and type(node.value) is str:
             from .literal_semantics import Literal
             literal=Literal.from_ast(node)
             if literal is None:raise _Unsupported
             self.has_big_text = True
             from .native_regions import literal_char
-            return _Expression(_string(literal.value),literal.kind,owned=False,stable_borrow=True,char_code=literal_char(literal.value))
+            return _Expression("&("+literal.rust_atom(self.literal,_string)+")",literal.kind,owned=False,stable_borrow=True,char_code=literal_char(literal.value))
         if (self.string_mode == "ascii" and isinstance(node,ast.Subscript)
                 and not isinstance(node.slice,ast.Slice)):
             from .native_regions import owner_view,char_projection
@@ -56,7 +58,8 @@ class BigIntText:
                 first,second=self.temporary(),self.temporary()
                 self.has_big_text=True
                 call=self.at(f"native_big_text_item_ref({first},&{second})",node)
-                prefix=f"{{ let {first}:&str={owner.code}; let {second}={self.number(index)}; "
+                owner_code=owner.text_view if owner.text_view is not None else owner.code
+                prefix=f"{{ let {first}:&str={owner_code}; let {second}={self.number(index)}; "
                 code=prefix+call+" }"
                 projected=prefix+self.at(f"native_big_ascii_codepoint({first},&{second})",node)+" }"
                 return _Expression(code,"str",owned=False,stable_borrow=True,char_code=char_projection(self,node,code,projected))
@@ -79,18 +82,18 @@ class BigIntText:
             from .native_text_methods import try_text_method
             return try_text_method(self,node,environment)
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
-            text = self.read_expression(node.value, environment)
+            text=(self.read_expression(node.value,environment)if self.string_mode=="unicode"else self.expression(node.value,environment))
             if text.kind == "str":
                 index = self.expression(node.slice, environment)
                 owner, offset = self.temporary(), self.temporary()
                 result = self.at(f"native_big_text_item({owner},&{offset})", node)
-                prefix=f"{{let {owner}:&str={text.code};let {offset}={self.number(index)};"
+                storage=text.code if not text.owned else f"&({text.code})"
+                prefix=f"{{let {owner}:&NativeText={storage};let {offset}={self.number(index)};"
                 code=prefix+result+"}"
                 from .native_regions import char_projection
-                projected=None
-                if self.string_mode=="ascii":
-                    projected=prefix+self.at(f"native_big_ascii_codepoint({owner},&{offset})",node)+"}"
-                return _Expression(code,"str",char_code=char_projection(self,node,code,projected))
+                helper="native_big_text_codepoint" if self.string_mode=="unicode" else "native_big_ascii_codepoint"
+                direct=prefix+self.at(f"{helper}({owner},&{offset})",node)+"}"
+                return _Expression(code,"str",char_code=char_projection(self,node,code,direct))
         if isinstance(node, ast.Compare):
             values = [self.read_expression(value, environment) for value in [node.left,*node.comparators]]
             if any(value.kind == "str" for value in values):
@@ -99,10 +102,10 @@ class BigIntText:
             name = node.func.id
             if name == "input" and not node.args:
                 self.has_input = self.has_big_text = True
-                return _Expression(f"({self.at('native_input.line(&mut native_output)', node)}).to_owned()", "str")
+                return _text_expression(self.at("native_input.line(&mut native_output)",node))
             if name == "str" and not node.args:
                 self.has_big_text = True
-                return _Expression("String::new()", "str")
+                return _Expression("NativeText::new()", "str")
             if name in {"len", "int", "bool", "str"} and len(node.args) == 1 and not isinstance(node.args[0], ast.Starred):
                 # Preserve the existing buffered decimal-input lowering.
                 arg = node.args[0]
@@ -113,18 +116,18 @@ class BigIntText:
                 if value.kind == "str":
                     self.has_big_text = True
                     if name == "len":
-                        length = "len()" if self.string_mode == "ascii" else "chars().count()"
-                        return _Expression(f"Int::from_i128(({value.code}).{length} as i128)", "int")
+                        from .native_cached_text import text_length
+                        return _Expression(f"Int::from_i128(({text_length(value,self.string_mode)}) as i128)","int")
                     if name == "bool":
                         return _Expression(f"!({value.code}).is_empty()", "bool")
                     if name == "int":
                         return _Expression(self.at(f"Int::parse({value.code},10)",node), "int")
-                    return _Expression(f"({value.code}).to_owned()", "str")
+                    return _text_expression(value.code)
                 if name == "str" and value.kind in {"int", "bool", "int_bool"}:
                     self.has_big_text = True
                     result = (f'(if {value.code} {{"True"}}else{{"False"}}).to_owned()'
                               if value.kind == "bool" else f"({value.code}).to_string()")
-                    return _Expression(result, "str")
+                    return _text_expression(result)
         return None
 
     def text_binary(self, operator, left, right, node):
@@ -138,7 +141,7 @@ class BigIntText:
             left_code = left.code if left.kind == "str" else self.number(left)
             right_code = right.code if right.kind == "str" else self.number(right)
             result = self.at(f"native_big_text_repeat(&{text},&{count})",node)
-            return _Expression(f"{{let {first}={left_code};let {second}={right_code};{result}}}", "str")
+            return _text_expression(f"{{let {first}={left_code};let {second}={right_code};{result}}}")
         return None
 
     def text_compare(self, node, values):
@@ -152,7 +155,8 @@ class BigIntText:
         names = [self.temporary() for _ in values]
         tail = "true"
         def bind(name,value):
-            return f"let {name}" + (":&str" if value.kind == "str" else "") + f"={value.code};"
+            code=value.text_view if value.kind=="str"and value.text_view is not None else value.code
+            return f"let {name}" + (":&str" if value.kind == "str" else "") + f"={code};"
         for i in reversed(range(len(node.ops))):
             a,b,op = values[i],values[i+1],node.ops[i]
             x,y = names[i],names[i+1]

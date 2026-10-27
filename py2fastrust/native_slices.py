@@ -1,7 +1,7 @@
 """Typed flat-list and Unicode string slicing with checked structural indices."""
 import ast
 
-from .native import _Expression, _Unsupported
+from .native import _Expression, _Unsupported, _text_expression
 
 
 SLICE_HELPERS = r'''
@@ -71,7 +71,9 @@ def try_slice(generator, node, environment):
     generator.has_slices = True
     container = generator.temporary()
     if owner.kind == "str":
-        lines = [f"let {container}:&str={owner.code};"]
+        owner=(read(node.value,environment)if generator.string_mode=="unicode"else generator.expression(node.value,environment))
+        storage=owner.code if not owner.owned else f"&({owner.code})"
+        lines = [f"let {container}:&NativeText={storage};"]
     else:
         generator.has_lists = True
         lines = [f"let {container}:&[NativeInt]=&({owner.code});"]
@@ -103,11 +105,11 @@ def try_slice(generator, node, environment):
         else:
             ascii_name = generator.temporary()
             lines.append(f"let {ascii_name}={container}.is_ascii();")
-            length = f"if {ascii_name} {{{container}.len()}}else{{{container}.chars().count()}}"
+            length = f"{container}.codepoint_len()"
     plan = generator.temporary()
     call = generator.at(f"native_slice_indices({length},{','.join(bounds)})", node)
     lines.append(f"let {plan}={call};")
-    result = (f"native_text_slice({container},{plan},{ascii_name})" if owner.kind == "str"
+    result = (generator.at(f"native_text_slice({container},{plan},{ascii_name})",node) if owner.kind == "str"
               else f"native_flat_slice({container},{plan})")
     result_length = None
     if owner.length is not None and known:
@@ -115,8 +117,8 @@ def try_slice(generator, node, environment):
             result_length = len(range(*slice(*constants).indices(owner.length)))
         except ValueError:
             pass
-    return _Expression("{ " + " ".join(lines) + f" {result} }}", owner.kind,
-                       owned=True, length=result_length)
+    return (_text_expression("{ "+" ".join(lines)+f" {result} }}",length=result_length)if owner.kind=="str"else
+            _Expression("{ "+" ".join(lines)+f" {result} }}",owner.kind,owned=True,length=result_length))
 
 
 def sorted_list(generator, node, environment):

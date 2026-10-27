@@ -81,7 +81,7 @@ def canonical(generator,value):
         return f"({generator.number(value)}).clone()"
     if value.kind=="str":return f"({value.code}).clone()"
     if isinstance(value.kind,TupleType):
-        return canonical_tuple(canonical(generator,_Expression(tuple_field(value.code,index),kind)) for index,kind in enumerate(value.kind.fields))
+        return canonical_tuple(canonical(generator,_Expression(tuple_field(value.code,index),kind,owned=False)) for index,kind in enumerate(value.kind.fields))
     raise _Unsupported
 
 

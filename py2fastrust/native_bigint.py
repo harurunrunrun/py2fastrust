@@ -42,6 +42,7 @@ impl NativeRange {
 }
 impl Iterator for NativeRange {
     type Item=Int;
+    #[inline(always)]
     fn next(&mut self)->Option<Int> {
         if if self.ascending {self.cursor>=self.stop}else{self.cursor<=self.stop}{return None;}
         let value=self.cursor.clone();
@@ -142,7 +143,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         structural=coerce_structural(expression,kind,BigIntGenerator.coerce)
         if structural is not None:return structural
         if expression.kind == kind:
-            return f"({expression.code}).clone()" if kind in {"int","int_bool","str","bytes"} else expression.code
+            if kind=="str":return f"({expression.code}).clone()"
+            return f"({expression.code}).clone()" if kind in {"int","int_bool","bytes"} else expression.code
         if kind == "int_bool" and expression.kind in {"int", "bool"}:
             variant = "Int" if expression.kind == "int" else "Bool"
             value = f"({expression.code}).clone()" if expression.kind == "int" else expression.code
@@ -520,6 +522,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     source = "\n".join(result)
     from .native_text_policy import apply_text_policy
     source = apply_text_policy(source,string_mode)
+    from .native_cached_text import apply_cached_text
+    source = apply_cached_text(source,string_mode)
     if prune_output:
         from .rust_pruning import prune_rust_source
         source = prune_rust_source(source)

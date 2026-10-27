@@ -93,7 +93,12 @@ class NativeStringModeTests(unittest.TestCase):
                             codepoint = ("native_big_ascii_codepoint" if integer == "bigint"
                                          else "native_ascii_codepoint")
                             candidates.append(_BORROW_HELPERS[codepoint].strip())
-                        self.assertTrue(any(body in result.rust_source for body in candidates))
+                        if not any(body in result.rust_source for body in candidates):
+                            # Canonical cached text getters delegate to the same
+                            # mode-selected byte consumer instead of returning String.
+                            self.assertIn("const NATIVE_TEXT_UNICODE:bool=false;",result.rust_source)
+                            self.assertIn("native_text_get(value,",result.rust_source)
+                            self.assertRegex(result.rust_source,rf"fn {helper}\(value:&NativeText")
                     if expected.returncode:
                         self.assertEqual(actual.stderr.splitlines()[-1].split(":")[0],
                                          expected.stderr.splitlines()[-1].split(":")[0])

@@ -54,7 +54,7 @@ print(saved, s, saved == s)
 '''
         self.differential(source, ("猫🐈\n!\n", "\n海\n"))
         rust = try_generate_native(source, "snapshots.py", "i64")
-        self.assertRegex(rust, r"fn native_function_\d+_str\(native_argument_0: String")
+        self.assertRegex(rust, r"fn native_function_\d+_str\(native_argument_0: NativeText")
         main = rust[rust.index("fn main() {"):]
         # The saved binding and by-value argument still need owned snapshots.
         self.assertIn(".clone()", main)

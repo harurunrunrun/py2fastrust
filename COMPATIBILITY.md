@@ -8,7 +8,7 @@ keeps the same direct generation path.
 
 ## Current public direct path
 
-Proved integer/boolean and String/f64 scalars, BigInt scalar arithmetic and
+Proved integer/boolean, string, and f64 scalars, BigInt scalar arithmetic and
 functions, integer containers, compatible branches/loops, scalar functions and
 selected competitive-programming input/BFS patterns are implemented. This is
 an incomplete subset of the required Python language. Recursion outside the
@@ -78,9 +78,13 @@ String methods include `strip`/`lstrip`/`rstrip` with an optional
 character set, `count` with bounds in the selected string model, and `join` over a proved
 string iterable. Joining exhausts generator inputs before constructing its
 result. Unicode whitespace includes Python's additional U+001C–U+001F range.
-BigInt-mode strings are ordinary Rust `String` values, with borrowing for
-immediate reads, value-preserving assignments, comparisons, concatenation,
-repetition, indexing, integer conversion, and typed function specialization.
+All integer modes use the same immutable `NativeText` storage in scalar
+bindings, function signatures, classes, and containers. Cloning a string shares
+its storage, and literal sites retain static storage. Unicode lengths are
+cached; indexed reads lazily build and reuse code-point offsets. ASCII reads
+retain byte-based borrowed views. Mutable formatting and output builders remain
+ordinary Rust `String` values. String identity and the remaining general object
+protocols still need direct implementation.
 
 Structural type descriptors are shared by binding joins, declarations,
 function signatures, and tuple operations. Fixed tuples of immutable scalar

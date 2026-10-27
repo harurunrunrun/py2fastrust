@@ -79,6 +79,12 @@ class _Expression:
     text_view: str | None = None
 
 
+
+def _text_expression(code, **metadata):
+    """Convert a concrete builder/view result to canonical immutable text."""
+    return _Expression(f"NativeText::from({code})","str",**metadata)
+
+
 @dataclass(frozen=True)
 class _ListInfo:
     length: int | None
@@ -609,7 +615,7 @@ class _Generator:
         structural=coerce_structural(expression,kind,_Generator.coerce)
         if structural is not None:return structural
         if expression.kind == kind:
-            return expression.code
+            return f"({expression.code}).clone()"if kind=="str"else expression.code
         if kind == "int_bool" and expression.kind in {"int", "bool"}:
             variant = "Int" if expression.kind == "int" else "Bool"
             return f"NativeScalar::{variant}({expression.code})"
@@ -2303,6 +2309,8 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     source = "\n".join(result)
     from .native_text_policy import apply_text_policy
     source = apply_text_policy(source, string_mode)
+    from .native_cached_text import apply_cached_text
+    source = apply_cached_text(source,string_mode)
     if prune_output:
         from .rust_pruning import prune_rust_source
         source = prune_rust_source(source)

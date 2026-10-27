@@ -3,7 +3,7 @@ import ast
 import re
 from importlib.resources import files
 
-from .native import _Binding, _Expression, _Function, _Unsupported, _string
+from .native import _Binding, _Expression, _Function, _Unsupported, _string, _text_expression
 from .native_types import TupleType,ListType,TypedListInfo,join_types,tuple_code,tuple_field,unmaybe
 
 
@@ -123,7 +123,7 @@ def tuple_compare(generator,left,right,operator,node):
         if isinstance(operator,(ast.Eq,ast.NotEq)):
             return str(isinstance(operator,ast.NotEq)).lower()
         return generator.at('Err::<bool,String>("TypeError: values do not support tuple ordering".into())',node)
-    pairs=[(_Expression(tuple_field(left.code,index),a),_Expression(tuple_field(right.code,index),b))
+    pairs=[(_Expression(tuple_field(left.code,index),a,owned=False),_Expression(tuple_field(right.code,index),b,owned=False))
            for index,(a,b) in enumerate(zip(left.kind.fields,right.kind.fields))]
     if isinstance(operator,(ast.Eq,ast.NotEq)):
         result=" && ".join(f"({_equal(generator,a,b)})" for a,b in pairs) or "true"
@@ -145,14 +145,14 @@ def tuple_ordering(generator,left,right,node):
             "std::cmp::Ordering::Greater" if len(left.kind.fields)>len(right.kind.fields) else "std::cmp::Ordering::Equal")
     for index,(a,b) in reversed(list(enumerate(zip(left.kind.fields,right.kind.fields)))):
         if isinstance(a,TupleType) and isinstance(b,TupleType):
-            first=_Expression(tuple_field(left.code,index),a);second=_Expression(tuple_field(right.code,index),b)
+            first=_Expression(tuple_field(left.code,index),a,owned=False);second=_Expression(tuple_field(right.code,index),b,owned=False)
             comparison=tuple_ordering(generator,first,second,node)
             temporary=generator.temporary()
             result=f"{{let {temporary}={comparison};if {temporary}==std::cmp::Ordering::Equal{{{result}}}else{{{temporary}}}}}"
             continue
         if not (a in {"int","bool","int_bool"} and b in {"int","bool","int_bool"} or a==b=="str"):
             raise _Unsupported
-        first=_Expression(tuple_field(left.code,index),a);second=_Expression(tuple_field(right.code,index),b)
+        first=_Expression(tuple_field(left.code,index),a,owned=False);second=_Expression(tuple_field(right.code,index),b,owned=False)
         result=f"if {_equal(generator,first,second)}{{{result}}}else if {_order(generator,first,second,'<',node)}{{std::cmp::Ordering::Less}}else{{std::cmp::Ordering::Greater}}"
     return "{"+result+"}"
 
@@ -206,7 +206,7 @@ def try_expression(generator,node,environment):
             if isinstance(value.kind,TupleType):
                 _mark(generator,value.kind)
                 if name=="tuple":return value
-                if name=="str":return _Expression(tuple_repr(generator,value),"str")
+                if name=="str":return _text_expression(tuple_repr(generator,value))
                 constant=len(value.kind.fields) if name=="len" else bool(value.kind.fields)
                 code=generator.literal(constant) if name=="len" else str(constant).lower()
                 return _Expression(f"{{let _=&({value.code}); {code}}}","int" if name=="len" else "bool",constant)
@@ -290,7 +290,7 @@ def try_statement(generator,node,environment):
                     continue
                 for index,(item,kind) in enumerate(zip(target.elts,value.kind.fields)):
                     if item.id in generator.iterating_lists:raise _Unsupported
-                    code=generator.coerce(_Expression(f"{name}.{index}",kind),kind)
+                    code=generator.coerce(_Expression(f"{name}.{index}",kind,owned=False),kind)
                     lines.append(f"{generator.bind(item.id,kind,environment)}={code};")
             else:raise _Unsupported
         return "\n".join(lines),environment
@@ -303,7 +303,7 @@ def try_statement(generator,node,environment):
         if star:
             if not isinstance(value.kind,TupleType):return None
             has_tuple=True;name=generator.temporary();receiver=value.code if value.owned else f"&({value.code})";setup.append(f"let {name}={receiver};")
-            values.extend(_Expression(f"{name}.{index}",kind) for index,kind in enumerate(value.kind.fields))
+            values.extend(_Expression(f"{name}.{index}",kind,owned=False) for index,kind in enumerate(value.kind.fields))
         else:
             has_tuple|=isinstance(value.kind,TupleType)
             name=generator.temporary();receiver=f"&({value.code})" if isinstance(value.kind,TupleType) and not value.owned else value.code

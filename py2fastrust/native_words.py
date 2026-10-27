@@ -202,7 +202,7 @@ def lower(g,plan,environment,planner):
     factory="NativeWords" if kind=="str" else "NativeByteWords"
     call=g.at(f"{factory}::new(&{buffer},{separator},{maximum})",plan.node)
     lines.append(f"let {cursor}={call};")
-    field="@.to_owned()" if kind=="str" else "@.to_vec()"
+    field="NativeText::from(@)" if kind=="str" else "@.to_vec()"
     result=planner.leaf("\n".join(lines),"",cursor,((kind,field,True),))
     result.words=WordSource(kind,buffer,cursor,method)
     return result

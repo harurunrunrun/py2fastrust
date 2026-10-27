@@ -327,7 +327,7 @@ def _representation(g,value,*,quoted=False):
         if quoted:
             g.has_tuples = True
             return f"native_tuple_repr_str(&({code}))"
-        return f"({code}).clone()"
+        return f"({code}).to_string()"
     if kind == "bool":
         return f'(if {code} {{"True"}}else{{"False"}}).to_owned()'
     if kind in {"int","int_bool"}:
@@ -345,7 +345,7 @@ def _representation(g,value,*,quoted=False):
         for index,field in enumerate(kind.fields):
             if index:
                 lines.append(f'{result}.push_str(", ");')
-            representation = _representation(g,_Expression(f"{owner}.{index}",field),quoted=True)
+            representation = _representation(g,_Expression(f"{owner}.{index}",field,owned=False),quoted=True)
             lines.append(f"{result}.push_str(&({representation}));")
         if len(kind.fields) == 1:
             lines.append(f"{result}.push(',');")
@@ -354,7 +354,7 @@ def _representation(g,value,*,quoted=False):
     if kind == "list_int" or isinstance(kind,ListType):
         element = "int" if kind == "list_int" else kind.element
         owner,result,index,item = (g.temporary() for _ in range(4))
-        representation = _representation(g,_Expression(f"(*{item})",element),quoted=True)
+        representation = _representation(g,_Expression(f"(*{item})",element,owned=False),quoted=True)
         return (f'{{let {owner}=&({code}); let mut {result}=String::from("["); '
                 f'for ({index},{item}) in {owner}.iter().enumerate() {{if {index}>0 {{{result}.push_str(", ");}} '
                 f"{result}.push_str(&({representation}));}} {result}.push(']'); {result}}}")
@@ -409,10 +409,10 @@ def _print(g,node,environment):
         elif value.kind == "list_int" or isinstance(value.kind,ListType):
             element = "int" if value.kind == "list_int" else value.kind.element
             item = g.temporary()
-            lines.append(f"for {item} in {value.code}.iter() {{\n{write(_Expression(f'(*{item})',element))}\n}}")
+            lines.append(f"for {item} in {value.code}.iter() {{\n{write(_Expression(f'(*{item})',element,owned=False))}\n}}")
         elif isinstance(value.kind,TupleType):
             for index,kind in enumerate(value.kind.fields):
-                lines.append(write(_Expression(f"{value.code}.{index}",kind)))
+                lines.append(write(_Expression(f"{value.code}.{index}",kind,owned=False)))
         else:
             raise _Unsupported
     lines.append(f"native_output.push_str({_string(end)});")

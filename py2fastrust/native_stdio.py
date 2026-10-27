@@ -6,7 +6,7 @@ binary buffer; no spelling is rewritten to Python's distinct input() operation.
 import ast
 from dataclasses import dataclass
 
-from .native import _Binding, _Expression, _Function, _Unsupported, _string
+from .native import _Binding, _Expression, _Function, _Unsupported, _string, _text_expression
 
 
 @dataclass(frozen=True)
@@ -142,7 +142,7 @@ def try_expression(generator,node,environment):
             generator.has_input=True
             if generator.bits:generator.has_extended_scalars=True
             else:generator.has_big_text=True
-            return _Expression(f"({generator.at('native_input.line(&mut native_output)',node)}).to_owned()","str")
+            return _text_expression(generator.at("native_input.line(&mut native_output)",node))
     local_names=generator.function.local_names if generator.function is not None else generator.entry_local_names
     direct_input=(isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id == "input")
     wrapped_input=(isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id == "int"
@@ -175,7 +175,7 @@ def try_expression(generator,node,environment):
                 if isinstance(argument,ast.Constant) and argument.value is None:
                     if reader.line and not reader.binary:
                         call=generator.at('Err::<String,String>("TypeError: None cannot be interpreted as an integer".into())',node)
-                        return _Expression(call,"str")
+                        return _text_expression(call)
                 else:
                     value=generator.expression(argument,environment)
                     name=generator.temporary()
@@ -184,7 +184,7 @@ def try_expression(generator,node,environment):
                     count=size
             kind="bytes" if reader.binary else "text"
             call=generator.at(f"native_stdin_read_{kind}(&mut native_input.reader,{count},{str(reader.line).lower()})",node)
-            return _Expression(f"{{{setup} {call}}}","bytes" if reader.binary else "str")
+            return (_Expression(f"{{{setup} {call}}}","bytes")if reader.binary else _text_expression(f"{{{setup} {call}}}"))
         if isinstance(node.func,ast.Name) and node.func.id in {"int","len","bool"} and len(node.args)==1 and not node.keywords:
             argument=node.args[0]
             if (isinstance(argument,ast.Call) and isinstance(argument.func,ast.Name)
@@ -193,8 +193,8 @@ def try_expression(generator,node,environment):
             value=getattr(generator,"read_expression",generator.expression)(argument,environment)
             if value.kind in {"str","bytes"}:
                 if node.func.id == "len":
-                    length=(f"({value.code}).len()" if value.kind == "bytes" or generator.string_mode=="ascii"
-                            else f"({value.code}).chars().count()")
+                    from .native_cached_text import text_length
+                    length=text_length(value,generator.string_mode)if value.kind=="str"else f"({value.code}).len()"
                     code=f"Int::from_i128(({length}) as i128)" if not generator.bits else f"(({length}) as NativeInt)"
                     return _Expression(code,"int",value.length)
                 if node.func.id == "bool":
@@ -215,7 +215,7 @@ def try_expression(generator,node,environment):
                 if method == "decode":
                     if len(node.args)>1 or node.args and not (isinstance(node.args[0],ast.Constant) and node.args[0].value in {"utf-8","utf8"}):
                         raise _Unsupported
-                    return _Expression(generator.at(f"native_bytes_decode(&({value.code}))",node),"str")
+                    return _text_expression(generator.at(f"native_bytes_decode(&({value.code}))",node))
                 if node.args:
                     raise _Unsupported
                 return _Expression(f"native_bytes_strip(&({value.code}),{str(method!='rstrip').lower()},{str(method!='lstrip').lower()})","bytes")

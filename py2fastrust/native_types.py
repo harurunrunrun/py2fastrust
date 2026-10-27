@@ -135,7 +135,7 @@ def render_type(kind, leaf_override=None):
     if getattr(kind,"_key_container",False):
         from .native_key_types import container_type
         return container_type(kind)
-    return {"int":"NativeInt","bool":"bool","int_bool":"NativeScalar","str":"String",
+    return {"int":"NativeInt","bool":"bool","int_bool":"NativeScalar","str":"NativeText",
             "bytes":"Vec<u8>","float":"f64","none":"()","list_int":"Vec<NativeInt>",
             "matrix_int":"Vec<Vec<NativeInt>>","dict_int":"NativeDict","set_int":"NativeSet",
             "deque_int":"std::collections::VecDeque<NativeInt>"}[kind]
@@ -195,7 +195,7 @@ def default_value(kind,zero):
     if isinstance(kind,TupleType):return tuple_code(default_value(field,zero) for field in kind.fields)
     if isinstance(kind,ListType):return "Vec::new()"
     if getattr(kind,"_key_container",False):return "NativeKeySet::new()" if kind._key_container=="set" else "NativeKeyDict::new()"
-    return {"none":"()","int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"String::new()",
+    return {"none":"()","int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"NativeText::new()",
             "bytes":"Vec::<u8>::new()","float":"0.0_f64","list_int":"Vec::new()",
             "matrix_int":"Vec::new()","set_int":"NativeSet::new()","dict_int":"NativeDict::new()",
             "deque_int":"std::collections::VecDeque::new()"}[kind]

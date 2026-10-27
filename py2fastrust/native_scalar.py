@@ -13,7 +13,7 @@ from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,
                            is_maybe,unmaybe,maybe_type,immutable,list_type,default_value)
 from .literal_semantics import float_literal
 
-from .native import _Binding, _Expression, _Generator, _Unsupported, _string
+from .native import _Binding, _Expression, _Generator, _Unsupported, _string, _text_expression
 
 
 TEXT_INPUT_HELPERS = r'''
@@ -316,14 +316,16 @@ class ScalarGenerator(_Generator):
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and binding.kind == "str":
-                return _Expression(f"&{binding.slot}", "str", owned=False, stable_borrow=True)
+                from .native_regions import owner_view_for_slot
+                return _Expression(f"&{binding.slot}","str",owned=False,stable_borrow=True,
+                                   text_view=owner_view_for_slot(self,binding.slot))
         if isinstance(node, ast.Constant) and type(node.value) is str:
             from .literal_semantics import Literal
             literal=Literal.from_ast(node)
             if literal is None:raise _Unsupported
             self.has_extended_scalars = True
             from .native_regions import literal_char
-            return _Expression(_string(literal.value),literal.kind,owned=False,stable_borrow=True,char_code=literal_char(literal.value))
+            return _Expression("&("+literal.rust_atom(self.literal,_string)+")",literal.kind,owned=False,stable_borrow=True,char_code=literal_char(literal.value))
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "str" and len(node.args) == 1 and not node.keywords):
             value = self.read_expression(node.args[0], environment)
@@ -351,7 +353,8 @@ class ScalarGenerator(_Generator):
     @staticmethod
     def read_binding(name, value):
         kind = ": &str" if value.kind == "str" else ""
-        return f"let {name}{kind} = {value.code};"
+        code=value.text_view if value.kind=="str"and value.text_view is not None else value.code
+        return f"let {name}{kind} = {code};"
 
     @result_shapes
     def expression(self, node, environment):
@@ -406,16 +409,18 @@ class ScalarGenerator(_Generator):
             if any(value.kind in {"str", "float"} for value in values):
                 return self.compare(node, values)
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
-            value = self.read_expression(node.value, environment)
+            value=(self.read_expression(node.value,environment)if self.string_mode=="unicode"else self.expression(node.value,environment))
             if value.kind == "str":
                 index = self.expression(node.slice, environment)
                 first, second = self.temporary(), self.temporary()
                 call = self.at(f"native_string_item({first}, {second})", node)
-                prefix=f"{{ {self.read_binding(first,value)} let {second}={self.number(index)}; "
+                owner=value.code if not value.owned else f"&({value.code})"
+                prefix=f"{{ let {first}:&NativeText={owner}; let {second}={self.number(index)}; "
                 code=prefix+call+" }"
                 from .native_regions import char_projection
-                projected=(prefix+self.at(f"native_ascii_codepoint({first},({second}) as i128)",node)+" }" if self.string_mode=="ascii" else None)
-                return _Expression(code,"str",char_code=char_projection(self,node,code,projected))
+                helper="native_text_codepoint" if self.string_mode=="unicode" else "native_ascii_codepoint"
+                direct=prefix+self.at(f"{helper}({first},({second}) as i128)",node)+" }"
+                return _Expression(code,"str",char_code=char_projection(self,node,code,direct))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
             if (name == "int" and len(node.args) == 1 and isinstance(node.args[0], ast.Call)
@@ -426,10 +431,10 @@ class ScalarGenerator(_Generator):
                 return super().expression(node, environment)
             if name == "input" and not node.args:
                 self.has_input = self.has_extended_scalars = True
-                return _Expression(f"({self.at('native_input.line(&mut native_output)', node)}).to_owned()", "str")
+                return _text_expression(self.at("native_input.line(&mut native_output)",node))
             if name in {"str", "float", "bool"} and not node.args:
                 self.has_extended_scalars = True
-                return _Expression({"str": "String::new()", "float": "0.0_f64", "bool": "false"}[name], name)
+                return _Expression({"str": "NativeText::new()", "float": "0.0_f64", "bool": "false"}[name], name)
             if name in {"str", "float", "bool", "int", "len", "abs"} and len(node.args) == 1:
                 try:
                     value = (self.read_expression(node.args[0], environment)
@@ -449,7 +454,7 @@ class ScalarGenerator(_Generator):
                     code = (f"native_float_text({value.code})" if value.kind == "float" else
                             f'(if {value.code} {{ "True" }} else {{ "False" }}).to_owned()' if value.kind == "bool" else
                             f"({value.code}).to_string()")
-                    return _Expression(code, "str")
+                    return _text_expression(code)
                 if name == "float" and value.kind in {"int", "bool", "int_bool", "float", "str"}:
                     self.has_extended_scalars = True
                     code = self.at(f"native_scalar_float(&({value.code}))", node) if value.kind == "str" else self.floating(value)
@@ -459,8 +464,8 @@ class ScalarGenerator(_Generator):
                     code = (f"native_float_integer({value.code})" if value.kind == "float" else f"native_scalar_integer(&({value.code}))")
                     return _Expression(self.at(code, node), "int")
                 if name == "len" and value.kind == "str":
-                    length = "len()" if self.string_mode == "ascii" else "chars().count()"
-                    return _Expression(f"(({value.code}).{length} as NativeInt)", "int")
+                    from .native_cached_text import text_length
+                    return _Expression(f"({text_length(value,self.string_mode)} as NativeInt)","int")
                 if name == "abs" and value.kind == "float":
                     return _Expression(f"({value.code}).abs()", "float")
         return super().expression(node, environment)
@@ -479,7 +484,7 @@ class ScalarGenerator(_Generator):
             call = self.at(f"native_string_repeat(&{a}, {b})", node)
             left_code = left.code if left.kind == "str" else self.number(left)
             right_code = right.code if right.kind == "str" else self.number(right)
-            return _Expression(f"{{ let {first} = {left_code}; let {second} = {right_code}; {call} }}", "str")
+            return _text_expression(f"{{ let {first} = {left_code}; let {second} = {right_code}; {call} }}")
         numeric = {"int", "bool", "int_bool", "float"}
         if left.kind in numeric and right.kind in numeric and ("float" in (left.kind, right.kind) or isinstance(operator, ast.Div)):
             self.has_extended_scalars = True

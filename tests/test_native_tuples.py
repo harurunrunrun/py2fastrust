@@ -14,8 +14,8 @@ from py2fastrust.native_types import TupleType,ListType,MaybeType,rust_type,kind
 
 class StructuralTypeTests(unittest.TestCase):
     def test_shape_rendering_and_finite_numeric_joins(self):
-        self.assertEqual(rust_type(TupleType(("int","str","bool"))),"(NativeInt,String,bool)")
-        self.assertEqual(rust_type(ListType(TupleType(("int","str")))),"Vec<(NativeInt,String)>")
+        self.assertEqual(rust_type(TupleType(("int","str","bool"))),"(NativeInt,NativeText,bool)")
+        self.assertEqual(rust_type(ListType(TupleType(("int","str")))),"Vec<(NativeInt,NativeText)>")
         self.assertEqual(rust_type(MaybeType(TupleType(("bool",)))),"Option<(bool,)>")
         self.assertEqual(rust_type("maybe_bytes"),"Option<Vec<u8>>")
         self.assertNotEqual(kind_tag(TupleType(("int",))),kind_tag(TupleType(("int","int"))))

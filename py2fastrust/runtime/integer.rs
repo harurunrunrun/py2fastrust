@@ -1,7 +1,21 @@
 // The generator supplies INT_BITS: 64, 128, or 0 (arbitrary precision).
 // Magnitudes use base 2^32. A canonical small representation avoids allocations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Int(IntRepr);
+
+impl Clone for Int {
+    // Preserve the allocation-free small-value path in large generated modules.
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        match &self.0 {
+            IntRepr::Small(value) => Self(IntRepr::Small(*value)),
+            IntRepr::Big { negative, digits } => Self(IntRepr::Big {
+                negative: *negative,
+                digits: digits.clone(),
+            }),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum IntRepr {

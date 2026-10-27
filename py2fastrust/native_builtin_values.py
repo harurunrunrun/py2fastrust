@@ -1,5 +1,5 @@
 """Apply a proved builtin identity to already lowered scalar arguments."""
-from .native import _Expression, _Unsupported
+from .native import _Expression, _Unsupported, _text_expression
 from .references import BuiltinIdentity
 
 
@@ -26,10 +26,10 @@ def unary(g, identity, value, node):
         code=(g.coerce(value,"str") if value.kind=="str" else
               f'(if {value.code} {{"True"}}else{{"False"}}).to_owned()' if value.kind=="bool" else
               f"({value.code}).to_string()")
-        return _Expression(code,"str")
+        return _text_expression(code)
     if name == "len" and value.kind in {"str","bytes","list_int","matrix_int","dict_int","set_int","deque_int"}:
-        length=(f"({value.code}).chars().count()" if value.kind=="str" and g.string_mode=="unicode"
-                else f"({value.code}).len()")
+        from .native_cached_text import text_length
+        length=text_length(value,g.string_mode)if value.kind=="str"else f"({value.code}).len()"
         code=f"({length}) as NativeInt"if g.bits else f"Int::from_i128(({length}) as i128)"
         return _Expression(code,"int",value.length)
     raise _Unsupported

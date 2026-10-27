@@ -45,7 +45,7 @@ def canonical_type(kind):
     from .native_types import TupleType,EmptyType
     if isinstance(kind,EmptyType):return "NativeEmpty"
     if kind in {"int","bool","int_bool"}:return "NativeInt"
-    if kind=="str":return "String"
+    if kind=="str":return "NativeText"
     if isinstance(kind,TupleType):return canonical_tuple(canonical_type(field) for field in kind.fields)
     raise KeyError(kind)
 
