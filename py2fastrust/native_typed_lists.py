@@ -30,6 +30,8 @@ fn native_typed_copy<T:Clone>(values:&[T])->Result<Vec<T>,String> {
 
 from .native_list_operations import HELPERS as _LIST_OPERATION_HELPERS
 HELPERS += _LIST_OPERATION_HELPERS
+from .native_list_methods import HELPERS as _LIST_SEARCH_HELPERS
+HELPERS += _LIST_SEARCH_HELPERS
 
 def _enable(g):
     g.has_typed_lists = True
@@ -183,6 +185,9 @@ def _slice(g, node, owner, environment):
 
 
 def try_expression(g, node, environment):
+    from .native_list_methods import try_expression as sequence_search
+    search=sequence_search(g,node,environment)
+    if search is not None:return search
     if isinstance(node,ast.Name):
         binding = environment.get(node.id)
         if isinstance(binding,_Binding) and isinstance(binding.info,TypedListInfo):

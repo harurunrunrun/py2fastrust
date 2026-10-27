@@ -699,7 +699,7 @@ impl Int {
 
     fn exact_divmod(&self, other: &Self) -> Result<(Self, Self), String> {
         if other.is_zero() {
-            return Err("ZeroDivisionError: integer division or modulo by zero".into());
+            return Err("ZeroDivisionError: division by zero".into());
         }
         if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
             if let Some(mut q) = a.checked_div(*b) {

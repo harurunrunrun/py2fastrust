@@ -188,13 +188,17 @@ class Normalizer:
             return self._methods[key]
         self._methods[key]=None
         if not (isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
-                and node.func.attr in {"split","join"}):
+                and node.func.attr in {"split","join","index","count","pop"}):
             return None
         evaluate=getattr(self.generator,"expression",None)
         if evaluate is None:
             return None
         receiver=evaluate(node.func.value,self.environment)
-        if receiver.kind not in {"str","bytes"} or receiver.kind=="bytes" and node.func.attr=="join":
+        from .native_types import list_type
+        sequence_search=node.func.attr in {"index","count","pop"}
+        if sequence_search:
+            if not list_type(receiver.kind):return None
+        elif receiver.kind not in {"str","bytes"} or receiver.kind=="bytes" and node.func.attr=="join":
             return None
         identity=BuiltinMethodIdentity(receiver.kind,node.func.attr)
         original=self.invocation(node)
@@ -202,8 +206,18 @@ class Normalizer:
         if identity.name=="split":
             signature=_signature(("self","sep","maxsplit"),positional_only=("self",),defaults=("sep","maxsplit"))
             defaults=(("sep",None),("maxsplit",-1))
-        else:
+        elif identity.name=="join":
             signature=_signature(("self","iterable"),positional_only=("self","iterable"))
+            defaults=()
+        elif identity.name=="index":
+            signature=_signature(("self","value","start","stop"),
+                                 positional_only=("self","value","start","stop"),defaults=("start","stop"))
+            defaults=(("start",0),("stop",None))
+        elif identity.name=="pop":
+            signature=_signature(("self","index"),positional_only=("self","index"),defaults=("index",))
+            defaults=(("index",-1),)
+        else:
+            signature=_signature(("self","value"),positional_only=("self","value"))
             defaults=()
         default_values={name:Operand(None,name,DefaultValue(name,value))for name,value in defaults}
         implicit=Operand(node.func.value,"self",captured=receiver)
@@ -298,8 +312,9 @@ class Normalizer:
                 if method.identity.name=="split":
                     source=ProducerPlan(ProducerKind.WORDS,node,invocation=invocation,method=method)
                     return ConsumerPlan(ConsumerKind.LIST,node,source,method=method)
-                source=self.producer(method.invocation.binding["iterable"].expression)
-                return ConsumerPlan(ConsumerKind.JOIN,node,source,method=method)
+                if method.identity.name=="join":
+                    source=self.producer(method.invocation.binding["iterable"].expression)
+                    return ConsumerPlan(ConsumerKind.JOIN,node,source,method=method)
             return None
         if kind is ConsumerKind.LIST and not invocation.arguments.evaluation_order:
             return ConsumerPlan(kind,node,ProducerPlan(ProducerKind.SEQUENCE,node))

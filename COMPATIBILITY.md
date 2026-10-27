@@ -51,6 +51,14 @@ detection. `--string-mode unicode` selects Python code-point semantics. The
 source-comment directive overrides CLI/API settings. Non-ASCII strings require
 Unicode mode; ASCII mode does not detect and switch automatically.
 
+Uniquely owned flat lists of supported immutable values share direct
+`index`, `count`, and `pop` lowering. Search bounds use Python slice-style
+normalization, numeric bool/int equality is preserved, and arguments finish
+before the receiver's current contents are searched or mutated. Pop checks
+index-size overflow and keeps unbound-name errors distinct from empty-list
+errors. Element comparisons that require unsupported identity or object
+protocols, including floating-point element identity, remain `E006`.
+
 Concatenation and repetition of proved flat lists share one operation plan in
 fixed-width and BigInt modes, including immutable bool/string/tuple elements.
 Operands are evaluated in source order; results have independent list storage.

@@ -189,7 +189,7 @@ fn native_at<T>(result: Result<T, String>, line: usize, function: &'static str) 
 }
 #[inline]
 fn native_divmod(a: NativeInt, b: NativeInt) -> Result<(NativeInt, NativeInt), String> {
-    if b == 0 { return Err("ZeroDivisionError: integer division or modulo by zero".into()); }
+    if b == 0 { return Err("ZeroDivisionError: division by zero".into()); }
     if a == NativeInt::MIN && b == -1 { return Ok((NativeInt::MIN, 0)); }
     let (mut q, mut r) = (a / b, a % b);
     if r != 0 && (r < 0) != (b < 0) { q = q.wrapping_sub(1); r = r.wrapping_add(b); }

@@ -78,7 +78,7 @@ def _scalar(kind):
     if isinstance(kind,UnionType):return all(_scalar(value) for value in kind.alternatives)
     if isinstance(kind,NullableType):return _scalar(kind.value)
     return (all(_scalar(field) for field in kind.fields) if isinstance(kind,TupleType) else
-            kind in {"int","bool","int_bool","str","none"})
+            kind in {"int","bool","int_bool","str","bytes","none"})
 
 
 def _equal(generator,left,right):
@@ -91,7 +91,7 @@ def _equal(generator,left,right):
         return tuple_compare(generator,left,right,ast.Eq(),None)
     if left.kind in {"int","bool","int_bool"} and right.kind in {"int","bool","int_bool"}:
         return f"({generator.number(left)})==({generator.number(right)})"
-    if left.kind==right.kind=="str":
+    if left.kind==right.kind and left.kind in {"str","bytes"}:
         return f"({left.code})==({right.code})"
     return "false"
 
@@ -106,7 +106,7 @@ def _order(generator,left,right,operator,node):
         return tuple_compare(generator,left,right,operation(),node)
     if left.kind in {"int","bool","int_bool"} and right.kind in {"int","bool","int_bool"}:
         return f"({generator.number(left)}){operator}({generator.number(right)})"
-    if left.kind==right.kind=="str":
+    if left.kind==right.kind and left.kind in {"str","bytes"}:
         return f"({left.code}){operator}({right.code})"
     return generator.at('Err::<bool,String>("TypeError: tuple elements do not support ordering".into())',node)
 

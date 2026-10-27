@@ -489,6 +489,8 @@ class Solver:
                 result=value(self.allocation(term.site,"list",context));self.insert(result,"element",value("bytes" if "bytes" in kinds else "str"));return result
             if name in {"strip","lstrip","rstrip","join"} and kinds&{"str","bytes"}:return value("bytes" if "bytes" in kinds else "str")
             if name in {"pop","popleft"} and "deque_int" in kinds:return value("int")
+            if name=="pop" and ("list" in category or any(isinstance(kind,ListType) for kind in kinds)):
+                return self.field_values(receiver,"iteration")
             if name in {"append","appendleft","extend","extendleft","clear","reverse","rotate"} and "deque_int" in kinds:return value("none")
             if name in {"count","index","bit_length","bit_count"}:return value("int")
             return UNKNOWN
