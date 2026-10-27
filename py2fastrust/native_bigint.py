@@ -515,11 +515,28 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         raise _Unsupported
 
 
-def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None,trusted_imports=frozenset()):
+def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None,trusted_imports=frozenset(),unit=None):
     """Return a complete direct-Rust program only after a full scalar proof."""
+    from .frontend import build_program, native_namespace_diagnostic
+    from .diagnostics import CompilationError
     try:
-        tree = ast.parse(source,filename=filename)
-        table = symtable.symtable(source,filename,"exec")
+        if unit is None:
+            from dataclasses import replace
+            unit = build_program(source, filename).main
+            # Internal callers historically opt into standard-module helpers.
+            # Restrict that proof to origins verified by the shared resolver.
+            unit = replace(unit, native_imports=unit.native_imports.intersection(trusted_imports))
+        unit.check_identity(source, filename)
+    except CompilationError as error:
+        if diagnostic_out is not None:diagnostic_out.append(error.diagnostic)
+        return None
+    namespace_error = native_namespace_diagnostic(unit)
+    if namespace_error is not None:
+        if diagnostic_out is not None:diagnostic_out.append(namespace_error)
+        return None
+    trusted_imports = unit.native_imports
+    try:
+        tree, table = unit.tree, unit.table
         for node in ast.walk(tree):
             if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS-{"input"}:
                 raise _Unsupported
@@ -540,7 +557,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError) as error:
         if diagnostic_out is not None:
-            diagnostic_out.append(_direct_diagnostic(source,filename,error))
+            diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
         return None
     runtime = files("py2fastrust").joinpath("runtime")
     notice = runtime.joinpath("NOTICE.txt").read_text(encoding="utf-8")

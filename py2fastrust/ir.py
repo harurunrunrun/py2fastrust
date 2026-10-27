@@ -1,6 +1,7 @@
 """Source-located intermediate code lowered to Rust control-flow blocks."""
 
 from dataclasses import dataclass, field
+from .source_locations import SourceLocation
 
 
 @dataclass
@@ -55,12 +56,3 @@ class Program:
     flow: object | None = field(default=None, repr=False, compare=False)
     # Python-only proofs keyed by the actual allocated AOT Code identity.
     native_leaves: dict[int, tuple] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class SourceLocation:
-    code: int
-    instruction: int
-    filename: str
-    line: int
-    column: int

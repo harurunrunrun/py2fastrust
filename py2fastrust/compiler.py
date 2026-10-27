@@ -14,12 +14,8 @@ from .ir import Code, Instruction, Parameters, Pattern, Program
 from .native_leaf import prove_native_leaf
 
 
-BUILTIN_MODULES = {
-    "sys", "math", "heapq", "bisect", "collections", "itertools", "functools",
-    "builtins", "operator", "types", "typing", "string", "string.templatelib",
-    "gc", "time", "io", "_py2fastrust_functools", "__future__",
-}
-VENDORED_MODULES = {"heapq", "bisect", "collections", "functools", "__future__"}
+from .module_catalog import BUILTIN_MODULES, VENDORED_MODULES
+
 FUTURE_ANNOTATIONS = __future__.annotations.compiler_flag
 FUTURE_MASK = sum(getattr(__future__, name).compiler_flag for name in __future__.all_feature_names) & ~0x10
 BINARY = {

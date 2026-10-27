@@ -26,7 +26,7 @@ def _static_reference(value):
     return isinstance(value, (_Function, _DequeConstructor)) or getattr(value, "_native_reference", False)
 
 
-def _direct_diagnostic(source, filename, error=None, node=None):
+def _direct_diagnostic(source, filename, error=None, node=None, unit=None):
     """Locate the innermost AST operation whose direct lowering failed."""
     traceback = getattr(error, "__traceback__", None)
     while traceback is not None:
@@ -36,7 +36,7 @@ def _direct_diagnostic(source, filename, error=None, node=None):
         traceback = traceback.tb_next
     if node is None:
         try:
-            tree = ast.parse(source, filename=filename)
+            tree = unit.tree if unit is not None else ast.parse(source, filename=filename)
             node = tree.body[0] if tree.body else None
         except (SyntaxError, ValueError, RecursionError):
             pass
@@ -1845,7 +1845,7 @@ class _Generator:
             name = self.bind(node.target.id, value, environment)
             return f"{name} = {value.code};", environment
         if isinstance(node, ast.If):
-            if self.function is None and self.functions and _main_guard(node):
+            if self.function is None and self.functions and "__name__" not in environment and _main_guard(node):
                 return self.statements(node.body, environment)
             test = self.expression(node.test, environment)
             yes, yes_environment = self.statements(node.body, environment)
@@ -2257,9 +2257,6 @@ def _function_plans(tree, table, bits, generator_type=_Generator):
                                         local_names, "int" if value_returns else "none", set(), set(), set())
         functions[node.name] = function
         functions.definitions[node] = function
-    if functions and any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-                         and node.id in {"__builtins__", "__name__"} for node in ast.walk(tree)):
-        raise _Unsupported
     return functions
 
 
@@ -2371,36 +2368,48 @@ def _declarations(generator):
 
 
 def try_generate_native(source: str, filename: str, integer: str, *, trusted_imports=frozenset(),
-                        prune_output=True, diagnostic_out=None) -> str | None:
+                        prune_output=True, diagnostic_out=None, unit=None) -> str | None:
     """Return direct Rust, or None with an optional positioned diagnostic.
 
     Fixed-width modes use native Rust integers; BigInt selects the owned
     arbitrary-precision scalar backend. An unimplemented direct path fails.
-    trusted_imports must come from Compiler's actual standard-module resolution;
+    SourceUnit carries the shared resolver's actual standard-module proof;
     a spelling such as "collections" in user source is insufficient evidence.
     """
-    # Class lowering has concrete layouts; an unsupported operation reports its
-    # missing implementation and never retries a general execution backend.
+    from .frontend import build_program, native_namespace_diagnostic
+    from .diagnostics import CompilationError
     try:
-        has_classes = any(isinstance(node, ast.ClassDef) for node in ast.walk(ast.parse(source, filename=filename)))
-    except (SyntaxError, RecursionError):
-        has_classes = False
+        if unit is None:
+            from dataclasses import replace
+            unit = build_program(source, filename).main
+            # Internal callers historically opt into standard-module helpers.
+            # Restrict that proof to origins verified by the shared resolver.
+            unit = replace(unit, native_imports=unit.native_imports.intersection(trusted_imports))
+        unit.check_identity(source, filename)
+    except CompilationError as error:
+        if diagnostic_out is not None:diagnostic_out.append(error.diagnostic)
+        return None
+    namespace_error = native_namespace_diagnostic(unit)
+    if namespace_error is not None:
+        if diagnostic_out is not None:diagnostic_out.append(namespace_error)
+        return None
+    trusted_imports = unit.native_imports
+    has_classes = any(isinstance(node, ast.ClassDef) for node in ast.walk(unit.tree))
     if has_classes:
         from .native_classes import try_generate_classes
         return try_generate_classes(source, filename, integer, trusted_imports=trusted_imports,
-                                    prune_output=prune_output, diagnostic_out=diagnostic_out)
+                                    prune_output=prune_output, diagnostic_out=diagnostic_out, unit=unit)
     if integer == "bigint":
         from .native_bigint import try_generate_bigint
         return try_generate_bigint(source, filename, prune_output=prune_output,
-                                   diagnostic_out=diagnostic_out,trusted_imports=trusted_imports)
+                                   diagnostic_out=diagnostic_out,trusted_imports=trusted_imports,unit=unit)
     if integer not in {"i64", "i128"}:
         if diagnostic_out is not None:
-            diagnostic_out.append(_direct_diagnostic(source, filename))
+            diagnostic_out.append(_direct_diagnostic(source, filename, unit=unit))
         return None
     from .native_scalar import ScalarGenerator, SCALAR_HELPERS, TEXT_INPUT_HELPERS
     try:
-        tree = ast.parse(source, filename=filename)
-        table = symtable.symtable(source, filename, "exec")
+        tree, table = unit.tree, unit.table
         # Builtins cannot be rebound even on a path that seems unreachable.
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in ScalarGenerator.BUILTINS-{"input"}:
@@ -2439,7 +2448,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             body = f"'native_entrypoint: {{\n{body}\n}}"
     except (SyntaxError, _Unsupported, RecursionError) as error:
         if diagnostic_out is not None:
-            diagnostic_out.append(_direct_diagnostic(source, filename, error))
+            diagnostic_out.append(_direct_diagnostic(source, filename, error, unit=unit))
         return None
     runtime = files("py2fastrust").joinpath("runtime")
     notice = runtime.joinpath("NOTICE.txt").read_text(encoding="utf-8")

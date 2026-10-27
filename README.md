@@ -106,7 +106,17 @@ else:
         print(diagnostic)
 ```
 
-`source_map` retains original file, line, column and intermediate-code positions.
+The shared frontend parses each source once with the official `ast` and
+`symtable` APIs, validates contextual syntax, and resolves fixed-name imports
+before native lowering. All direct emitters consume the same read-only source
+unit and lexical metadata. No VM instruction compilation is needed for public
+conversion. Only requested modules are resolved; `__future__` is not implicitly
+loaded.
+
+`source_map` retains original file, line and column. Its `code` field identifies
+a lexical scope; `instruction` is a stable AST ordinal within that scope, rather
+than a generated Rust instruction offset. These positions remain identical
+with optional Rust helper pruning enabled or disabled.
 A successful public result has `backend="native"`. An unimplemented direct
 lowering returns `rust_source=None` and an `E006` diagnostic at the relevant
 source operation. Official Python syntax, scope and module-resolution errors

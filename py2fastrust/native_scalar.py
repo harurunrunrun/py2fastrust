@@ -14,6 +14,13 @@ import math
 from .native import _Binding, _Expression, _Generator, _Unsupported, _string
 
 
+def float_literal(value):
+    """Format a Rust binary64 literal without importing general codegen."""
+    return ("f64::NAN" if math.isnan(value) else
+            "f64::INFINITY" if value == math.inf else
+            "f64::NEG_INFINITY" if value == -math.inf else repr(value) + "_f64")
+
+
 TEXT_INPUT_HELPERS = r'''
 struct NativeInput { reader: StandardInput, line: String }
 impl NativeInput {
@@ -349,9 +356,7 @@ class ScalarGenerator(_Generator):
                 if any(0xD800 <= ord(c) <= 0xDFFF for c in node.value):
                     raise _Unsupported
                 return _Expression(f"String::from({_string(node.value)})", "str")
-            code = ("f64::NAN" if math.isnan(node.value) else
-                    "f64::INFINITY" if node.value == math.inf else
-                    "f64::NEG_INFINITY" if node.value == -math.inf else repr(node.value) + "_f64")
+            code = float_literal(node.value)
             return _Expression(code, "float")
         if isinstance(node, ast.Name):
             binding = environment.get(node.id)

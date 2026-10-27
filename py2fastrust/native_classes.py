@@ -68,12 +68,7 @@ def merge(left, right, node):
     return left
 
 
-def mangle(name, owner):
-    if owner and name.startswith("__") and not name.endswith("__"):
-        prefix = owner.lstrip("_")
-        if prefix:
-            return "_" + prefix + name
-    return name
+from .frontend import private_name as mangle
 
 
 @dataclass
@@ -122,8 +117,9 @@ class Model:
     DATA = {"int", "bool", "scalar", "str", "bytes", "float", "none", "object", "list", "tuple", "range"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
-    def __init__(self, tree, filename, integer, trusted_imports):
+    def __init__(self, tree, filename, integer, trusted_imports, unit=None):
         self.tree, self.filename, self.integer = tree, filename, integer
+        self.unit = unit
         self.trusted_imports = trusted_imports
         self.classes, self.functions = {}, {}
         self.plans = []
@@ -138,6 +134,11 @@ class Model:
         self.final = False
         self.global_symbols = {}
         self.discover()
+
+    def resolved_name(self, plan, node):
+        if self.unit is not None:return self.unit.name_for(node)
+        raw=node.id if isinstance(node,ast.Name)else node.attr if isinstance(node,ast.Attribute)else node.arg
+        return plan.name(raw)
 
     def cell(self, plan, node, tag=None, args=()):
         key = (plan.index, id(node))
@@ -168,17 +169,21 @@ class Model:
         if any(value.annotation is not None for value in arguments):
             raise ClassUnsupported(node)
         plan = FunctionPlan(node, len(self.plans), owner)
-        plan.parameters = [plan.name(value.arg) for value in node.args.posonlyargs + node.args.args]
-        plan.positional_only = {plan.name(value.arg) for value in node.args.posonlyargs}
-        plan.keyword_only = [plan.name(value.arg) for value in node.args.kwonlyargs]
+        plan.parameters = [self.resolved_name(plan,value) for value in node.args.posonlyargs + node.args.args]
+        plan.positional_only = {self.resolved_name(plan,value) for value in node.args.posonlyargs}
+        plan.keyword_only = [self.resolved_name(plan,value) for value in node.args.kwonlyargs]
         if owner and not plan.parameters:
             raise ClassUnsupported(node)
         for name in plan.parameters + plan.keyword_only:
             plan.arguments[name] = Cell()
-        plan.declared = set(plan.arguments) | {plan.name(value.id) for value in ast.walk(node)
+        plan.declared = set(plan.arguments) | {self.resolved_name(plan,value) for value in ast.walk(node)
                                              if isinstance(value, ast.Name) and isinstance(value.ctx, (ast.Store, ast.Del))}
+        if self.unit is not None:
+            scope = self.unit.scope_for(node)
+            plan.declared = {symbol.name for symbol in scope.symbols
+                             if symbol.has("local") or symbol.has("parameter")}
         defaults = list(zip(plan.parameters[len(plan.parameters)-len(node.args.defaults):], node.args.defaults))
-        defaults += [(plan.name(arg.arg), value) for arg, value in zip(node.args.kwonlyargs, node.args.kw_defaults) if value is not None]
+        defaults += [(self.resolved_name(plan,arg), value) for arg, value in zip(node.args.kwonlyargs, node.args.kw_defaults) if value is not None]
         for name, value in defaults:
             literal = value.operand if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)) else value
             if not isinstance(literal, ast.Constant) or type(literal.value) not in {int, bool, float, str, type(None)}:
@@ -210,7 +215,7 @@ class Model:
                         raise ClassUnsupported(member)
                     if member.name.startswith("__") and member.name.endswith("__") and member.name != "__init__":
                         raise ClassUnsupported(member)
-                    name = mangle(member.name, node.name)
+                    name = self.unit.name_for(member) if self.unit is not None else mangle(member.name, node.name)
                     if name in owner.methods:
                         raise ClassUnsupported(member)
                     owner.methods[name] = self.function(member, owner)
@@ -230,8 +235,6 @@ class Model:
                 effects = True
         for value in ast.walk(self.tree):
             if isinstance(value, ast.Name) and isinstance(value.ctx, (ast.Store, ast.Del)) and value.id in names:
-                raise ClassUnsupported(value)
-            if isinstance(value, ast.Name) and isinstance(value.ctx, (ast.Store, ast.Del)) and value.id in {"__name__","__builtins__"}:
                 raise ClassUnsupported(value)
             if isinstance(value, ast.arg) and value.arg in names:
                 raise ClassUnsupported(value)
@@ -327,10 +330,10 @@ class Model:
                 raise ClassUnsupported(node)
             return self.cell(plan, node, tag)
         if isinstance(node, ast.Name):
-            name = plan.name(node.id)
+            name = self.resolved_name(plan,node)
             if name in environment:
                 return self.remember(plan, node, environment[name])
-            if node.id == "__name__":
+            if node.id == "__name__" and name not in plan.declared:
                 return self.cell(plan, node, "str")
             if name in plan.declared:
                 values = plan.locals.get(name, [])
@@ -356,7 +359,7 @@ class Model:
                 return self.cell(plan, node)
             if receiver.tag == "object":
                 owner = self.classes[receiver.args[0]]
-                name = plan.name(node.attr)
+                name = self.resolved_name(plan,node)
                 return self.remember(plan, node, self.field(owner, name, node))
             intrinsic = {("sys","stdin"):"stdin", ("stdin","buffer"):"stdin_buffer",
                          ("stdin","readline"):"reader_text", ("stdin","read"):"read_text",
@@ -481,7 +484,7 @@ class Model:
     def call(self, plan, node, environment):
         function = node.func
         if (isinstance(function,ast.Name) and plan is not self.module
-                and plan.name(function.id) in plan.declared and plan.name(function.id) not in environment):
+                and self.resolved_name(plan,function) in plan.declared and self.resolved_name(plan,function) not in environment):
             raise ClassUnsupported(node)
         if (isinstance(function,ast.Name) and function.id == "map" and "map" not in environment
                 and len(node.args) == 2 and not node.keywords and isinstance(node.args[0],ast.Name)
@@ -496,7 +499,7 @@ class Model:
             receiver = self.expression(plan,function.value,environment).root()
         arguments = [self.expression(plan,value,environment) for value in node.args]
         keywords = [(value.arg,self.expression(plan,value.value,environment)) for value in node.keywords]
-        if isinstance(function,ast.Name) and plan.name(function.id) not in environment:
+        if isinstance(function,ast.Name) and self.resolved_name(plan,function) not in environment:
             if function.id in self.classes:
                 if function.id not in (plan.visible_definitions or ()):
                     raise ClassUnsupported(node)
@@ -552,15 +555,15 @@ class Model:
                 for value in arguments if len(arguments)>1 else [self.item(arguments[0],node)]:
                     merge(result,value,node)
                 return result
-        if isinstance(function,ast.Name) and plan.name(function.id) in environment:
-            callable_ = environment[plan.name(function.id)].root()
+        if isinstance(function,ast.Name) and self.resolved_name(plan,function) in environment:
+            callable_ = environment[self.resolved_name(plan,function)].root()
             if callable_.tag in {"reader_text","reader_bytes","read_text","read_bytes"} and not arguments and not keywords:
                 self.remember(plan,function,callable_)
                 return self.cell(plan,node,"bytes" if callable_.tag in {"reader_bytes","read_bytes"} else "str")
         if receiver is not None:
             if receiver.tag == "object":
                 owner = self.classes[receiver.args[0]]
-                method = owner.methods.get(plan.name(function.attr))
+                method = owner.methods.get(self.resolved_name(plan,function))
                 if method is None:
                     raise ClassUnsupported(function)
                 return self.bind_call(plan,node,method,[receiver]+arguments,keywords)
@@ -623,7 +626,7 @@ class Model:
 
     def target(self, plan, node, value, environment):
         if isinstance(node,ast.Name):
-            name = plan.name(node.id)
+            name = self.resolved_name(plan,node)
             if value.root().tag in {"map_int","enumerate"}:
                 raise ClassUnsupported(node)
             if plan is self.module and name in self.global_symbols:
@@ -646,7 +649,7 @@ class Model:
         if isinstance(node,ast.Attribute):
             owner = self.expression(plan,node.value,environment).root()
             if owner.tag == "object":
-                field_ = self.field(self.classes[owner.args[0]],plan.name(node.attr),node,writing=True)
+                field_ = self.field(self.classes[owner.args[0]],self.resolved_name(plan,node),node,writing=True)
                 merge(field_,value,node)
                 self.remember(plan,node,field_)
                 return
@@ -891,13 +894,13 @@ class Emitter:
             elif tag == "bytes":
                 code,constant = "vec!["+",".join(f"{byte}_u8"for byte in value)+"]",None
             elif tag == "float":
-                from .codegen import float_literal
+                from .native_scalar import float_literal
                 code,constant = float_literal(value),None
             else:
                 code,constant = "()",None
             return self.encoded(code,(tag,),wanted,node,constant)
         if isinstance(node,ast.Name):
-            name = self.plan.name(node.id)
+            name = self.model.resolved_name(self.plan,node)
             if wanted[0] in self.model.INTRINSICS:
                 return Expression("()",wanted)
             if node.id == "__name__" and name not in self.plan.locals:
@@ -921,7 +924,7 @@ class Emitter:
             if receiver.kind[0] != "object":
                 raise ClassUnsupported(node)
             owner = self.model.classes[receiver.kind[1]]
-            index = list(owner.fields).index(self.plan.name(node.attr))
+            index = list(owner.fields).index(self.model.resolved_name(self.plan,node))
             return Expression(self.at(f"class_get_{owner.index}_{index}(&({receiver.code}))",node),wanted)
         if isinstance(node,ast.Subscript):
             setup,owner = self.capture(self.expression(node.value))
@@ -1129,7 +1132,7 @@ class Emitter:
             receiver = self.expression(function.value)
             if receiver.kind[0] == "object":
                 owner = self.model.classes[receiver.kind[1]]
-                method = owner.methods[self.plan.name(function.attr)]
+                method = owner.methods[self.model.resolved_name(self.plan,function)]
                 return self.call_user(node,method,receiver)
         else:
             receiver = None
@@ -1330,7 +1333,7 @@ class Emitter:
             kind = self.kind(target)
             if kind[0] in self.model.INTRINSICS:
                 return ""
-            name = self.plan.name(target.id)
+            name = self.model.resolved_name(self.plan,target)
             slot = self.slot(name,kind)
             clearing = "".join(f"{other}=None;" for (other_name,other_kind),other in self.slots.items()
                                if other_name==name and other_kind!=kind)
@@ -1357,7 +1360,7 @@ class Emitter:
             setup,owner = self.capture(self.expression(target.value))
             if owner.kind[0]!="object":raise ClassUnsupported(target)
             plan=self.model.classes[owner.kind[1]]
-            name=self.plan.name(target.attr)
+            name=self.model.resolved_name(self.plan,target)
             return setup,("field",owner,plan,list(plan.fields).index(name),shape(plan.fields[name].cell))
         if isinstance(target,ast.Subscript):
             setup,owner=self.capture(self.expression(target.value))
@@ -1370,7 +1373,7 @@ class Emitter:
         if reference[0]=="name":
             target=reference[1]
             kind=kind or self.kind(target)
-            name=self.plan.name(target.id)
+            name=self.model.resolved_name(self.plan,target)
             slot=self.slot(name,kind)
             message=f"UnboundLocalError: cannot access local variable '{name}' where it is not associated with a value"
             if self.plan is self.model.module:message=f"NameError: name '{name}' is not defined"
@@ -1583,18 +1586,35 @@ def _class_layouts(model,emitter):
     return "\n".join(result)
 
 
-def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),prune_output=True,diagnostic_out=None):
+def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),prune_output=True,diagnostic_out=None,unit=None):
     """Lower a proved closed class program to concrete Rust and compiled futures."""
+    from .frontend import build_program, native_namespace_diagnostic
+    from .diagnostics import CompilationError
+    try:
+        if unit is None:
+            from dataclasses import replace
+            unit = build_program(source, filename).main
+            # Internal callers historically opt into standard-module helpers.
+            # Restrict that proof to origins verified by the shared resolver.
+            unit = replace(unit, native_imports=unit.native_imports.intersection(trusted_imports))
+        unit.check_identity(source, filename)
+    except CompilationError as error:
+        if diagnostic_out is not None:diagnostic_out.append(error.diagnostic)
+        return None
+    namespace_error = native_namespace_diagnostic(unit)
+    if namespace_error is not None:
+        if diagnostic_out is not None:diagnostic_out.append(namespace_error)
+        return None
+    trusted_imports = unit.native_imports
     try:
         if integer not in {"i64","i128","bigint"}:raise ClassUnsupported(ast.Module(body=[],type_ignores=[]))
-        tree=ast.parse(source,filename=filename)
-        symtable.symtable(source,filename,"exec")
-        model=Model(tree,filename,integer,trusted_imports).run()
+        tree=unit.tree
+        model=Model(tree,filename,integer,trusted_imports,unit=unit).run()
         emitters=[Emitter(model,plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
     except (SyntaxError,_Unsupported,RecursionError)as error:
-        if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error))
+        if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
         return None
     from .native import _HELPERS,_OUTPUT_HELPERS,_INPUT_HELPERS,_SCALAR_UNION_HELPERS
     runtime=files("py2fastrust").joinpath("runtime")

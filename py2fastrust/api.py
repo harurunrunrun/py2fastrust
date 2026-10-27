@@ -3,9 +3,9 @@
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .compiler import Compiler
+from .frontend import build_program
 from .diagnostics import CompilationError, Diagnostic
-from .ir import SourceLocation
+from .source_locations import SourceLocation
 from .native import try_generate_native
 from .provenance import add_header
 from .settings import apply_source_options, license_name, source_directives
@@ -43,23 +43,20 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
             options = replace(options, license=license_name(options.license))
         except ValueError as exc:
             return TranspileResult(None, (Diagnostic(str(exc), options.filename, code="E004"),))
-        compiler = Compiler(options.filename, options.module_paths, options.include_modules)
-        program = compiler.compile(source)
+        program = build_program(source, options.filename, options.module_paths, options.include_modules)
         if options.include_modules:
             return TranspileResult(None, (Diagnostic(
                 "direct Rust generation for --include-module is not implemented",
                 options.filename, code="E006"),))
         diagnostics = []
         native = try_generate_native(source, options.filename, options.integer,
-                                     trusted_imports=frozenset(compiler.native_imports),
+                                     unit=program.main,
                                      prune_output=options.optimize, diagnostic_out=diagnostics)
         if native is None:
             return TranspileResult(None, tuple(diagnostics) or (Diagnostic(
                 "direct Rust generation is not implemented for this program",
                 options.filename, code="E006"),))
-        source_map = tuple(SourceLocation(code_id, index, code.filename, op.line, op.column)
-                           for code_id, code in enumerate(program.codes)
-                           for index, op in enumerate(code.ops))
+        source_map = program.source_map
         return TranspileResult(add_header(native, source, options, "native"), source_map=source_map, backend="native")
     except CompilationError as exc:
         return TranspileResult(None, (exc.diagnostic,))
