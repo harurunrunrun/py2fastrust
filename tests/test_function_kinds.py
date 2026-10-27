@@ -109,6 +109,31 @@ print(first(True),first(3),outer([2,4],True),outer([],5))
 '''
         self.differential(source)
 
+    def test_function_variants_emit_union_helpers_and_keep_array_loop_tags(self):
+        source = '''
+def show(flag):
+ if flag:value=True
+ else:value=7
+ print(value,value+1,value&True)
+def rows(values,flag):
+ result=0
+ for value in values:
+  if flag:result=True
+  else:result=value
+ print(result,result^False)
+show(0)
+show(True)
+rows([2,3],True)
+rows([],False)
+rows([2,3],0)
+'''
+        rust = try_generate_native(source, "function_unions.py", "i64")
+        self.assertIsNotNone(rust)
+        self.assertIn("enum NativeScalar", rust)
+        self.assertNotIn("enum Value", rust)
+        self.assertIn("native_argument_0: &[NativeInt]", rust)
+        self.differential(source)
+
     def test_array_bounds_and_argument_errors_keep_output_and_trace(self):
         self.differential('''
 def item(values,index):

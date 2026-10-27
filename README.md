@@ -110,6 +110,8 @@ Deque specialization uses the compiler's resolved bundled `collections` module; 
 Shared rows, container aliases, and mutation during active iteration use the general runtime.
 Programs that cannot be specialized also use the shared dynamic runtime.
 The optimizer follows proved type changes and combines compatible branch and loop states.
+Finite unions of `bool` and integer values also stay native across branches and loop back edges.
+A stack value preserves their distinct result types and formatting without object allocation.
 Unproved combinations use the general runtime.
 Ordinary user functions get separate Rust versions for proved integer, boolean, and read-only integer-list arguments.
 Scalar results retain their integer or boolean type; positional and keyword arguments, constant defaults, and calls between functions are supported.

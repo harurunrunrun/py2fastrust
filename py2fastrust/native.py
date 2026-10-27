@@ -12,6 +12,8 @@ from dataclasses import dataclass, replace
 from importlib.resources import files
 import symtable
 
+from .typeflow import TypeSet
+
 
 class _Unsupported(Exception):
     pass
@@ -366,6 +368,36 @@ fn native_deque_popleft(values: &mut std::collections::VecDeque<NativeInt>) -> R
 '''
 
 
+_SCALAR_UNION_HELPERS = r'''
+// A proved finite bool/int union uses a stack value, without the object VM.
+#[derive(Clone, Copy)]
+enum NativeScalar { Int(NativeInt), Bool(bool) }
+impl NativeScalar {
+    #[inline]
+    fn integer(self) -> NativeInt { match self { Self::Int(value)=>value,Self::Bool(value)=>value as NativeInt } }
+    #[inline]
+    fn truth(self) -> bool { self.integer()!=0 }
+    #[inline]
+    fn bitand(self,other:Self)->Self {
+        match (self,other) {(Self::Bool(a),Self::Bool(b))=>Self::Bool(a&b),_=>Self::Int(self.integer()&other.integer())}
+    }
+    #[inline]
+    fn bitor(self,other:Self)->Self {
+        match (self,other) {(Self::Bool(a),Self::Bool(b))=>Self::Bool(a|b),_=>Self::Int(self.integer()|other.integer())}
+    }
+    #[inline]
+    fn bitxor(self,other:Self)->Self {
+        match (self,other) {(Self::Bool(a),Self::Bool(b))=>Self::Bool(a^b),_=>Self::Int(self.integer()^other.integer())}
+    }
+}
+impl std::fmt::Display for NativeScalar {
+    fn fmt(&self,formatter:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        match self {Self::Int(value)=>std::fmt::Display::fmt(value,formatter),Self::Bool(value)=>formatter.write_str(if *value {"True"}else{"False"})}
+    }
+}
+'''
+
+
 class _Generator:
     BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "list", "map", "dict", "set"}
 
@@ -380,6 +412,7 @@ class _Generator:
         self.has_dicts = False
         self.has_sets = False
         self.has_deques = False
+        self.has_scalar_union = False
         self.iterating_lists = []
         self.return_label = None
         self.functions = functions or {}
@@ -404,8 +437,10 @@ class _Generator:
         return f"({value}_i128 as NativeInt)"
 
     def slot(self, kind):
-        if kind not in {"int", "bool", "list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
+        if kind not in {"int", "bool", "int_bool", "list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
             raise _Unsupported
+        if kind == "int_bool":
+            self.has_scalar_union = True
         slot = f"native_var_{len(self.bindings)}"
         self.bindings[slot] = kind
         return slot
@@ -433,12 +468,35 @@ class _Generator:
             return expression.code
         if expression.kind == "bool":
             return f"(({expression.code}) as NativeInt)"
+        if expression.kind == "int_bool":
+            return f"({expression.code}).integer()"
         raise _Unsupported
+
+    @staticmethod
+    def coerce(expression, kind):
+        if expression.kind == kind:
+            return expression.code
+        if kind == "int_bool" and expression.kind in {"int", "bool"}:
+            variant = "Int" if expression.kind == "int" else "Bool"
+            return f"NativeScalar::{variant}({expression.code})"
+        raise _Unsupported
+
+    def scalar_kind(self, expressions):
+        types = TypeSet()
+        for value in expressions:
+            if value.kind not in {"int", "bool", "int_bool"}:
+                raise _Unsupported
+            types = types.join(TypeSet.from_kind(value.kind))
+        if types.native_kind == "int_bool":
+            self.has_scalar_union = True
+        return types.native_kind
 
     @staticmethod
     def truth(expression):
         if expression.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
             return f"!({expression.code}).is_empty()"
+        if expression.kind == "int_bool":
+            return f"({expression.code}).truth()"
         if expression.kind not in {"int", "bool"}:
             raise _Unsupported
         return expression.code if expression.kind == "bool" else f"(({expression.code}) != 0)"
@@ -785,15 +843,14 @@ class _Generator:
             return self.binary(node.op, left, right, node)
         if isinstance(node, ast.BoolOp):
             values = [self.expression(value, environment) for value in node.values]
-            if len({value.kind for value in values}) != 1 or values[0].kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
-                raise _Unsupported
-            code = values[-1].code
+            kind = self.scalar_kind(values)
+            code = self.coerce(values[-1], kind)
             for value in reversed(values[:-1]):
                 name = self.temporary()
-                check = self.truth(_Expression(name, value.kind))
+                check = self.truth(_Expression(name, kind))
                 yes, no = (code, name) if isinstance(node.op, ast.And) else (name, code)
-                code = f"{{ let {name} = {value.code}; if {check} {{ {yes} }} else {{ {no} }} }}"
-            return _Expression(code, values[0].kind)
+                code = f"{{ let {name} = {self.coerce(value, kind)}; if {check} {{ {yes} }} else {{ {no} }} }}"
+            return _Expression(code, kind)
         if isinstance(node, ast.Compare):
             values = [self.expression(value, environment) for value in [node.left, *node.comparators]]
             if len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn)):
@@ -822,11 +879,8 @@ class _Generator:
             test = self.expression(node.test, environment)
             yes = self.expression(node.body, environment)
             no = self.expression(node.orelse, environment)
-            if yes.kind != no.kind:
-                raise _Unsupported
-            if yes.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int"}:
-                raise _Unsupported
-            return _Expression(f"(if {self.truth(test)} {{ {yes.code} }} else {{ {no.code} }})", yes.kind)
+            kind = self.scalar_kind([yes, no])
+            return _Expression(f"(if {self.truth(test)} {{ {self.coerce(yes, kind)} }} else {{ {self.coerce(no, kind)} }})", kind)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
             if name == "set" and len(node.args) <= 1:
@@ -926,6 +980,12 @@ class _Generator:
         raise _Unsupported
 
     def binary(self, operator, left, right, node):
+        if (isinstance(operator, (ast.BitAnd, ast.BitOr, ast.BitXor))
+                and "int_bool" in (left.kind, right.kind)
+                and left.kind in {"bool", "int_bool"} and right.kind in {"bool", "int_bool"}):
+            self.has_scalar_union = True
+            method = {ast.BitAnd: "bitand", ast.BitOr: "bitor", ast.BitXor: "bitxor"}[type(operator)]
+            return _Expression(f"({self.coerce(left, 'int_bool')}).{method}({self.coerce(right, 'int_bool')})", "int_bool")
         if isinstance(operator, (ast.BitAnd, ast.BitOr, ast.BitXor)) and left.kind == right.kind == "bool":
             # bool's three bitwise operations retain a bool only when both
             # operands are bool; mixed bool/int operations still return int.
@@ -1035,10 +1095,18 @@ class _Generator:
                 if all(value is first for value in values):
                     result[name] = first
                 continue
-            if not isinstance(first, _Binding) or any(not isinstance(value, _Binding) or value.kind != first.kind for value in values):
+            if not isinstance(first, _Binding):
                 continue
+            types = TypeSet()
+            for value in values:
+                types = types.join(TypeSet.from_kind(value.kind) if isinstance(value, _Binding) else TypeSet(maybe_unbound=True))
+            kind = types.native_kind
+            if kind is None:
+                continue
+            if kind == "int_bool":
+                self.has_scalar_union = True
             infos = [value.info for value in values]
-            info = infos[0]
+            info = kind if kind == "int_bool" else infos[0]
             if isinstance(info, _ListInfo) and any(value != info for value in infos):
                 info = _ListInfo(None)
             elif isinstance(info, _MatrixInfo) and any(value != info for value in infos):
@@ -1050,16 +1118,17 @@ class _Generator:
             elif isinstance(info, _SetInfo) and any(value != info for value in infos):
                 info = _SetInfo(None)
             candidate = (preferred or {}).get(name)
-            if isinstance(candidate, _Binding) and candidate.kind == first.kind:
+            if isinstance(candidate, _Binding) and candidate.kind == kind:
                 slot = candidate.slot
             elif all(value.slot == first.slot for value in values):
                 slot = first.slot
             else:
-                slot = self.slot(first.kind)
+                slot = self.slot(kind)
             result[name] = _Binding(slot, info)
             for index, environment in enumerate(environments):
                 if environment is not None and environment[name].slot != slot:
-                    moves[index].append(f"{slot} = {environment[name].slot};")
+                    source = environment[name]
+                    moves[index].append(f"{slot} = {self.coerce(_Expression(source.slot, source.kind), kind)};")
         return result, moves
 
     @staticmethod
@@ -1129,6 +1198,125 @@ class _Generator:
         block(statements, set())
         return reads
 
+    def loop_header(self, node, environment):
+        """Widen finite scalar kinds before lowering reads on a back edge.
+
+        This pass only adds possible bool/int kinds. Unsupported values still
+        fail the ordinary body proof; no result narrows an existing type set.
+        """
+        header = self.after_loop(environment)
+        live = self.read_before_write(node.body)
+        if isinstance(node, ast.While):
+            live |= {value.id for value in ast.walk(node.test) if isinstance(value, ast.Name) and isinstance(value.ctx, ast.Load)}
+        else:
+            live -= {value.id for value in ast.walk(node.target) if isinstance(value, ast.Name)}
+        entry = {name: TypeSet.from_kind(value.kind)
+                 for name, value in environment.items() if isinstance(value, _Binding)}
+        unknown = TypeSet.from_kind("unknown")
+
+        def infer(expression, state):
+            if isinstance(expression, ast.Constant) and type(expression.value) in {int, bool}:
+                return TypeSet.from_kind("bool" if type(expression.value) is bool else "int")
+            if isinstance(expression, ast.Name):
+                return state.get(expression.id, TypeSet(maybe_unbound=True))
+            if isinstance(expression, ast.Compare):
+                return TypeSet.from_kind("bool")
+            if isinstance(expression, ast.UnaryOp):
+                return TypeSet.from_kind("bool" if isinstance(expression.op, ast.Not) else "int") if infer(expression.operand, state).kinds <= {"bool", "int"} else unknown
+            if isinstance(expression, (ast.BoolOp, ast.IfExp)):
+                values = expression.values if isinstance(expression, ast.BoolOp) else [expression.body, expression.orelse]
+                kinds = TypeSet()
+                for value in values:
+                    current = infer(value, state)
+                    if not current.kinds <= {"int", "bool"}:
+                        return unknown
+                    kinds = kinds.join(current)
+                return kinds
+            if isinstance(expression, ast.BinOp):
+                left, right = infer(expression.left, state), infer(expression.right, state)
+                if not left.kinds <= {"int", "bool"} or not right.kinds <= {"int", "bool"}:
+                    return unknown
+                kinds = TypeSet.from_kind("int")
+                if isinstance(expression.op, (ast.BitAnd, ast.BitOr, ast.BitXor)) and "bool" in left.kinds and "bool" in right.kinds:
+                    kinds = TypeSet.from_kind("bool")
+                    if "int" in left.kinds or "int" in right.kinds:
+                        kinds = kinds.join(TypeSet.from_kind("int"))
+                return kinds
+            if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Name) and expression.func.id in {"int", "abs", "pow", "len", "sum"}:
+                return TypeSet.from_kind("int")
+            return unknown
+
+        if sum(1 for statement in node.body for _ in ast.walk(statement)) > 2048:
+            return "", header
+
+        def merge(states):
+            states = [state for state in states if state is not None]
+            if not states:
+                return None
+            joined = {}
+            for name in set().union(*(state.keys() for state in states)):
+                types = TypeSet()
+                for state in states:
+                    types = types.join(state.get(name, TypeSet(maybe_unbound=True)))
+                joined[name] = types
+            return joined
+
+        def block(statements, incoming):
+            state = incoming.copy()
+            continues, breaks = [], []
+            for statement in statements:
+                if isinstance(statement, ast.Assign):
+                    types = infer(statement.value, state)
+                    for target in statement.targets:
+                        if isinstance(target, ast.Name):
+                            state[target.id] = types
+                elif isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
+                    expression = ast.BinOp(left=statement.target, op=statement.op, right=statement.value)
+                    state[statement.target.id] = infer(expression, state)
+                elif isinstance(statement, ast.If):
+                    yes, yc, yb = block(statement.body, state)
+                    no, nc, nb = block(statement.orelse, state)
+                    continues += yc + nc
+                    breaks += yb + nb
+                    state = merge([yes, no])
+                    if state is None:
+                        return None, continues, breaks
+                elif isinstance(statement, ast.Continue):
+                    return None, continues + [state], breaks
+                elif isinstance(statement, ast.Break):
+                    return None, continues, breaks + [state]
+                elif isinstance(statement, ast.Return):
+                    return None, continues, breaks
+                elif isinstance(statement, (ast.For, ast.While)):
+                    inner, normal, exits = loop(statement, state)
+                    state = merge([inner, normal, *exits])
+            return state, continues, breaks
+
+        def loop(statement, incoming):
+            current = incoming.copy()
+            while True:
+                body_entry = current.copy()
+                if isinstance(statement, ast.For):
+                    for target in ast.walk(statement.target):
+                        if isinstance(target, ast.Name):
+                            body_entry[target.id] = TypeSet.from_kind("int")
+                normal, continues, breaks = block(statement.body, body_entry)
+                joined = merge([incoming, normal, *continues])
+                if joined == current:
+                    return current, normal, breaks
+                current = joined
+
+        possibilities, _, _ = loop(node, entry)
+        initializers = []
+        for name in sorted(live):
+            old = environment.get(name)
+            if (isinstance(old, _Binding) and old.kind in {"int", "bool"}
+                    and possibilities.get(name, TypeSet()).native_kind == "int_bool"):
+                slot = self.slot("int_bool")
+                header[name] = _Binding(slot, "int_bool")
+                initializers.append(f"{slot} = {self.coerce(_Expression(old.slot, old.kind), 'int_bool')};")
+        return "\n".join(initializers), header
+
     def finish_loop(self, node, entry, header, context, body, remaining, nonempty, may_repeat, zero=False):
         if remaining is not None:
             marker = "// " + self.temporary() + "_edge"
@@ -1147,9 +1335,11 @@ class _Generator:
         entry_slots = {value.slot for value in entry.values() if isinstance(value, _Binding)}
         for name, binding in joined.items():
             if isinstance(binding, _Binding) and binding.slot not in entry_slots:
-                default = {"int": "0", "bool": "false", "list_int": "Vec::new()",
+                default = {"int": "0", "bool": "false", "int_bool": "NativeScalar::Int(0)", "list_int": "Vec::new()",
                            "dict_int": "NativeDict::new()", "set_int": "NativeSet::new()",
                            "matrix_int": "Vec::new()", "deque_int": "std::collections::VecDeque::new()"}[binding.kind]
+                if isinstance(entry.get(name), _Binding) and entry[name].kind in {"int", "bool", "int_bool"} and binding.kind == "int_bool":
+                    default = self.coerce(_Expression(entry[name].slot, entry[name].kind), binding.kind)
                 initializers.append(f"{binding.slot} = {default};")
         live = self.read_before_write(node.body)
         if isinstance(node, ast.While):
@@ -1165,11 +1355,12 @@ class _Generator:
                     if not isinstance(previous, _Binding):
                         continue
                     current = environment.get(name)
-                    if not isinstance(current, _Binding) or current.kind != previous.kind:
+                    compatible = isinstance(current, _Binding) and (current.kind == previous.kind or previous.kind == "int_bool" and current.kind in {"int", "bool"})
+                    if not compatible:
                         if name in live:
                             raise _Unsupported
                     elif current.slot != previous.slot:
-                        copies.append(f"{previous.slot} = {current.slot};")
+                        copies.append(f"{previous.slot} = {self.coerce(_Expression(current.slot, current.kind), previous.kind)};")
             if not zero:
                 copies += post_moves[index + offset]
             # Same-kind header/post phis use the same slot. Moving an owned
@@ -1345,7 +1536,7 @@ class _Generator:
                 raise _Unsupported
             label = self.temporary()
             context = {"label": label, "edges": []}
-            widened = self.after_loop(environment)
+            header_initializers, widened = self.loop_header(node, environment)
             if isinstance(node, ast.While):
                 # Subsequent iterations may see containers resized or replaced
                 # by the body. Their entry cardinality is not a loop invariant.
@@ -1357,7 +1548,7 @@ class _Generator:
                 zero = test.constant is not None and not bool(test.constant)
                 initialization, body, joined = self.finish_loop(node, environment, widened, context, body, remaining,
                                                                nonempty, not zero, zero)
-                return f"{initialization}\n'{label}: while {self.truth(test)} {{\n{body}\n}}", joined
+                return f"{header_initializers}\n{initialization}\n'{label}: while {self.truth(test)} {{\n{body}\n}}", joined
             is_range = isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name) and node.iter.func.id == "range"
             list_name = None
             item_pair = False
@@ -1436,7 +1627,7 @@ class _Generator:
             item = self.temporary()
             assignments = "\n".join(f"{target} = {item}.{index};" if item_pair else f"{target} = {item};"
                                     for index, target in enumerate(target_names))
-            code = f"{setup}\n{initialization}\n'{label}: for {item} in {iterator} {{\n{assignments}\n{body}\n}}"
+            code = f"{setup}\n{header_initializers}\n{initialization}\n'{label}: for {item} in {iterator} {{\n{assignments}\n{body}\n}}"
             return code, joined
         if isinstance(node, (ast.Break, ast.Continue)) and self.loops:
             context = self.loops[-1]
@@ -1581,7 +1772,7 @@ class _Generator:
                 values = [self.expression(argument.value if isinstance(argument, ast.Starred) else argument, environment)
                           for argument in call.args]
                 starred = [isinstance(argument, ast.Starred) for argument in call.args]
-                if any(value.kind not in ({"list_int", "deque_int"} if star else {"int", "bool"})
+                if any(value.kind not in ({"list_int", "deque_int"} if star else {"int", "bool", "int_bool"})
                        for value, star in zip(values, starred)):
                     raise _Unsupported
                 names = [self.temporary() for _ in values]
@@ -1606,7 +1797,7 @@ class _Generator:
                 for index, (name, value) in enumerate(zip(names, values)):
                     if index:
                         lines.append(f"native_output.push_str({_string(separator)});")
-                    formatted = name if value.kind == "int" else f'(if {name} {{ "True" }} else {{ "False" }})'
+                    formatted = name if value.kind in {"int", "int_bool"} else f'(if {name} {{ "True" }} else {{ "False" }})'
                     lines.append(f'write!(&mut native_output, "{{}}", {formatted}).unwrap();')
                 lines.append(f"native_output.push_str({_string(end)});")
                 if flush: lines.append(self.at("native_flush_output(&mut native_output)", node) + ";")
@@ -1813,7 +2004,7 @@ class _Specializations:
 
 
 def _declarations(generator):
-    types = {"int": "NativeInt", "bool": "bool", "list_int": "Vec<NativeInt>",
+    types = {"int": "NativeInt", "bool": "bool", "int_bool": "NativeScalar", "list_int": "Vec<NativeInt>",
              "dict_int": "NativeDict", "set_int": "NativeSet",
              "matrix_int": "Vec<Vec<NativeInt>>", "deque_int": "std::collections::VecDeque<NativeInt>"}
     return "\n".join(f"let mut {slot}: {types[kind]};"
@@ -1858,7 +2049,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         body, _ = generator.statements(statements, {})
         function_sources = specializations.sources
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques"):
+            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -1889,6 +2080,8 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         result.append(_SET_HELPERS)
     if generator.has_deques:
         result.append(_DEQUE_HELPERS)
+    if generator.has_scalar_union:
+        result.append(_SCALAR_UNION_HELPERS)
     result.extend(function_sources)
     result.append("fn main() {\nuse std::fmt::Write as _;\nuse std::io::Write as _;\n"
                   "let mut native_output = String::new();\n"
