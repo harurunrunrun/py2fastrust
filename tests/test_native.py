@@ -515,7 +515,7 @@ print(d[0],d[-1],len(d))
             "x=eval(input())", "exec('x=1')", "import math\nprint(1)",
             "class A:\n pass", "x=[1,2]\nprint(x)",
             "print(1/2)", "x=int(input())\nprint(2**x)", "print(2**-1)",
-            "print(input())", "print(1, flush=True)", "print(*(1,2))",
+            "print(input())", "print(1, flush=int(input()))", "print(*(1,2))",
             "for i in range(3):\n pass\nelse:\n print(1)", "del x", "print(1 is 1)",
         ]
         for source in rejected:
@@ -524,6 +524,7 @@ print(d[0],d[-1],len(d))
         self.assertIsNone(try_generate_native("print(1)", "fallback.py", "bigint"))
         self.differential("x=1\nx=True\nprint(x)")
         self.differential("def f():\n return 1\nprint(f())")
+        self.differential("print(1, flush=True)\nprint(2, flush=False)")
 
     def test_no_argument_entry_wrapper(self):
         source = '''
