@@ -43,7 +43,7 @@ impl Runtime {
         kwargs: KeywordArgs,
         root: usize,
     ) -> PyResult<Value> {
-        if !["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&type_name) {
+        if !["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "complex", "frozenset"].contains(&type_name) {
             return Err(pyerr(
                 "NotImplementedError",
                 format!("native payload for {} subclasses", type_name),
@@ -61,7 +61,7 @@ impl Runtime {
                 "tuple.__new__ takes at most one iterable argument",
             ));
         }
-        if type_name == "tuple" || type_name == "int" {
+        if type_name == "tuple" || type_name == "int" || type_name == "bytes" {
             for base in self
                 .class_mro(&class, 0)
                 .unwrap_or_else(|| vec![class.clone()])
@@ -94,6 +94,11 @@ impl Runtime {
         let payload = match type_name {
             "frozenset"=>{if Self::same_type(&class,&Value::Builtin("frozenset".into())){self.frozen_constructor(args,kwargs)?}else{if args.len()>1||(!kwargs.is_empty()&&self.slot_override(&class,"__init__",0).is_none()){return Err(pyerr("TypeError","frozenset expected one positional argument"));}let entries=if let Some(source)=args.first(){self.frozen_collect(source.clone())?}else{Vec::new()};self.frozen_make(entries,true)}},
             "complex"=>self.complex_constructor(args,kwargs)?,
+            "float"=>{
+                let custom_init=self.slot_override(&class,"__init__",0).is_some_and(|value|!matches!(native_attribute_parts(&value),Some((_,"object","__init__"))));
+                self.builtin("float",args,if custom_init{Vec::new()}else{kwargs},None)?
+            },
+            "bytes"=>self.bytes_constructor(args,kwargs)?,
             "list" => self.obj_value(Object::List(Vec::new())),
             "dict" => self.obj_value(Object::Dict(Vec::new())),
             "set" => self.obj_value(Object::Set(Vec::new())),
@@ -178,6 +183,7 @@ impl Runtime {
         if Self::same_type(&class, &Value::Builtin(type_name.into())) {
             return Ok(payload);
         }
+        let payload=self.native_payload(&payload).unwrap_or(payload);
         let attrs = self.alloc(Object::Dict(Vec::new()));
         self.roots[root].push(Value::Obj(attrs));
         Ok(self.obj_value(Object::BuiltinInstance {

@@ -7509,6 +7509,8 @@ impl Runtime {
         match position{Some(position)=>Ok(Value::Int(Int::from_i128(position as i128).into())),None if name=="index"||name=="rindex"=>Err(pyerr("ValueError","substring not found")),None=>Ok(Value::Int(Int::from_i128(-1).into()))}
     }
     fn bytes_needle(&mut self, value: &Value, integer: bool) -> PyResult<Vec<u8>> {
+        if let Some(payload)=self.native_payload(value){if matches!(payload,Value::Bytes(_)){return self.bytes_needle(&payload,integer);}}
+        if integer && self.object_class(value).and_then(|class|self.slot_definition(&class,"__index__",0)).is_some(){let number=self.as_int(value)?;return self.bytes_needle(&Value::Int(number.into()),true);}
         match value { Value::Bytes(value)=>Ok(value.to_vec()),Value::Int(_) | Value::Bool(_) if integer=>{let value=self.as_int(value)?.to_i128().ok_or_else(||pyerr("ValueError","byte must be in range(0, 256)"))?;if !(0..256).contains(&value){return Err(pyerr("ValueError","byte must be in range(0, 256)"));}Ok(vec![value as u8])},_=>Err(pyerr("TypeError","a bytes-like object is required")) }
     }
     fn bytes_method(&mut self, source: Vec<u8>, name: &str, args: Vec<Value>, kwargs: KeywordArgs) -> Option<PyResult<Value>> {

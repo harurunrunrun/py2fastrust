@@ -13,7 +13,7 @@ they do not imply compatibility with all CPython internals or the entire standar
 | Functions | Defaults, positional-only and keyword-only arguments, variadic arguments, recursion, lambdas, closures, type parameters with lazy bounds and defaults |
 | Container expressions | Comprehensions, generator expressions, unpacking, negative indices, slicing |
 | Exceptions | `raise`, `except`, `except*`, exception-group splitting and merging, `else`, `finally`, `assert`, original `args`, cause/context/notes, exception-target cleanup, source information in tracebacks |
-| Classes | Inheritance, C3 MRO, descriptors, `property`, `staticmethod`/`classmethod`, `super`, metaclasses, `__slots__`, subclasses of `list`/`tuple`/`dict`/`set`/`frozenset`/`str`/`int`/`complex` |
+| Classes | Inheritance, C3 MRO, descriptors, `property`, `staticmethod`/`classmethod`, `super`, metaclasses, `__slots__`, subclasses of `list`/`tuple`/`dict`/`set`/`frozenset`/`str`/`bytes`/`int`/`float`/`complex` |
 | Comprehensions | List/set/dict expressions execute in the enclosing frame with isolated iteration bindings and fresh local snapshots; generators and class-visible annotation comprehensions retain separate frames |
 | Namespaces | `__prepare__` returning custom mappings, private names, Unicode NFKC identifiers, ordinary module/builtin dictionaries with arbitrary hashable keys and string-subclass lookup protocols, dictionary insertion order, separate internal temporaries, Python 3.14 function-local snapshots including free variables |
 | Other constructs | `with`, generator `send`/`throw`/`close` and `yield from`, f-strings, t-strings, `match`/`case` |
@@ -92,3 +92,10 @@ BigInt mode uses arbitrary-precision integers.
 Negative `//` and `%`, modular powers with negative exponents, negative bitwise operations,
 large shifts, and comparisons between integers and floats have dedicated handling.
 Lengths, indices, allocation sizes, and range progression are checked separately from user integer arithmetic.
+
+Integers provide `to_bytes`, `from_bytes`, `as_integer_ratio`, and `is_integer`.
+Floating-point values provide `hex`, `fromhex`, `from_number`, `as_integer_ratio`, and `is_integer`.
+Integer results from these methods follow the selected integer normalization policy;
+internal calculations for binary64 conversion retain the precision needed for correct rounding.
+Float floor division, remainder, and `divmod` share sign and quotient correction,
+including signed zero and values close to an integral quotient.

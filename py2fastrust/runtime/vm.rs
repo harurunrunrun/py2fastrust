@@ -708,7 +708,7 @@ impl Runtime {
         for base in self.class_mro(class, 0)? {
             match &base {
                 Value::Builtin(name)
-                    if ["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&name.as_str()) || stdlib_type_name(name) =>
+                    if ["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "complex", "frozenset"].contains(&name.as_str()) || stdlib_type_name(name) =>
                 {
                     return Some(base)
                 }
@@ -794,6 +794,7 @@ impl Runtime {
             return Ok(Value::Obj(attrs));
         }
         if name == "__weakref__" {
+            if !self.class_allows_weakref(&class){return Err(pyerr("AttributeError","this object has no __weakref__ attribute"));}
             return if delete || value.is_some() {
                 Err(pyerr(
                     "AttributeError",
@@ -886,7 +887,7 @@ impl Runtime {
             }
             if let Some(payload) = self.native_payload(&v) {
                 if ["__repr__","__str__"].contains(&name) && self.frozen_owner(&payload).is_some_and(|(_,frozen)|frozen) {if let Some(result)=self.frozen_attr(v.clone(),name){return result;}}
-                let payload = if matches!(name, "__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") {
+                let payload = if matches!(name, "__int__" | "__index__" | "__float__" | "__bytes__" | "__complex__" | "__pos__" | "conjugate") {
                     payload.fresh_primitive()
                 } else { payload };
                 return self.getattr_default(payload, name);
@@ -4502,7 +4503,7 @@ impl Runtime {
             if let Some(Value::Obj(i)) = args.first() {
                 if let Object::BuiltinInstance { payload, .. } = self.object(*i)? {
                     if self.typename(&payload) == owner && owner!="frozenset" {
-                        args[0] = if matches!(method, "__int__" | "__index__" | "__complex__" | "__pos__" | "conjugate") || (owner=="str"&&method=="__str__") {
+                        args[0] = if matches!(method, "__int__" | "__index__" | "__float__" | "__bytes__" | "__complex__" | "__pos__" | "conjugate") || (owner=="str"&&method=="__str__") {
                             payload.fresh_primitive()
                         } else { payload }
                     }
@@ -4671,7 +4672,7 @@ impl Runtime {
                     }
                 };
             }
-            if ["tuple", "list", "dict", "set", "str", "int", "complex", "frozenset"].contains(&typ) && method == "__new__"
+            if ["tuple", "list", "dict", "set", "str", "int", "float", "bytes", "complex", "frozenset"].contains(&typ) && method == "__new__"
             {
                 let class = args
                     .first()
@@ -4768,31 +4769,7 @@ impl Runtime {
                     }
                 }))
             }
-            "float" => {
-                if args.len()>1 || !kwargs.is_empty(){return Err(pyerr("TypeError","float() takes at most one positional argument"));}
-                let v = args.first().cloned().unwrap_or(Value::Float(0.0.into()));
-                Ok(Value::Float(match v {
-                    Value::Float(value) => value,
-                    Value::Str(s) => s.trim().parse().map_err(|_| {
-                        pyerr(
-                            "ValueError",
-                            format!("could not convert string to float: {:?}", s),
-                        )
-                    })?,
-                    v => {
-                        match self.special_method(v.clone(),"__float__") {
-                            Ok(fun)=>{
-                                let out=self.call(fun,Vec::new(),Vec::new(),None)?;
-                                match out { Value::Float(value)=>return Ok(Value::Float(value)),value=>if let Some(Value::Float(value))=self.native_payload(&value){return Ok(Value::Float(value.into_inner().into()));} }
-                                return Err(pyerr("TypeError","__float__ returned non-float"));
-                            },
-                            Err(error) if self.missing_special_method(&v,"__float__",&error)=>(),
-                            Err(error)=>return Err(error),
-                        }
-                        self.as_float(&v)?.into()
-                    },
-                }))
-            }
+            "float" => self.scalar_float_constructor(args,kwargs),
             "bool" => Ok(Value::Bool(if args.is_empty() {
                 false
             } else {
@@ -5093,6 +5070,9 @@ impl Runtime {
                 }else{self.binary("**",base,exponent)}
             }
             "divmod" => {
+                if args.len()!=2||!kwargs.is_empty(){return Err(pyerr("TypeError","divmod expected 2 positional arguments"));}
+                if let Some(result)=self.operand_binary("divmod",&args[0],&args[1]){return result;}
+                if let Some(result)=self.float_divmod_values(&args[0],&args[1]){return result;}
                 let a = self.binary("//", arg(0)?, arg(1)?)?;
                 let b = self.binary("%", arg(0)?, arg(1)?)?;
                 Ok(self.obj_value(Object::Tuple(vec![a, b])))
@@ -5850,6 +5830,7 @@ impl Runtime {
                 for base in &bases {
                     if self.is_subclass(base, &Value::Builtin("tuple".into()))?
                         || self.is_subclass(base, &Value::Builtin("int".into()))?
+                        || self.is_subclass(base, &Value::Builtin("bytes".into()))?
                     {
                         return Err(pyerr(
                             "TypeError",
@@ -5862,14 +5843,15 @@ impl Runtime {
         let dict_allowed = inherited_dict
             || declared_slots.is_none()
             || slot_names.iter().any(|name| name == "__dict__");
-        let weakref_allowed = inherited_weakref
+        let bytes_layout=bases.iter().any(|base|self.class_mro(base,0).unwrap_or_default().iter().any(|base|matches!(base,Value::Builtin(name)if name=="bytes")));
+        let weakref_allowed = !bytes_layout && (inherited_weakref
             || declared_slots.is_none()
-            || slot_names.iter().any(|name| name == "__weakref__");
+            || slot_names.iter().any(|name| name == "__weakref__"));
         if declared_slots.is_none() {
             if !inherited_dict && !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__dict__")) {
                 slot_names.push("__dict__".into());
             }
-            if !inherited_weakref && !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__weakref__")) {
+            if !bytes_layout && !inherited_weakref && !items.iter().any(|(key,_)|matches!(key,Value::Str(name)if name=="__weakref__")) {
                 slot_names.push("__weakref__".into());
             }
         }
@@ -7269,28 +7251,14 @@ impl Runtime {
                     }
                     x / y
                 }
-                "//" => {
-                    if y == 0.0 {
-                        return Err(pyerr("ZeroDivisionError", "float floor division by zero"));
-                    }
-                    (x / y).floor()
-                }
-                "%" => {
-                    if y == 0.0 {
-                        return Err(pyerr("ZeroDivisionError", "float modulo"));
-                    }
-                    let r = x % y;
-                    if r != 0.0 && r.signum() != y.signum() {
-                        r + y
-                    } else {
-                        r
-                    }
-                }
+                "//" => float_div_mod(x,y)?.0,
+                "%" => float_div_mod(x,y)?.1,
                 "**" => {if x<0.0 && x.is_finite() && y.is_finite() && y.fract()!=0.0 {return Ok(Value::Complex(Complex::new(x,0.0).pow(Complex::new(y,0.0))?.into()));}x.powf(y)},
                 _ => return Err(pyerr("TypeError", "unsupported float operation")),
             };
             return Ok(Value::Float(z.into()));
         }
+        if let Some(result)=self.scalar_bytes_repeat(op,&a,&b){return result;}
         match (&a, &b, op) {
             (Value::Str(x), Value::Str(y), "+" | "+=") => {
                 return Ok(Value::Str(format!("{}{}", x, y).into()))
@@ -8383,6 +8351,8 @@ impl Runtime {
         if name=="__class__" {if let Some(class)=self.stdlib_instance_class(&v) {return Ok(class);}}
         if let Some(class)=self.stdlib_instance_class(&v) {if let Some(member)=self.class_attribute_lookup(&class,name) {return self.bind_descriptor(member,Some(v),class);}}
         if let Some(result)=self.native_attribute_meta(v.clone(),name){return result;}
+        if let Some(result)=self.numeric_getattr(v.clone(),name){return result;}
+        if let Some(result)=self.scalar_primitive_attr(v.clone(),name){return result;}
         if ["__and__","__rand__","__or__","__ror__","__xor__","__rxor__"].contains(&name)
             && (matches!(&v,Value::Bool(_)|Value::Int(_)) || matches!(&v,Value::Builtin(owner)if owner=="bool")) {
             let class=Value::Builtin(if matches!(&v,Value::Int(_)){"int"}else{"bool"}.into());
@@ -8391,7 +8361,7 @@ impl Runtime {
                 return self.bind_descriptor(descriptor,instance,class);
             }
         }
-        if matches!(&v,Value::Builtin(owner)if ["dict","list","tuple","set","frozenset","str","int","complex","object","type"].contains(&owner.as_str())) && !["__class__","__dict__","__name__","__qualname__","__mro__","__bases__","__module__","__annotations__","__annotate__","__type_params__"].contains(&name) {
+        if matches!(&v,Value::Builtin(owner)if ["dict","list","tuple","set","frozenset","str","int","float","bytes","complex","object","type"].contains(&owner.as_str())) && !["__class__","__dict__","__name__","__qualname__","__mro__","__bases__","__module__","__annotations__","__annotate__","__type_params__"].contains(&name) {
             if let Some(value)=self.class_attribute_lookup(&v,name){return self.bind_descriptor(value,None,v);}
             return Err(pyerr("AttributeError",format!("type has no attribute '{name}'")));
         }

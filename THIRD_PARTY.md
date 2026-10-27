@@ -15,6 +15,12 @@ The high-accuracy error-function and gamma-function algorithms in
 `Modules/mathmodule.c`. Source versions and attribution are recorded in that
 file. The same PSF license is included in generated general-runtime Rust.
 
+The floating-point quotient and remainder helper in
+`py2fastrust/runtime/float_arithmetic.rs` is adapted from `float_rem` and
+`_float_div_mod` in
+[CPython 3.14's Objects/floatobject.c](https://github.com/python/cpython/blob/v3.14.0/Objects/floatobject.c).
+It uses the same retained PSF license, included in generated general-runtime Rust.
+
 Type-parameter collection and substitution control flow in
 `py2fastrust/runtime/generic_alias.rs` is adapted from CPython 3.14's
 `Objects/genericaliasobject.c`, `Objects/typevarobject.c`, and `Lib/typing.py`.

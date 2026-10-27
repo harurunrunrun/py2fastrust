@@ -7,6 +7,7 @@ fn operand_method(op: &str) -> Option<&'static str> {
         "*" => "mul",
         "/" => "truediv",
         "//" => "floordiv",
+        "divmod" => "divmod",
         "%" => "mod",
         "**" => "pow",
         "<<" => "lshift",
@@ -50,7 +51,7 @@ impl Runtime {
             .strip_prefix("__")
             .and_then(|name| name.strip_suffix("__"))?;
         let ordinary = [
-            "add", "sub", "mul", "truediv", "floordiv", "mod", "pow", "lshift", "rshift", "and",
+            "add", "sub", "mul", "truediv", "floordiv", "divmod", "mod", "pow", "lshift", "rshift", "and",
             "or", "xor", "matmul",
         ];
         let binary = ordinary.contains(&stem)
@@ -78,13 +79,13 @@ impl Runtime {
             if let Some(value) = result {
                 return Ok(value);
             }
-            if ["list", "tuple", "str"].contains(&owner) && name == "__add__" {
+            if ["list", "tuple", "str", "bytes"].contains(&owner) && name == "__add__" {
                 return Err(pyerr(
                     "TypeError",
                     "can only concatenate matching sequences",
                 ));
             }
-            if ["list", "tuple", "str"].contains(&owner) && ["__mul__", "__rmul__"].contains(&name)
+            if ["list", "tuple", "str", "bytes"].contains(&owner) && ["__mul__", "__rmul__"].contains(&name)
             {
                 let count = self.as_int(&args[0])?;
                 let payload = self
@@ -397,7 +398,7 @@ impl Runtime {
             return Ok(None);
         };
         let ordinary = [
-            "add", "sub", "mul", "truediv", "floordiv", "mod", "pow", "lshift", "rshift", "and",
+            "add", "sub", "mul", "truediv", "floordiv", "divmod", "mod", "pow", "lshift", "rshift", "and",
             "or", "xor",
         ];
         let (reflected, stem) = if ordinary.contains(&stem) {
@@ -413,6 +414,7 @@ impl Runtime {
             "mul" => "*",
             "truediv" => "/",
             "floordiv" => "//",
+            "divmod" => "divmod",
             "mod" => "%",
             "pow" => "**",
             "lshift" => "<<",
@@ -454,11 +456,11 @@ impl Runtime {
                 ["int", "float", "complex"].contains(&kind)
                     && ["+", "-", "*", "/", "**"].contains(&op)
             }
-            "str" => {
+            "str" | "bytes" => {
                 if op == "%" {
                     true
                 } else if op == "+" {
-                    kind == "str"
+                    kind == owner
                 } else {
                     op == "*" && kind == "int"
                 }
@@ -490,6 +492,12 @@ impl Runtime {
             if let Value::Bool(value)=left {left=Value::Int(Int::from_i128(value as i128).into());}
             if let Value::Bool(value)=right {right=Value::Int(Int::from_i128(value as i128).into());}
         }
+        if op=="divmod" {
+            if let Some(result)=self.float_divmod_values(&left,&right){return result.map(Some);}
+            let quotient=self.binary_default("//",left.clone(),right.clone())?;
+            let remainder=self.binary_default("%",left,right)?;
+            return Ok(Some(self.obj_value(Object::Tuple(vec![quotient,remainder]))));
+        }
         self.binary_default(op, left, right).map(Some)
     }
     fn operand_binary_slot(
@@ -507,7 +515,7 @@ impl Runtime {
     fn operand_sequence_fallback(slot: Option<&SlotDefinition>) -> bool {
         slot.and_then(|slot| operand_descriptor(slot.value()))
             .is_some_and(|(owner, name)| {
-                ["str", "list", "tuple"].contains(&owner)
+                ["str", "bytes", "list", "tuple"].contains(&owner)
                     && ["__add__", "__mul__", "__rmul__"].contains(&name)
             })
     }
@@ -649,7 +657,7 @@ impl Runtime {
                 .native_payload(right)
                 .unwrap_or_else(|| right.clone());
             if base == "*" {
-                if ["str", "list", "tuple"].contains(&runtime.operand_kind(&lp))
+                if ["str", "bytes", "list", "tuple"].contains(&runtime.operand_kind(&lp))
                     && Self::operand_sequence_fallback(
                         runtime.operand_slot(left, "__mul__").as_ref(),
                     )
@@ -657,7 +665,7 @@ impl Runtime {
                     let count = runtime.as_int(right)?;
                     return runtime.binary_default(base, lp, Value::Int(count.into()));
                 }
-                if ["str", "list", "tuple"].contains(&runtime.operand_kind(&rp))
+                if ["str", "bytes", "list", "tuple"].contains(&runtime.operand_kind(&rp))
                     && Self::operand_sequence_fallback(
                         runtime.operand_slot(right, "__rmul__").as_ref(),
                     )

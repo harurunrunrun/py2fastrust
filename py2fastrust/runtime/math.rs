@@ -468,6 +468,7 @@ impl Runtime {
         match self.special_method(value.clone(), "__float__") {
             Ok(method) => {
                 let result = self.call(method, Vec::new(), Vec::new(), None)?;
+                let result=self.native_payload(&result).unwrap_or(result);
                 if let Value::Float(x) = result {
                     return Ok(*x);
                 }

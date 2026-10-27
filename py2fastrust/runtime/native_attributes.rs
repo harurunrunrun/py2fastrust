@@ -117,6 +117,21 @@ fn native_attribute_kind(owner: &str, name: &str) -> Option<&'static str> {
         ) => Some("method"),
         ("str", "maketrans") => Some("static"),
         ("bool", "__and__" | "__rand__" | "__or__" | "__ror__" | "__xor__" | "__rxor__") => Some("wrapper"),
+        ("float"|"bytes", "__new__") => Some("new"),
+        ("float", "__repr__"|"__hash__"|"__lt__"|"__le__"|"__eq__"|"__ne__"|"__gt__"|"__ge__"
+            |"__add__"|"__radd__"|"__sub__"|"__rsub__"|"__mul__"|"__rmul__"|"__mod__"|"__rmod__"
+            |"__divmod__"|"__rdivmod__"|"__pow__"|"__rpow__"|"__neg__"|"__pos__"|"__abs__"|"__bool__"
+            |"__int__"|"__float__"|"__floordiv__"|"__rfloordiv__"|"__truediv__"|"__rtruediv__")=>Some("wrapper"),
+        ("float", "real"|"imag")=>Some("member"),
+        ("float", "conjugate"|"__round__"|"__trunc__"|"__floor__"|"__ceil__"|"__format__"|"__getnewargs__")=>Some("method"),
+        ("bytes", "__repr__"|"__hash__"|"__str__"|"__lt__"|"__le__"|"__eq__"|"__ne__"|"__gt__"|"__ge__"
+            |"__iter__"|"__mod__"|"__rmod__"|"__len__"|"__getitem__"|"__add__"|"__mul__"|"__rmul__"|"__contains__")=>Some("wrapper"),
+        ("bytes", "__bytes__"|"__getnewargs__"|"capitalize"|"center"|"count"|"decode"|"endswith"|"expandtabs"
+            |"find"|"hex"|"index"|"isalnum"|"isalpha"|"isascii"|"isdigit"|"islower"|"isspace"|"istitle"|"isupper"
+            |"join"|"ljust"|"lower"|"lstrip"|"partition"|"removeprefix"|"removesuffix"|"replace"|"rfind"|"rindex"
+            |"rjust"|"rpartition"|"rsplit"|"rstrip"|"split"|"splitlines"|"startswith"|"strip"|"swapcase"|"title"|"translate"|"upper"|"zfill")=>Some("method"),
+        ("float", "hex" | "is_integer" | "as_integer_ratio") => Some("method"),
+        ("float", "fromhex" | "from_number") => Some("class"),
         ("int", "__new__") => Some("new"),
         (
             "int",
@@ -452,6 +467,8 @@ impl Runtime {
                         .unwrap_or_else(|| instance.clone());
                     if let Some(result)=self.stdlib_member(&owner,&instance,&name) {return result;}
                     match (owner.as_str(), name.as_str(), &payload) {
+                        ("float", "real", Value::Float(_)) => Ok(if self.native_payload(&instance).is_some(){payload.fresh_primitive()}else{payload}),
+                        ("float", "imag", Value::Float(_)) => Ok(Value::Float(0.0.into())),
                         ("complex", "real", Value::Complex(number)) => {
                             Ok(Value::Float(number.real.into()))
                         }
@@ -586,6 +603,7 @@ impl Runtime {
                     "classmethod descriptor requires a subtype",
                 ));
             }
+            if let Some(result)=self.numeric_descriptor_call(&owner,&name,class.clone(),args[1..].to_vec(),kwargs.clone()){return result;}
             match name.as_str() {
                 "__class_getitem__" => {
                     if args.len() != 2 || !kwargs.is_empty() {
@@ -649,6 +667,8 @@ impl Runtime {
         self.native_validate_receiver(&owner, &receiver)?;
         let rest = args[1..].to_vec();
         if stdlib_type_name(&owner) {return self.stdlib_method(&owner,&name,receiver,rest,kwargs).unwrap();}
+        if let Some(result)=self.scalar_descriptor_call(&owner,&name,receiver.clone(),rest.clone(),kwargs.clone()){return result;}
+        if let Some(result)=self.numeric_descriptor_call(&owner,&name,receiver.clone(),rest.clone(),kwargs.clone()){return result;}
         if name == "__init__" {
             if ["list", "dict", "set"].contains(&owner.as_str()) {
                 return self.builtin_instance_init(&owner, receiver, rest, kwargs);
@@ -761,6 +781,10 @@ impl Runtime {
         if owner=="complex"&&["__pow__","__rpow__"].contains(&name.as_str())&&rest.len()==2 {
             let payload=self.native_payload(&receiver).unwrap_or(receiver);
             return self.complex_method(payload,&name,rest,kwargs).unwrap();
+        }
+        if owner=="float" && ["__pow__","__rpow__"].contains(&name.as_str()) && rest.len()==2 && kwargs.is_empty(){
+            if !matches!(rest[1],Value::None){return Err(pyerr("TypeError","pow() 3rd argument not allowed unless all arguments are integers"));}
+            if let Some(result)=self.operand_attribute(&value,&receiver,&rest[..1],&kwargs){return result;}
         }
         if let Some(result)=self.operand_attribute(&value,&receiver,&rest,&kwargs){return result;}
         if owner == "dict" && name == "__getitem__" {
