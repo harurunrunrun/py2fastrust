@@ -41,6 +41,17 @@ fn work(input: &mut SplitWhitespace<'_>, output: &mut String) {
     writeln!(output, "{total}").unwrap();
 }
 
+#[cfg(benchmark = "string_index")]
+fn work(input: &mut SplitWhitespace<'_>, output: &mut String) {
+    let n = number(input) as usize;
+    let text = input.next().unwrap().as_bytes();
+    let mut answer = 0_i64;
+    for i in 0..n {
+        answer += (text[i] == b'x') as i64;
+    }
+    writeln!(output, "{answer}").unwrap();
+}
+
 #[cfg(benchmark = "sort")]
 fn work(input: &mut SplitWhitespace<'_>, output: &mut String) {
     let n = number(input);

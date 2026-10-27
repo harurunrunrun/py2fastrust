@@ -31,6 +31,7 @@ from py2fastrust import TranspileOptions, transpile
 CASES = {
     "arithmetic": "n=int(input())\ns=0\nfor i in range(n):\n s += (i*17+3)%1000000007\nprint(s)\n",
     "input": "n=int(input())\ns=0\nfor i in range(n):\n s += int(input())\nprint(s)\n",
+    "string_index": "n=int(input())\ns=input()\nanswer=0\nfor i in range(n):\n answer += s[i] == 'x'\nprint(answer)\n",
     "list": "n=int(input())\na=[i%100 for i in range(n)]\ns=0\nfor x in a:\n s += x*x\nprint(s)\n",
     "sort": "n=int(input())\na=[(i*19237)%100003 for i in range(n)]\na.sort()\nprint(a[0],a[-1],sum(a))\n",
     "dict": "n=int(input())\nd={}\nfor i in range(n):\n k=i%101\n d[k]=d.get(k,0)+1\nprint(sum(d.values()))\n",
@@ -40,11 +41,13 @@ CASES = {
     "bigint": "n=int(input())\na=1\nfor i in range(n):\n a=a*2+1\nprint(a.bit_length())\n",
 }
 DEFAULT_SIZES = {"arithmetic": 20_000_000, "input": 500_000, "list": 2_000_000,
+                 "string_index": 1_000_000,
                  "sort": 500_000, "dict": 500_000, "set": 2_000,
                  "bfs": 2_000, "dp": 2_000_000, "bigint": 5_000}
 ALGORITHMS = {
     "arithmetic": "counted-loop sum of (i*17+3)%1000000007",
     "input": "parse/sum n decimal integers: buffered Rust tokens versus Python lines",
+    "string_index": "count x by indexed ASCII character reads in a loop; no rewritten input algorithm",
     "list": "materialize n i%100 values, then sum squares",
     "sort": "ascending integer sort, first/last/sum; both Rust paths use sort_unstable",
     "dict": "101 possible integer keys: explicit get then insert; sum counts",
@@ -73,6 +76,9 @@ def input_text(case, size, batch):
     item = f"{size}\n"
     if case == "input":
         item += "".join(f"{i}\n" for i in range(size))
+    elif case == "string_index":
+        pattern="xoxoxxoo"
+        item += (pattern*((size+len(pattern)-1)//len(pattern)))[:size]+"\n"
     elif case == "bfs":
         item = f"{size} {size-1}\n" + "".join(f"{i} {i+1}\n" for i in range(size-1))
     return f"{batch}\n" + item * batch
