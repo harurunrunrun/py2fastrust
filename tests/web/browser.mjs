@@ -26,6 +26,7 @@ const mime = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/jav
   '.css': 'text/css', '.json': 'application/json', '.py': 'text/plain', '.wasm': 'application/wasm' };
 const prefix = '/py2fastrust/';
 const requests = [];
+const browserErrors = [];
 const server = createServer(async (request, response) => {
   try {
     const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
@@ -87,7 +88,7 @@ try {
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1360, height: 1000 } });
   const page = await context.newPage();
-  const errors = [];
+  const errors = browserErrors;
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => {
     if (message.type() === 'error') errors.push(message.text());
@@ -184,18 +185,23 @@ try {
   await page.waitForFunction(() => document.getElementById('status').textContent === 'Conversion complete.');
   const style = await page.evaluate(() => {
     const colors = new Set();
+    const unexpected = [];
     for (const element of document.querySelectorAll('*')) {
       const s = getComputedStyle(element);
       for (const property of ['color', 'backgroundColor', 'borderTopColor']) {
         if (s[property] !== 'rgba(0, 0, 0, 0)') colors.add(s[property]);
+        if (!['rgba(0, 0, 0, 0)', 'rgb(0, 0, 0)', 'rgb(255, 255, 255)'].includes(s[property])) {
+          unexpected.push({ tag: element.tagName, id: element.id, property, value: s[property] });
+        }
       }
     }
     const left = document.getElementById('source').getBoundingClientRect();
     const right = document.getElementById('output').getBoundingClientRect();
-    return { colors: [...colors], sideBySide: left.x < right.x && left.y === right.y };
+    return { colors: [...colors], unexpected, sideBySide: left.x < right.x && left.y === right.y };
   });
+  report.palette = style;
   assert(style.sideBySide);
-  assert(style.colors.every(c => ['rgb(0, 0, 0)', 'rgb(255, 255, 255)'].includes(c)), JSON.stringify(style.colors));
+  assert.equal(style.unexpected.length, 0, JSON.stringify(style.unexpected));
   await page.setViewportSize({ width: 390, height: 844 });
   assert(await page.evaluate(() => {
     const a = document.getElementById('source').getBoundingClientRect();
@@ -214,6 +220,8 @@ try {
   report.error = error.stack || String(error);
   throw error;
 } finally {
+  report.browser_errors = browserErrors;
+  report.network_requests = requests;
   await writeFile(join(artifacts, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   if (browser) await browser.close();
   await new Promise(resolve => server.close(resolve));
