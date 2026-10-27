@@ -7,7 +7,10 @@ struct CstLower {
 impl CstLower {
     fn error(&self,n:usize,message:&str)->String{
         let token=&self.tokens[self.tree.nodes[n].start.min(self.tokens.len()-1)];
-        format!("SyntaxError: {message} ({}:{}, column {})",self.filename,token.line,token.column+1)
+        let (kind,message)=if let Some(message)=message.strip_prefix("NotImplementedError: "){
+            ("NotImplementedError",message)
+        }else{("SyntaxError",message)};
+        format!("{kind}: {message} ({}:{}, column {})",self.filename,token.line,token.column+1)
     }
     fn unsupported(&self,n:usize)->String{self.error(n,&format!("runtime lowering of grammar rule '{}' is not implemented",self.rule(n)))}
     fn rule(&self,n:usize)->&'static str{match self.tree.nodes[n].kind{PegNodeKind::Rule(rule)=>PEG_RULES[rule].name,PegNodeKind::Binding(_)=>"<binding>",PegNodeKind::Token(_)=>"<token>"}}

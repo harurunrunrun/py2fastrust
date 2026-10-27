@@ -389,6 +389,9 @@ fn d_decode_formatted_text(text:&str,raw:bool)->Result<String,String>{
             'x'|'u'|'U'=>{
                 let width=if next=='x'{2}else if next=='u'{4}else{8};let mut value=0;
                 for _ in 0..width{value=value*16+chars.next().and_then(|ch|ch.to_digit(16)).ok_or_else(||"SyntaxError: truncated hexadecimal escape".to_owned())?;}
+                if (0xd800..=0xdfff).contains(&value) {
+                    return Err("NotImplementedError: unpaired Unicode surrogates are not supported".to_owned());
+                }
                 result.push(char::from_u32(value).ok_or_else(||"SyntaxError: invalid Unicode escape".to_owned())?);
             },
             '0'..='7'=>{
