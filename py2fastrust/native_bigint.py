@@ -20,6 +20,7 @@ from .native import (_Binding, _Expression, _Function, _Generator, _ListInfo, _S
                      _Unsupported, _OUTPUT_HELPERS, _declarations,
                      _function_plans, _string, _direct_diagnostic)
 from .native import _static_reference
+from .references import CANONICAL_REBINDABLES
 from .native_bigint_lists import BigIntLists, HELPERS as LIST_HELPERS
 from .native_bigint_text import BigIntText, HELPERS as BIG_TEXT_HELPERS
 
@@ -262,8 +263,6 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             if isinstance(function, _Function):
                 return self.user_call(node,function,environment)
             name = node.func.id
-            if name in {"min","max"}:
-                return self.extremum(node,environment)
             if node.keywords:
                 raise _Unsupported
             if name in {"int","bool"} and not node.args:
@@ -340,47 +339,6 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 pass
         return _Expression(f"{{{setup} {result}}}","int",constant)
 
-    def extremum(self, node, environment):
-        if any(isinstance(argument,ast.Starred) for argument in node.args) or not node.args:
-            raise _Unsupported
-        default = None
-        for keyword in node.keywords:
-            if keyword.arg == "key" and isinstance(keyword.value,ast.Constant) and keyword.value.value is None:
-                continue
-            if keyword.arg == "default" and len(node.args) == 1 and default is None:
-                default = self.expression(keyword.value,environment)
-            else:
-                raise _Unsupported
-        compare = ">" if node.func.id == "max" else "<"
-        if len(node.args)>=2:
-            values = [self.expression(value,environment) for value in node.args]
-            kind = self.scalar_kind(values)
-            names = [self.temporary() for _ in values]
-            setup = " ".join(f"let {name}={self.coerce(value,kind)};" for name,value in zip(names,values))
-            best = self.temporary()
-            current = self.number(_Expression(best,kind))
-            updates = " ".join(f"if {self.number(_Expression(name,kind))} {compare} {current} {{{best}={name};}}" for name in names[1:])
-            return _Expression(f"{{{setup} let mut {best}={names[0]}; {updates} {best}}}",kind)
-        iterable = node.args[0]
-        if not isinstance(iterable,(ast.List,ast.Tuple)):
-            return self.list_extremum(node,environment)
-        values = [self.expression(value,environment) for value in iterable.elts]
-        kind = self.scalar_kind(values+([default] if default else [])) if values or default else "int"
-        names = [self.temporary() for _ in values]
-        # Evaluate iterable elements first, then the default, then comparisons.
-        setup = " ".join(f"let {name}={self.coerce(value,kind)};" for name,value in zip(names,values))
-        if default is not None:
-            default_name = self.temporary()
-            setup += f"let {default_name}={self.coerce(default,kind)};"
-        if not values:
-            if default is not None:
-                return _Expression(f"{{{setup} {default_name}}}",kind)
-            error = self.at(f'Err::<Int,String>("ValueError: {node.func.id}() iterable argument is empty".into())',node)
-            return _Expression(error,"int")
-        best = self.temporary()
-        current = self.number(_Expression(best,kind))
-        updates = " ".join(f"if {self.number(_Expression(name,kind))} {compare} {current} {{{best}={name};}}" for name in names[1:])
-        return _Expression(f"{{{setup} let mut {best}={names[0]}; {updates} {best}}}",kind)
 
     def range_iterator(self, node, environment):
         from .native_stream_lowering import integer_range
@@ -468,7 +426,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     try:
         tree, table = unit.tree, unit.table
         for node in ast.walk(tree):
-            if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS-{"input"}:
+            if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS-{"input"}-CANONICAL_REBINDABLES:
                 raise _Unsupported
         functions = _function_plans(tree,table,0,BigIntGenerator,unit=unit)
         function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree)))

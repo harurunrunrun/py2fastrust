@@ -29,6 +29,15 @@ Producer conversion errors and consumer cardinality errors retain their own
 source frames. General dynamic callable values and conflicting core-name
 rebinding still require direct implementation.
 
+Positional `min` and `max` calls consume canonical call plans in every integer
+mode. Supported values include integers/bools, strings, bytes, and immutable
+tuples with supported comparable fields; fixed-width modes also support scalar
+floats. Every argument runs before comparisons, ties retain the first value,
+and tuples compare lexicographically with short-circuited field comparisons.
+`key=None` is supported. Captured builtin identities can replace `min`/`max`
+bindings without dispatching by their old spelling. User key callbacks, general
+mutable candidates, and tuple float identity rules require further lowering.
+
 Generator expressions consumed by `sum`, `any`, `all`, `min`, or `max` lower to
 typed Rust loops, including proved nested clauses, filters, and
 `map`/`filter`/`enumerate`/`zip` adapters. Construction and iteration keep their

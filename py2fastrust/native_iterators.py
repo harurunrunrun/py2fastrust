@@ -556,8 +556,11 @@ class Planner:
 
 def try_reduction(generator, node, environment):
     """Return typed Rust for a supported consumer, or None for other syntax."""
-    plan=consumer_plan(generator,node,environment,{ConsumerKind.SUM,ConsumerKind.ANY,ConsumerKind.ALL,ConsumerKind.MIN,ConsumerKind.MAX})
+    plan=consumer_plan(generator,node,environment,{ConsumerKind.SUM,ConsumerKind.ANY,ConsumerKind.ALL,ConsumerKind.MIN,ConsumerKind.MAX,ConsumerKind.MIN_ARGUMENTS,ConsumerKind.MAX_ARGUMENTS})
     if plan is None:return None
+    if plan.kind in {ConsumerKind.MIN_ARGUMENTS,ConsumerKind.MAX_ARGUMENTS}:
+        from .native_extrema import positional
+        return positional(generator,plan,environment)
     name=plan.kind.value
     g = generator
     stream = Planner(g).lower(plan.source, environment, allow_set=True)

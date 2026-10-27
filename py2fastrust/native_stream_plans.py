@@ -319,10 +319,13 @@ class Normalizer:
         if kind is ConsumerKind.LIST and not invocation.arguments.evaluation_order:
             return ConsumerPlan(kind,node,ProducerPlan(ProducerKind.SEQUENCE,node))
         if kind in {ConsumerKind.MIN, ConsumerKind.MAX} and len(invocation.arguments.positional) != 1:
-            if len(invocation.arguments.positional) < 2 or invocation.arguments.keywords:
+            if len(invocation.arguments.positional) < 2:
                 raise CallBindingError("this variadic extremum form is not proved")
             variadic = ConsumerKind.MIN_ARGUMENTS if kind is ConsumerKind.MIN else ConsumerKind.MAX_ARGUMENTS
-            return ConsumerPlan(variadic, node, None, values=tuple(argument.expression for argument in invocation.arguments.positional))
+            parameters=tuple(f"value_{index}"for index in range(len(invocation.arguments.positional)))
+            binding=self.bind(invocation,_signature(parameters,positional_only=parameters,keywords=("key",),defaults=("key",)),(("key",None),))
+            return ConsumerPlan(variadic,node,None,binding=binding,
+                                values=tuple(binding.binding[name].expression for name in parameters))
         if kind is ConsumerKind.SUM:
             signature = _signature(("iterable", "start"), positional_only=("iterable",), defaults=("start",))
             defaults = (("start", 0),)

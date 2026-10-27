@@ -22,6 +22,7 @@ print(ans)
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
 class NativeExtremaTests(unittest.TestCase):
+    string_mode = "ascii"
     compile = test_native.NativeTests.compile
     differential = test_native.NativeTests.differential
 

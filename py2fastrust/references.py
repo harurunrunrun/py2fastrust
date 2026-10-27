@@ -51,6 +51,11 @@ class UnknownReference:
 
 _BUILTINS={name:BuiltinIdentity(name)for name in CORE_BUILTINS}
 
+# These names have no spelling-based call implementation: their calls are
+# lowered only through the canonical identity plans. Other legacy builtin
+# spellings still require the conservative assignment boundary.
+CANONICAL_REBINDABLES=frozenset({"min","max"})
+
 
 def _known(value,name):
     return value if getattr(value,"_native_reference",False) else UnknownReference(name,"bound value is not a static callable reference")
@@ -165,7 +170,7 @@ def capture_builtin_assignment(generator,node,environment):
     if not isinstance(value,BuiltinIdentity):
         return None
     from .native import _Unsupported
-    if not all(isinstance(target,ast.Name) and target.id not in CORE_BUILTINS
+    if not all(isinstance(target,ast.Name) and (target.id not in CORE_BUILTINS or target.id in CANONICAL_REBINDABLES)
                and target.id not in generator.iterating_lists for target in node.targets):
         raise _Unsupported
     for target in node.targets:
