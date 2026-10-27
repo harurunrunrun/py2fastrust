@@ -447,6 +447,7 @@ struct Frame {
     except_star: Vec<Value>,
     next_call: Option<Box<Frame>>,
     cache_returns: Vec<CacheReturn>,
+    protocol: Option<ProtocolState>,
     comprehensions: Vec<InlineComprehension>,
     resume_value: Option<Value>,
     injected_exception: Option<PyException>,
@@ -1644,6 +1645,7 @@ impl Runtime {
                 except_star: Vec::new(),
             next_call: None,
             cache_returns: Vec::new(),
+            protocol: None,
             comprehensions: Vec::new(),
             resume_value: None,
             injected_exception: None,
@@ -1739,6 +1741,7 @@ impl Runtime {
             out.extend(pending.entry.args.iter().cloned());
             out.extend(pending.entry.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         }
+        if let Some(protocol)=&frame.protocol {protocol.roots(out);}
         out.extend(frame.resume_value.iter().cloned());
         if let Some(e) = &frame.injected_exception {
             Self::exception_roots(e, out);
@@ -1784,7 +1787,7 @@ impl Runtime {
         self.roots.push(Vec::new());
         self.recursion += 1;
         let mut frames: Vec<Frame> = Vec::new();
-        let result = (|| loop {
+        let result = (|| 'execute: loop {
             self.active_future_flags=self.codes[f.code].future_flags;
             self.active_builtins=f.builtins.clone();
             self.handled_exception=f.exception.clone().or_else(||f.inherited_exception.clone());
@@ -1808,7 +1811,9 @@ impl Runtime {
                     .map(|instruction| &instruction.op),
                 Some(Op::YieldFrom)
             );
-            let result = if f.injected_exception.is_some() && !delegated {
+            let result = if f.protocol.as_ref().is_some_and(|state|state.value.is_some() || state.plan.is_some()) {
+                self.resume_protocol(&mut f).map(|_|None)
+            } else if f.injected_exception.is_some() && !delegated {
                 Err(f.injected_exception.take().unwrap())
             } else if f.pc >= self.codes[f.code].ops.len() {
                 Ok(Some(FrameExit::Return(Value::None)))
@@ -1831,11 +1836,15 @@ impl Runtime {
                 }
                 other=>other,
             };
+            let result=if matches!(&result,Ok(None)) && f.next_call.is_some() && self.recursion>=self.recursion_limit {
+                f.next_call=None;
+                Err(pyerr("RecursionError","maximum recursion depth exceeded"))
+            }else{result};
             match result {
                 Ok(Some(FrameExit::Return(v))) => {
                     if let Some(mut parent) = frames.pop() {
                         self.collection_callers.pop();
-                        parent.stack.push(v);
+                        if let Some(protocol)=&mut parent.protocol {protocol.value=Some(v);}else{parent.stack.push(v);}
                         self.recursion -= 1;
                         f = parent;
                     } else {
@@ -1845,12 +1854,6 @@ impl Runtime {
                 Ok(Some(exit @ FrameExit::Yield(_))) => return Ok((exit, f)),
                 Ok(None) => {
                     if let Some(child) = f.next_call.take() {
-                        if self.recursion >= self.recursion_limit {
-                            return Err(pyerr(
-                                "RecursionError",
-                                "maximum recursion depth exceeded",
-                            ));
-                        }
                         let inherited=f.exception.clone().or_else(||f.inherited_exception.clone());
                         self.collection_callers.push(child.globals);
                         frames.push(f);
@@ -1860,6 +1863,25 @@ impl Runtime {
                     }
                 }
                 Err(mut e) => loop {
+                    if f.protocol.is_some() {
+                        match self.protocol_binding_failure(&mut f,&e) {
+                            Ok(true)=>{
+                                if let Some(child)=f.next_call.take() {
+                                    if self.recursion>=self.recursion_limit {
+                                        e=pyerr("RecursionError","maximum recursion depth exceeded");
+                                    }else{
+                                        let inherited=f.exception.clone().or_else(||f.inherited_exception.clone());
+                                        self.collection_callers.push(child.globals);
+                                        frames.push(f);self.recursion+=1;f=*child;f.inherited_exception=inherited;
+                                        continue 'execute;
+                                    }
+                                }else{continue 'execute;}
+                            },
+                            Ok(false)=>{},
+                            Err(replacement)=>e=replacement,
+                        }
+                        f.protocol=None;
+                    }
                     self.active_future_flags=self.codes[f.code].future_flags;
                     self.active_builtins=f.builtins.clone();
                     if e.context.is_none() {
@@ -2070,8 +2092,9 @@ impl Runtime {
             }
             Op::Unary(op) => {
                 let a = Self::pop(f)?;
-                let v = self.unary(&op, a)?;
-                f.stack.push(v)
+                if op=="not" && self.start_protocol_truth(f,a.clone(),ProtocolSink::Not)? {}else{
+                    let v = self.unary(&op, a)?;f.stack.push(v)
+                }
             }
             Op::Compare(op) => {
                 let b = Self::pop(f)?;
@@ -2092,15 +2115,11 @@ impl Runtime {
             Op::Jump(t) => f.pc = t,
             Op::JumpFalse(t) => {
                 let v = Self::pop(f)?;
-                if !self.truth(&v)? {
-                    f.pc = t
-                }
+                if !self.start_protocol_truth(f,v.clone(),ProtocolSink::Jump{target:t,when:false})? && !self.truth(&v)? {f.pc=t;}
             }
             Op::JumpTrue(t) => {
                 let v = Self::pop(f)?;
-                if self.truth(&v)? {
-                    f.pc = t
-                }
+                if !self.start_protocol_truth(f,v.clone(),ProtocolSink::Jump{target:t,when:true})? && self.truth(&v)? {f.pc=t;}
             }
             Op::Break(t) | Op::Continue(t) => return Ok(self.transfer(f, Pending::Jump(t))),
             Op::BuildList(n) | Op::BuildTuple(n) | Op::BuildSet(n) => {
@@ -2205,6 +2224,7 @@ impl Runtime {
                     .collect::<Vec<_>>().into_iter().zip(vals[pos..].iter().cloned())
                     .collect();
                 let args = vals[..pos].to_vec();
+                if self.start_protocol_call(f,callable.clone(),args.clone(),kwargs.clone())? {return Ok(None);}
                 match self.prepare_direct_call(callable.clone(),args.clone(),kwargs.clone())? {
                     PreparedCall::Frame(child)=>f.next_call=Some(Box::new(child)),
                     PreparedCall::Value(value)=>f.stack.push(value),
@@ -2223,6 +2243,7 @@ impl Runtime {
                 roots.extend(kw.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
                 self.view_rooted(roots,|runtime,_|{
                     let args=runtime.to_vec(arg)?;
+                    if runtime.start_protocol_call(f,fun.clone(),args.clone(),kw.clone())? {return Ok(());}
                     match runtime.prepare_direct_call(fun.clone(),args.clone(),kw.clone())?{
                         PreparedCall::Frame(child)=>f.next_call=Some(Box::new(child)),
                         PreparedCall::Value(value)=>f.stack.push(value),
@@ -2851,6 +2872,7 @@ impl Runtime {
                 except_star: Vec::new(),
                 next_call: None,
             cache_returns: Vec::new(),
+            protocol: None,
             comprehensions: Vec::new(),
                 resume_value: None,
                 injected_exception: None,
@@ -6065,6 +6087,7 @@ impl Runtime {
                 except_star: Vec::new(),
             next_call: None,
             cache_returns: Vec::new(),
+            protocol: None,
             comprehensions: Vec::new(),
             resume_value: None,
             injected_exception: None,
@@ -9604,7 +9627,7 @@ impl Runtime {
                 code:function.code,pc:0,locals:ns,
                 temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
                 globals:function.globals,builtins:function.builtins.clone(),closure:function.closure,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
-                exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),next_call:None,cache_returns:Vec::new(),comprehensions:Vec::new(),
+                exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),next_call:None,cache_returns:Vec::new(),protocol:None,comprehensions:Vec::new(),
                 resume_value:None,injected_exception:None,finally_regions:Vec::new(),
             })
         })
