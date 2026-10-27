@@ -4,7 +4,7 @@ The analysis never executes Python expressions. Definitions are static instructi
 identities; joins retain every reaching definition and possible type. Unknown
 operations and user calls keep an explicit top value rather than inventing a
 native type or a direct call target. Exception/finally edges overapproximate the
-VM's transfers, so this is a proof aid, not an alternative execution engine.
+runtime's transfers. The analysis supplies proofs for Rust code generation.
 """
 
 from collections import deque

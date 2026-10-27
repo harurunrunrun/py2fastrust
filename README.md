@@ -120,6 +120,12 @@ integer-list `append`, `extend`, and `sort`, dictionary aggregation, and diction
 Native integer sets support construction, insertion, deletion, membership, and `sum`.
 Programs that observe set iteration order or sharing use general AOT.
 Owned adjacency lists and unbounded integer deques support native BFS loops.
+Proved strings use Rust `String`, and floating-point values use `f64`.
+Unicode indexing counts code points, with a direct ASCII path. Integer/float
+comparisons and integer true division preserve the integer operand's precision
+until the operation requires a floating-point result.
+Proved BigInt scalar arithmetic, branches, loops, input and output use owned
+Rust `Int` values with the bundled arbitrary-precision implementation.
 Deque specialization uses the compiler's resolved bundled `collections` module; a user module of the same name is respected.
 Shared rows, container aliases, and mutation during active iteration use general AOT.
 Programs without a proved typed specialization use general AOT with shared value and object helpers.
@@ -127,18 +133,24 @@ The optimizer follows proved type changes and combines compatible branch and loo
 Finite unions of `bool` and integer values also stay native across branches and loop back edges.
 A stack value preserves their distinct result types and formatting without object allocation.
 Unproved combinations use general AOT.
-Ordinary user functions get separate Rust versions for proved integer, boolean, and read-only integer-list arguments.
-Scalar results retain their integer or boolean type; positional and keyword arguments, constant defaults, and calls between functions are supported.
+Ordinary user functions get separate Rust versions for proved integer, boolean,
+string, float, and read-only integer-list arguments. BigInt scalar functions
+use the same specialization rules with owned arbitrary-precision values.
+Scalar results retain their proved type; positional and keyword arguments,
+constant defaults, and calls between functions are supported.
 Integer lists are borrowed without copying; functions that mutate or expose those argument lists use general AOT.
 Recursion and functions with dynamic global or closure state use general AOT.
 Within a general-AOT program, selected pure arithmetic function bodies can also use native code.
 Entry guards check the actual code object and bound integer arguments before any body operation;
 other argument types execute the general AOT Rust body. `--no-optimize` disables these native entry paths.
-For simple module-level code, a separate analysis proves whether dynamic compilation is unreachable.
-The proof checks both the AST and the lowered control flow, including reaching assignments,
-possible types, call targets, and unknown effects. Uncertain paths retain the runtime parser.
+For simple module-level code and closed static functions or comprehensions,
+a separate analysis proves whether dynamic compilation is unreachable.
+Simple scopes use reaching assignments, types, call targets and effect facts.
+Static callbacks require a closed set of calls without reflective namespace or
+external capability access. Both proofs check the AST and lowered code.
+Uncertain paths retain the runtime parser.
 When that proof succeeds, the general backend omits the runtime parser, instruction interpreter,
-and Unicode name tables. Imports, reflection, indirect calls, user-defined functions or classes,
+and Unicode name tables. Imports, reflection, unknown indirect calls, classes,
 and unknown syntax currently retain these components conservatively. The reachability analysis also
 runs with `--no-optimize`; disabling optimization never changes static code into interpreted code.
 

@@ -71,10 +71,16 @@ All ordinary source bodies execute generated Rust functions, including bodies wh
 require dynamic `Value` and object helpers. The general backend is reported as `aot`;
 proved typed specializations are reported as `native`. Static code objects retain their AOT
 entry when called through dynamic code or used to construct another function.
+Proved scalar strings and floats use Rust `String` and `f64`, including typed
+function arguments, constant defaults and return values. Proved BigInt scalar
+expressions, control flow and functions use owned arbitrary-precision `Int`
+values. Unproved kinds and effects retain general AOT semantics.
 
 New Python source compiled at runtime by `compile`/`eval`/`exec` uses a runtime instruction
 interpreter. The converter omits that interpreter, parser, and dynamic syntax tables for
-simple module-level programs whose calls are proved to target unmodified leaf built-ins.
+simple module-level programs whose calls are proved to target unmodified leaf built-ins,
+and closed static functions or comprehensions that cannot acquire runtime compilation
+through imports, attributes, reflective namespaces or non-leaf builtin values.
 Indirect calls, reflection, imports, and unknown syntax retain those components conservatively.
 This reachability check also runs with `--no-optimize`; that option disables native
 specializations while preserving direct Rust generation for ordinary source.

@@ -15,11 +15,13 @@ The high-accuracy error-function and gamma-function algorithms in
 `Modules/mathmodule.c`. Source versions and attribution are recorded in that
 file. The same PSF license is included in generated general-runtime Rust.
 
-The floating-point quotient and remainder helper in
-`py2fastrust/runtime/float_arithmetic.rs` is adapted from `float_rem` and
+The floating-point quotient and remainder helpers in
+`py2fastrust/runtime/float_arithmetic.rs` and `py2fastrust/native_scalar.py`
+are adapted from `float_rem` and
 `_float_div_mod` in
 [CPython 3.14's Objects/floatobject.c](https://github.com/python/cpython/blob/v3.14.0/Objects/floatobject.c).
-It uses the same retained PSF license, included in generated general-runtime Rust.
+They use the same retained PSF license, included in generated Rust containing
+these helpers.
 
 Type-parameter collection and substitution control flow in
 `py2fastrust/runtime/generic_alias.rs` is adapted from CPython 3.14's
@@ -51,8 +53,8 @@ Unicode case-fold mappings and character-property ranges in
 behavior by `tools/generate_unicode.py`. Unicode character data is covered by
 the [Unicode License V3](https://www.unicode.org/license.txt), retained in
 `py2fastrust/stdlib/UNICODE_LICENSE.txt` and in generated Rust that includes
-these tables. The integer parser's Unicode decimal-digit ranges use the same
-Unicode data.
+these tables. The integer parser's and native scalar parser's Unicode
+decimal-digit ranges use the same Unicode data.
 
 `py2fastrust/runtime/normalization_tables.rs` contains Unicode 16.0 NFKD
 decompositions, canonical combining classes and composition pairs, generated

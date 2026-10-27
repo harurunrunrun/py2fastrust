@@ -190,7 +190,7 @@ print(len(s),sum(s),sum(s,a),a in s)
             "s={1}; s.add([2])",
             "s={1}; x=s.add(2)",
             "s={1}; s.update([2],[3])",
-            "s={1}; s='changed'; print(s)",
+            "s={1}\nif input(): s='changed'\nprint(s)",
             "s={1}; f(s)",
             "s=set(x)",
             "set=list; s=set([1]); print(len(s))",
@@ -202,6 +202,7 @@ print(len(s),sum(s),sum(s,a),a in s)
         for source in programs:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+        self.differential("s={1}; s='changed'; print(s)")
         result = transpile("s={1}; t=s; t.add(2); print(len(s))", TranspileOptions())
         self.assertTrue(result.success)
         self.assertEqual(result.backend, "aot")

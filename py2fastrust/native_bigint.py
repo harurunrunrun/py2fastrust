@@ -1,0 +1,427 @@
+"""Direct Rust lowering for proven arbitrary-precision integer expressions.
+
+Integers are ordinary owned Rust ``Int`` values, not Python object handles.
+The fixed-width backend's binding and control-flow proofs are shared; explicit
+clones preserve Python's immutable-value semantics without requiring ``Copy``.
+Unproved programs go through the general AOT backend.
+"""
+
+import ast
+from importlib.resources import files
+import symtable
+
+from .native import (_Binding, _Expression, _Function, _Generator, _Specializations,
+                     _Unsupported, _OUTPUT_HELPERS, _declarations,
+                     _function_plans, _string)
+
+
+_HELPERS = r'''
+#[derive(Debug)]
+struct NativeError { message: String, line: usize, function: &'static str, frames: Vec<(usize, &'static str)> }
+fn native_at<T>(result: Result<T, String>, line: usize, function: &'static str) -> Result<T, NativeError> {
+    result.map_err(|message| NativeError { message, line, function, frames: Vec::new() })
+}
+// Each range owns its cursor. The Python target can be rebound independently.
+struct NativeRange { cursor: Int, stop: Int, step: Int, ascending: bool }
+impl NativeRange {
+    fn new(cursor: Int, stop: Int, step: Int) -> Result<Self,String> {
+        if step.is_zero(){return Err("ValueError: range() arg 3 must not be zero".into());}
+        let ascending=!step.is_negative();
+        Ok(Self {cursor,stop,step,ascending})
+    }
+}
+impl Iterator for NativeRange {
+    type Item=Int;
+    fn next(&mut self)->Option<Int> {
+        if if self.ascending {self.cursor>=self.stop}else{self.cursor<=self.stop}{return None;}
+        let value=self.cursor.clone();
+        self.cursor=self.cursor.add(&self.step);
+        Some(value)
+    }
+}
+#[derive(Clone)]
+enum NativeScalar { Int(Int), Bool(bool) }
+impl NativeScalar {
+    fn integer(&self)->Int {match self {Self::Int(value)=>value.clone(),Self::Bool(value)=>Int::from_i128(*value as i128)}}
+    fn truth(&self)->bool {match self {Self::Int(value)=>!value.is_zero(),Self::Bool(value)=>*value}}
+    fn bitand(self,other:Self)->Self {match (&self,&other) {(Self::Bool(a),Self::Bool(b))=>Self::Bool(a&b),_=>Self::Int(self.integer().bitand(&other.integer()))}}
+    fn bitor(self,other:Self)->Self {match (&self,&other) {(Self::Bool(a),Self::Bool(b))=>Self::Bool(a|b),_=>Self::Int(self.integer().bitor(&other.integer()))}}
+    fn bitxor(self,other:Self)->Self {match (&self,&other) {(Self::Bool(a),Self::Bool(b))=>Self::Bool(a^b),_=>Self::Int(self.integer().bitxor(&other.integer()))}}
+}
+impl std::fmt::Display for NativeScalar {
+    fn fmt(&self,formatter:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        match self {Self::Int(value)=>std::fmt::Display::fmt(value,formatter),Self::Bool(value)=>formatter.write_str(if *value {"True"}else{"False"})}
+    }
+}
+'''
+
+_INPUT_HELPERS = r'''
+struct NativeInput { reader:StandardInput, line:String }
+impl NativeInput {
+    fn new()->Self {Self {reader:StandardInput::new(),line:String::new()}}
+    fn line(&mut self,output:&mut String)->Result<&str,String> {
+        if !output.is_empty(){native_flush_output(output)?;}
+        self.reader.read_text_into(&mut self.line,None,true).map_err(StandardInputError::native_message)?;
+        if self.line.is_empty(){return Err("EOFError: EOF when reading a line".into());}
+        if self.line.ends_with('\n'){self.line.pop();}
+        Ok(&self.line)
+    }
+    fn integer(&mut self,output:&mut String)->Result<Int,String> {Int::parse(self.line(output)?,10)}
+    fn unpack_integers(&mut self,count:usize,output:&mut String)->Result<Vec<Int>,String> {
+        let mut words=self.line(output)?.split(native_space).filter(|word|!word.is_empty());
+        let mut result=Vec::with_capacity(count);
+        for index in 0..count {
+            let word=words.next().ok_or_else(||format!("ValueError: not enough values to unpack (expected {}, got {})",count,index))?;
+            result.push(Int::parse(word,10)?);
+        }
+        if let Some(word)=words.next(){
+            // A lazy map converts exactly one excess item before unpack fails.
+            Int::parse(word,10)?;
+            return Err(format!("ValueError: too many values to unpack (expected {})",count));
+        }
+        Ok(result)
+    }
+}
+fn native_space(character:char)->bool {character.is_whitespace()||('\u{1c}'..='\u{1f}').contains(&character)}
+'''
+
+
+class BigIntGenerator(_Generator):
+    BUILTINS = _Generator.BUILTINS | {"bool"}
+
+    def __init__(self, bits=0, functions=None, function=None, function_input=False, constructors=None, specializations=None):
+        super().__init__(0, functions, function, function_input, constructors, specializations)
+
+    def normalize(self, value):
+        return int(value)
+
+    def literal(self, value):
+        value = int(value)
+        if -(1 << 127) < value < (1 << 127):
+            return f"Int::from_i128({value}_i128)"
+        if value == -(1 << 127):
+            return "Int::from_i128(i128::MIN)"
+        return f"Int::parse({_string(str(value))},10).unwrap()"
+
+    def slot(self, kind):
+        if kind not in {"int", "bool", "int_bool"}:
+            raise _Unsupported
+        return super().slot(kind)
+
+    @staticmethod
+    def number(expression):
+        if expression.kind == "int":
+            return expression.code
+        if expression.kind == "bool":
+            return f"Int::from_i128(({expression.code}) as i128)"
+        if expression.kind == "int_bool":
+            return f"({expression.code}).integer()"
+        raise _Unsupported
+
+    @staticmethod
+    def coerce(expression, kind):
+        if expression.kind == kind:
+            return f"({expression.code}).clone()" if kind in {"int", "int_bool"} else expression.code
+        if kind == "int_bool" and expression.kind in {"int", "bool"}:
+            variant = "Int" if expression.kind == "int" else "Bool"
+            value = f"({expression.code}).clone()" if expression.kind == "int" else expression.code
+            return f"NativeScalar::{variant}({value})"
+        raise _Unsupported
+
+    @staticmethod
+    def truth(expression):
+        if expression.kind == "int":
+            return f"!({expression.code}).is_zero()"
+        if expression.kind == "int_bool":
+            return f"({expression.code}).truth()"
+        if expression.kind == "bool":
+            return expression.code
+        raise _Unsupported
+
+    def expression(self, node, environment):
+        if isinstance(node, ast.Name):
+            binding = environment.get(node.id)
+            if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool"}:
+                raise _Unsupported
+            return _Expression(self.coerce(_Expression(binding.slot,binding.kind),binding.kind),binding.kind)
+        if isinstance(node, ast.Constant):
+            if type(node.value) is int:
+                return _Expression(self.literal(node.value), "int", node.value)
+            if type(node.value) is bool:
+                return _Expression(str(node.value).lower(), "bool", node.value)
+            raise _Unsupported
+        if isinstance(node, ast.UnaryOp):
+            value = self.expression(node.operand,environment)
+            if isinstance(node.op, ast.Not):
+                return _Expression(f"!({self.truth(value)})","bool",None if value.constant is None else not value.constant)
+            number = self.number(value)
+            if isinstance(node.op, ast.UAdd):
+                return _Expression(number,"int",value.constant)
+            if isinstance(node.op, ast.USub):
+                return _Expression(f"({number}).neg()","int",None if value.constant is None else -value.constant)
+            if isinstance(node.op, ast.Invert):
+                return _Expression(f"({number}).invert()","int",None if value.constant is None else ~value.constant)
+            raise _Unsupported
+        if isinstance(node, ast.BinOp):
+            return self.binary(node.op,self.expression(node.left,environment),self.expression(node.right,environment),node)
+        if isinstance(node, (ast.BoolOp, ast.Compare, ast.IfExp)):
+            return super().expression(node,environment)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            function = environment.get(node.func.id)
+            if isinstance(function, _Function):
+                return self.user_call(node,function,environment)
+            name = node.func.id
+            if name in {"min","max"}:
+                return self.extremum(node,environment)
+            if node.keywords:
+                raise _Unsupported
+            if name in {"int","bool"} and not node.args:
+                return _Expression(self.literal(0),"int",0) if name == "int" else _Expression("false","bool",False)
+            if name in {"int","bool"} and len(node.args) == 1:
+                argument = node.args[0]
+                if name == "int" and isinstance(argument,ast.Call) and isinstance(argument.func,ast.Name) and argument.func.id == "input" and not argument.args and not argument.keywords:
+                    self.has_input = True
+                    return _Expression(self.at("native_input.integer(&mut native_output)",argument),"int")
+                if name == "int" and isinstance(argument,ast.Constant) and type(argument.value) is str:
+                    return _Expression(self.at(f"Int::parse({_string(argument.value)},10)",node),"int")
+                value = self.expression(argument,environment)
+                if name == "bool":
+                    return _Expression(self.truth(value),"bool",None if value.constant is None else bool(value.constant))
+                return _Expression(self.number(value),"int",value.constant)
+            if name == "abs" and len(node.args) == 1:
+                value = self.expression(node.args[0],environment)
+                return _Expression(f"({self.number(value)}).abs()","int",None if value.constant is None else abs(value.constant))
+            if name == "pow" and len(node.args) in {2,3}:
+                arguments = [self.expression(value,environment) for value in node.args]
+                if len(arguments) == 2:
+                    return self.binary(ast.Pow(),*arguments,node)
+                names = [self.temporary() for _ in arguments]
+                setup = " ".join(f"let {name}={self.number(value)};" for name,value in zip(names,arguments))
+                call = self.at(f"{names[0]}.modpow(&{names[1]},&{names[2]})",node)
+                return _Expression(f"{{{setup} {call}}}","int")
+        raise _Unsupported
+
+    def binary(self, operator, left, right, node):
+        if isinstance(operator,(ast.BitAnd,ast.BitOr,ast.BitXor)) and left.kind == right.kind == "bool":
+            return super().binary(operator,left,right,node)
+        if (isinstance(operator,(ast.BitAnd,ast.BitOr,ast.BitXor)) and "int_bool" in (left.kind,right.kind)
+                and left.kind in {"bool","int_bool"} and right.kind in {"bool","int_bool"}):
+            return super().binary(operator,left,right,node)
+        first,second = self.temporary(),self.temporary()
+        setup = f"let {first}={self.number(left)}; let {second}={self.number(right)};"
+        simple = {ast.Add:"add",ast.Sub:"sub",ast.Mult:"mul",ast.BitAnd:"bitand",ast.BitOr:"bitor",ast.BitXor:"bitxor"}
+        if type(operator) in simple:
+            result = f"{first}.{simple[type(operator)]}(&{second})"
+        elif isinstance(operator,(ast.FloorDiv,ast.Mod)):
+            result = f"({self.at(f'{first}.divmod(&{second})',node)}).{0 if isinstance(operator,ast.FloorDiv) else 1}"
+        elif isinstance(operator,(ast.LShift,ast.RShift)):
+            method = "shl" if isinstance(operator,ast.LShift) else "shr"
+            result = self.at(f"{first}.{method}(&{second})",node)
+        elif isinstance(operator,ast.Pow):
+            # A negative exponent has a float result and belongs to general AOT.
+            if right.constant is None or right.constant < 0:
+                raise _Unsupported
+            result = self.at(f"{first}.pow(&{second})",node)
+        else:
+            raise _Unsupported
+        constant = None
+        if left.constant is not None and right.constant is not None:
+            x,y = int(left.constant),int(right.constant)
+            try:
+                if isinstance(operator,ast.Add): constant=x+y
+                elif isinstance(operator,ast.Sub): constant=x-y
+                elif isinstance(operator,ast.Mult) and x.bit_length()+y.bit_length()<=4096: constant=x*y
+                elif isinstance(operator,ast.FloorDiv): constant=x//y
+                elif isinstance(operator,ast.Mod): constant=x%y
+                elif isinstance(operator,ast.BitAnd): constant=x&y
+                elif isinstance(operator,ast.BitOr): constant=x|y
+                elif isinstance(operator,ast.BitXor): constant=x^y
+                elif isinstance(operator,ast.LShift) and 0<=y<=4096: constant=x<<y
+                elif isinstance(operator,ast.RShift) and y>=0: constant=x>>y
+                elif isinstance(operator,ast.Pow) and 0<=y and max(1,x.bit_length())*y<=4096: constant=x**y
+            except (ValueError,ZeroDivisionError):
+                pass
+        return _Expression(f"{{{setup} {result}}}","int",constant)
+
+    def extremum(self, node, environment):
+        if any(isinstance(argument,ast.Starred) for argument in node.args) or not node.args:
+            raise _Unsupported
+        default = None
+        for keyword in node.keywords:
+            if keyword.arg == "key" and isinstance(keyword.value,ast.Constant) and keyword.value.value is None:
+                continue
+            if keyword.arg == "default" and len(node.args) == 1 and default is None:
+                default = self.expression(keyword.value,environment)
+            else:
+                raise _Unsupported
+        compare = ">" if node.func.id == "max" else "<"
+        if len(node.args)>=2:
+            values = [self.expression(value,environment) for value in node.args]
+            kind = self.scalar_kind(values)
+            names = [self.temporary() for _ in values]
+            setup = " ".join(f"let {name}={self.coerce(value,kind)};" for name,value in zip(names,values))
+            best = self.temporary()
+            current = self.number(_Expression(best,kind))
+            updates = " ".join(f"if {self.number(_Expression(name,kind))} {compare} {current} {{{best}={name};}}" for name in names[1:])
+            return _Expression(f"{{{setup} let mut {best}={names[0]}; {updates} {best}}}",kind)
+        iterable = node.args[0]
+        if not isinstance(iterable,(ast.List,ast.Tuple)):
+            raise _Unsupported
+        values = [self.expression(value,environment) for value in iterable.elts]
+        kind = self.scalar_kind(values+([default] if default else [])) if values or default else "int"
+        names = [self.temporary() for _ in values]
+        # Evaluate iterable elements first, then the default, then comparisons.
+        setup = " ".join(f"let {name}={self.coerce(value,kind)};" for name,value in zip(names,values))
+        if default is not None:
+            default_name = self.temporary()
+            setup += f"let {default_name}={self.coerce(default,kind)};"
+        if not values:
+            if default is not None:
+                return _Expression(f"{{{setup} {default_name}}}",kind)
+            error = self.at(f'Err::<Int,String>("ValueError: {node.func.id}() iterable argument is empty".into())',node)
+            return _Expression(error,"int")
+        best = self.temporary()
+        current = self.number(_Expression(best,kind))
+        updates = " ".join(f"if {self.number(_Expression(name,kind))} {compare} {current} {{{best}={name};}}" for name in names[1:])
+        return _Expression(f"{{{setup} let mut {best}={names[0]}; {updates} {best}}}",kind)
+
+    def range_iterator(self, node, environment):
+        if not (isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id == "range" and not node.keywords and 1<=len(node.args)<=3):
+            raise _Unsupported
+        arguments = [self.expression(value,environment) for value in node.args]
+        if len(arguments)==1:
+            arguments.insert(0,_Expression(self.literal(0),"int",0))
+        if len(arguments)==2:
+            arguments.append(_Expression(self.literal(1),"int",1))
+        names = [self.temporary() for _ in arguments]
+        setup = "\n".join(f"let {name}={self.number(value)};" for name,value in zip(names,arguments))
+        return setup,self.at(f"NativeRange::new({','.join(names)})",node),arguments
+
+    def finish_loop(self, node, entry, header, context, body, remaining, nonempty, may_repeat, zero=False):
+        # The shared CFG proof uses moves for fixed-width Copy values. BigInt
+        # edges instead copy immutable values explicitly, and construct typed
+        # zero placeholders only for bindings proved definite after the loop.
+        if remaining is not None:
+            marker = "// "+self.temporary()+"_edge"
+            context["edges"].append((marker,"normal",remaining))
+            body += "\n"+marker
+        edges = context["edges"]
+        environments = ([entry] if not nonempty else [])+[environment for _,_,environment in edges]
+        if zero:
+            environments = [entry]
+        joined,post_moves = self.join(environments,preferred=entry)
+        if joined is None:
+            joined = self.after_loop(entry)
+        initializers = []
+        entry_slots = {binding.slot for binding in entry.values() if isinstance(binding,_Binding)}
+        for name,binding in joined.items():
+            if isinstance(binding,_Binding) and binding.slot not in entry_slots:
+                default = {"int":"Int::from_i128(0)","bool":"false","int_bool":"NativeScalar::Int(Int::from_i128(0))"}[binding.kind]
+                old = entry.get(name)
+                if isinstance(old,_Binding) and binding.kind == "int_bool":
+                    default = self.coerce(_Expression(old.slot,old.kind),binding.kind)
+                initializers.append(f"{binding.slot}={default};")
+        live = self.read_before_write(node.body)
+        if isinstance(node,ast.While):
+            live |= {value.id for value in ast.walk(node.test) if isinstance(value,ast.Name) and isinstance(value.ctx,ast.Load)}
+        else:
+            live -= {value.id for value in ast.walk(node.target) if isinstance(value,ast.Name)}
+        replacements = {}
+        offset = 0 if nonempty else 1
+        for index,(marker,kind,environment) in enumerate(edges):
+            copies = []
+            if kind != "break" and may_repeat and not zero:
+                for name,previous in header.items():
+                    current = environment.get(name)
+                    compatible = isinstance(current,_Binding) and (current.kind==previous.kind or previous.kind=="int_bool" and current.kind in {"int","bool"})
+                    if not compatible:
+                        if name in live:
+                            raise _Unsupported
+                    elif current.slot != previous.slot:
+                        copies.append(f"{previous.slot}={self.coerce(_Expression(current.slot,current.kind),previous.kind)};")
+            if not zero:
+                copies += post_moves[index+offset]
+            replacements[marker] = "\n".join(dict.fromkeys(copies))
+        body = "\n".join(replacements.get(line,line) for line in body.split("\n"))
+        return "\n".join(initializers),body,self.after_loop(joined)
+
+    def statement(self, node, environment):
+        if isinstance(node,ast.Assign):
+            if len(node.targets)==1 and isinstance(node.targets[0],(ast.Tuple,ast.List)):
+                targets = node.targets[0].elts
+                if not all(isinstance(target,ast.Name) for target in targets):
+                    raise _Unsupported
+                name = self.temporary()
+                if self.input_map(node.value):
+                    self.has_input = True
+                    value = self.at(f"native_input.unpack_integers({len(targets)},&mut native_output)",node)
+                    lines = [f"let {name}={value};"]
+                    for index,target in enumerate(targets):
+                        lines.append(f"{self.bind(target.id,'int',environment)}={name}[{index}].clone();")
+                    return "\n".join(lines),environment
+                if isinstance(node.value,(ast.Tuple,ast.List)) and len(node.value.elts)==len(targets):
+                    values = [self.expression(value,environment) for value in node.value.elts]
+                    names = [self.temporary() for _ in values]
+                    lines = [f"let {name}={value.code};" for name,value in zip(names,values)]
+                    for target,name,value in zip(targets,names,values):
+                        lines.append(f"{self.bind(target.id,value,environment)}={name};")
+                    return "\n".join(lines),environment
+                raise _Unsupported
+            if not all(isinstance(target,ast.Name) for target in node.targets):
+                raise _Unsupported
+            value = self.expression(node.value,environment)
+            name = self.temporary()
+            lines = [f"let {name}={value.code};"]
+            for target in node.targets:
+                lines.append(f"{self.bind(target.id,value,environment)}={self.coerce(_Expression(name,value.kind),value.kind)};")
+            return "\n".join(lines),environment
+        if isinstance(node,ast.For):
+            if not isinstance(node.iter,ast.Call) or not isinstance(node.iter.func,ast.Name) or node.iter.func.id != "range":
+                raise _Unsupported
+        if isinstance(node,(ast.Pass,ast.FunctionDef,ast.Return,ast.AugAssign,ast.If,ast.For,ast.While,ast.Break,ast.Continue,ast.Expr)):
+            return super().statement(node,environment)
+        raise _Unsupported
+
+
+def try_generate_bigint(source, filename):
+    """Return a complete direct-Rust program only after a full scalar proof."""
+    try:
+        tree = ast.parse(source,filename=filename)
+        table = symtable.symtable(source,filename,"exec")
+        if any(isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS for node in ast.walk(tree)):
+            return None
+        functions = _function_plans(tree,table,0,BigIntGenerator)
+        function_input = bool(functions) and any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree))
+        specializations = _Specializations(0,functions,{},function_input,BigIntGenerator)
+        generator = BigIntGenerator(functions=functions,function_input=function_input,specializations=specializations)
+        body,_ = generator.statements(tree.body,{})
+        generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
+    except (SyntaxError,_Unsupported,RecursionError):
+        return None
+    runtime = files("py2fastrust").joinpath("runtime")
+    notice = runtime.joinpath("NOTICE.txt").read_text(encoding="utf-8")
+    unicode_license = files("py2fastrust").joinpath("stdlib","UNICODE_LICENSE.txt").read_text(encoding="utf-8")
+    result = ["// Generated by py2fastrust: native BigInt AOT backend.\n"
+              "#![allow(dead_code,unused_imports,unused_variables,unused_mut,unused_assignments,unused_parens,unused_labels)]\n"
+              "const INT_BITS:u32=0;\ntype NativeInt=Int;\n",
+              "/*\n"+notice+"\n*/\n",
+              "\n".join("// "+line for line in unicode_license.splitlines())+"\n",
+              runtime.joinpath("integer.rs").read_text(encoding="utf-8"),
+              _HELPERS,_OUTPUT_HELPERS]
+    if generator.has_input:
+        result += [runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),_INPUT_HELPERS]
+    result.extend(specializations.sources)
+    result.append("fn main(){\nuse std::fmt::Write as _;\nuse std::io::Write as _;\nlet mut native_output=String::new();\nlet native_result=(||->Result<(),NativeError>{")
+    if generator.has_input:
+        result.append("let mut native_input=NativeInput::new();")
+    result.append(_declarations(generator))
+    result += [body,"Ok(())\n})();\nstd::io::stdout().write_all(native_output.as_bytes()).unwrap();\n",
+               "if let Err(error)=native_result{\n"
+               'eprintln!("Traceback (most recent call last):");\n'
+               "for &(line,function) in error.frames.iter().rev(){\n"
+               f'eprintln!("  File {{:?}}, line {{}}, in {{}}",{_string(filename)},line,function);\n'
+               "}\n"
+               f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);\n'
+               "std::process::exit(1);\n}\n}\n"]
+    from .rust_pruning import prune_rust_source
+    return prune_rust_source("\n".join(result))

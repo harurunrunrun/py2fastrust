@@ -216,12 +216,12 @@ print(accumulate(int(input()),int(input()),int(input())))
         self.assertTrue(result.success)
         self.assertEqual(result.backend, "aot")
 
-    def test_bigint_still_uses_the_general_backend(self):
+    def test_bigint_scalar_functions_use_native_rust(self):
         source = "def f(x): return x*x\nprint(f(1<<256))"
-        self.assertIsNone(try_generate_native(source, "big.py", "bigint"))
+        self.assertIsNotNone(try_generate_native(source, "big.py", "bigint"))
         result = transpile(source, TranspileOptions(integer="bigint"))
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "aot")
+        self.assertEqual(result.backend, "native")
 
 
 if __name__ == "__main__":

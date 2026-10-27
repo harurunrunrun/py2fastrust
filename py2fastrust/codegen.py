@@ -1,4 +1,4 @@
-"""Render executable IR and self-contained Rust runtime sources."""
+"""Render static Rust functions and self-contained shared runtime sources."""
 
 import math
 from importlib.resources import files

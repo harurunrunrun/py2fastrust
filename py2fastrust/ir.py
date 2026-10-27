@@ -1,4 +1,4 @@
-"""Source-located, stack-based executable IR shared with the Rust runtime."""
+"""Source-located intermediate code lowered to Rust control-flow blocks."""
 
 from dataclasses import dataclass, field
 

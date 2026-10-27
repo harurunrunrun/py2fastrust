@@ -166,7 +166,7 @@ print(calculate(values,True,2**127),calculate(values,False,2**64))
             "def f(xs=[]): return len(xs)\nprint(f())",
             "def mutate(xs):\n xs.append(2)\n return sum(xs)\ndef f(xs): return mutate(xs)\nprint(f([1]))",
             "def f(x): return f(not x)\nprint(f(True))",
-            "def f(x): return x\nprint(f(1.5))",
+            "def f(x): return x\nprint(f(1j))",
             "def f(x):\n if x:return True\n return 3\nprint(f(1))",
             "def f(x): return later(x)\nprint(f(True))\ndef later(x):return x",
             "def f(xs): return sum(xs)\nrows=[[1,2]]\nprint(f(rows[0]))",

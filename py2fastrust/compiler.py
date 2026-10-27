@@ -1,4 +1,4 @@
-"""Compile the official Python AST to source-located executable instructions."""
+"""Compile the official Python AST to source-located intermediate code."""
 
 import ast
 import __future__

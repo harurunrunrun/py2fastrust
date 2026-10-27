@@ -304,11 +304,12 @@ print(value)
             "value={1}\nold=value\nvalue=[3]\nold.add(2)\nprint(old,value)",
             "value=[1,2]\nfor x in value:\n value=3\nprint(value)",
             "value=[1,2]\nfor value in value: pass\nprint(value)",
-            "value=1\nvalue='text'\nprint(value)",
+            "value=1\nif input(): value='text'\nprint(value)",
         ]
         for source in programs:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+        self.differential("value=1\nvalue='text'\nprint(value)")
         alias = '''
 value=[1]
 old=value

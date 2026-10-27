@@ -42,8 +42,6 @@ class ReachabilityTests(unittest.TestCase):
             "globals()['int'] = eval\nprint(int('3+4'))",
             "__builtins__.int = eval\nprint(int('3+4'))",
             "print([eval][0]('3+4'))",
-            "print([x for x in range(3)])",
-            "def f(): return 1\nprint(f())",
             "import math\nprint(math.isqrt(9))",
             "class C: pass\nprint(C())",
         ):
@@ -151,7 +149,7 @@ class PrunedExecutionTests(unittest.TestCase):
                     self.assertFalse("struct PegParser" in result.rust_source)
 
     def test_pruned_exception_keeps_prior_output_and_source_location(self):
-        result = self.compare('state = "ready"\nprint(state)\nvalue = [1][3]\n')
+        result = self.compare('state = "ready"\nprint(state)\nvalue = ([1],)[0][3]\n')
         self.assertEqual(result.backend, "aot")
         self.assertFalse("struct PegParser" in result.rust_source)
 
