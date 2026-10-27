@@ -242,8 +242,10 @@ class Compiler:
         if not name or name in self.module_ids:
             return
         path = self.find_module(name)
+        vendored = False
         if path is None and name in VENDORED_MODULES:
             path = Path(str(files("py2fastrust").joinpath("stdlib", name + ".py")))
+            vendored = True
             self.native_imports.add(name)
         if path is None and name in BUILTIN_MODULES:
             return
@@ -254,9 +256,12 @@ class Compiler:
             self.load_module(name.rsplit(".", 1)[0], node, filename)
         with tokenize.open(path) as stream:
             source = stream.read()
-        tree, table = self.parse(source, str(path))
-        self.file_modules[str(path)] = name
-        emitter = self.scope(tree, table, name, "Module", str(path))
+        # Resource placement varies between a checkout, installed wheel and
+        # Pyodide. Keep that read path out of emitted code and source locations.
+        module_filename = f"<pytors-stdlib>/{name}.py" if vendored else str(path)
+        tree, table = self.parse(source, module_filename)
+        self.file_modules[module_filename] = name
+        emitter = self.scope(tree, table, name, "Module", module_filename)
         self.module_ids[name] = emitter.code_id
         self.program.modules.append((name, emitter.code_id))
         emitter.setup_scope_annotations(tree)

@@ -52,6 +52,37 @@ function run(command, args, options = {}) {
     `${command} failed: ${result.error || ''}\n${result.stdout || ''}\n${result.stderr || ''}`);
   return result.stdout;
 }
+async function checkRustParity(name, actual, expected) {
+  if (actual === expected) return;
+  const actualBytes = Buffer.from(actual, 'utf8');
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  let offset = 0;
+  while (offset < Math.min(actualBytes.length, expectedBytes.length)
+    && actualBytes[offset] === expectedBytes[offset]) offset += 1;
+  let line = 1;
+  let lastNewline = -1;
+  for (let index = 0; index < offset; index += 1) {
+    if (actualBytes[index] === 10) { line += 1; lastNewline = index; }
+  }
+  const firstDifference = {
+    byte_offset: offset, line, byte_column: offset - lastNewline,
+    actual_byte: actualBytes[offset] ?? null, expected_byte: expectedBytes[offset] ?? null,
+    actual_context: actualBytes.subarray(Math.max(0, offset - 120), offset + 180).toString('utf8'),
+    expected_context: expectedBytes.subarray(Math.max(0, offset - 120), offset + 180).toString('utf8'),
+  };
+  const mismatch = {
+    case: name, actual_bytes: actualBytes.length, expected_bytes: expectedBytes.length,
+    actual_file: `${name}.actual.rs`, expected_file: `${name}.expected.rs`,
+    first_difference: firstDifference,
+  };
+  await writeFile(join(artifacts, mismatch.actual_file), actual);
+  await writeFile(join(artifacts, mismatch.expected_file), expected);
+  await writeFile(join(artifacts, `${name}.diff.json`), JSON.stringify(mismatch, null, 2) + '\n');
+  report.mismatch = mismatch;
+  console.error(JSON.stringify(mismatch, null, 2));
+  assert.fail(`${name}: CLI parity differs at byte ${offset} (line ${line}). `
+    + `Full Rust outputs and first difference saved in ${artifacts}.`);
+}
 try {
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1360, height: 1000 } });
@@ -128,7 +159,7 @@ try {
     run(values.python, ['-m', 'py2fastrust', 'main.py', '-o', 'main.rs', ...options], {
       cwd: directory, env: { ...process.env, PYTHONPATH: source },
     });
-    assert.equal(rust, await readFile(join(directory, 'main.rs'), 'utf8'), `${item.name}: CLI parity`);
+    await checkRustParity(item.name, rust, await readFile(join(directory, 'main.rs'), 'utf8'));
     assert(rust.includes('Transpilation does not use generative AI.'));
     if (item.compile !== false) {
       run('rustc', ['--edition=2021', '-O', join(directory, 'main.rs'), '-o', join(directory, 'main')]);
