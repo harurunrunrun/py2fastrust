@@ -5,6 +5,10 @@ fn native_attribute_kind(owner: &str, name: &str) -> Option<&'static str> {
     if let Some(kind)=buffer_native_kind(owner,name){return Some(kind);}
     if let Some(kind)=stdlib_attribute_kind(owner,name) {return Some(kind);}
     match (owner, name) {
+        ("cell", "__new__")=>Some("new"),
+        ("cell", "__repr__"|"__eq__"|"__ne__"|"__lt__"|"__le__"|"__gt__"|"__ge__")=>Some("wrapper"),
+        ("cell", "cell_contents")=>Some("member"),
+        ("cell", "__hash__")=>Some("none"),
         ("dict", "__new__") => Some("new"),
         (
             "dict",
@@ -468,6 +472,7 @@ impl Runtime {
                         .native_payload(&instance)
                         .unwrap_or_else(|| instance.clone());
                     if let Some(result)=self.stdlib_member(&owner,&instance,&name) {return result;}
+                    if owner=="cell"&&name=="cell_contents" {return self.cell_contents_get(&instance);}
                     match (owner.as_str(), name.as_str(), &payload) {
                         ("float", "real", Value::Float(_)) => Ok(if self.native_payload(&instance).is_some(){payload.fresh_primitive()}else{payload}),
                         ("float", "imag", Value::Float(_)) => Ok(Value::Float(0.0.into())),
@@ -503,6 +508,10 @@ impl Runtime {
         let (kind, owner, method) = native_attribute_parts(&value)?;
         let (kind, owner, method) = (kind.to_owned(), owner.to_owned(), method.to_owned());
         Some(match name {
+            "__name__"|"__qualname__" if owner=="cell"&&kind!="new"=>Ok(self.cell_descriptor_metadata(&method,name)),
+            "__doc__" if owner=="cell" => Ok(if kind=="member" {Value::None}else{Value::Str(match method.as_str() {"__new__"=>"Create and return a new object.  See help(type) for accurate signature.","__repr__"=>"Return repr(self).","__eq__"=>"Return self==value.","__ne__"=>"Return self!=value.","__lt__"=>"Return self<value.","__le__"=>"Return self<=value.","__gt__"=>"Return self>value.",_=>"Return self>=value."}.into())}),
+            "__text_signature__" if owner=="cell"&&kind!="member" => Ok(Value::Str(if kind=="new" {"($type, *args, **kwargs)"}else if method=="__repr__" {"($self, /)"}else{"($self, value, /)"}.into())),
+            "__set__"|"__delete__" if owner=="cell"&&kind=="member" => Ok(self.obj_value(Object::Bound(Value::Builtin(if name=="__set__" {"cell_contents_set"}else{"cell_contents_delete"}.into()),value))),
             "__name__" => Ok(Value::Str(method.into())),
             "__qualname__" => Ok(Value::Str(format!("{owner}.{method}").into())),
             "__module__" if kind == "new" => Ok(Value::None),
@@ -543,6 +552,17 @@ impl Runtime {
         let (kind, owner, name) = (kind.to_owned(), owner.to_owned(), name.to_owned());
         if kind=="static"&&owner=="bytearray"&&name=="maketrans"{return self.buffer_maketrans(args,kwargs);}
         if kind=="class"&&owner=="bytearray"&&name=="fromhex"{let class=args.first().cloned().ok_or_else(||pyerr("TypeError","fromhex requires a class"))?;if !self.is_subclass(&class,&Value::Builtin("bytearray".into()))?{return Err(pyerr("TypeError","fromhex requires a bytearray subtype"));}return self.buffer_fromhex(class,args[1..].to_vec(),kwargs);}
+        if owner=="cell" {
+            if kind=="member" {return Err(pyerr("TypeError","'getset_descriptor' object is not callable"));}
+            if kind=="new" {
+                let class=args.first().ok_or_else(||pyerr("TypeError","cell.__new__(): not enough arguments"))?;
+                if !self.native_is_class(class) {return Err(pyerr("TypeError",format!("cell.__new__(X): X is not a type object ({})",self.typename(class))));}
+                if !self.is_cell_type(class) {return Err(pyerr("TypeError",format!("cell.__new__({}): {} is not a subtype of cell",self.class_name(class),self.class_name(class))));}
+                return self.cell_constructor(args[1..].to_vec(),kwargs);
+            }
+            if cell_comparison_op(&name).is_some() {return self.cell_descriptor_compare_sync(value,args,kwargs);}
+            if name=="__repr__" {let receiver=self.cell_wrapper_arguments(&name,&args,&kwargs)?;return self.cell_repr(&receiver).map(|value|Value::Str(value.into()));}
+        }
         if kind == "new" {
             let class = args
                 .first()
@@ -564,7 +584,7 @@ impl Runtime {
                     .unwrap_or_default()
                     .iter()
                     .any(|base| {
-                        matches!(base,Value::Builtin(name)if ["tuple","list","dict","set","frozenset","str","int","complex","float","bytes","bytearray","memoryview","bool","type"].contains(&name.as_str()) || stdlib_type_name(name))
+                        matches!(base,Value::Builtin(name)if ["tuple","list","dict","set","frozenset","str","int","complex","float","bytes","bytearray","memoryview","bool","type","cell"].contains(&name.as_str()) || stdlib_type_name(name))
                             || matches!(base, Value::Type(_))
                     });
                 if native {
@@ -695,6 +715,22 @@ impl Runtime {
             return Ok(Value::None);
         }
         if owner == "type" {
+            if self.is_cell_type(&receiver) {
+                match name.as_str() {
+                    "__call__"=>return self.cell_constructor(rest,kwargs),
+                    "__subclasses__"=>{
+                        if !rest.is_empty()||!kwargs.is_empty(){return Err(pyerr("TypeError","__subclasses__() takes no arguments"));}
+                        return Ok(self.obj_value(Object::List(Vec::new())));
+                    },
+                    "__instancecheck__"|"__subclasscheck__"=>{
+                        if rest.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","type check takes one argument"));}
+                        if name=="__instancecheck__" {return Ok(Value::Bool(self.is_cell(&rest[0])));}
+                        if !self.native_is_class(&rest[0]) {return Err(pyerr("TypeError","issubclass() arg 1 must be a class"));}
+                        return self.is_subclass(&rest[0],&receiver).map(Value::Bool);
+                    },
+                    _=>{},
+                }
+            }
             match name.as_str() {
                 "__getattribute__" => {
                     if rest.len() != 1 || !kwargs.is_empty() {
@@ -735,6 +771,11 @@ impl Runtime {
             }
         }
         if owner == "object" {
+            if name=="__sizeof__"&&self.is_cell(&receiver) {
+                if !kwargs.is_empty(){return Err(pyerr("TypeError","object.__sizeof__() takes no keyword arguments"));}
+                if !rest.is_empty(){return Err(pyerr("TypeError",format!("object.__sizeof__() takes no arguments ({} given)",rest.len())));}
+                return Ok(Value::Int(Int::from_i128(24).into()));
+            }
             if let Some(result)=self.operand_attribute(&value,&receiver,&rest,&kwargs){return result;}
             if name=="__reduce_ex__"&&self.frozen_owner(&receiver).is_some_and(|(_,frozen)|frozen) {
                 if rest.len()!=1||!kwargs.is_empty(){return Err(pyerr("TypeError","__reduce_ex__ takes one positional argument"));}

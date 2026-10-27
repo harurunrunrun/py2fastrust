@@ -337,7 +337,9 @@ enum IteratorState {
     Range(Int, Int, Int),
     Enumerate(Value, Int),
     Zip(Vec<Value>),
+    ZipStrict(Vec<Value>),
     Map(Value, Vec<Value>),
+    MapStrict(Value,Vec<Value>),
     Filter(Value, Value),
     Callable(Value, Value),
     Reversed(Value, isize),
@@ -455,6 +457,8 @@ struct Frame {
     next_call: Option<Box<Frame>>,
     cache_returns: Vec<CacheReturn>,
     protocol: Option<ProtocolState>,
+    protocol_generator: Option<usize>,
+    protocol_exit: Option<FrameExit>,
     comprehensions: Vec<InlineComprehension>,
     resume_value: Option<Value>,
     injected_exception: Option<PyException>,
@@ -473,10 +477,13 @@ struct Runtime {
     function_closures: HashMap<usize, usize>,
     typing_alias_cache: Vec<TypingAliasCacheEntry>,
     template_metadata: HashMap<String, Value>,
+    cell_metadata: HashMap<String, Value>,
     assoc_layouts: HashMap<usize, AssocLayout>,
     dictionary_hashes: HashMap<usize,Vec<Option<i64>>>,
     set_member_hashes: HashMap<usize,HashMap<u64,i64>>,
     frozen_reprs:std::collections::HashSet<usize>,
+    protocol_repr_active:std::collections::HashSet<usize>,
+    active_sort_lists:HashMap<usize,(usize,u64)>,
     keyword_intern_pool: HashMap<String,Ident<String>>,
     literal_pools: HashMap<usize, HashMap<LiteralKey, Value>>,
     code_objects: HashMap<usize,usize>,
@@ -887,6 +894,13 @@ impl Runtime {
         }
     }
     fn special_method(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        // A native class's explicit attributes describe its instances. Implicit
+        // operations on the class itself bind the metaclass's descriptor.
+        if matches!(&v,Value::Builtin(_)|Value::Type(_)) && self.native_is_class(&v) {
+            let class=Value::Builtin("type".into());
+            let method=self.class_attribute_lookup(&class,name).ok_or_else(||pyerr("AttributeError",name))?;
+            return self.bind_descriptor(method,Some(v),class);
+        }
         if let Some(result)=self.file_special_method(v.clone(),name){return result;}
         if let Some(class) = self.object_class(&v) {
             if let Some(method) = self.slot_override(&class, name, 0) {
@@ -992,7 +1006,7 @@ impl Runtime {
                         _ => return Err(pyerr("TypeError", "a bytes-like object is required")),
                     }
                 } else {
-                    match v {
+                    match self.native_payload(v).unwrap_or_else(||v.clone()) {
                         Value::Str(s) => (s.as_bytes().to_vec(), s.chars().count()),
                         _ => return Err(pyerr("TypeError", "write() argument must be str")),
                     }
@@ -1268,10 +1282,13 @@ impl Runtime {
             function_closures: HashMap::new(),
             typing_alias_cache: Vec::new(),
             template_metadata: HashMap::new(),
+            cell_metadata: HashMap::new(),
             assoc_layouts: HashMap::new(),
             dictionary_hashes: HashMap::new(),
             set_member_hashes: HashMap::new(),
             frozen_reprs:std::collections::HashSet::new(),
+            protocol_repr_active:std::collections::HashSet::new(),
+            active_sort_lists:HashMap::new(),
             keyword_intern_pool: HashMap::new(),
             literal_pools: HashMap::new(),
             code_objects: HashMap::new(),
@@ -1686,7 +1703,7 @@ impl Runtime {
                 except_star: Vec::new(),
             next_call: None,
             cache_returns: Vec::new(),
-            protocol: None,
+            protocol: None,protocol_generator:None,protocol_exit:None,
             comprehensions: Vec::new(),
             resume_value: None,
             injected_exception: None,
@@ -1785,6 +1802,8 @@ impl Runtime {
             out.extend(pending.entry.kwargs.iter().flat_map(|(name,value)|[name.original.clone(),value.clone()]));
         }
         if let Some(protocol)=&frame.protocol {protocol.roots(out);}
+        out.extend(frame.protocol_generator.map(Value::Obj));
+        if let Some(FrameExit::Yield(value)|FrameExit::Return(value))=&frame.protocol_exit {out.push(value.clone());}
         out.extend(frame.resume_value.iter().cloned());
         if let Some(e) = &frame.injected_exception {
             Self::exception_roots(e, out);
@@ -1830,6 +1849,8 @@ impl Runtime {
         self.roots.push(Vec::new());
         self.recursion += 1;
         let mut frames: Vec<Frame> = Vec::new();
+        let mut protocol_error:Option<PyException>=None;
+        let running_depth=self.running_generators.len();
         let result = (|| 'execute: loop {
             self.active_future_flags=self.codes[f.code].future_flags;
             self.active_builtins=f.builtins.clone();
@@ -1854,7 +1875,7 @@ impl Runtime {
                     .map(|instruction| &instruction.op),
                 Some(Op::YieldFrom)
             );
-            let result = if f.protocol.as_ref().is_some_and(|state|state.value.is_some() || state.plan.is_some()) {
+            let result = if let Some(error)=protocol_error.take(){Err(error)}else if f.protocol.as_ref().is_some_and(|state|state.value.is_some() || state.plan.is_some()) {
                 self.resume_protocol(&mut f).map(|_|None)
             } else if f.injected_exception.is_some() && !delegated {
                 Err(f.injected_exception.take().unwrap())
@@ -1865,6 +1886,7 @@ impl Runtime {
                 f.pc += 1;
                 self.step(&mut f, ins.op)
             };
+            let result=match result{Ok(None)=>Ok(f.protocol_exit.take()),other=>other};
             let result=match result {
                 Ok(Some(FrameExit::Return(mut value)))=>{
                     let mut failure=None;
@@ -1885,6 +1907,14 @@ impl Runtime {
             }else{result};
             match result {
                 Ok(Some(FrameExit::Return(v))) => {
+                    if let Some(owner)=self.protocol_generator_finished(&mut f) {
+                        self.ns_set(f.temps,"$generator_return".into(),v);f.pc=usize::MAX;
+                        self.heap[owner]=Some(Object::Generator(Box::new(f)));
+                        let parent=frames.pop().ok_or_else(||pyerr("RuntimeError","missing generator caller"))?;
+                        self.collection_callers.pop();self.recursion-=1;f=parent;
+                        protocol_error=Some(self.iterator_stop(&Value::Obj(owner))?);
+                        continue 'execute;
+                    }
                     if let Some(mut parent) = frames.pop() {
                         self.collection_callers.pop();
                         if let Some(protocol)=&mut parent.protocol {protocol.value=Some(v);}else{parent.stack.push(v);}
@@ -1894,14 +1924,25 @@ impl Runtime {
                         return Ok((FrameExit::Return(v), f));
                     }
                 }
-                Ok(Some(exit @ FrameExit::Yield(_))) => return Ok((exit, f)),
+                Ok(Some(exit @ FrameExit::Yield(_))) => {
+                    if let Some(owner)=self.protocol_generator_finished(&mut f) {
+                        let FrameExit::Yield(value)=exit else{unreachable!()};
+                        self.heap[owner]=Some(Object::Generator(Box::new(f)));
+                        let mut parent=frames.pop().ok_or_else(||pyerr("RuntimeError","missing generator caller"))?;
+                        self.collection_callers.pop();self.recursion-=1;
+                        if let Some(protocol)=&mut parent.protocol{protocol.value=Some(value);}else{parent.stack.push(value);}
+                        f=parent;
+                    }else{return Ok((exit,f));}
+                },
                 Ok(None) => {
                     if let Some(child) = f.next_call.take() {
                         let inherited=f.exception.clone().or_else(||f.inherited_exception.clone());
                         self.collection_callers.push(child.globals);
+                        let mut suspended_roots=Vec::new();Self::frame_roots(&f,&mut suspended_roots);self.roots[root+frames.len()]=suspended_roots;
                         frames.push(f);
                         self.recursion += 1;
                         f = *child;
+                        if let Some(owner)=f.protocol_generator{self.running_generators.push(owner);}
                         f.inherited_exception=inherited;
                     }
                 }
@@ -1915,7 +1956,8 @@ impl Runtime {
                                     }else{
                                         let inherited=f.exception.clone().or_else(||f.inherited_exception.clone());
                                         self.collection_callers.push(child.globals);
-                                        frames.push(f);self.recursion+=1;f=*child;f.inherited_exception=inherited;
+                                        let mut suspended_roots=Vec::new();Self::frame_roots(&f,&mut suspended_roots);self.roots[root+frames.len()]=suspended_roots;
+                                        frames.push(f);self.recursion+=1;f=*child;if let Some(owner)=f.protocol_generator{self.running_generators.push(owner);}f.inherited_exception=inherited;
                                         continue 'execute;
                                     }
                                 }else{continue 'execute;}
@@ -1923,7 +1965,7 @@ impl Runtime {
                             Ok(false)=>{},
                             Err(replacement)=>e=replacement,
                         }
-                        f.protocol=None;
+                        self.protocol_abandon(&mut f);
                     }
                     self.active_future_flags=self.codes[f.code].future_flags;
                     self.active_builtins=f.builtins.clone();
@@ -1968,6 +2010,13 @@ impl Runtime {
                         }
                         break;
                     }
+                    if let Some(owner)=self.protocol_generator_finished(&mut f) {
+                        f.pc=usize::MAX;self.heap[owner]=Some(Object::Generator(Box::new(f.clone())));
+                        if self.exception_has_native_class(&e,"StopIteration") {
+                            let trace=e.trace.clone();let value=self.exception_value(&mut e);
+                            let mut error=pyerr("RuntimeError","generator raised StopIteration");error.cause=Some(value.clone());error.context=Some(value);error.suppress_context=true;error.trace=trace;e=error;
+                        }
+                    }
                     if let Some(parent) = frames.pop() {
                         self.collection_callers.pop();
                         self.recursion -= 1;
@@ -1979,6 +2028,7 @@ impl Runtime {
             }
         })();
         self.roots.truncate(root);
+        self.running_generators.truncate(running_depth);
         self.collection_callers.truncate(collection_depth);
         self.active_future_flags=previous_flags;
         self.active_builtins=previous_builtins;
@@ -2172,20 +2222,15 @@ impl Runtime {
                 let values = Self::pop_many(f, n)?;
                 let obj = match op {
                     Op::BuildTuple(_) => Object::Tuple(values),
-                    Op::BuildSet(_)=>{let values=self.obj_value(Object::List(values));let result=self.set_constructor_value(vec![values],Vec::new())?;f.stack.push(result);return Ok(None);}
+                    Op::BuildSet(_)=>{self.start_protocol_build(f,values,true)?;return Ok(None);}
                     _ => Object::List(values),
                 };
                 let v = self.obj_value(obj);
                 f.stack.push(v)
             }
             Op::BuildDict(n) => {
-                let v = Self::pop_many(f, n * 2)?;
-                let d=self.view_rooted(v.clone(),|runtime,root|{
-                    let d=runtime.obj_value(Object::Dict(Vec::new()));runtime.roots[root].push(d.clone());
-                    for p in v.chunks(2){runtime.setitem(d.clone(),p[0].clone(),p[1].clone())?;}
-                    Ok(d)
-                })?;
-                f.stack.push(d)
+                let values=Self::pop_many(f,n*2)?;
+                self.start_protocol_build(f,values,false)?;
             }
             Op::BuildSlice(n) => {
                 let v = Self::pop_many(f, n)?;
@@ -2250,6 +2295,7 @@ impl Runtime {
                     .last()
                     .cloned()
                     .ok_or_else(|| pyerr("RuntimeError", "missing iterator"))?;
+                if self.start_protocol_for_iter(f,it.clone(),t)? {return Ok(None);}
                 match self.next(it)? {
                     Some(v) => f.stack.push(v),
                     None => {
@@ -2359,6 +2405,7 @@ impl Runtime {
                     .last()
                     .cloned()
                     .ok_or_else(|| pyerr("RuntimeError", "missing iterator"))?;
+                if self.start_protocol_yield_from(f,it.clone())? {return Ok(None);}
                 let result = if let Some(mut error) = f.injected_exception.take() {
                     if self.exception_has_native_class(&error, "GeneratorExit") {
                         match self.getattr(it.clone(), "close") {
@@ -2568,7 +2615,7 @@ impl Runtime {
                         )
                         .cloned()
                         .ok_or_else(|| pyerr("RuntimeError", "missing comprehension container"))?;
-                self.container_add(obj, v, matches!(op, Op::SetAdd(_)))?
+                if matches!(op,Op::SetAdd(_)){self.start_protocol_collection_mutation(f,obj,v,None,true)?;}else{self.container_add(obj,v,false)?;}
             }
             Op::MapAdd(depth) => {
                 let v = Self::pop(f)?;
@@ -2582,7 +2629,7 @@ impl Runtime {
                         )
                         .cloned()
                         .ok_or_else(|| pyerr("RuntimeError", "missing dict"))?;
-                self.setitem(obj, k, v)?
+                if !self.start_protocol_setitem(f,obj.clone(),k.clone(),Some(v.clone()))?{self.setitem(obj,k,v)?;}
             }
             Op::Import {module,names,level} => {
                 f.stack.push(self.import_statement(f,&module,&names,level)?);
@@ -2595,18 +2642,7 @@ impl Runtime {
             Op::FormatValue { conversion, spec } => {
                 let specification = if spec { Some(Self::pop(f)?) } else { None };
                 let value = Self::pop(f)?;
-                let value = match conversion {
-                    114 => Value::Str(self.repr(&value)?.into()),
-                    97 => Value::Str(text_ascii_escape(&self.repr(&value)?).into()),
-                    115 => Value::Str(self.str_value(&value)?.into()),
-                    _ => value,
-                };
-                let specification = match specification {
-                    Some(value) => self.str_value(&value)?,
-                    None => String::new(),
-                };
-                let result = self.format_value(value, &specification)?;
-                f.stack.push(Value::Str(result.into()))
+                self.start_protocol_format(f,value,conversion,specification)?;
             }
             Op::BuildString(n) => {
                 let vs = Self::pop_many(f, n)?;
@@ -2917,7 +2953,7 @@ impl Runtime {
                 except_star: Vec::new(),
                 next_call: None,
             cache_returns: Vec::new(),
-            protocol: None,
+            protocol: None,protocol_generator:None,protocol_exit:None,
             comprehensions: Vec::new(),
                 resume_value: None,
                 injected_exception: None,
@@ -3481,8 +3517,8 @@ impl Runtime {
                 IteratorState::Enumerate(v, _) | IteratorState::Reversed(v, _) => {
                     pending.push(v.clone())
                 }
-                IteratorState::Zip(v) => pending.extend(v.iter().cloned()),
-                IteratorState::Map(f, v) => {
+                IteratorState::Zip(v)|IteratorState::ZipStrict(v) => pending.extend(v.iter().cloned()),
+                IteratorState::Map(f, v)|IteratorState::MapStrict(f,v) => {
                     pending.push(f.clone());
                     pending.extend(v.iter().cloned())
                 }
@@ -3503,6 +3539,7 @@ impl Runtime {
         pending.extend(self.literal_pools.values().flat_map(|pool|pool.values().cloned()));
         pending.extend(self.modules.values().cloned());
         pending.extend(self.template_metadata.values().cloned());
+        pending.extend(self.cell_metadata.values().cloned());
         for entry in &self.typing_alias_cache {pending.extend([entry.owner.clone(),entry.key.clone(),entry.value.clone()]);}
         pending.extend(extra.iter().cloned());
         pending.extend(self.running_generators.iter().map(|i| Value::Obj(*i)));
@@ -3598,6 +3635,9 @@ impl Runtime {
     ) -> PyResult<Value> {
         if let Some(result)=self.buffer_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}
 
+        if name=="__length_hint__" && args.is_empty() && kwargs.is_empty() {
+            if let Some(hint)=self.protocol_iterator_length_hint(&receiver){return Ok(Value::Int(hint.into()));}
+        }
         if self.frozen_owner(&receiver).is_some(){if let Some(result)=self.frozen_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
         if matches!(&receiver,Value::Complex(_)){return self.complex_method(receiver,name,args,kwargs).unwrap();}
         if self.is_exception_value(&receiver){if let Some(result)=self.exception_group_method(receiver.clone(),name,args.clone(),kwargs.clone()){return result;}}
@@ -3651,6 +3691,7 @@ impl Runtime {
                         if let Some(Object::List(xs)) = self.heap[i].as_mut() {
                             xs.push(value)
                         }
+                        self.protocol_sort_nonempty(i);
                         return Ok(Value::None);
                     }
                     "clear" => {
@@ -3693,6 +3734,7 @@ impl Runtime {
                         if let Some(Object::List(xs)) = self.heap[i].as_mut() {
                             xs.extend(more)
                         }
+                        self.protocol_sort_nonempty(i);
                         return Ok(Value::None);
                     }
                     _ => {}
@@ -4227,6 +4269,7 @@ impl Runtime {
                         }
                         _ => return Err(pyerr("AttributeError", name)),
                     }
+                    if !tuple && !xs.is_empty() {self.protocol_sort_note(i);}
                     self.heap[i] = Some(if tuple {
                         Object::Tuple(xs)
                     } else {
@@ -4480,7 +4523,15 @@ impl Runtime {
         if stdlib_type_name(name) {let (module,member)=name.split_once('.').unwrap();return self.module_call(&format!("module:{module}:{member}"),args,kwargs);}
         if let Some(slot)=name.strip_prefix("implicit_native:"){return self.implicit_native_call(slot,args,kwargs);}
         if name.starts_with("native_attr:") {return self.native_attribute_call(Value::Builtin(name.into()),args,kwargs);}
+        if name=="cell_contents_set"||name=="cell_contents_delete" {return self.cell_contents_mutate(args,kwargs,name=="cell_contents_delete");}
         if name=="native_attr_bind" {
+            if matches!(args.first().and_then(native_attribute_parts),Some((_,"cell",_))) {
+                if !kwargs.is_empty(){return Err(pyerr("TypeError","wrapper __get__() takes no keyword arguments"));}
+                let given=args.len()-1;
+                if !(1..=2).contains(&given){return Err(pyerr("TypeError",format!("__get__ expected {} {} argument{}, got {given}",if given==0 {"at least"}else{"at most"},if given==0 {1}else{2},if given==0 {""}else{"s"})));}
+                if matches!(args[1],Value::None)&&args.get(2).is_none_or(|value|matches!(value,Value::None)){return Err(pyerr("TypeError","__get__(None, None) is invalid"));}
+                if !matches!(args[1],Value::None)&&!self.is_cell(&args[1]){let (_,_,member)=native_attribute_parts(&args[0]).unwrap();return Err(self.cell_binding_error(member,&args[1]));}
+            }
             if !(2..=3).contains(&args.len())||!kwargs.is_empty(){return Err(pyerr("TypeError","descriptor __get__ takes one or two arguments"));}
             let descriptor=args[0].clone();let instance=args[1].clone();
             let class=args.get(2).cloned().filter(|value|!matches!(value,Value::None)).unwrap_or_else(||self.native_receiver_class(&instance));
@@ -5248,6 +5299,7 @@ impl Runtime {
             }
             "callable" => {
                 let v = arg(0)?;
+                if matches!(native_attribute_parts(&v),Some(("member","cell",_))) {return Ok(Value::Bool(false));}
                 Ok(Value::Bool(match &v {
                     Value::Builtin(_) | Value::Type(_) => true,
                     Value::Obj(i) => {
@@ -5812,7 +5864,7 @@ impl Runtime {
         };
         let implicit_base=bases.is_empty();
         if bases.iter().any(|base|!matches!(base,Value::Builtin(_)|Value::Type(_)) && !matches!(base,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_))))){return Err(pyerr("TypeError","bases must be types"));}
-        for base in &bases {if matches!(base,Value::Builtin(name)if template_type_name(name)){return Err(pyerr("TypeError",format!("type '{}' is not an acceptable base type",self.class_name(base))));}}
+        for base in &bases {if matches!(base,Value::Builtin(name)if template_type_name(name)||name=="cell"){return Err(pyerr("TypeError",format!("type '{}' is not an acceptable base type",self.class_name(base))));}}
         if bases.is_empty() {
             bases.push(Value::Builtin("object".into()))
         }
@@ -6191,7 +6243,7 @@ impl Runtime {
                 except_star: Vec::new(),
             next_call: None,
             cache_returns: Vec::new(),
-            protocol: None,
+            protocol: None,protocol_generator:None,protocol_exit:None,
             comprehensions: Vec::new(),
             resume_value: None,
             injected_exception: None,
@@ -6376,6 +6428,7 @@ impl Runtime {
         self.repr_inner(v, &mut Vec::new())
     }
     fn repr_inner(&mut self, v: &Value, seen: &mut Vec<usize>) -> PyResult<String> {
+        if let Some(value)=self.protocol_repr_recursive(v){return Ok(value);}
         if let Some(kind)=self.buffer_kind(v){return if kind=="bytearray"{Ok(format!("bytearray({})",buffer_repr_bytes(&self.buffer_owner_data(v)?)))}else if kind=="memoryview"{let released=self.buffer_view(v).is_err();Ok(format!("<{}memory at 0x{:x}>",if released{"released "}else{""},self.identity_number(v)))}else{Ok(format!("<_buffer_wrapper object at 0x{:x}>",self.identity_number(v)))};}
         if let Some(result)=self.template_repr(v,seen){return result;}
         match v {
@@ -6491,6 +6544,10 @@ impl Runtime {
                     }
                     Object::Generator(_) => "<generator object>".into(),
                     Object::Iterator(_) => "<iterator object>".into(),
+                    Object::Bound(function,receiver) if matches!(native_attribute_parts(&function),Some(("wrapper","cell",_)))=>{
+                        let (_,_,name)=native_attribute_parts(&function).unwrap();
+                        format!("<method-wrapper '{name}' of cell object at 0x{:x}>",self.identity_number(&receiver))
+                    },
                     Object::Bound(..) => "<bound method>".into(),
                     Object::Slice(a, b, c) => format!("slice({}, {}, {})", a.map(|value|value.to_string()).unwrap_or_else(||"None".into()), b.map(|value|value.to_string()).unwrap_or_else(||"None".into()), c.map(|value|value.to_string()).unwrap_or_else(||"None".into())),
                     Object::Partial { function, args, .. } => {
@@ -6513,7 +6570,7 @@ impl Runtime {
                     Object::Property { .. } => "<property>".into(),
                     Object::ExceptStarState(_) => "<except* state>".into(),
                     Object::ExecutionLocals(value)=>self.repr_inner(&value,seen)?,
-                    Object::Cell(_) => "<cell>".into(),
+                    Object::Cell(_) => self.cell_repr(v)?,
                     Object::Code(_) => "<code object>".into(),
                     Object::Slot { owner, name, .. } => format!(
                         "<member '{}' of '{}' objects>",
@@ -6532,7 +6589,8 @@ impl Runtime {
                 Ok(s)
             }
             Value::Builtin(n) => {
-                if file_type_name(n) || template_type_name(n) || stdlib_type_name(n){return Ok(format!("<class '{}'>",n));}
+                if n=="cell" || native_descriptor_class_name(n) || file_type_name(n) || template_type_name(n) || stdlib_type_name(n){return Ok(format!("<class '{}'>",n));}
+                if let Some((kind,"cell",name))=native_attribute_parts(v) {return Ok(match kind {"new"=>format!("<built-in method {name} of type object at 0x{:x}>",self.identity_number(&Value::Builtin("cell".into()))),"member"=>format!("<attribute '{name}' of 'cell' objects>"),_=>format!("<slot wrapper '{name}' of 'cell' objects>")});}
                 if n=="typing.NoDefault" {return Ok("typing.NoDefault".into());}
                 if n=="typing.Unpack" {return Ok("typing.Unpack".into());}
                 if n=="NoneType" {return Ok("<class 'NoneType'>".into());}
@@ -6736,7 +6794,8 @@ impl Runtime {
             Value::Str(_) => "str".into(),
             Value::Bytes(_) => "bytes".into(),
             Value::Builtin(n) => {
-                if template_type_name(n) || stdlib_type_name(n){return "type".into();}
+                if n=="cell" || native_descriptor_class_name(n) || template_type_name(n) || stdlib_type_name(n){return "type".into();}
+                if let Some((kind,"cell",_))=native_attribute_parts(v) {return match kind {"new"=>"builtin_function_or_method","wrapper"=>"wrapper_descriptor","member"=>"getset_descriptor",_=>"method_descriptor"}.into();}
                 if n=="typing.NoDefault" {return "NoDefaultType".into();}
                 if typing_type_name(n) || n=="NoneType" {return "type".into();}
                 if n == "Ellipsis" {
@@ -6759,6 +6818,7 @@ impl Runtime {
             Value::Type(_) => "type".into(),
             Value::Obj(i) => match self.heap.get(*i).and_then(|o| o.as_ref()) {
                 Some(Object::IoFile(file))=>file.type_name.rsplit('.').next().unwrap().into(),
+                Some(Object::Bound(function,_)) if matches!(native_attribute_parts(function),Some(("wrapper","cell",_)))=>"method-wrapper".into(),
                 Some(Object::Static(_))=>"staticmethod".into(),
                 Some(Object::ClassMethod(_))=>"classmethod".into(),
                 Some(Object::Property{..})=>"property".into(),
@@ -7325,6 +7385,7 @@ impl Runtime {
                     if let Some(Object::List(xs)) = self.heap[*i].as_mut() {
                         xs.extend(more);
                     }
+                    self.protocol_sort_nonempty(*i);
                     return Ok(a);
                 }
             }
@@ -7430,6 +7491,7 @@ impl Runtime {
                             };
                             xs.extend(ys);
                             if op == "+=" && !tuple {
+                                if !xs.is_empty() {self.protocol_sort_note(*i);}
                                 self.heap[*i] = Some(Object::List(xs));
                                 return Ok(a);
                             }
@@ -7450,6 +7512,7 @@ impl Runtime {
                             out.extend(xs.iter().cloned())
                         }
                         if op == "*=" && !tuple {
+                            if !out.is_empty() {self.protocol_sort_note(*i);}
                             self.heap[*i] = Some(Object::List(out));
                             return Ok(a);
                         }
@@ -7817,6 +7880,7 @@ impl Runtime {
                                 }
                             }
                             self.heap[i] = Some(Object::List(xs));
+                            self.protocol_sort_nonempty(i);
                             return Ok(());
                         }
                     }
@@ -7932,6 +7996,7 @@ impl Runtime {
                 Object::List(mut xs) if !set => {
                     xs.push(v);
                     self.heap[i] = Some(Object::List(xs));
+                    self.protocol_sort_nonempty(i);
                     return Ok(());
                 }
                 Object::Set(_)=>{self.set_insert_value(i,v,None)?;return Ok(());}
@@ -8182,6 +8247,8 @@ impl Runtime {
                     }
                     IteratorState::Values(v, p) => {
                         if p >= v.len() {
+                            self.heap[i]=Some(Object::Iterator(IteratorState::Values(Vec::new(),0)));
+                            self.collection_keepers.remove(&i);
                             return Ok(None);
                         }
                         self.heap[i] =
@@ -8197,6 +8264,8 @@ impl Runtime {
                             self.heap[i] = Some(Object::Iterator(IteratorState::List(j, p + 1)));
                             return Ok(Some(value));
                         }
+                        self.heap[i]=Some(Object::Iterator(IteratorState::Values(Vec::new(),0)));
+                        self.collection_keepers.remove(&i);
                         return Ok(None);
                     }
                     IteratorState::Range(cur, stop, step) => {
@@ -8221,6 +8290,8 @@ impl Runtime {
                         }
                         return Ok(None);
                     }
+                    IteratorState::ZipStrict(iters)=>return self.protocol_stream_native_strict_next(iters,None),
+                    IteratorState::MapStrict(function,iters)=>return self.protocol_stream_native_strict_next(iters,Some(function)),
                     IteratorState::Zip(its) => {
                         if its.is_empty() {
                             return Ok(None);
@@ -8491,6 +8562,7 @@ impl Runtime {
         Ok(v)
     }
     fn getattr_default(&mut self, v: Value, name: &str) -> PyResult<Value> {
+        if let Some(result)=self.cell_native_attribute(&v,name) {return result;}
         if let Some(result)=self.file_getattr(v.clone(),name){return result;}
         if let Some(result)=self.buffer_getattr(v.clone(),name){return result;}
         if let Some(result)=self.stdlib_type_attribute(&v,name) {return result;}
@@ -9073,6 +9145,7 @@ impl Runtime {
                         Object::Generator(_) => {
                             ["__iter__", "__next__", "send", "close", "throw"].contains(&name)
                         }
+                        Object::Iterator(_) if name=="__length_hint__"=>self.protocol_iterator_length_hint(&v).is_some(),
                         _ => ["__iter__", "__next__"].contains(&name),
                     };
                     if supported {
@@ -9270,6 +9343,7 @@ impl Runtime {
         ))
     }
     fn setattr_default(&mut self, obj: Value, name: &str, value: Value) -> PyResult<()> {
+        if self.is_cell_type(&obj) {return Err(pyerr("TypeError",format!("cannot set '{name}' attribute of immutable type 'cell'")));}
         if let Some(result)=self.file_setattr(&obj,name,value.clone()){return result;}
         if matches!(&obj,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Class(_)))) {
             if let Some(meta)=self.object_class(&obj) {if let Some(descriptor)=self.class_attribute_lookup(&meta,name) {
@@ -9615,6 +9689,7 @@ impl Runtime {
         ))
     }
     fn delattr_default(&mut self, obj: Value, name: &str) -> PyResult<()> {
+        if self.is_cell_type(&obj) {return Err(pyerr("TypeError",format!("cannot set '{name}' attribute of immutable type 'cell'")));}
         if let Some(result)=self.file_delattr(&obj,name){return result;}
         if let Some(class) = self.object_class(&obj) {
             let descriptor=if matches!(&obj,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::Instance{..}|Object::BuiltinInstance{..}))){self.class_attribute_lookup(&class,name)}else{self.slot_override(&class,name,0)};
@@ -9678,6 +9753,7 @@ impl Runtime {
         Err(pyerr("AttributeError", name))
     }
     fn attribute_items(&mut self, obj: &Value) -> PyResult<Vec<(String, Value)>> {
+        if self.is_cell(obj)||self.is_cell_type(obj) {return Ok(CELL_DIR_NAMES.iter().map(|name|((*name).into(),Value::None)).collect());}
         if let Value::Obj(i) = obj {
             let a = match self.object(*i)? {
                 Object::Instance { attrs, .. } | Object::Module { attrs, .. } => attrs,
@@ -9766,7 +9842,7 @@ impl Runtime {
                 code:function.code,pc:0,locals:ns,
                 temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
                 globals:function.globals,builtins:function.builtins.clone(),closure:function.closure,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
-                exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),next_call:None,cache_returns:Vec::new(),protocol:None,comprehensions:Vec::new(),
+                exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),next_call:None,cache_returns:Vec::new(),protocol:None,protocol_generator:None,protocol_exit:None,comprehensions:Vec::new(),
                 resume_value:None,injected_exception:None,finally_regions:Vec::new(),
             })
         })

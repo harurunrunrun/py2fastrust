@@ -16,6 +16,16 @@ impl ProtocolOperand {
 impl Runtime {
     fn start_protocol_binary(&mut self,frame:&mut Frame,op:String,left:Value,right:Value)->PyResult<bool> {
         let op=match op.strip_prefix('i'){Some(base) if operand_method(base).is_some()=>format!("{base}="),_=>op};
+        if op=="+=" && matches!(&left,Value::Obj(owner)if matches!(self.heap.get(*owner).and_then(Option::as_ref),Some(Object::List(_)))) {
+            return self.start_protocol_call(frame,Value::Builtin("method:__iadd__".into()),vec![left,right],Vec::new());
+        }
+        if self.object_class(&left).is_none() && self.object_class(&right).is_none() && self.frozen_native(&left) && self.frozen_owner(&right).is_some() {
+            let frozen=self.frozen_owner(&left).unwrap().1;
+            let name=match (op.as_str(),frozen){("|",_)|("|=",true)=>Some("__or__"),("&",_)|("&=",true)=>Some("__and__"),("-",_)|("-=",true)=>Some("__sub__"),("^",_)|("^=",true)=>Some("__xor__"),("|=",false)=>Some("__ior__"),("&=",false)=>Some("__iand__"),("-=",false)=>Some("__isub__"),("^=",false)=>Some("__ixor__"),_=>None};
+            if let Some(name)=name {
+                return self.start_protocol_call(frame,Value::Builtin(format!("method:{name}")),vec![left,right],Vec::new());
+            }
+        }
         if operand_method(op.strip_suffix('=').unwrap_or(&op)).is_none() || (self.object_class(&left).is_none()&&self.object_class(&right).is_none()) || self.is_template_value(&left)||self.is_template_value(&right) {return Ok(false);}
         if self.is_typing_value(&left)||self.is_typing_value(&right)||self.generic_parts(&left).is_some()||self.generic_parts(&right).is_some(){return Ok(false);}
         if [&left,&right].iter().any(|value|matches!(value,Value::Obj(index)if matches!(self.heap.get(*index).and_then(Option::as_ref),Some(Object::DictView{..}|Object::MappingProxy{..})))){return Ok(false);}
@@ -25,9 +35,13 @@ impl Runtime {
         frame.protocol=Some(state);self.resume_protocol(frame)?;Ok(true)
     }
     fn start_protocol_compare(&mut self,frame:&mut Frame,op:String,left:Value,right:Value)->PyResult<bool> {
+        if op=="in"||op=="not in"{return self.start_protocol_contains(frame,left,right,op=="not in");}
         if !["==","!=","<","<=",">",">="].contains(&op.as_str()){return Ok(false);}
+        let mut cells=Self::protocol_empty(ProtocolSink::Stack);
+        if self.protocol_cell_compare(&mut cells,&op,&left,&right)? {frame.protocol=Some(cells);self.resume_protocol(frame)?;return Ok(true);}
         if self.object_class(&left).is_none()&&self.object_class(&right).is_none() {
             let mut state=Self::protocol_empty(ProtocolSink::Stack);
+            if self.protocol_collection_compare(&mut state,&op,left.clone(),right.clone())?{frame.protocol=Some(state);self.resume_protocol(frame)?;return Ok(true);}
             if !self.protocol_sequence_compare(&mut state,&op,left,right)? {return Ok(false);}
             frame.protocol=Some(state);self.resume_protocol(frame)?;return Ok(true);
         }
@@ -40,7 +54,9 @@ impl Runtime {
         frame.protocol=Some(state);self.resume_protocol(frame)?;Ok(true)
     }
     fn protocol_compare_into(&mut self,state:&mut ProtocolState,op:String,left:Value,right:Value)->PyResult<()> {
+        if self.protocol_cell_compare(state,&op,&left,&right)? {return Ok(());}
         if self.object_class(&left).is_none()&&self.object_class(&right).is_none() {
+            if self.protocol_collection_compare(state,&op,left.clone(),right.clone())?{return Ok(());}
             if self.protocol_sequence_compare(state,&op,left.clone(),right.clone())? {return Ok(());}
             state.value=Some(self.compare_value(&op,&left,&right)?);return Ok(());
         }
@@ -65,6 +81,17 @@ impl Runtime {
             return Ok(true);
         }
         let comparison=matches!(operation.kind,ProtocolOperandKind::Comparison{..});
+        if !comparison && matches!(operand_descriptor(slot.value()),Some(("list","__iadd__"))) {
+            state.actions.push_front(ProtocolAction::Operand(Box::new(operation)));
+            state.actions.push_front(ProtocolAction::Return(receiver.clone()));
+            state.plan=Some(ProtocolPlan{function:Value::Builtin("method:extend".into()),args:vec![receiver,argument],kwargs:Vec::new()});
+            return Ok(true);
+        }
+        if !comparison && matches!(operand_descriptor(slot.value()),Some(("set"|"frozenset",name))if ["__or__","__ror__","__and__","__rand__","__sub__","__rsub__","__xor__","__rxor__","__ior__","__iand__","__isub__","__ixor__"].contains(&name)) {
+            state.actions.push_front(ProtocolAction::Operand(Box::new(operation)));
+            state.plan=Some(ProtocolPlan{function:slot.value().clone(),args:vec![receiver,argument],kwargs:Vec::new()});
+            return Ok(true);
+        }
         if comparison && matches!(operand_descriptor(slot.value()),Some(("object","__ne__"))) {
             if let Some(eq)=self.operand_slot(&receiver,"__eq__") {
                 state.actions.push_front(ProtocolAction::Operand(Box::new(operation.clone())));
@@ -80,6 +107,11 @@ impl Runtime {
         }
         if comparison {
             if let Some((owner,name))=operand_descriptor(slot.value()) {
+                if ["dict","set","frozenset"].contains(&owner) {
+                    let op=match name{"__eq__"=>"==","__ne__"=>"!=","__lt__"=>"<","__le__"=>"<=","__gt__"=>">","__ge__"=>">=",_=>""};
+                    state.actions.push_front(ProtocolAction::Operand(Box::new(operation.clone())));
+                    if self.protocol_collection_compare(state,op,receiver.clone(),argument.clone())?{return Ok(true);}state.actions.remove(0);
+                }
                 if ["list","tuple"].contains(&owner) {
                     let op=match name {"__eq__"=>"==","__ne__"=>"!=","__lt__"=>"<","__le__"=>"<=","__gt__"=>">","__ge__"=>">=",_=>""};
                     let left=self.native_payload(&receiver).unwrap_or_else(||receiver.clone());let right=self.native_payload(&argument).unwrap_or_else(||argument.clone());

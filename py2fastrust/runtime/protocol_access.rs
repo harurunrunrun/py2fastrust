@@ -1,7 +1,7 @@
 // Attribute and subscription adapters suspend in the initiating Python frame.
 impl Runtime {
     fn protocol_empty(sink:ProtocolSink)->ProtocolState {
-        ProtocolState{plan:None,value:None,actions:ProtocolActions::new(),sink,binding_recovery:None,attribute_recovery:None}
+        ProtocolState{plan:None,value:None,actions:ProtocolActions::new(),sink,binding_recovery:None,attribute_recovery:None,repr_guards:Vec::new()}
     }
     fn protocol_bind_value(&mut self,state:&mut ProtocolState,value:Value,instance:Option<Value>,class:Value,after:ProtocolAction)->PyResult<()> {
         if let Value::Obj(index)=&value {match self.object(*index)? {
@@ -44,7 +44,7 @@ impl Runtime {
     }
     fn start_protocol_setitem(&mut self,frame:&mut Frame,object:Value,key:Value,value:Option<Value>)->PyResult<bool> {
         let name=if value.is_some(){"__setitem__"}else{"__delitem__"};
-        let Some((method,class))=self.protocol_slot(&object,name) else{return Ok(false)};
+        let Some((method,class))=self.protocol_slot(&object,name) else{return self.start_protocol_collection_mutation(frame,object,key,value,false)};
         let mut state=Self::protocol_empty(ProtocolSink::Discard);
         let mut args=vec![key];args.extend(value);
         self.protocol_bind(&mut state,method,object,class,args,Vec::new(),ProtocolAction::Pass,false)?;
@@ -85,12 +85,7 @@ impl Runtime {
         }}Ok(false)
     }
     fn protocol_dict_getitem(&mut self,state:&mut ProtocolState,object:Value,key:Value)->PyResult<bool> {
-        let Some((missing,class))=self.protocol_slot(&object,"__missing__") else{return Ok(false)};
-        let Ok(owner)=self.collection_dict_owner(&object) else{return Ok(false)};
-        let mut roots=vec![object.clone(),key.clone(),missing.clone()];state.roots(&mut roots);
-        let found=self.view_rooted(roots,|runtime,_|{let items=runtime.assoc_entries(owner)?;let found=runtime.dictionary_find(owner,&items,&key)?;Ok(found.map(|index|runtime.assoc_entries(owner).map(|items|items[index].1.clone())).transpose()? )})?;
-        if let Some(value)=found{state.value=Some(value);}else{self.protocol_bind(state,missing,object,class,vec![key],Vec::new(),ProtocolAction::Pass,false)?;}
-        Ok(true)
+        self.protocol_collection_lookup(state,object,key,ProtocolLookupOp::Get{default:None,missing:true},None)
     }
     fn protocol_native_access(&mut self,state:&mut ProtocolState,plan:&ProtocolPlan)->PyResult<bool> {
         let parts=native_attribute_parts(&plan.function).map(|(_,owner,name)|(owner.to_owned(),name.to_owned()));
@@ -193,7 +188,7 @@ impl Runtime {
     fn protocol_attribute_failure(&mut self,state:&mut ProtocolState)->PyResult<bool> {
         let Some(mut recovery)=state.attribute_recovery.take() else{return Ok(false)};
         state.plan=None;state.value=None;state.binding_recovery=None;
-        if let Some(end)=state.actions.iter().position(|action|matches!(action,ProtocolAction::AttributeDone)){state.actions.drain(..=end);}
+        if let Some(end)=state.actions.iter().position(|action|matches!(action,ProtocolAction::AttributeDone)){self.protocol_discard_actions(state,end+1);}
         if recovery.fallback {
             recovery.fallback=false;
             if let Some((method,class))=self.protocol_slot(&recovery.receiver,"__getattr__") {

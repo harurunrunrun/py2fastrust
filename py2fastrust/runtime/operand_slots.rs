@@ -558,6 +558,7 @@ impl Runtime {
                     if let Some(Object::List(target)) = self.heap[index].as_mut() {
                         target.extend(values);
                     }
+                    self.protocol_sort_nonempty(index);
                 } else {
                     let iterator = self.iter(argument.clone())?;
                     self.view_rooted(
@@ -568,6 +569,7 @@ impl Runtime {
                                 if let Some(Object::List(target)) = runtime.heap[index].as_mut() {
                                     target.push(value);
                                 }
+                                runtime.protocol_sort_nonempty(index);
                             }
                             Ok(())
                         },

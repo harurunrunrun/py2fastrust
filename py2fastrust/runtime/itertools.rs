@@ -26,7 +26,7 @@ enum ToolsState {
 #[derive(Clone, Debug)]
 struct ToolsGroup { iter: Value, function: Value, current: Option<(Value, Value)>, consumed: bool, active_key: Option<Value>, generation: usize, exhausted: bool }
 #[derive(Clone, Debug)]
-struct ToolsTee { iter: Value, buffer: std::collections::VecDeque<Value>, base: usize, cursors: Vec<std::rc::Weak<std::cell::Cell<usize>>>, exhausted: bool }
+struct ToolsTee { iter: Value, buffer: std::collections::VecDeque<Value>, base: usize, cursors: Vec<std::rc::Weak<std::cell::Cell<usize>>>, exhausted: bool, running: bool }
 impl ToolsState {
     fn type_name(&self) -> &'static str {
         match self {
@@ -171,7 +171,7 @@ impl Runtime {
             "tee" => {
                 let mut a = self.tools_arguments(name,args,kwargs,&["iterable","n"],2,2,1)?; let count = if let Some(value) = a[1].take() { self.tools_size(&value,false)? } else { 2 }; let source = self.iter(a[0].take().unwrap())?;
                 let existing = match &source { Value::Obj(index)=>match self.object(*index)? { Object::Iterator(IteratorState::Tools(state))=>if let ToolsState::Tee { shared,cursor } = *state { Some((shared,cursor.get())) }else{None},_=>None },_=>None };
-                let (shared,position) = existing.unwrap_or_else(||(std::rc::Rc::new(std::cell::RefCell::new(ToolsTee { iter:source,buffer:std::collections::VecDeque::new(),base:0,cursors:Vec::new(),exhausted:false })),0));
+                let (shared,position) = existing.unwrap_or_else(||(std::rc::Rc::new(std::cell::RefCell::new(ToolsTee { iter:source,buffer:std::collections::VecDeque::new(),base:0,cursors:Vec::new(),exhausted:false,running:false })),0));
                 let mut tees = Vec::new(); tees.try_reserve(count).map_err(|_|pyerr("MemoryError","cannot allocate tee iterators"))?;
                 for _ in 0..count { let cursor = std::rc::Rc::new(std::cell::Cell::new(position)); shared.borrow_mut().cursors.push(std::rc::Rc::downgrade(&cursor)); let value = self.tools_iterator(ToolsState::Tee { shared:shared.clone(),cursor }); self.tools_keep(root,value.clone()); tees.push(value); }
                 return Ok(self.obj_value(Object::Tuple(tees)));

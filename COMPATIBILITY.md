@@ -21,8 +21,10 @@ they do not imply compatibility with all CPython internals or the entire standar
 | Memory | Object identity, cyclic references, mark-and-sweep GC rooted in frames and temporary values, `__del__` and resurrection |
 
 Ordinary function recursion, including calls through `cache` and `lru_cache`, uses heap-allocated frames.
-Direct `len`, `bool`, `int`, `hash`, `str`, `repr`, and `iter` calls, selected descriptor binding,
-subscription, attribute access, unary/binary operators, and rich comparisons use caller-owned heap continuations.
+Direct value protocols, `print`, iteration, `map`/`filter`/`zip`, itertools consumers,
+container construction and lookup, sorting, `min`/`max`, and `functools.reduce` use caller-owned
+heap continuations, together with selected descriptor binding, subscription, attribute access,
+unary/binary operators, and rich comparisons.
 Return validation runs after the Python callback has returned, in its caller's exception scope.
 Some internal built-in callback paths still reenter through Rust calls and need further continuation adapters.
 
@@ -33,6 +35,15 @@ and conditional annotation cells share the public closure-cell storage.
 
 Heap classes retain stable `__mro__` and `__bases__` tuple identities, including
 their MRO ownership cycles. Creation hooks observe this metadata before they run.
+
+`types.CellType` exposes its native class metadata, rich-comparison wrappers, and
+writable `cell_contents` descriptor. Empty cells sort before filled cells; filled
+cells delegate comparisons to their contents and preserve arbitrary rich results.
+Cell descriptor callbacks use the same heap continuation queue as other code.
+
+Sorting retains stable equal-key order, keeps the list temporarily empty during
+callbacks, and restores it on errors. Mutations during sorting raise `ValueError`,
+including an empty extension that reserves storage through a positive length hint.
 
 `sys.setrecursionlimit` controls Python frame depth. Finite native list/tuple comparison nesting does not
 consume that budget. Pending native protocol actions have a separate 64 MiB storage bound, counting

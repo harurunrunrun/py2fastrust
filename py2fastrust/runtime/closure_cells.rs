@@ -124,9 +124,8 @@ impl Runtime {
     }
 
     fn cell_constructor(&mut self, args: Vec<Value>, kwargs: KeywordArgs) -> PyResult<Value> {
-        if args.len() > 1 || !kwargs.is_empty() {
-            return Err(pyerr("TypeError", "cell expected at most 1 positional argument"));
-        }
+        if !kwargs.is_empty() {return Err(pyerr("TypeError","cell() takes no keyword arguments"));}
+        if args.len()>1 {return Err(pyerr("TypeError",format!("cell expected at most 1 argument, got {}",args.len())));}
         Ok(self.obj_value(Object::Cell(args.into_iter().next())))
     }
 

@@ -488,6 +488,9 @@ impl Runtime {
         let object = self.heap.get(*index).and_then(Option::as_ref)?.clone();
         let supported = match object {
             Object::DictView { owner, kind } => {
+                if kind==DictViewKind::Values && name=="__contains__" {
+                    return Some(Err(pyerr("AttributeError","'dict_values' object has no attribute '__contains__'")));
+                }
                 if name == "mapping" {
                     let result=self.obj_value(Object::MappingProxy { owner });
                     return Some(Ok(self.collection_inherit_keeper(result,&value)));

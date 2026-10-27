@@ -34,7 +34,7 @@ impl Runtime {
         Ok(true)
     }
     fn protocol_sequence_callback_boundary(&self,state:&mut ProtocolState) {
-        for action in &mut state.actions {if let ProtocolAction::Sequence(sequence)=action {sequence.cycle_candidate=false;}}
+        for action in &mut state.actions {match action {ProtocolAction::Sequence(sequence)=>sequence.cycle_candidate=false,ProtocolAction::Cell(record)=>record.cycle_candidate=false,_=>{}}}
     }
     fn protocol_sequence_comparison_callback(&self,op:&str,left:&Value,right:&Value)->bool {
         let (forward,reverse)=match op {"=="=>("__eq__","__eq__"),"!="=>("__ne__","__ne__"),"<"=>("__lt__","__gt__"),"<="=>("__le__","__ge__"),">"=>("__gt__","__lt__"),_=>("__ge__","__le__")};

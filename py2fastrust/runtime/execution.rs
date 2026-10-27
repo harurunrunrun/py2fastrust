@@ -296,7 +296,7 @@ impl Runtime {
                     temps:runtime.alloc(Object::Namespace(OrderedNamespace::new(),None)),
                     globals,builtins,closure,stack:Vec::new(),handlers:Vec::new(),pending:Vec::new(),
                     exception:None,exception_stack:Vec::new(),inherited_exception:None,except_star:Vec::new(),
-                    next_call:None,cache_returns:Vec::new(),protocol:None,comprehensions:Vec::new(),resume_value:None,injected_exception:None,finally_regions:Vec::new(),
+                    next_call:None,cache_returns:Vec::new(),protocol:None,protocol_generator:None,protocol_exit:None,comprehensions:Vec::new(),resume_value:None,injected_exception:None,finally_regions:Vec::new(),
                 }
             };
             let value=if runtime.codes[code].is_generator {

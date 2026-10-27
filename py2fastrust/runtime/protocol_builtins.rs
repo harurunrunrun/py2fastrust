@@ -93,6 +93,10 @@ impl Runtime {
                 }
                 Err(pyerr("TypeError",format!("'{}' object is not iterable",self.typename(&value))))
             },
+            ProtocolBindingRecovery::Contains(owner,key)=>{
+                state.actions.push_front(ProtocolAction::Collection(Box::new(ProtocolCollection::IterateContains{iterator:Value::None,key,phase:0,reverse:false,current:None})));
+                state.plan=Some(ProtocolPlan{function:Value::Builtin("iter".into()),args:vec![owner],kwargs:Vec::new()});Ok(true)
+            },
             _=>Ok(false),
         }
     }
