@@ -118,6 +118,8 @@ Scalar results retain their integer or boolean type; positional and keyword argu
 Integer lists are borrowed without copying; functions that mutate or expose those argument lists use the general runtime.
 Recursion and functions with dynamic global or closure state use the general runtime.
 For simple module-level code, the optimizer also proves whether dynamic compilation is unreachable.
+The proof checks both the AST and the lowered control flow, including reaching assignments,
+possible types, call targets, and unknown effects. Uncertain paths retain the runtime parser.
 When that proof succeeds, the general backend omits the runtime parser and its Unicode name tables.
 Imports, reflection, indirect calls, user-defined functions or classes, and unknown syntax retain the full runtime.
 `--no-optimize` retains all runtime components.

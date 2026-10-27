@@ -29,7 +29,7 @@ class FrontendTests(unittest.TestCase):
 
     def test_comprehension_has_isolated_bindings(self):
         program = Compiler().compile("def f(n):\n return [x+n for x in range(n)]\n")
-        code = next(c for c in program.codes if c.name == "listcomp")
+        code = next(c for c in program.codes if c.name == "<listcomp>")
         owner = next(c for c in program.codes if c.name == "f")
         code_id = program.codes.index(code)
         self.assertIn("x", code.locals)
@@ -42,7 +42,7 @@ class FrontendTests(unittest.TestCase):
 
     def test_generator_comprehension_retains_its_own_frame(self):
         program = Compiler().compile("def f(n):\n return (x+n for x in range(n))\n")
-        code = next(c for c in program.codes if c.name == "genexpr")
+        code = next(c for c in program.codes if c.name == "<genexpr>")
         owner = next(c for c in program.codes if c.name == "f")
         code_id = program.codes.index(code)
         self.assertEqual(code.params.positional, [".0"])

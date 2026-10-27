@@ -51,6 +51,8 @@ class Code:
 class Program:
     codes: list[Code] = field(default_factory=list)
     modules: list[tuple[str, int]] = field(default_factory=list)
+    # Python-only proof metadata; never changes the generated Rust ABI.
+    flow: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

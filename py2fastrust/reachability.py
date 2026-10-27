@@ -3,16 +3,12 @@
 import ast
 
 from .ir import Program
+from .ir_flow import LEAF_BUILTINS, analyze_program
 
 
 # These built-ins cannot call an argument as a Python function. Higher-order
 # operations, reflection, imports and user-defined classes stay on the full path.
-_LEAF_CALLS = frozenset({
-    "abs", "ascii", "bin", "bool", "bytes", "chr", "complex", "dict", "divmod",
-    "float", "format", "frozenset", "hash", "hex", "id", "input", "int",
-    "isinstance", "issubclass", "len", "list", "oct", "ord", "pow", "print",
-    "range", "repr", "reversed", "round", "set", "slice", "str", "sum", "tuple",
-})
+_LEAF_CALLS = LEAF_BUILTINS
 
 _SIMPLE_NODES = (
     ast.Module, ast.Expr, ast.Assign, ast.AugAssign, ast.If, ast.For, ast.While,
@@ -55,4 +51,7 @@ def dynamic_compilation_unreachable(source: str, program: Program) -> bool:
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name) or node.func.id not in _LEAF_CALLS:
                 return False
-    return True
+    # The AST remains necessary. Independently check the actual lowered calls:
+    # compiler helpers or future changes must not introduce opaque targets,
+    # rebinding or arbitrary effects behind a source-level leaf-call proof.
+    return analyze_program(program).codes[0].proves_leaf_calls

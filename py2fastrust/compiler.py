@@ -91,6 +91,8 @@ class Compiler:
         self.load_module("__future__", tree, self.filename)
         for name in self.include_modules:
             self.load_module(name, tree, self.filename)
+        from .ir_flow import analyze_program
+        analyze_program(self.program)
         return self.program
 
     def stringify_annotation(self, expression):
