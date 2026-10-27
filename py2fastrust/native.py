@@ -399,7 +399,7 @@ impl std::fmt::Display for NativeScalar {
 
 
 class _Generator:
-    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "list", "map", "dict", "set"}
+    BUILTINS = {"int", "input", "print", "range", "abs", "pow", "len", "sum", "min", "max", "list", "map", "dict", "set"}
 
     def __init__(self, bits, functions=None, function=None, function_input=False, constructors=None, specializations=None):
         self.bits = bits
@@ -583,6 +583,79 @@ class _Generator:
         else:
             iterator = f"{name}.iter().copied()"
         return setup, iterator
+
+    def extremum(self, node, environment):
+        """Lower exact scalar extrema without introducing runtime objects."""
+        name = node.func.id
+        if not node.args or any(isinstance(value, ast.Starred) for value in node.args):
+            raise _Unsupported
+        default = None
+        for keyword in node.keywords:
+            if keyword.arg == "key" and isinstance(keyword.value, ast.Constant) and keyword.value.value is None:
+                continue
+            if keyword.arg == "default" and len(node.args) == 1:
+                default = self.expression(keyword.value, environment)
+            else:
+                raise _Unsupported
+        compare = ">" if name == "max" else "<"
+        if len(node.args) >= 2:
+            values = [self.expression(value, environment) for value in node.args]
+            kind = self.scalar_kind(values)
+            names = [self.temporary() for _ in values]
+            # Python evaluates every argument before making any comparisons.
+            setup = " ".join(f"let {local} = {self.coerce(value, kind)};" for local, value in zip(names, values))
+            best = self.temporary()
+            best_number = self.number(_Expression(best, kind))
+            updates = " ".join(f"if {self.number(_Expression(local, kind))} {compare} {best_number} {{ {best} = {local}; }}" for local in names[1:])
+            constant = None
+            if all(value.constant is not None for value in values):
+                constant = (max if name == "max" else min)(value.constant for value in values)
+            return _Expression(f"{{ {setup} let mut {best} = {names[0]}; {updates} {best} }}", kind, constant)
+        source = node.args[0]
+        setup = ""
+        if isinstance(source, (ast.List, ast.Tuple)):
+            values = [self.expression(value, environment) for value in source.elts]
+            kind = self.scalar_kind(values + ([default] if default else [])) if values or default else "int"
+            local = self.temporary()
+            rust_type = {"int": "NativeInt", "bool": "bool", "int_bool": "NativeScalar"}[kind]
+            setup = f"let {local}: [{rust_type}; {len(values)}] = [" + ", ".join(self.coerce(value, kind) for value in values) + "];"
+            iterator = f"{local}.into_iter()"
+        else:
+            if isinstance(source, ast.Call) and isinstance(source.func, ast.Name) and source.func.id == "range":
+                setup, iterator, _ = self.range_iterator(source, environment)
+                local = self.temporary()
+                setup += f" let {local} = {iterator};"
+                iterator = local
+            else:
+                view = self.dict_view(source, environment)
+                value = self.integer_input_list(source) if self.input_map(source) else (view[0] if view else self.expression(source, environment))
+                if value.kind not in {"list_int", "set_int", "dict_int", "deque_int"} or view and view[1] == "items":
+                    raise _Unsupported
+                local = self.temporary()
+                # Delay a borrow of a named owner until after default has run.
+                # A default expression can mutate the same uniquely owned list.
+                binding = value.code if value.owned else f"&({value.code})"
+                line = f"let {local} = {binding};"
+                if value.owned:
+                    setup = line
+                else:
+                    setup = ""
+                iterator = (f"{local}.entries.iter().map(|&(_, value)| value)" if view and view[1] == "values" else
+                            f"{local}.entries.iter().map(|&(key, _)| key)" if value.kind == "dict_int" else f"{local}.iter().copied()")
+                if not value.owned:
+                    iterator = f"{{ {line} {iterator} }}"
+            kind = self.scalar_kind([_Expression("", "int")] + ([default] if default else []))
+            if kind == "int_bool":
+                iterator = f"({iterator}).map(NativeScalar::Int)"
+        default_name = self.temporary() if default else None
+        if default:
+            setup += f" let {default_name} = {self.coerce(default, kind)};"
+        best, item = self.temporary(), self.temporary()
+        test = f"{self.number(_Expression(item, kind))} {compare} {self.number(_Expression(best, kind))}"
+        reduction = f"({iterator}).reduce(|{best}, {item}| if {test} {{ {item} }} else {{ {best} }})"
+        result = (f"{reduction}.unwrap_or({default_name})" if default else
+                  self.at(f'{reduction}.ok_or_else(|| "ValueError: {name}() iterable argument is empty".to_string())', node))
+        return _Expression(f"{{ {setup} {result} }}", kind)
 
     def user_call(self, node, function, environment):
         if any(isinstance(value, ast.Starred) for value in node.args):
@@ -881,6 +954,8 @@ class _Generator:
             no = self.expression(node.orelse, environment)
             kind = self.scalar_kind([yes, no])
             return _Expression(f"(if {self.truth(test)} {{ {self.coerce(yes, kind)} }} else {{ {self.coerce(no, kind)} }})", kind)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"min", "max"}:
+            return self.extremum(node, environment)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
             if name == "set" and len(node.args) <= 1:
