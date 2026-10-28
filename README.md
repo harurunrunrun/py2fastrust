@@ -195,8 +195,11 @@ Ordinary class instances can use concrete Rust structs, typed fields and
 methods, and shared lists with proved scalar, tuple, instance or nested-list
 elements. Shallow copies and repetition retain inner aliases. Synchronous list
 comprehensions on this path generate typed loops with isolated target bindings.
-Recursive methods compile to Rust
-futures with an iterative call executor and a logical Python recursion limit.
+Small acyclic call paths use ordinary Result-returning Rust functions.
+Recursive methods and longer call chains use typed Rust futures with an
+iterative call executor and a logical Python recursion limit. Both call forms
+keep Python argument order and exception frames. Proved stable concrete fields
+can be reused lazily within loops without changing first-read errors.
 This initial class implementation has a separate proof boundary; integrating
 it with common semantic lowering remains required work. Inheritance,
 descriptors, metaclasses, escaped methods, cyclic ownership, heterogeneous

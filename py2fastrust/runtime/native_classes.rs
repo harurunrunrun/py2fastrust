@@ -22,6 +22,22 @@ impl ClassScope {
               io:Rc::new(RefCell::new(ClassIo{input:StandardInput::new(),output:String::new()}))}
     }
 }
+struct ClassSyncDepth<'a>(&'a ClassScope);
+impl Drop for ClassSyncDepth<'_> {
+    fn drop(&mut self) { self.0.control.borrow_mut().depth-=1; }
+}
+fn class_sync_call<T>(scope:&ClassScope,call:impl FnOnce()->ClassResult<T>,line:usize,caller:&'static str)->ClassResult<T> {
+    {
+        let mut control=scope.control.borrow_mut();
+        if control.depth>=control.limit {
+            return Err(NativeError{message:"RecursionError: maximum recursion depth exceeded".into(),
+                line,function:caller,frames:Vec::new()});
+        }
+        control.depth+=1;
+    }
+    let _depth=ClassSyncDepth(scope);
+    call().map_err(|mut error|{error.frames.push((line,caller));error})
+}
 struct ClassNoop;
 impl Wake for ClassNoop { fn wake(self: Arc<Self>) {} }
 struct ClassCall<T> {

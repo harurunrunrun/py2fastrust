@@ -203,6 +203,7 @@ class Model:
         self.unit = unit
         self.trusted_imports = trusted_imports
         self.classes, self.functions = {}, {}
+        self.call_edges = {}
         self.plans = []
         self.node_cells = {}
         # Storage members receive directional value constraints. Their incoming
@@ -633,6 +634,7 @@ class Model:
         if callee.global_names is None:callee.global_names=set(names)
         else:callee.global_names.update(names)
         callee.reachable = True
+        self.call_edges.setdefault(caller.index,set()).add(callee.index)
         visible = set(caller.visible_definitions or ())
         if callee.visible_definitions is None:
             callee.visible_definitions = visible
@@ -946,6 +948,7 @@ class Emitter:
         self.model, self.plan = model, plan
         self.counter = 0
         self.loops = []
+        self.loop_field_caches = []
         self.slots = {}
         self.reference_slots = {}
         if model.integer == "bigint":
@@ -1141,7 +1144,9 @@ class Emitter:
                 raise ClassUnsupported(node)
             owner = self.model.classes[receiver.kind.name]
             index = list(owner.fields).index(self.model.resolved_name(self.plan,node))
-            return Expression(self.at(f"class_get_{owner.index}_{index}(&({receiver.code}))",node),wanted)
+            code=self.at(f"class_get_{owner.index}_{index}(&({receiver.code}))",node)
+            from .native_class_loop_fields import read
+            return Expression(read(self,node,code,wanted),wanted)
         if isinstance(node,ast.Subscript):
             setup,owner = self.capture(self.expression(node.value))
             index_setup,index = self.capture(self.expression(node.slice))
@@ -1325,8 +1330,9 @@ class Emitter:
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
         # Constructor futures receive only explicit Python arguments. Their
         # internal __init__ future shares this logical call-stack entry.
-        future = name+"(class_scope.clone()"+(" ,"+",".join(values)if values else"")+")"
-        call = f"class_call(class_scope.clone(),{future},{node.lineno},{_string(self.plan.scope)}).await?"
+        invocation = name+"(class_scope.clone()"+(" ,"+",".join(values)if values else"")+")"
+        from .native_class_calls import call as compiled_call
+        call = compiled_call(self,invocation,callee,node)
         return Expression("{"+"\n".join(setup)+call+"}",self.kind(node))
 
     def parse_words(self, node, count=None):
@@ -1696,10 +1702,12 @@ class Emitter:
         if isinstance(node,ast.While):
             label=self.fresh()
             self.loops.append(label)
-            setup,test=self.capture(self.expression(node.test))
-            body=self.statements(node.body)
+            from .native_class_loop_fields import scope
+            with scope(self,node)as cache:
+                setup,test=self.capture(self.expression(node.test))
+                body=self.statements(node.body)
             self.loops.pop()
-            return f"'{label}:loop{{{setup}if !({self.truth(test)}){{break;}}{body}}}"
+            return "{"+cache+f"'{label}:loop{{{setup}if !({self.truth(test)}){{break;}}{body}}}"+"}"
         if isinstance(node,ast.For):
             return self.for_statement(node)
         if isinstance(node,ast.Break):
@@ -1720,7 +1728,10 @@ class Emitter:
             counter=self.fresh()
             setup+=f"let mut {counter}={self.number(start)};"
         label=self.fresh();self.loops.append(label)
-        body=self.statements(node.body)
+        from .native_class_loop_fields import scope
+        with scope(self,node)as cache:
+            body=self.statements(node.body)
+        setup+=cache
         self.loops.pop()
         current=self.fresh()
         if domain(source.kind)=="list":
@@ -1753,7 +1764,7 @@ class Emitter:
             before+=f"{counter}={increment};"
             item=Expression(f"({saved},{item.code})",TupleType(("int",item.kind)))
         binding=self.assign(node.target,item)
-        return setup+prefix+before+binding+body+"}"
+        return "{"+setup+prefix+before+binding+body+"}}"
 
     def declaration(self):
         data=[f"let mut {slot}:{self.rust_type(MaybeType(kind))}=None;"for(_,kind),slot in self.slots.items()]
@@ -1773,6 +1784,10 @@ class Emitter:
         else:
             tail=f"Err(NativeError{{message:\"RuntimeError: invalid compiled return\".into(),line:{getattr(self.plan.node,'lineno',1)},function:{_string(self.plan.scope)},frames:Vec::new()}})"
         signature="class_scope:ClassScope"+(" ,"+",".join(parameters)if parameters else"")
+        from .native_class_calls import synchronous
+        if synchronous(self.model,self.plan):
+            return (f"fn {self.function_name(self.plan)}({signature})->ClassResult<{result}>{{\n"
+                    "use std::fmt::Write as _;\n"+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n}")
         return (f"fn {self.function_name(self.plan)}({signature})->ClassFuture<{result}>{{Box::pin(async move{{\n"
                 "use std::fmt::Write as _;\n"+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n})}")
 
@@ -1823,6 +1838,7 @@ fn class_from_usize(value:usize)->NativeInt{"""+from_usize+"}"
 
 
 def _class_layouts(model,emitter):
+    from .native_class_calls import synchronous
     result=[]
     for owner in model.classes.values():
         if not owner.used:continue
@@ -1843,8 +1859,12 @@ def _class_layouts(model,emitter):
         initialize=",".join(f"field_{i}:None"for i in range(len(fields)))
         body=f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));"
         if constructor:
-            body+=f"class_function_{constructor.index}(class_scope.clone(),object.clone()"+(","+",".join(args)if args else"")+ ").await?;"
-        result.append(f"fn class_construct_{owner.index}({signature})->ClassFuture<ClassHandle_{owner.index}>{{Box::pin(async move{{{body}Ok(object)}})}}")
+            suffix="?;"if synchronous(model,constructor)else".await?;"
+            body+=f"class_function_{constructor.index}(class_scope.clone(),object.clone()"+(","+",".join(args)if args else"")+ ")"+suffix
+        if synchronous(model,constructor):
+            result.append(f"fn class_construct_{owner.index}({signature})->ClassResult<ClassHandle_{owner.index}>{{{body}Ok(object)}}")
+        else:
+            result.append(f"fn class_construct_{owner.index}({signature})->ClassFuture<ClassHandle_{owner.index}>{{Box::pin(async move{{{body}Ok(object)}})}}")
     return "\n".join(result)
 
 
@@ -1873,6 +1893,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         if integer not in {"i64","i128","bigint"}:raise ClassUnsupported(ast.Module(body=[],type_ignores=[]))
         tree=unit.tree
         model=Model(tree,filename,integer,trusted_imports,unit=unit,string_mode=string_mode).run()
+        from .native_class_calls import classify,synchronous,runtime as call_runtime
+        classify(model)
         emitters=[Emitter(model,plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
@@ -1918,8 +1940,10 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         from .native_typed_lists import HELPERS as sequence_helpers
         pieces.append(sequence_helpers)
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
-                   _text_helpers(runtime),_structural_helpers(integer),runtime.joinpath("native_classes.rs").read_text(encoding="utf-8"),layouts,*bodies])
-    pieces.append("fn main(){use std::io::Write as _;let scope=ClassScope::new();let result=class_execute(scope.clone(),class_function_0(scope.clone()));\n"
+                   _text_helpers(runtime),_structural_helpers(integer),call_runtime(runtime.joinpath("native_classes.rs").read_text(encoding="utf-8"),model),layouts,*bodies])
+    entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if synchronous(model,model.module)
+           else "let result=class_execute(scope.clone(),class_function_0(scope.clone()));")
+    pieces.append("fn main(){use std::io::Write as _;let scope=ClassScope::new();"+entry+"\n"
                   "std::io::stdout().write_all(scope.io.borrow().output.as_bytes()).unwrap();\n"
                   'if let Err(error)=result {eprintln!("Traceback (most recent call last):");\n'
                   'for &(line,function)in error.frames.iter().rev(){\n'

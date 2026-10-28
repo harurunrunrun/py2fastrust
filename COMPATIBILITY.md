@@ -271,6 +271,20 @@ control-flow planner still needs migration to the shared semantic graph. Nullabl
 mutable handles and identity-sensitive floating-point container comparisons remain
 outside this direct proof.
 
+A resolved class-path call graph selects ordinary Rust functions for small
+acyclic call paths. Recursive components, their callers and longer chains retain
+the typed compiled-future stack; no generic source instruction interpreter is
+introduced. Both representations share logical recursion depth checks and error
+frames. Constructor initialization retains its single Python call frame.
+
+Concrete field reads may be reused inside a loop only when its receiver binding
+is stable and the loop has no attribute stores, user calls or inner lexical
+scopes. Cache values are initialized at the first actual getter, then dropped at
+loop exit. Mutable field contents retain their shared handles. Zero-trip paths,
+missing attributes and argument effects keep their original order. This proof
+uses the currently closed object/protocol surface; additional dynamic protocols
+must extend its effect analysis before using this optimization.
+
 Synchronous class-path list comprehensions use the common producer and generator
 plans to emit typed loops. Their first iterable is captured in the enclosing
 namespace; targets, later iterables, filters and elements use an isolated logical
