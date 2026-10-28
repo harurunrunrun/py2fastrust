@@ -283,7 +283,6 @@ class NativeClassProofTests(unittest.TestCase):
     def test_unresolved_local_callable_and_import_shadowing_are_rejected(self):
         for source in (
             "import sys\nclass Item:\n def read(self):\n  print(sys.getrecursionlimit())\n  sys=1\nItem().read()\n",
-            "class Item:\n def read(self):\n  print(input())\n  input=3\nItem().read()\n",
             "class Item:pass\na,b=map(int,'12')\nprint(a,b)\n",
         ):
             result=transpile(source)
@@ -294,7 +293,6 @@ class NativeClassProofTests(unittest.TestCase):
         for source in (
             "print(Box())\nclass Box:pass\n",
             "def run():return Box()\nprint(run())\nclass Box:pass\n",
-            "class Box:\n def value(self):return later()\nprint(Box().value())\ndef later():return 7\n",
         ):
             result=transpile(source)
             self.assertFalse(result.success)

@@ -361,6 +361,34 @@ CASES={'required_cross_scope_rebinding': ('def first(n):\n'
                                           'print(callbacks[0](3),len(callbacks))\n',
                                           ('',))}
 
+for _name,_receiver in (("text_line","sys.stdin.readline"),("bytes_line","sys.stdin.buffer.readline"),
+                        ("text_all","sys.stdin.read"),("bytes_all","sys.stdin.buffer.read")):
+    CASES["captured_stream_"+_name]=(
+        "import sys\n"
+        "class Holder:\n"
+        " def __init__(self,value):self.value=value\n"
+        "def main():\n"
+        f" input={_receiver}\n"
+        " values=[0]+list(map(int,input().split()))\n"
+        " print(Holder(sum(values)).value,len(input()))\n"
+        "main()\n",("1 20 -3\n42\n","\n",""))
+
+CASES["captured_stream_unbound_local"]=(
+    "import sys\n"
+    "class Holder:\n"
+    " def __init__(self,value):self.value=value\n"
+    "def main():\n"
+    " flag=int(sys.stdin.buffer.readline())\n"
+    " if flag: reader=sys.stdin.buffer.readline\n"
+    " print(Holder(len(reader())).value)\n"
+    "main()\n",("0\n123\n","1\n123\n"))
+
+CASES["class_local_builtin_name_before_assignment"]=(
+    "class Item:\n def read(self):\n  print(input())\n  input=3\nItem().read()\n",("",))
+
+CASES["class_method_function_before_definition"]=(
+    "class Box:\n def value(self):return later()\nprint(Box().value())\ndef later():return 7\n",("",))
+
 
 def frames(stderr):
     result=[]
@@ -417,6 +445,17 @@ class NativeCallableCellTests(unittest.TestCase):
 
     def test_required_cross_scope_rebinding_and_deletion(self):
         for name in ("required_cross_scope_rebinding","required_original_alias_deletion"):
+            self.exercise(name)
+
+    def test_captured_standard_stream_methods_keep_intrinsic_results(self):
+        for name in ("text_line","bytes_line","text_all","bytes_all"):
+            self.exercise("captured_stream_"+name)
+
+    def test_captured_stream_unbound_local_keeps_python_order_and_frames(self):
+        self.exercise("captured_stream_unbound_local")
+
+    def test_class_binding_errors_are_executed_instead_of_rejected(self):
+        for name in ("class_local_builtin_name_before_assignment","class_method_function_before_definition"):
             self.exercise(name)
 
     def test_callee_is_captured_before_argument_effects(self):

@@ -133,6 +133,11 @@ class CallableCells:
             name=self.model.resolved_name(plan,function)
             if self.stable_direct(plan,function,environment):return False
             if name in self.model.classes and self.owner(plan,function)==0:return False
+            current=environment.get(name)
+            if current is not None and current.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
+                # These captured standard-stream methods already have a
+                # canonical intrinsic call adapter and typed read result.
+                return False
             if name in self.model.namespace.builtin_names and name not in self.model.functions:
                 # A local/parameter binding never falls back to builtins. A
                 # module binding still needs a builtin carrier after deletion.
