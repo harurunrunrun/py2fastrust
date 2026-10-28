@@ -497,13 +497,13 @@ class _Resolver:
             path = base.with_suffix(".py")
             if path.is_file():return Module(name, "user", str(path), False)
             if base.is_dir():namespaces.append(base)
-        if namespaces:return Module(name, "namespace", None, True, tuple(namespaces))
+        namespace=Module(name,"namespace",None,True,tuple(namespaces))if namespaces else None
         parts = name.split(".")
         resource_root = VENDORED_PACKAGES.get(parts[0])
-        if resource_root is None or any(not part.isidentifier() for part in parts):return None
+        if resource_root is None or any(not part.isidentifier() for part in parts):return namespace
         # A user-supplied package owns all its children. Do not mix in bundled
         # children merely because an identically named child is missing there.
-        if parent is not None and (parent.origin != "vendored" or parent.resource is None):return None
+        if parent is not None and (parent.origin != "vendored" or parent.resource is None):return namespace
         relative = resource_root + tuple(parts[1:])
         resource = files("py2fastrust").joinpath(*relative)
         package = resource.joinpath("__init__.py")
@@ -513,7 +513,7 @@ class _Resolver:
         path = relative[:-1] + (relative[-1]+".py",)
         if files("py2fastrust").joinpath(*path).is_file():
             return Module(name,"vendored","<pytors-ac-library-python>/"+"/".join(parts)+".py",False,(),path)
-        return None
+        return namespace
 
     def load(self, name, unit, node):
         if name in self.modules:return self.modules[name]

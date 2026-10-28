@@ -17,6 +17,28 @@ PUBLIC_MODULES=('dsu','fenwicktree','segtree','lazysegtree','scc','twosat',
 
 
 class ACLResolutionTests(unittest.TestCase):
+    def test_bundled_regular_package_wins_over_earlier_namespace_candidates(self):
+        for child in (False,True):
+            with self.subTest(child=child),tempfile.TemporaryDirectory(prefix='pytors-acl-namespace-')as directory:
+                root=Path(directory);package=root/'atcoder';package.mkdir()
+                if child:(package/'dsu.py').write_text('raise RuntimeError("namespace child must not execute")\n')
+                program=build_program('from atcoder.dsu import DSU\n',str(root/'main.py'))
+                for name in ('atcoder','atcoder.dsu'):
+                    module=next(module for module in program.modules if module.name==name)
+                    self.assertEqual(module.origin,'vendored')
+                unit=next(unit for unit in program.units if unit.name=='atcoder.dsu')
+                self.assertEqual(unit.source,files('py2fastrust').joinpath('vendor','ac_library_python','atcoder','dsu.py').read_text())
+
+    def test_regular_namespace_priority_is_not_specific_to_one_package_name(self):
+        with tempfile.TemporaryDirectory(prefix='pytors-package-priority-')as directory:
+            root=Path(directory);entry=root/'entry';entry.mkdir();(entry/'ordinary_package').mkdir()
+            resources=root/'resources';package=resources/'bundled'/'ordinary_package';package.mkdir(parents=True)
+            (package/'__init__.py').write_text('value=3\n');(package/'choice.py').write_text('value=7\n')
+            with patch('py2fastrust.frontend.files',return_value=resources),patch.dict('py2fastrust.frontend.VENDORED_PACKAGES',{'ordinary_package':('bundled','ordinary_package')}):
+                program=build_program('import ordinary_package.choice\n',str(entry/'main.py'))
+            self.assertTrue(all(module.origin=='vendored'for module in program.modules))
+            self.assertEqual(next(unit for unit in program.units if unit.name=='ordinary_package.choice').source,'value=7\n')
+
     def test_all_library_modules_resolve_without_installation_or_module_paths(self):
         original_import=builtins.__import__
         def no_host_acl(name,*args,**kwargs):
