@@ -314,13 +314,13 @@ _DICT_HELPERS = r'''
 // Values are scalars and every dictionary has one proved owner. Entries retain
 // Python insertion order while the hash index provides expected O(1) lookup.
 struct NativeDict {
-    entries: Vec<(NativeInt, NativeInt)>,
+    entries: NativeDictionaryEntries<(NativeInt, NativeInt)>,
     index: std::collections::HashMap<NativeInt, usize>,
 }
 impl NativeDict {
     fn clear(&mut self) { self.entries.clear(); self.index.clear(); }
     fn new() -> Self {
-        Self { entries: Vec::new(), index: std::collections::HashMap::new() }
+        Self { entries: NativeDictionaryEntries::new(), index: std::collections::HashMap::new() }
     }
     #[inline]
     fn len(&self) -> usize { self.entries.len() }
@@ -338,14 +338,14 @@ impl NativeDict {
             .ok_or_else(|| format!("KeyError: {}", key))
     }
     #[inline]
-    fn set(&mut self, key: NativeInt, value: NativeInt) {
-        match self.index.entry(key) {
-            std::collections::hash_map::Entry::Occupied(entry) => self.entries[*entry.get()].1 = value,
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(self.entries.len());
-                self.entries.push((key, value));
-            }
-        }
+    fn set(&mut self, key: NativeInt, value: NativeInt) -> Result<(), String> {
+        if let Some(&index)=self.index.get(&key){self.entries[index].1=value;return Ok(());}
+        self.index.try_reserve(1).map_err(|_|"MemoryError: cannot allocate dictionary index".to_owned())?;
+        let index=native_dict_insert(&mut self.entries,(key,value))?;
+        self.index.insert(key,index);Ok(())
+    }
+    fn delete(&mut self,key:NativeInt)->bool {
+        match self.index.remove(&key){Some(slot)=>{native_dict_remove(&mut self.entries,&mut self.index,slot);true},None=>false}
     }
 }
 '''
@@ -409,6 +409,7 @@ class _Generator:
         self.has_input = False
         self.has_lists = False
         self.has_dicts = False
+        self.has_mapping_delete = False
         self.has_sets = False
         self.has_deques = False
         self.has_scalar_union = False
@@ -927,7 +928,7 @@ class _Generator:
             for key, value in pairs:
                 key_name, value_name = self.temporary(), self.temporary()
                 lines += [f"let {key_name} = {key.code};", f"let {value_name} = {value.code};",
-                          f"{result}.set({key_name}, {value_name});"]
+                          self.at(f"{result}.set({key_name}, {value_name})",node)+";"]
             length = len({key.constant for key, _ in pairs}) if all(key.constant is not None for key, _ in pairs) else None
             return _Expression("{ " + " ".join(lines) + f" {result} }}", "dict_int", length=length, nonempty=bool(pairs))
         if isinstance(node, ast.Set):
@@ -1445,7 +1446,8 @@ class _Generator:
                     if index.kind != "int":
                         raise _Unsupported
                     self.update_info(environment, target.value.id, _DictInfo(None, True))
-                    return f"let {result} = {value.code};\nlet {offset} = {index.code};\n{values.code}.set({offset}, {result});", environment
+                    setter=self.at(f"{values.code}.set({offset}, {result})",node)
+                    return f"let {result} = {value.code};\nlet {offset} = {index.code};\n{setter};", environment
                 setter = self.at(f"native_set(&mut {values.code}, {offset}, {result})", node)
                 return f"let {result} = {value.code};\nlet {offset} = {self.number(index)};\n{setter};", environment
             if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in node.targets):
@@ -1489,7 +1491,8 @@ class _Generator:
                 raise _Unsupported
             result = self.temporary()
             if values.kind == "dict_int":
-                return f"let {offset} = {index.code};\nlet {old} = {getter};\nlet {result} = {value.code};\n{values.code}.set({offset}, {result});", environment
+                setter=self.at(f"{values.code}.set({offset}, {result})",node)
+                return f"let {offset} = {index.code};\nlet {old} = {getter};\nlet {result} = {value.code};\n{setter};", environment
             setter = self.at(f"native_set(&mut {values.code}, {offset}, {result})", node)
             return f"let {offset} = {self.number(index)};\nlet {old} = {getter};\nlet {result} = {value.code};\n{setter};", environment
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
@@ -2110,7 +2113,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             generator.union_types.update(local.union_types)
             generator.text_predicates.update(local.text_predicates)
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_fixed_parsing", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_callback_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
+            for flag in ("needs_integer_runtime", "has_fixed_parsing", "has_input", "has_lists", "has_dicts", "has_mapping_delete", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_callback_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2138,6 +2141,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_input:
         result.append(runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"))
         result.append(_INPUT_HELPERS if generator.has_fixed_parsing else TEXT_INPUT_HELPERS)
+    if generator.has_key_containers or generator.has_dicts:
+        from .native_ordered_entries import helpers as dictionary_entries
+        result.append(dictionary_entries(getattr(generator,"has_mapping_delete",False)))
     if generator.has_key_containers:
         from .native_key_containers import HELPERS as KEY_HELPERS
         result.append(KEY_HELPERS)

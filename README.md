@@ -176,7 +176,7 @@ wrapping policy.
 
 Supported competitive-programming patterns include unpacked integer input,
 `list(map(int, input().split()))`, integer-list mutation and sorting, dictionary
-aggregation and insertion-order iteration, and owned adjacency-list BFS.
+aggregation, key deletion and insertion-order iteration, and owned adjacency-list BFS.
 Standard input is buffered and read on demand. Output flushes before a blocking
 input operation, including inside supported ordinary functions.
 Immediate iterator producers and consumers share immutable semantic plans.
@@ -245,6 +245,8 @@ Generated-source audit results are saved too, but text checks alone cannot prove
 or guarantee the performance of other programs.
 
 Direct integer dictionaries and sets use Rust `HashMap` and `HashSet`.
+Dictionary deletion selects reusable ordered slots, including inside ordinary
+functions, preserving expected amortized O(1) updates and insertion order.
 Operations at either end of a supported deque are amortized O(1).
 Unimplemented benchmark patterns produce the same positioned diagnostic as
 other input programs; they are not measured through another backend.

@@ -208,6 +208,23 @@ retaining the original key, and dictionaries retain insertion order. BigInt
 integer keys use the same typed containers. Mutable values, observable set
 iteration, and general container aliases remain unfinished.
 
+Builtin dictionaries support `del d[key]`, including sequential deletion
+targets, checked missing-key errors and numeric augmented entry updates.
+Receiver lookup and key evaluation run once; augmented assignment fetches the
+old value before its right operand and stores after that operand's effects.
+Deletion/reinsertion preserves Python insertion order and the original key on
+an overwrite. Admitted keys are immutable integer/bool, text and tuple shapes;
+general hash/equality protocols remain unfinished.
+
+Programs with proved key deletion use hash indices and reusable linked slots:
+lookup, insertion and deletion take expected amortized O(1), traversal is O(n)
+in the live entry count, and slot storage grows with peak live occupancy.
+Function specializations propagate this storage requirement to their caller.
+Programs without deletion retain dense entry storage. Index and entry reserves
+are checked. Mutation during active dictionary iteration, shared mutable
+mapping arguments/aliases and custom `__delitem__` protocols still require
+their corresponding direct storage/protocol adapters.
+
 A shared semantic constraint graph supplies ordinary function allocation shapes
 and loop-header binding types to the fixed-width and BigInt emitters. Empty
 list/set/dict fields start as type variables; proven insertions, indexing,

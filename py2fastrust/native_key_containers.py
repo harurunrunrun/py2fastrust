@@ -23,9 +23,9 @@ impl<K,C:Eq+std::hash::Hash> NativeKeySet<K,C> {
     }
 }
 #[derive(Clone)]
-struct NativeKeyDict<K,V,C> { entries:Vec<(K,V)>, index:std::collections::HashMap<C,usize> }
+struct NativeKeyDict<K,V,C> { entries:NativeDictionaryEntries<(K,V)>, index:std::collections::HashMap<C,usize> }
 impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
-    fn new()->Self {Self {entries:Vec::new(),index:std::collections::HashMap::new()}}
+    fn new()->Self {Self {entries:NativeDictionaryEntries::new(),index:std::collections::HashMap::new()}}
     fn len(&self)->usize {self.entries.len()}
     fn is_empty(&self)->bool {self.entries.is_empty()}
     fn clear(&mut self){self.entries.clear();self.index.clear();}
@@ -33,9 +33,12 @@ impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
     fn get(&self,key:&C)->Option<&V> {self.index.get(key).map(|&index|&self.entries[index].1)}
     fn set(&mut self,key:K,canonical:C,value:V)->Result<(),String> {
         if let Some(&index)=self.index.get(&canonical){self.entries[index].1=value;return Ok(());}
-        self.entries.try_reserve(1).map_err(|_|"MemoryError".to_string())?;
         self.index.try_reserve(1).map_err(|_|"MemoryError".to_string())?;
-        self.index.insert(canonical,self.entries.len());self.entries.push((key,value));Ok(())
+        let slot=native_dict_insert(&mut self.entries,(key,value))?;
+        self.index.insert(canonical,slot);Ok(())
+    }
+    fn delete(&mut self,key:&C)->bool {
+        match self.index.remove(key){Some(slot)=>{native_dict_remove(&mut self.entries,&mut self.index,slot);true},None=>false}
     }
 }
 '''
@@ -247,6 +250,9 @@ def _widen(generator,environment,name,kind,node):
 
 
 def try_statement(generator,node,environment):
+    from .native_mapping_mutations import lower as mapping_delete
+    deleted=mapping_delete(generator,node,environment)
+    if deleted is not None:return deleted
     if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Subscript):
         target=node.targets[0]
         if not isinstance(target.value,ast.Name) or isinstance(target.slice,ast.Slice):return None

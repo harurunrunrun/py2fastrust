@@ -231,6 +231,7 @@ class SemanticGraph:
         site=self.site(node)
         if isinstance(node,ast.Assign):return Operation(site,"assign",(self.expression(node.value),),data=tuple(self.target(target) for target in node.targets))
         if isinstance(node,ast.AugAssign):return Operation(site,"augment",(self.expression(node.target),self.expression(node.value)),data=(self.target(node.target),type(node.op).__name__))
+        if isinstance(node,ast.Delete):return Operation(site,"delete",data=tuple(self.target(target)for target in node.targets))
         if isinstance(node,ast.Expr):return Operation(site,"expression",(self.expression(node.value),))
         if isinstance(node,ast.If):return Operation(site,"branch",(self.expression(node.test),),(self.block(node.body),self.block(node.orelse)))
         if isinstance(node,(ast.For,ast.While)):
@@ -706,6 +707,15 @@ class Solver:
                     self.record_mutation(first,context)
                     self.assign(target,self.augmented(first,second,operator),state)
             elif op=="expression":evaluate(args[0])
+            elif op=="delete":
+                def delete(target):
+                    if target[0]=='name':state[target[1]]=MISSING
+                    elif target[0]=='unpack':
+                        for child in target[1]:delete(child)
+                    elif target[0]=='index':
+                        evaluate(target[1]);evaluate(target[2])
+                    elif target[0]=='attribute':evaluate(target[1])
+                for target in operation.data:delete(target)
             elif op=="branch":
                 evaluate(args[0]);yes=self.block(operation.blocks[0],state,globals,locals,context);no=self.block(operation.blocks[1],state,globals,locals,context)
                 flow.normal=merge([yes.normal,no.normal]);flow.breaks+=yes.breaks+no.breaks;flow.continues+=yes.continues+no.continues;flow.returns=flow.returns.join(yes.returns).join(no.returns)

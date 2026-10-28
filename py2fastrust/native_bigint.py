@@ -486,6 +486,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_native_modules |= any(local.has_native_modules for local in specializations.generators)
         generator.has_tuples |= any(local.has_tuples for local in specializations.generators)
         generator.has_key_containers |= any(local.has_key_containers for local in specializations.generators)
+        generator.has_mapping_delete |= any(local.has_mapping_delete for local in specializations.generators)
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
         generator.has_native_words |= any(local.has_native_words for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError,ConstraintFailure) as error:
@@ -516,6 +517,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.has_input:
         result += [runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),_INPUT_HELPERS]
     if generator.has_key_containers:
+        from .native_ordered_entries import helpers as dictionary_entries
+        result.append(dictionary_entries(getattr(generator,"has_mapping_delete",False)))
         from .native_key_containers import HELPERS as KEY_HELPERS,BIG_HASH
         result.extend([KEY_HELPERS,BIG_HASH])
     if generator.has_tuples:

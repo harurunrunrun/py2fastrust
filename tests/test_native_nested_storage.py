@@ -431,9 +431,5 @@ d[3]=("third",None)
 print(d)
 ''',('',))
 
-    def test_unimplemented_mapping_key_deletion_is_an_explicit_boundary(self):
-        from py2fastrust import transpile,TranspileOptions
-        for mode in ('i64','i128','bigint'):
-            result=transpile('d={1:2}\ndel d[1]\nprint(d)\n',TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
+    def test_mapping_key_deletion_keeps_the_original_boundary_source(self):
+        self.exercise('d={1:2}\ndel d[1]\nprint(d)\n',('',))

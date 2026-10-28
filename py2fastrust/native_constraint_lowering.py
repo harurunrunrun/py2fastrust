@@ -97,7 +97,7 @@ def allocation_expression(g,node,environment):
             if kind=="dict_int":
                 expression=g.expression(g.type_analysis.graph.nodes[item.site],environment)
                 value=g.temporary();lines.append(f"let {value}={g.coerce(expression,'int')};")
-                lines.append(f"{owner}.set({name},{value});")
+                lines.append(g.at(f"{owner}.set({name},{value})",node)+";")
             else:lines.append(f"{owner}.insert({name});")
         return _Expression("{"+" ".join(lines)+f"{owner}}}",kind,length=len(children),nonempty=bool(children))
     if kind=="matrix_int":return None
