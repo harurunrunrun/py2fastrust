@@ -40,6 +40,8 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
     name = type(kind).__name__
     if name in {"ListType","SharedListType"}:
         return "list[" + nested(kind.element) + "]"
+    if name == "DequeType":
+        return "collections.deque[" + nested(kind.element) + "]"
     if name == "TupleSequenceType":
         return "tuple[" + nested(kind.element) + ", ...]"
     if name == "TupleType":

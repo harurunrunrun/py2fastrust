@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import ast
 
 from .native import _Binding,_Unsupported
-from .native_types import is_maybe,immutable,unmaybe
+from .native_types import is_maybe,immutable,unmaybe,deque_type
 from .native_sequence_plans import element_type
 
 
@@ -105,7 +105,7 @@ def capture_owned(g,receiver,node,environment,*,mutates):
     setup=(f"let _=&({receiver.code});",)
     mutable=(f'{binding.slot}.as_mut().expect("validated sequence receiver")' if is_maybe(binding.kind)
              else f"&mut {binding.slot}")
-    read=f"&({receiver.code})"if receiver.kind=="deque_int"else f"&({receiver.code})[..]"
+    read=f"&({receiver.code})"if deque_type(receiver.kind)else f"&({receiver.code})[..]"
     return SequenceStorage(setup,read,mutable,receiver.kind,binding_name=name)
 
 

@@ -1,3 +1,4 @@
+from .native_types import DequeType,deque_type
 """Typed list operations with owned vectors and identity-preserving shared rows."""
 
 import ast
@@ -349,9 +350,10 @@ def _representation(g,value,*,quoted=False):
     if kind == "float":
         g.has_extended_scalars = True
         return f"native_float_text({code})"
-    if kind=="deque_int":
+    if deque_type(kind):
         g.has_deques=True
-        return f"native_deque_repr(&({code}))"
+        from .native_deques import representation
+        return representation(g,value)
     if kind == "bytes":
         from .native_stdio import _enable
         _enable(g)
@@ -449,7 +451,10 @@ def _print(g,node,environment,*,values=None):
                 continue
             if star and isinstance(value.kind,SharedListType):
                 value=_Expression(f"({value.code}).borrow().clone()",ListType(value.kind.element))
-            if star and not value.owned and (value.kind in {"list_int","deque_int"} or isinstance(value.kind,ListType)):
+            if star and not value.owned and isinstance(value.kind,DequeType):
+                from .native_deques import copy_code
+                code=copy_code(g,value,source)
+            elif star and not value.owned and (value.kind in {"list_int","deque_int"} or isinstance(value.kind,ListType)):
                 code=f"({value.code}).clone()"
             elif not value.owned and immutable(value.kind):
                 code=g.coerce(value,value.kind)
@@ -472,7 +477,7 @@ def _print(g,node,environment,*,values=None):
     for star,value in arguments:
         if not star:
             lines.append(write(value))
-        elif value.kind in {"list_int","deque_int"} or isinstance(value.kind,(ListType,TupleSequenceType)):
+        elif value.kind in {"list_int","deque_int"} or isinstance(value.kind,(ListType,DequeType,TupleSequenceType)):
             element = "int" if value.kind in {"list_int","deque_int"} else value.kind.element
             item = g.temporary()
             lines.append(f"for {item} in {value.code}.iter() {{\n{write(_Expression(f'(*{item})',element,owned=False))}\n}}")

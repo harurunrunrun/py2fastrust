@@ -33,6 +33,18 @@ class SharedListType(ListType):
 
 
 @dataclass(frozen=True)
+class DequeType:
+    """A uniquely owned typed builtin deque with ordinary element values."""
+    element: object
+
+
+@dataclass(frozen=True)
+class TypedDequeInfo:
+    kind: DequeType
+    length: int | None = None
+
+
+@dataclass(frozen=True)
 class MaybeType:
     value: object
 
@@ -145,6 +157,7 @@ def render_type(kind, leaf_override=None):
     if isinstance(kind,SharedListType):return "NativeSharedList<"+recurse(kind.element)+">"
     if isinstance(kind,ListType):
         return "Vec<"+recurse(kind.element)+">"
+    if isinstance(kind,DequeType):return "NativeDeque<"+recurse(kind.element)+">"
     if getattr(kind,"_key_container",False):
         from .native_key_types import container_type
         return container_type(kind)
@@ -167,6 +180,7 @@ def kind_tag(kind):
     if isinstance(kind,SharedListType):return "shared_list_"+kind_tag(kind.element)+"_end"
     if isinstance(kind,ListType):
         return "list_"+kind_tag(kind.element)+"_end"
+    if isinstance(kind,DequeType):return "deque_"+kind_tag(kind.element)+"_end"
     if getattr(kind,"_key_container",False):
         return kind._key_container+"_"+kind_tag(kind.key)+("_"+kind_tag(kind.value) if kind._key_container=="dict" else "")+"_end"
     return kind
@@ -218,6 +232,10 @@ def list_type(kind):
     return kind=="list_int" or isinstance(kind,ListType)
 
 
+def deque_type(kind):
+    return kind=="deque_int" or isinstance(kind,DequeType)
+
+
 def default_value(kind,zero):
     if is_maybe(kind):return "None"
     if isinstance(kind,NullableType):return "None"
@@ -228,6 +246,7 @@ def default_value(kind,zero):
     if isinstance(kind,TupleSequenceType):return "NativeTuple::from_vec(Vec::new())"
     if isinstance(kind,SharedListType):return "native_shared_list(Vec::new())"
     if isinstance(kind,ListType):return "Vec::new()"
+    if isinstance(kind,DequeType):return "NativeDeque::new(None)"
     if getattr(kind,"_key_container",False):return "NativeKeySet::new()" if kind._key_container=="set" else "NativeKeyDict::new()"
     return {"none":"()","int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"NativeText::new()",
             "bytes":"Vec::<u8>::new()","float":"0.0_f64","list_int":"Vec::new()",

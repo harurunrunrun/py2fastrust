@@ -160,7 +160,8 @@ The converter uses Python's official `ast` and `symtable` APIs. Supported
 bindings, operators and control flow become Rust values, expressions, loops
 and functions. The current implementation covers proved integer and boolean
 operations, shared immutable strings and `f64` scalars, owned BigInt scalar operations, integer
-lists and shared nested rows, dictionaries, sets and integer deques, including bounded queues. It supports
+lists and shared nested rows, dictionaries, sets and typed deques with
+immutable scalar or tuple elements, including bounded queues. It supports
 ordinary scalar functions with proved argument and return kinds, constant
 defaults, positional and keyword binding, and calls between those functions.
 Statically known function aliases retain their original definitions across

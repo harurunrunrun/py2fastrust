@@ -1,10 +1,10 @@
 """One dispatch point for already lowered ordinary comparison operands."""
 import ast
 
-from .native_types import TupleType
+from .native_types import TupleType,deque_type
 
 
-def compare_values(g,node,values):
+def compare_values(g,node,values,environment=None):
     from .native import _Expression,_Unsupported
     # A finite wrapper can itself contain shared handles. Dispatch that wrapper
     # before a concrete-list adapter sees only the other operand's layout.
@@ -15,8 +15,8 @@ def compare_values(g,node,values):
     shared=shared_comparison(g,node,values)
     if shared is not None:return shared
     from .native_deques import comparison as deque_comparison
-    if any(value.kind=="deque_int" for value in values):
-        deque=deque_comparison(g,node,values)
+    if any(deque_type(value.kind) for value in values):
+        deque=deque_comparison(g,node,values,environment)
         if deque is not None:return deque
     if len(node.ops)==1 and isinstance(node.ops[0],(ast.In,ast.NotIn)):
         from .native_key_containers import comparison as keyed_comparison

@@ -3,7 +3,7 @@ import ast
 
 from .call_semantics import CallBindingError,FunctionSignature,normalize_call
 from .native import _Binding,_Expression,_Unsupported,_string
-from .native_types import ListType,TupleType,TupleSequenceType
+from .native_types import ListType,DequeType,TupleType,TupleSequenceType
 from .native_key_types import DictType,SetType
 from .references import BuiltinIdentity,callable_reference
 
@@ -32,7 +32,7 @@ def _length(g,value,node):
     from .native_types import SharedListType
     if isinstance(kind,SharedListType):return f"native_shared_len(&({value.code}))"
     if isinstance(kind,TupleType):return f"{len(kind.fields)}_usize"
-    if isinstance(kind,(ListType,TupleSequenceType,DictType,SetType))or kind in _CONTAINERS:
+    if isinstance(kind,(ListType,DequeType,TupleSequenceType,DictType,SetType))or kind in _CONTAINERS:
         return f"({value.code}).len()"
     if kind=="str":
         from .native_cached_text import text_length

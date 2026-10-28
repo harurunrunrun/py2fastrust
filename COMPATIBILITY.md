@@ -194,13 +194,15 @@ leaving stale container cardinality proofs. Mutable equality, non-`None` object
 identity, general operations on nullable values, and remaining class integration
 are still unfinished.
 
-Integer `collections.deque` values use one native `VecDeque<NativeInt>` storage
-adapter in i64, i128, and BigInt modes. Trusted imports, module members, aliases,
+`collections.deque` values use one native `VecDeque<T>` storage adapter in i64,
+i128, and BigInt modes. The element representation is solved from ordinary
+producers and mutations, including integers, booleans, text, bytes, None,
+immutable finite alternatives, and fixed or homogeneous tuples. Trusted imports, module members, aliases,
 and function-local imports resolve through the same callable identities. The
-constructor accepts integer iterable producers and optional `maxlen`, including
+constructor accepts supported typed iterable producers and optional `maxlen`, including
 proved nullable bounds. Append/pop operations at both ends, extend/extendleft,
 clear, copy, count, index, insert, remove, reverse, rotate, readonly maxlen,
-integer item reads/writes/deletion, content comparisons, membership, printing,
+integer-indexed item reads/writes/deletion, content comparisons, membership, printing,
 and existing stream consumers share typed native lowering. Bounded queues evict
 from the opposite end; a zero bound still consumes source iterator effects.
 Exact self-extension snapshots the original contents, while copy produces an
@@ -208,9 +210,10 @@ independent deque with the same bound. Plain print arguments retain mutable
 identity until later arguments finish; starred arguments capture their expanded
 values at their own evaluation point.
 
-This adapter currently requires a proved unique deque owner and integer elements.
-General mutable aliases, mutation during active iteration, deque function
-arguments, non-integer element storage, floating/custom search protocols, deque
+This adapter currently requires a proved unique deque owner and identity-safe
+immutable elements. General mutable aliases, mutation during active iteration,
+deque function arguments, mutable element storage, floating/custom search
+protocols, deque
 subclasses, arithmetic operators, and the remaining general object protocols are
 still required work. Unsupported cases remain positioned diagnostics; no VM or
 implicit Python execution supplies these operations.

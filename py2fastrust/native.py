@@ -8,7 +8,7 @@ the public API; it never selects a general execution backend.
 """
 
 import ast
-from .native_types import (TupleType,TupleSequenceType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
+from .native_types import (TupleType,TupleSequenceType,ListType,DequeType,deque_type,TypedDequeInfo,MaybeType,TypedListInfo,rust_type,kind_tag,
                            is_maybe,unmaybe,maybe_type,immutable,list_type,default_value,
                            UnionType,NullableType,join_types,EmptyType,EMPTY)
 from dataclasses import dataclass, field, replace
@@ -124,7 +124,7 @@ class _Binding:
         if isinstance(self.info, _MaybeInfo):
             return maybe_type(self.info.kind)
         if getattr(self.info,"_key_info",False):return self.info.kind
-        if isinstance(self.info,TypedListInfo):
+        if isinstance(self.info,(TypedListInfo,TypedDequeInfo)):
             return self.info.kind
         if isinstance(self.info, _ListInfo):
             return "list_int"
@@ -470,7 +470,7 @@ class _Generator:
 
     def slot(self, kind):
         inner=unmaybe(kind)
-        if isinstance(inner,(TupleType,TupleSequenceType,ListType,UnionType,NullableType,EmptyType)) or getattr(inner,"_key_container",False):
+        if isinstance(inner,(TupleType,TupleSequenceType,ListType,DequeType,UnionType,NullableType,EmptyType)) or getattr(inner,"_key_container",False):
             self.register_type(inner)
             slot=f"native_var_{len(self.bindings)}"
             self.bindings[slot]=kind
@@ -516,6 +516,9 @@ class _Generator:
             for field in kind.fields:self.register_type(field)
         elif isinstance(kind,ListType):
             self.has_typed_lists=True
+            self.register_type(kind.element)
+        elif isinstance(kind,DequeType):
+            self.has_deques=True
             self.register_type(kind.element)
 
     def text_from_codepoint(self, code):
@@ -626,7 +629,7 @@ class _Generator:
             return f"{{let _=&({expression.code}); {str(bool(expression.kind.fields)).lower()}}}"
         from .native_types import SharedListType
         if isinstance(expression.kind,SharedListType):return f"native_shared_len(&({expression.code}))!=0"
-        if isinstance(expression.kind,ListType):return f"!({expression.code}).is_empty()"
+        if isinstance(expression.kind,(ListType,DequeType)):return f"!({expression.code}).is_empty()"
         if expression.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int", "bytes"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind == "int_bool":
@@ -647,6 +650,7 @@ class _Generator:
         from .native_types import SharedListType
         if isinstance(expression.kind,SharedListType):return TypedListInfo(expression.kind,None)
         if isinstance(expression.kind,ListType):return TypedListInfo(expression.kind,expression.length)
+        if isinstance(expression.kind,DequeType):return TypedDequeInfo(expression.kind,expression.length)
         if expression.kind == "list_int":
             return _ListInfo(expression.length)
         if expression.kind == "matrix_int":
@@ -887,7 +891,7 @@ class _Generator:
             if not isinstance(information, _Binding):
                 raise _Unsupported
             info = information.info
-            if isinstance(info,TypedListInfo):
+            if isinstance(info,(TypedListInfo,TypedDequeInfo)):
                 return _Expression(information.slot,info.kind,owned=False,length=info.length)
             if isinstance(info, _MaybeInfo):
                 if info.owner is None:
@@ -1279,6 +1283,7 @@ class _Generator:
         for name, binding in environment.items():
             if isinstance(binding, _Binding):
                 info = binding.info
+                if isinstance(info,TypedDequeInfo):info=TypedDequeInfo(info.kind,None)
                 if getattr(info,"_key_info",False):
                     from .native_key_types import KeyInfo
                     info=KeyInfo(info.kind,None,False)
@@ -1745,7 +1750,7 @@ class _Generator:
                 if flush: lines.append(self.at("native_flush_output(&mut native_output)", node) + ";")
                 return "\n".join(lines), environment
             expression = self.expression(call, environment)
-            return f"let _ = {'&(' + expression.code + ')' if (expression.kind in {'list_int', 'dict_int', 'set_int', 'matrix_int', 'deque_int'} or isinstance(expression.kind,ListType) or getattr(expression.kind,"_key_container",False)) and not expression.owned else expression.code};", environment
+            return f"let _ = {'&(' + expression.code + ')' if (expression.kind in {'list_int', 'dict_int', 'set_int', 'matrix_int', 'deque_int'} or isinstance(expression.kind,(ListType,DequeType)) or getattr(expression.kind,"_key_container",False)) and not expression.owned else expression.code};", environment
         raise _Unsupported
 
 

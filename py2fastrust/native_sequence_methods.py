@@ -1,12 +1,12 @@
 """One operation lowering for owned and shared builtin sequence storage."""
 from .native import _Expression,_Unsupported
-from .native_types import EmptyType,immutable,list_type
+from .native_types import EmptyType,immutable,list_type,deque_type
 from .native_sequence_plans import element_type
 
 
 def lower(g,storage,method,bound,node,environment,*,sort_key=None):
     """Consume already captured explicit values; borrow contents at the operation."""
-    if storage.kind=="deque_int":
+    if deque_type(storage.kind):
         from .native_deques import lower as deque_lower
         return deque_lower(g,storage,method,bound,node,environment)
     element=storage.element

@@ -72,7 +72,7 @@ def lower(g,node,environment):
         values=capture(g,(node.left,*node.comparators),environment,
                        unconditional=2,read=True,node=node)
         from .native_comparison_lowering import compare_values
-        return compare_values(g,node,values)
+        return compare_values(g,node,values,environment)
     if isinstance(node,ast.BoolOp):
         values=capture(g,node.values,environment,node=node)
         from .native_expression_results import kind as result_kind

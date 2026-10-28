@@ -11,7 +11,7 @@ from types import MappingProxyType
 
 from .call_semantics import FunctionSignature,normalize_call,CallBindingError
 from .literal_semantics import Literal
-from .native_types import (TupleType,TupleSequenceType,ListType,SharedListType,EmptyType,EMPTY,NullableType,UnionType,
+from .native_types import (TupleType,TupleSequenceType,ListType,SharedListType,DequeType,deque_type,EmptyType,EMPTY,NullableType,UnionType,
                           join_types,union_type,alternatives,unmaybe,is_maybe,kind_tag,shared_payload)
 from .native_key_types import SetType,DictType
 from .references import BuiltinIdentity,DequeConstructor,CORE_BUILTINS
@@ -289,6 +289,8 @@ class Analysis:
 def canonical_kind(kind):
     kind=unmaybe(kind)
     if isinstance(kind,SharedListType):return ListType(canonical_kind(kind.element))
+    if isinstance(kind,DequeType):return DequeType(canonical_kind(kind.element))
+    if kind=="deque_int":return DequeType("int")
     if isinstance(kind,ListType):return ListType(canonical_kind(kind.element))
     if kind=="list_int":return ListType("int")
     if kind=="set_int":return SetType("int")
@@ -299,6 +301,7 @@ def canonical_kind(kind):
 
 def native_kind(kind,bits):
     if isinstance(kind,SharedListType):return kind
+    if isinstance(kind,DequeType)and kind.element=="int":return "deque_int"
     if isinstance(kind,ListType) and kind.element=="int":return "list_int"
     if isinstance(kind,ListType) and kind.element==ListType("int"):return "matrix_int"
     if bits and isinstance(kind,SetType) and kind.key=="int":return "set_int"
@@ -365,9 +368,9 @@ class Solver:
         result=BOTTOM
         for part in item.alternatives:
             if isinstance(part,Allocation):
-                name="element" if part.category in {"list","tuple_sequence"} else "key" if role=="iteration" else role
+                name="element" if part.category in {"list","tuple_sequence","deque"} else "key" if role=="iteration" else role
                 result=result.join(self.field(part,name))
-            elif isinstance(part,(ListType,TupleSequenceType)):result=result.join(value(part.element))
+            elif isinstance(part,(ListType,TupleSequenceType,DequeType)):result=result.join(value(part.element))
             elif isinstance(part,SetType):result=result.join(value(part.key))
             elif isinstance(part,DictType):result=result.join(value(part.key if role=="iteration" else part.value))
             elif isinstance(part,IteratorValue):result=result.join(part.item)
@@ -414,7 +417,7 @@ class Solver:
         categories={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
         if "dict" in categories:
             self.insert(receiver,"key",index);self.insert(receiver,"value",item)
-        if "list" in categories:self.insert(receiver,"element",item)
+        if categories&{"list","deque"}:self.insert(receiver,"element",item)
 
     def assign(self,target,item,state):
         if target[0]=="name":
@@ -466,7 +469,7 @@ class Solver:
                 member=_member(owner,term.data)
                 if member is not None:members=members.join(value(member))
             if members.alternatives:result=members
-            elif term.data=="maxlen"and self.kind(receiver)=="deque_int":result=value(NullableType("int"))
+            elif term.data=="maxlen"and deque_type(self.kind(receiver)):result=value(NullableType("int"))
         elif op=="call":
             callee=evaluate(args[0]);positional=tuple(evaluate(child) for child in args[1]);keywords=tuple((name,evaluate(child)) for name,child in args[2])
             self.calls[(context,term.site)]=CallFact(callee,positional,keywords)
@@ -537,17 +540,25 @@ class Solver:
 
     def call(self,identity,args,keywords,term,state,globals,locals,context):
         if isinstance(identity,FunctionValue):return self.function(identity,args,keywords,state if context[0] is None else globals)
-        if isinstance(identity,DequeConstructor):return value("deque_int")
+        if isinstance(identity,DequeConstructor):
+            result=value(self.allocation(term.site,"deque",context))
+            if args:self.insert(result,"element",self.field_values(args[0],"iteration"))
+            elif any(name=="iterable"for name,_ in keywords):
+                self.insert(result,"element",self.field_values(next(item for name,item in keywords if name=="iterable"),"iteration"))
+            return result
         if isinstance(identity,MethodValue):
             receiver=self.provenance(identity.receiver);name=identity.name
             if name in {"append","extend","clear","reverse","sort","pop","insert","remove"}:
                 self.record_mutation(receiver,context)
             category={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
             kinds={part for part in receiver.alternatives if isinstance(part,(str,ListType,DictType,SetType))}
-            if name in {"append","add"} and args and (category&{"list","set"}):
-                self.insert(receiver,"element" if name=="append" else "key",args[0]);return value("none")
-            if name in {"extend","update"} and args and (category&{"list","set"}):
-                self.insert(receiver,"element" if name=="extend" else "key",self.field_values(args[0],"iteration"));return value("none")
+            if name in {"append","appendleft","add"} and args and (category&{"list","deque","set"}):
+                self.insert(receiver,"key" if name=="add" else "element",args[0]);return value("none")
+            if name=="insert"and len(args)>1 and "deque"in category:
+                self.insert(receiver,"element",args[1]);return value("none")
+            if name in {"extend","extendleft","update"} and args and (category&{"list","deque","set"}):
+                self.insert(receiver,"key" if name=="update" else "element",self.field_values(args[0],"iteration"));return value("none")
+            if name in {"clear","reverse","rotate"}and "deque"in category:return value("none")
             if (name=="clear" and not args and not keywords and len(category)==1
                     and any(isinstance(part,Allocation) for part in identity.receiver.alternatives)):
                 # Clearing a uniquely owned object creates a new content epoch,
@@ -563,7 +574,7 @@ class Solver:
             if name in {"clear","reverse","sort"} and (category or any(isinstance(kind,ListType) for kind in kinds)):return value("none")
             if name=="copy" and len(category)==1:
                 category=next(iter(category));result=value(self.allocation(term.site,category,context))
-                for role in ("element",) if category=="list" else ("key",) if category=="set" else ("key","value"):
+                for role in ("element",) if category in {"list","deque"} else ("key",) if category=="set" else ("key","value"):
                     self.insert(result,role,self.field_values(receiver,"iteration" if role in {"key","element"} else "value"))
                 return result
             if name in {"keys","values","items"} and ("dict" in category or any(isinstance(kind,DictType) for kind in kinds)):
@@ -575,6 +586,7 @@ class Solver:
             if name=="split" and kinds&{"str","bytes"}:
                 result=value(self.allocation(term.site,"list",context));self.insert(result,"element",value("bytes" if "bytes" in kinds else "str"));return result
             if name in {"strip","lstrip","rstrip","join"} and kinds&{"str","bytes"}:return value("bytes" if "bytes" in kinds else "str")
+            if name in {"pop","popleft"} and "deque"in category:return self.field_values(receiver,"iteration")
             if name in {"pop","popleft"} and "deque_int" in kinds:return value("int")
             if name=="copy"and "deque_int"in kinds:return value("deque_int")
             if name=="pop" and ("list" in category or any(isinstance(kind,ListType) for kind in kinds)):
@@ -766,9 +778,9 @@ class Solver:
                 current=EMPTY if part in active else self.kind(self.variables.get(part,BOTTOM),active|{part})
             elif isinstance(part,Allocation):
                 if part in active:return None
-                fields=("element",) if part.category in {"list","tuple_sequence"} else ("key",) if part.category=="set" else ("key","value")
+                fields=("element",) if part.category in {"list","tuple_sequence","deque"} else ("key",) if part.category=="set" else ("key","value")
                 kinds=tuple(self.kind(self.field(part,name),active|{part}) for name in fields)
-                current=None if None in kinds else TupleSequenceType(kinds[0]) if part.category=="tuple_sequence" else ListType(kinds[0]) if part.category=="list" else SetType(kinds[0]) if part.category=="set" else DictType(*kinds)
+                current=None if None in kinds else TupleSequenceType(kinds[0]) if part.category=="tuple_sequence" else ListType(kinds[0]) if part.category=="list" else DequeType(kinds[0]) if part.category=="deque" else SetType(kinds[0]) if part.category=="set" else DictType(*kinds)
             elif isinstance(part,TupleValue):
                 fields=tuple(self.kind(field,active) for field in part.fields);current=None if None in fields else TupleType(fields)
             elif isinstance(part,Computed):
@@ -779,7 +791,7 @@ class Solver:
                 current=EMPTY
                 if owner is None:return None
                 for shape in alternatives(owner):
-                    if isinstance(shape,(ListType,TupleSequenceType)):item=shape.element
+                    if isinstance(shape,(ListType,TupleSequenceType,DequeType)):item=shape.element
                     elif isinstance(shape,SetType):item=shape.key
                     elif isinstance(shape,DictType):item=shape.key if part.role=="iteration" else shape.value
                     elif isinstance(shape,TupleType):
@@ -793,7 +805,7 @@ class Solver:
                     else:return None
                     current=join_types(current,item)
             elif isinstance(part,ShapeConstraint):current=part.kind
-            elif isinstance(part,(str,TupleType,TupleSequenceType,ListType,SetType,DictType,UnionType,NullableType,EmptyType)):current=part
+            elif isinstance(part,(str,TupleType,TupleSequenceType,ListType,DequeType,SetType,DictType,UnionType,NullableType,EmptyType)):current=part
             elif getattr(part,"_native_kind_tag",None) is not None:current=part
             else:return None
             if current is None:return None
@@ -826,12 +838,13 @@ class Solver:
         for part in item.alternatives:
             if isinstance(part,Allocation):
                 if part.category=="list" and isinstance(expected,ListType):fields=(("element",expected.element),)
+                elif part.category=="deque" and isinstance(expected,DequeType):fields=(("element",expected.element),)
                 elif part.category=="set" and isinstance(expected,SetType):fields=(("key",expected.key),)
                 elif part.category=="dict" and isinstance(expected,DictType):fields=(("key",expected.key),("value",expected.value))
                 else:continue
                 for name,kind in fields:
-                    if not isinstance(kind,EmptyType):self.constrain(Variable(part.site,name),value(ShapeConstraint(kind) if isinstance(kind,(ListType,SetType,DictType,TupleType,TupleSequenceType)) else kind))
-            elif isinstance(part,Variable):self.constrain(part,value(ShapeConstraint(expected) if isinstance(expected,(ListType,SetType,DictType,TupleType,TupleSequenceType)) else expected))
+                    if not isinstance(kind,EmptyType):self.constrain(Variable(part.site,name),value(ShapeConstraint(kind) if isinstance(kind,(ListType,DequeType,SetType,DictType,TupleType,TupleSequenceType)) else kind))
+            elif isinstance(part,Variable):self.constrain(part,value(ShapeConstraint(expected) if isinstance(expected,(ListType,DequeType,SetType,DictType,TupleType,TupleSequenceType)) else expected))
             elif isinstance(part,TupleValue) and isinstance(expected,TupleType) and len(part.fields)==len(expected.fields):
                 for field,kind in zip(part.fields,expected.fields):self.equalize(field,kind)
 

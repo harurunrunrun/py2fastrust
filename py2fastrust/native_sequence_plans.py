@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from .call_semantics import FunctionSignature
-from .native_types import list_type
+from .native_types import list_type,deque_type
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ METHODS=MappingProxyType({**LIST_METHODS,**DEQUE_METHODS})
 
 
 def sequence_method(kind,name):
-    return DEQUE_METHODS.get(name)if kind=="deque_int"else LIST_METHODS.get(name)if list_type(kind)else None
+    return DEQUE_METHODS.get(name)if deque_type(kind)else LIST_METHODS.get(name)if list_type(kind)else None
 
 
 def element_type(kind):

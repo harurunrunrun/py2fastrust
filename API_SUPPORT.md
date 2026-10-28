@@ -10,8 +10,9 @@ work. The implementations and their acceptance tests are retained; this
 inventory and strict diagnostics do not establish completed compatibility or a
 green full suite. See [COMPATIBILITY.md](COMPATIBILITY.md) for the public boundary.
 
-Current direct module coverage includes proved integer `collections.deque` values
-in all integer modes, with bounded queues and the named methods described in
+Current direct module coverage includes proved immutable scalar and tuple
+elements in `collections.deque` in all integer modes, with bounded queues and
+the named methods described in
 [COMPATIBILITY.md](COMPATIBILITY.md), plus
 `sys.stdin`/`sys.stdin.buffer` `read`/`readline`, including statically captured
 reader aliases and local imports. This does not establish direct coverage of

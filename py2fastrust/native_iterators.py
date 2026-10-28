@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .native import _Binding, _DequeInfo, _Expression, _MaybeInfo, _Unsupported, _string
-from .native_types import TupleType,TupleSequenceType, immutable, maybe_type, rust_type, tuple_code, tuple_field
+from .native_types import TupleType,TupleSequenceType,DequeType,deque_type, immutable, maybe_type, rust_type, tuple_code, tuple_field
 from .call_semantics import CallBindingError
 from .native_stream_plans import ConsumerKind, ProducerKind, consumer_plan, context
 from .references import BuiltinIdentity
@@ -269,7 +269,7 @@ class Planner:
             field = ItemField("str", "@", True, "(@ as u32)")
             return self.leaf(setup, begin, cursor, (field,),
                              {node.id} if named and node.id not in self.snapshot_strings else (), length=length)
-        if value.kind not in {"list_int", "matrix_int", "dict_int", "deque_int", "set_int"}:
+        if value.kind not in {"list_int", "matrix_int", "dict_int", "deque_int", "set_int"} and not deque_type(value.kind):
             raise _Unsupported
         if value.kind == "set_int" and not allow_set:
             # A mapped/filtering consumer can observe set traversal order.
@@ -289,7 +289,9 @@ class Planner:
                 ("int", "@.1" if mode == "values" else "@.0", False),)
         else:
             begin = f"let {cursor} = {owner}.iter();"
-            fields = (("list_int", "@", False),) if value.kind == "matrix_int" else (("int", "*@", False),)
+            from .native_sequence_plans import element_type
+            element=element_type(value.kind) if deque_type(value.kind) else "int"
+            fields = (("list_int", "@", False),) if value.kind == "matrix_int" else ((element, "*@", False),)
         return self.leaf(setup, begin, cursor, fields, owners,
                          tupled=bool(view and view[1] == "items"), length=value.length,
                          nonempty=value.nonempty)

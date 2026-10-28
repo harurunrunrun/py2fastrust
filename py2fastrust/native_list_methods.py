@@ -1,6 +1,6 @@
 """Typed sequence methods through canonical method and ordered operand plans."""
 from .native import _Binding, _Expression, _Unsupported
-from .native_types import EmptyType, list_type, is_maybe
+from .native_types import EmptyType, list_type, is_maybe,deque_type
 
 
 HELPERS=r'''
@@ -45,10 +45,10 @@ def try_expression(g,node,environment):
     receiver=plan.receiver.captured
     method=sequence_method(receiver.kind,plan.identity.name)
     if method is None:return None
-    if receiver.kind=="deque_int"and method.name in {"extend","extendleft"}:
+    if deque_type(receiver.kind)and method.name in {"extend","extendleft"}:
         from .native_deques import extend
         return extend(g,node,environment,plan=plan)
-    if receiver.kind=="deque_int":g.has_deques=True
+    if deque_type(receiver.kind):g.has_deques=True
     else:g.has_lists=g.has_typed_lists=True
     g.register_type(receiver.kind)
     storage=capture_owned(g,receiver,plan.receiver.expression,environment,mutates=method.mutates)
