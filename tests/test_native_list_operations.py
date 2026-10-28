@@ -21,10 +21,10 @@ class NativeListOperationTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.harness.tearDownClass()
 
-    def compare(self, source, inputs=("",)):
+    def compare(self, source, inputs=("",), *, string_mode="ascii"):
         for mode in ("i64", "i128", "bigint"):
             for release in (False, True):
-                binary, _ = self.harness.compile(source, mode, release)
+                binary, _ = self.harness.compile(source, mode, release, string_mode=string_mode)
                 for data in inputs:
                     with self.subTest(mode=mode, release=release, data=data):
                         self.harness.compare(binary, source, mode, data)
@@ -51,7 +51,7 @@ y=[(3,"海")]
 z=x+y
 z[0]=(False,"x")
 print(x,y,z,2*x,x*False)
-''')
+''', string_mode="unicode")
 
     def test_empty_operands_and_unicode_strings_keep_list_copy_semantics(self):
         self.compare('''a=["a","猫"]
@@ -61,7 +61,7 @@ d=(a+[])*2
 b[0]="changed"
 c.append("海")
 print(a,b,c,d,[]+[],a*-3,False*a)
-''')
+''', string_mode="unicode")
 
     def test_source_effects_and_readonly_function_arguments_are_ordered(self):
         self.compare('''def mark(n):
@@ -119,7 +119,7 @@ print(a,b,c,d,process(a,2))
             lines.extend((f"left={left!r}", f"right={right!r}",
                           "combined=left+right", f"repeated={count}*combined",
                           f"print(combined,repeated,left,right,({left!r}+right)*{count})"))
-        self.compare("\n".join(lines)+"\n")
+        self.compare("\n".join(lines)+"\n", string_mode="unicode")
 
 
 if __name__ == "__main__":

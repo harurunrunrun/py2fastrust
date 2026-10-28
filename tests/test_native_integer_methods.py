@@ -29,8 +29,8 @@ class NativeIntegerMethodTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def compile(self, source, integer="bigint", release=False):
-        result = transpile(source, TranspileOptions(integer=integer, filename="main.py"))
+    def compile(self, source, integer="bigint", release=False, *, string_mode="ascii"):
+        result = transpile(source, TranspileOptions(integer=integer, filename="main.py", string_mode=string_mode))
         self.assertTrue(result.success, result.diagnostics)
         self.assertEqual(result.backend, "native", source)
         rust = result.rust_source
