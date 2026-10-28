@@ -35,8 +35,6 @@ class NativeDiagnosticTests(unittest.TestCase):
         sources=(
             ('def f(*items):return sum(items)\nprint(f(1))\n',('signature','items','packing','tuple')),
             ('def f(**items):return 1\nprint(f(a=1))\n',('signature','items','packing','dictionary')),
-            ('def f(x=[]):return len(x)\nprint(f())\n',('default','shared mutable','definition-time','identity')),
-            ('def f(x=input()):return x\nprint(f())\n',('default','definition-time','effects/exceptions','capture')),
             ('def outer(x):\n def inner():return x\n return inner\nf=outer(3)\nprint(f())\n',('nested function','inner','closure','lifetime')),
             ('def outer(x):\n def inner():return x\n return inner\nprint(outer(3)())\n',("call 'outer(3)'",'computed callee','callable-object/closure')),
         )
@@ -85,6 +83,10 @@ class NativeDiagnosticTests(unittest.TestCase):
         source='values=[1]\nalias=values\nalias.append(2)\nprint(values)\n'
         self.positive(source)
         self.positive('n=int(input())\nx=[1] if n else None\nprint(x)\n',('0\n','1\n'))
+
+    def test_definition_time_defaults_are_positive(self):
+        self.positive('def f(x=[]):return len(x)\nprint(f())\n')
+        self.positive('def f(x=input()):return x\nprint(f())\n',('value\n','\n',''))
 
     def test_comprehension_context_reports_element_shape_and_selected_class_path(self):
         forms=(
@@ -194,9 +196,22 @@ class NativeDiagnosticTests(unittest.TestCase):
             self.assertFalse(result.success)
             self.assertFalse(marker.exists())
 
-    def test_cli_failure_contains_the_same_specific_reason_and_location(self):
+    def test_cli_supported_default_matches_the_api(self):
         with tempfile.TemporaryDirectory(prefix='pytors-diagnostic-cli-')as directory:
             source=Path(directory,'main.py');source.write_text('def f(x=[]):return len(x)\nprint(f())\n')
+            target=Path(directory,'main.rs')
+            command=[sys.executable,'-m','py2fastrust',str(source),'-o',str(target)]
+            actual=subprocess.run(command,capture_output=True,text=True,timeout=10)
+            expected=transpile(source.read_text(),TranspileOptions(filename=str(source)))
+            self.assertTrue(expected.success,expected.diagnostics)
+            self.assertEqual(actual.returncode,0,actual.stderr)
+            self.assertEqual(actual.stdout,'')
+            self.assertEqual(actual.stderr,'')
+            self.assertEqual(target.read_text(),expected.rust_source)
+
+    def test_cli_failure_contains_the_same_specific_reason_and_location(self):
+        with tempfile.TemporaryDirectory(prefix='pytors-diagnostic-cli-')as directory:
+            source=Path(directory,'main.py');source.write_text('def f(*items):return sum(items)\nprint(f(1))\n')
             target=Path(directory,'main.rs')
             command=[sys.executable,'-m','py2fastrust',str(source),'-o',str(target)]
             actual=subprocess.run(command,capture_output=True,text=True,timeout=10)
@@ -204,7 +219,8 @@ class NativeDiagnosticTests(unittest.TestCase):
             self.assertEqual(actual.returncode,2,actual.stderr)
             self.assertEqual(actual.stdout,'')
             self.assertEqual(actual.stderr,str(expected.diagnostics[0])+'\n')
-            self.assertIn('shared mutable object',actual.stderr)
+            self.assertIn('items',actual.stderr)
+            self.assertIn('packing',actual.stderr)
             self.assertFalse(target.exists())
 
 

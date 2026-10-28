@@ -143,6 +143,12 @@ def _size_number(generator,value):
 
 
 def try_expression(generator,node,environment):
+    if isinstance(node,ast.Call):
+        from .references import BuiltinIdentity,callable_reference
+        if callable_reference(generator,node.func,environment)==BuiltinIdentity('print'):
+            from .native_typed_lists import print_call
+            output,_=print_call(generator,node,environment)
+            return _Expression('{'+output+'()}','none')
     from .native_builtin_values import try_expression as builtin_value
     canonical=builtin_value(generator,node,environment)
     if canonical is not None:return canonical

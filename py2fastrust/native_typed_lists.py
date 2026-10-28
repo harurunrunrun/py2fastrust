@@ -404,7 +404,10 @@ def _print_value(g,node,environment):
 def _print(g,node,environment,*,values=None):
     if not (isinstance(node,ast.Expr) and isinstance(node.value,ast.Call)):
         return None
-    call = node.value
+    return print_call(g,node.value,environment,values=values,error_node=node)
+
+
+def print_call(g,call,environment,*,values=None,error_node=None):
     from .references import BuiltinIdentity,callable_reference
     if callable_reference(g,call.func,environment)!=BuiltinIdentity("print"):return None
     from .native_unions import union_kind
@@ -488,7 +491,7 @@ def _print(g,node,environment,*,values=None):
             raise _Unsupported
     lines.append(f"native_output.push_str({_string(end)});")
     if flush:
-        lines.append(g.at("native_flush_output(&mut native_output)",node)+";")
+        lines.append(g.at("native_flush_output(&mut native_output)",error_node or call)+";")
     return "\n".join(lines),environment
 
 
