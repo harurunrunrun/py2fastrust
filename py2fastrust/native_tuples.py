@@ -250,6 +250,7 @@ def try_expression(generator,node,environment):
 
 def try_statement(generator,node,environment):
     if isinstance(node,ast.Assign):
+        if all(isinstance(target,ast.Name)for target in node.targets):return None
         candidate=node.value
         if isinstance(candidate,ast.Name):
             binding=environment.get(candidate.id)

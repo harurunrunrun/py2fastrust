@@ -571,16 +571,6 @@ class ScalarGenerator(_Generator):
         alias = self.function_alias_assignment(node, environment)
         if alias is not None:
             return alias
-        if isinstance(node, ast.Assign) and all(isinstance(target, ast.Name) for target in node.targets):
-            value = self.expression(node.value, environment)
-            if value.kind == "str":
-                temp = self.temporary()
-                lines = [f"let {temp} = {value.code};"]
-                for index, target in enumerate(node.targets):
-                    if target.id in self.iterating_lists: raise _Unsupported
-                    code = f"{temp}.clone()" if index + 1 < len(node.targets) else temp
-                    lines.append(f"{self.bind(target.id, value, environment)} = {code};")
-                return "\n".join(lines), environment
         if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and isinstance(node.op, ast.Add):
             binding = environment.get(node.target.id)
             if isinstance(binding, _Binding) and binding.kind == "str":

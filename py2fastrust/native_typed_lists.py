@@ -102,6 +102,12 @@ def _sort_options(g,node,environment,owners=()):
             if operand.parameter=="iterable":continue
             value=operand.expression
             if operand.parameter == "key":
+                from .native_callbacks import prepare
+                prepared=prepare(g,value,environment)
+                if prepared is not None:
+                    setup,key=prepared
+                    lines.extend(setup)
+                    continue
                 if _none_operand(g,operand):
                     if not (isinstance(value,ast.Constant) and value.value is None):
                         captured=g.expression(value,environment)
@@ -126,18 +132,23 @@ def _sort_options(g,node,environment,owners=()):
     return lines+checks,reverse,key
 
 
-def _sort_code(g,owner,element,node,environment,reverse,key):
+def _sort_code(g,owner,element,node,environment,reverse,key,*,forbidden_owners=()):
     left,right = g.temporary(),g.temporary()
     if key is None:
         comparison = _ordering(g,_Expression(f"(*{left})",element),_Expression(f"(*{right})",element),node)
         return f"{owner}.sort_by(|{left},{right}|{{let native_order={comparison};if {reverse} {{native_order.reverse()}}else{{native_order}}}});"
     item = g.temporary()
-    argument = "\0sort_" + g.temporary()
-    inside = environment.copy()
-    inside[argument] = _Binding(f"(*{item})",element)
-    call = ast.copy_location(ast.Call(func=key,args=[ast.Name(id=argument,ctx=ast.Load())],keywords=[]),node)
-    ast.fix_missing_locations(call)
-    value = g.expression(call,inside)
+    from .native_callbacks import InlineLambda,invoke
+    if isinstance(key,InlineLambda):
+        value=invoke(g,key,(_Expression(f"{item}.clone()",element),),environment,node,
+                     forbidden_owners=forbidden_owners)
+    else:
+        argument = "\0sort_" + g.temporary()
+        inside = environment.copy()
+        inside[argument] = _Binding(f"(*{item})",element)
+        call = ast.copy_location(ast.Call(func=key,args=[ast.Name(id=argument,ctx=ast.Load())],keywords=[]),node)
+        ast.fix_missing_locations(call)
+        value = g.expression(call,inside)
     if not immutable(value.kind):
         raise _Unsupported
     g.register_type(value.kind)
@@ -226,15 +237,23 @@ def try_expression(g, node, environment):
         source=Planner(g).lower(plan.source,environment,allow_set=order_free)
         if plan.kind is ConsumerKind.LIST:
             return _collect(g,source,node)
-        result=_collect(g,source,node,constructed=True)
         lines=[source.setup+("\n"+source.begin if source.eager else "")]
+        checkpoint=len(g.expression_mutations)
         options,reverse,key=_sort_options(g,plan,environment,source.owners if source.eager else ())
         lines.extend(options)
+        changed={binding.slot for binding in g.expression_mutations[checkpoint:]}
+        if any(isinstance(environment.get(name),_Binding) and environment[name].slot in changed
+               for name in source.owners):
+            source.length=None
+            source.nonempty=False
+        result=_collect(g,source,node,constructed=True)
         if not source.eager:lines.append(source.begin)
         owner=g.temporary()
         lines.append(f"let mut {owner}={result.code};")
         element="int"if result.kind=="list_int"else result.kind.element
-        if source.length!=0:lines.append(_sort_code(g,owner,element,node,environment,reverse,key))
+        from .native_types import EmptyType
+        if source.length!=0 and not isinstance(element,EmptyType):
+            lines.append(_sort_code(g,owner,element,node,environment,reverse,key))
         return _Expression("{\n"+"\n".join(lines)+f"\n{owner}\n}}",result.kind,length=result.length)
     if isinstance(node,ast.List) and node.elts:
         values = [g.expression(value,environment) for value in node.elts]
@@ -348,18 +367,31 @@ def _representation(g,value,*,quoted=False):
     raise _Unsupported
 
 
+def _print_value(g,node,environment):
+    from .native_characters import CharacterBinding
+    from .references import BuiltinIdentity,callable_reference
+    def text_read(expression):
+        if isinstance(expression,ast.Name):
+            binding=environment.get(expression.id)
+            return (isinstance(binding,_Binding) and binding.kind=="str"
+                    or isinstance(binding,CharacterBinding))
+        if isinstance(expression,ast.Constant):return type(expression.value)is str
+        if isinstance(expression,ast.Subscript) and not isinstance(expression.slice,ast.Slice):
+            return text_read(expression.value)
+        return (isinstance(expression,ast.Call) and len(expression.args)==1 and not expression.keywords
+                and callable_reference(g,expression.func,environment)==BuiltinIdentity("str")
+                and text_read(expression.args[0]))
+    if hasattr(g,"read_expression") and text_read(node):return g.read_expression(node,environment)
+    return g.expression(node,environment)
+
+
 def _print(g,node,environment,*,values=None):
-    if not (isinstance(node,ast.Expr) and isinstance(node.value,ast.Call)
-            and isinstance(node.value.func,ast.Name) and node.value.func.id == "print"):
+    if not (isinstance(node,ast.Expr) and isinstance(node.value,ast.Call)):
         return None
     call = node.value
-    if values is None:
-        values = [(isinstance(argument,ast.Starred),g.expression(argument.value if isinstance(argument,ast.Starred) else argument,environment))
-                  for argument in call.args]
+    from .references import BuiltinIdentity,callable_reference
+    if callable_reference(g,call.func,environment)!=BuiltinIdentity("print"):return None
     from .native_unions import union_kind
-    from .native_types import EmptyType
-    if not any(isinstance(value.kind,(ListType,TupleType,TupleSequenceType,EmptyType)) or union_kind(value.kind) or value.kind=="none" or not star and value.kind == "list_int" for star,value in values):
-        return None
     separator,end,flush = " ","\n",False
     seen = set()
     for keyword in call.keywords:
@@ -380,17 +412,47 @@ def _print(g,node,environment,*,values=None):
                 end = value
     lines = []
     arguments = []
-    for star,value in values:
-        temporary = g.temporary()
-        code = f"&({value.code})" if (isinstance(value.kind,(ListType,TupleType,TupleSequenceType)) or union_kind(value.kind) or value.kind == "list_int") and not value.owned else value.code
-        lines.append(f"let {temporary}={code};")
-        arguments.append((star,_Expression(temporary,value.kind)))
+    forbidden=g.iterating_lists
+    g.iterating_lists=list(forbidden)
+    try:
+        for index,argument in enumerate(call.args):
+            star=isinstance(argument,ast.Starred)
+            source=argument.value if star else argument
+            value=_print_value(g,source,environment) if values is None else values[index][1]
+            if not star and not value.owned and not immutable(value.kind):
+                from .native_sequence_storage import deferred_truth
+                captured=deferred_truth(g,value,source,environment)
+                if captured is not None:
+                    setup,deferred,owners=captured
+                    lines.extend(setup)
+                    g.iterating_lists.extend(owners)
+                    arguments.append((False,deferred))
+                    continue
+            temporary = g.temporary()
+            if value.kind=="str" and not value.owned and hasattr(g,"read_binding"):
+                lines.append(g.read_binding(temporary,value))
+                arguments.append((star,_Expression(temporary,value.kind,owned=False)))
+                continue
+            if star and not value.owned and (value.kind=="list_int" or isinstance(value.kind,ListType)):
+                code=f"({value.code}).clone()"
+            elif not value.owned and immutable(value.kind):
+                code=g.coerce(value,value.kind)
+            else:
+                code=value.code
+            lines.append(f"let {temporary}={code};")
+            arguments.append((star,_Expression(temporary,value.kind)))
+    finally:
+        g.iterating_lists=forbidden
     first = g.temporary()
     lines.append(f"let mut {first}=true;")
     def write(value):
+        prefix=f"if !{first} {{native_output.push_str({_string(separator)});}} {first}=false;\n"
+        if value.kind in {"int","int_bool"}:
+            return prefix+f'write!(&mut native_output,"{{}}",{value.code}).unwrap();'
+        if value.kind=="str":return prefix+f"native_output.push_str(&({value.code}));"
+        if value.kind=="bool":return prefix+f'native_output.push_str(if {value.code} {{"True"}}else{{"False"}});'
         display = _representation(g,value)
-        return (f"if !{first} {{native_output.push_str({_string(separator)});}} {first}=false;\n"
-                f"native_output.push_str(&({display}));")
+        return prefix+f"native_output.push_str(&({display}));"
     for star,value in arguments:
         if not star:
             lines.append(write(value))

@@ -293,57 +293,17 @@ def try_statement(generator,node,environment):
             return "",environment
         if isinstance(node.value,ast.Name) and isinstance(environment.get(node.value.id),_Function):
             return None
-        if all(isinstance(target,ast.Name) for target in node.targets):
-            value=generator.expression(node.value,environment)
-            if value.kind == "bytes":
-                temp=generator.temporary()
-                lines=[f"let {temp}={value.code};"]
-                for index,target in enumerate(node.targets):
-                    if target.id in generator.iterating_lists:
-                        raise _Unsupported
-                    assigned=temp if index+1==len(node.targets) else f"{temp}.clone()"
-                    lines.append(f"{generator.bind(target.id,value,environment)}={assigned};")
-                return "\n".join(lines),environment
-    if isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id == "print":
-        call=node.value
-        if any(isinstance(argument,ast.Starred) for argument in call.args):
-            return None
-        values=[generator.expression(argument,environment) for argument in call.args]
-        if not any(value.kind == "bytes" for value in values):
-            return None
-        if any(value.kind not in {"int","bool","int_bool","str","bytes","float"} for value in values):
-            # Structural values use the common typed printer, which also
-            # renders bytes. Reuse the already lowered ordered arguments.
+    if isinstance(node,ast.Expr) and isinstance(node.value,ast.Call):
+        from .references import BuiltinIdentity,callable_reference
+        target=callable_reference(generator,node.value.func,environment)
+        if target==BuiltinIdentity("print"):
             from .native_typed_lists import _print
-            printed=_print(generator,node,environment,values=tuple((False,value)for value in values))
-            if printed is None:raise _Unsupported
-            return printed
-        separator,end,flush=" ","\n",False
-        seen=set()
-        for keyword in call.keywords:
-            if keyword.arg in seen or keyword.arg not in {"sep","end","flush"} or not isinstance(keyword.value,ast.Constant):
-                raise _Unsupported
-            seen.add(keyword.arg)
-            if keyword.arg == "flush":
-                if type(keyword.value.value) is not bool:raise _Unsupported
-                flush=keyword.value.value
-            else:
-                if type(keyword.value.value) is not str:raise _Unsupported
-                if keyword.arg == "sep":separator=keyword.value.value
-                else:end=keyword.value.value
-        names=[generator.temporary() for _ in values]
-        lines=[f"let {name}={value.code};" for name,value in zip(names,values)]
-        for index,(name,value) in enumerate(zip(names,values)):
-            if index:lines.append(f"native_output.push_str({_string(separator)});")
-            if value.kind == "bytes":
-                _enable(generator)
-                name=f"native_bytes_repr(&{name})"
-            elif value.kind == "bool":name=f'if {name}{{"True"}}else{{"False"}}'
-            elif value.kind == "float":name=f"native_float_text({name})"
-            lines.append(f'write!(&mut native_output,"{{}}",{name}).unwrap();')
-        lines.append(f"native_output.push_str({_string(end)});")
-        if flush:lines.append(generator.at("native_flush_output(&mut native_output)",node)+";")
-        return "\n".join(lines),environment
+            return _print(generator,node,environment)
+        if isinstance(node.value.func,ast.Name) and node.value.func.id=="print":
+            if isinstance(target,_Function):
+                value=generator.expression(node.value,environment)
+                return f"{value.code};",environment
+            raise _Unsupported("the name 'print' does not resolve to the builtin print callable; calling this bound value is not implemented",node=node.value)
     return None
 
 def comparison(generator,node,values):

@@ -5,6 +5,7 @@ arguments have been evaluated, so callbacks may mutate the captured object.
 Shared handles capture object identity before a callback can replace a field.
 """
 from dataclasses import dataclass
+import ast
 
 from .native import _Binding,_Unsupported
 from .native_types import is_maybe,immutable
@@ -29,6 +30,26 @@ class SequenceStorage:
         return f"class_list({code})" if self.shared else code
 
 
+def binding_name(g,node):
+    """Query a canonical lexical name without requiring a normalized parent call.
+
+    The current semantic graph can omit a starred print's argument subtree.
+    SourceUnit still owns every name and its lexical/private-name mapping.
+    Ordinary exact-name binding proofs do not require emitting that subtree.
+    """
+    unit=getattr(g,"source_unit",None)
+    if unit is None:return None
+    if isinstance(node,ast.Name):
+        try:return unit.name_for(node)
+        except KeyError:return None
+    analysis=getattr(g,"type_analysis",None)
+    if analysis is None:return None
+    try:ordinal=unit.ordinal(node)
+    except KeyError:return None
+    term=analysis.graph.expressions.get(ordinal)
+    return term.data if term is not None and term.operation=="name"else None
+
+
 def capture_owned(g,receiver,node,environment,*,mutates):
     if receiver.sequence_view is not None:
         storage=receiver.sequence_view
@@ -41,10 +62,9 @@ def capture_owned(g,receiver,node,environment,*,mutates):
             f"&{owner}",f"&mut {owner}",receiver.kind)
     if g.type_analysis is None or g.source_unit is None:
         raise _Unsupported("capturing this borrowed sequence needs resolved allocation/binding facts so later argument effects cannot change which object is used; those identity facts are unavailable",node=node,types=(("receiver",receiver.kind),),proof="stable borrowed sequence identity across argument evaluation")
-    term=g.type_analysis.graph.expressions[g.source_unit.ordinal(node)]
-    if term.operation!="name":
+    name=binding_name(g,node)
+    if name is None:
         raise _Unsupported("this borrowed sequence producer is not a proved stable name binding; an identity handle for its result must survive later argument effects before the sequence is borrowed",node=node,types=(("receiver",receiver.kind),),proof="single evaluation and stable sequence object identity")
-    name=term.data
     binding=environment.get(name)
     if not isinstance(binding,_Binding):
         raise _Unsupported(f"sequence name {name!r} has no resolved native storage binding; its mutable object identity cannot be captured safely",node=node,types=(("receiver",receiver.kind),),proof="resolved sequence binding and object identity")
@@ -55,7 +75,8 @@ def capture_owned(g,receiver,node,environment,*,mutates):
     setup=(f"let _=&({receiver.code});",)
     mutable=(f'{binding.slot}.as_mut().expect("validated sequence receiver")' if is_maybe(binding.kind)
              else f"&mut {binding.slot}")
-    return SequenceStorage(setup,f"&({receiver.code})[..]",mutable,receiver.kind,binding_name=name)
+    read=f"&({receiver.code})"if receiver.kind=="deque_int"else f"&({receiver.code})[..]"
+    return SequenceStorage(setup,read,mutable,receiver.kind,binding_name=name)
 
 
 def row_expression(g,node,owner,index,environment):
@@ -97,7 +118,7 @@ def deferred_truth(g,value,node,environment):
         return storage.setup,_Expression(storage.read,value.kind,owned=False),storage.forbidden_owners
     if g.type_analysis is None or g.source_unit is None:
         raise _Unsupported("a mutable argument's truth must be tested after later arguments run; allocation/binding facts needed to retain that same object are unavailable",node=node,types=(("value",value.kind),),proof="mutable object identity and deferred truth-test evaluation order")
-    term=g.type_analysis.graph.expressions[g.source_unit.ordinal(node)]
-    if term.operation!="name"or not isinstance(environment.get(term.data),_Binding):
+    name=binding_name(g,node)
+    if name is None or not isinstance(environment.get(name),_Binding):
         raise _Unsupported("a mutable argument's truth must be tested after later arguments run, but this producer has no proved stable name/identity handle; copying its contents would hide intervening mutations",node=node,types=(("value",value.kind),),proof="mutable object identity and deferred truth-test evaluation order")
     return (f"let _=&({value.code});",),value,()

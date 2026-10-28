@@ -56,6 +56,12 @@ def try_expression(g,node,environment):
     try:
         for operand in plan.invocation.explicit_order:
             if method.name=="sort"and operand.parameter=="key":
+                from .native_callbacks import prepare
+                prepared=prepare(g,operand.expression,environment)
+                if prepared is not None:
+                    setup,sort_key=prepared
+                    lines.extend(setup)
+                    continue
                 from .references import BuiltinIdentity,callable_reference
                 import ast
                 if isinstance(operand.expression,ast.Name):

@@ -61,7 +61,7 @@ scalar target uses `Option<T>` with a positioned Python unbound-name error on
 read, including zero-iteration and filtered-generator paths.
 
 All integer modes support uniquely owned flat integer lists, indexed reads and
-updates, copied lists, ordinary list operations, `sorted` without a custom key,
+updates, copied lists, ordinary list operations, `sorted` with supported immutable key results,
 and slicing with positive or negative steps. Slices make independent lists.
 Shared mutable list aliases and shallow slices of nested mutable rows are not
 yet implemented on this path. In all integer modes, strings default to ASCII:
@@ -121,9 +121,18 @@ Structural type descriptors are shared by binding joins, declarations,
 function signatures, and tuple operations. Fixed tuples of immutable scalar
 values use ordinary Rust tuples and support aliases, unpacking, indexing,
 comparisons, Python-style printing, and typed function arguments/results.
-Possibly unbound tuple bindings use `Option<TupleType>` storage. Mutable tuple
-elements and remaining general tuple iteration require shared container/iteration
-lowering.
+Possibly unbound tuple bindings use `Option<TupleType>` storage. Homogeneous variable-length tuples use immutable shared handles, including
+`tuple(map(int, input().split()))`; their length is checked when unpacked rather
+than inferred from later target counts. Indexing, iteration, printing, supported
+comparisons and immutable keys share the same element types as fixed tuples.
+Mutable tuple elements and unproved comparison protocols still require lowering.
+
+Non-escaping lambdas support immediate calls and `sort`/`sorted` key callbacks.
+Definition-time immutable defaults run once, parameters retain their own lexical
+scope, and free bindings are read at invocation. Keys are computed once per item
+before stable sorting, including with `reverse=True`. Mutable arguments/defaults,
+variadic packing, escaping closures and callbacks observing the list currently
+being sorted remain unfinished and produce a specific diagnostic.
 
 Proved finite value alternatives share canonical types across ordinary binding
 joins, function arguments/results, and immutable container fields. Each shape

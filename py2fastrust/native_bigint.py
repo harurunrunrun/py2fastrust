@@ -399,7 +399,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 raise _Unsupported("these names would share one mutable container, but the selected storage requires a proved unique owner; alias-preserving shared mutable storage is not implemented for this assignment",node=node,types=(("value",value.kind),),proof="mutable alias identity and lifetime")
             name = self.temporary()
             from .native_unions import union_kind
-            assigned=self.coerce(value,value.kind) if (union_kind(value.kind) or isinstance(value.kind,TupleSequenceType)) and not value.owned else value.code
+            assigned=self.coerce(value,value.kind) if immutable(value.kind) and not value.owned else value.code
             lines = [f"let {name}={assigned};"]
             for index,target in enumerate(node.targets):
                 # Expressions already produce an owned immutable scalar. The

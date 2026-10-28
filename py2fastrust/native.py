@@ -444,6 +444,7 @@ class _Generator:
         self.expression_trace_id = None
         self.expression_mutations = []
         self.has_iterator_frames = False
+        self.has_callback_frames = False
         self.has_slices = False
         self.has_text_methods = False
         self.text_predicates=set()
@@ -751,14 +752,17 @@ class _Generator:
         for parameter,value in zip(bound.parameters,bound.values):
             kinds.append(value.kind)
             arguments.append(f"&({value.code})" if list_type(value.kind) else value.code)
-        globals_at_call = environment if self.function is None else self.global_environment
-        names=set(environment)if self.function is None else self.global_names
+        namespace=getattr(self,"inline_callback_globals",None)
+        if namespace is not None:globals_at_call,names=namespace
+        else:
+            globals_at_call = environment if self.function is None else self.global_environment
+            names=set(environment)if self.function is None else self.global_names
         variant = self.specializations.get(function, tuple(kinds), globals_at_call,global_names=names)
         if self.function is None:
             # A callee's globals are looked up at call time, including indirect
             # callees whose definitions may follow the caller definition.
-            if (any(environment.get(name) is not variant.global_bindings.get(name) for name in variant.required)
-                    or any(name in environment for name in variant.absent_globals)):
+            if (any(globals_at_call.get(name) is not variant.global_bindings.get(name) for name in variant.required)
+                    or any(name in globals_at_call for name in variant.absent_globals)):
                 raise _Unsupported
         else:
             self.function.dependencies.add(function.node)
@@ -1470,7 +1474,7 @@ class _Generator:
             if not immutable(value.kind) and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported("these names would share one mutable container, but the selected storage requires a proved unique owner; alias-preserving shared mutable storage is not implemented for this assignment",node=node,types=(("value",value.kind),),proof="mutable alias identity and lifetime")
             name = self.temporary()
-            assigned=self.coerce(value,value.kind) if isinstance(value.kind,(UnionType,NullableType,TupleSequenceType)) and not value.owned else value.code
+            assigned=self.coerce(value,value.kind) if immutable(value.kind) and not value.owned else value.code
             lines = [f"let {name} = {assigned};"]
             for index,target in enumerate(node.targets):
                 item=self.coerce(_Expression(name,value.kind),value.kind) if index+1<len(node.targets) else name
@@ -2122,7 +2126,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             generator.union_types.update(local.union_types)
             generator.text_predicates.update(local.text_predicates)
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_fixed_parsing", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
+            for flag in ("needs_integer_runtime", "has_fixed_parsing", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_callback_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2221,7 +2225,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
                       "}\n"
                       f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}", {_string(filename)}, error.line, error.function, error.message);\n'
                       "std::process::exit(1);\n}\n}\n")
-    elif functions or generator.has_iterator_frames:
+    elif functions or generator.has_iterator_frames or generator.has_callback_frames:
         result.append("if let Err(error) = native_result {\n"
                       'eprintln!("Traceback (most recent call last):");\n'
                       "for &(line, function) in error.frames.iter().rev() {\n"

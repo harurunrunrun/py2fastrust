@@ -24,16 +24,10 @@ def capture(g, node, value, environment):
         owner = g.temporary()
         return ContainerRead(f"let {owner}={value.code};", owner)
 
-    unit = getattr(g, "source_unit", None)
-    analysis = getattr(g, "type_analysis", None)
-    term = None
-    if unit is not None and analysis is not None:
-        try:
-            term = analysis.graph.expressions[unit.ordinal(node)]
-        except KeyError:
-            pass
-    if term is not None and term.operation == "name":
-        binding = environment.get(term.data)
+    from .native_sequence_storage import binding_name
+    name=binding_name(g,node)
+    if name is not None:
+        binding = environment.get(name)
         if not isinstance(binding, _Binding):
             raise _Unsupported("the container name has no resolved native storage binding; its identity cannot be captured before later argument effects",node=node,types=(("container",value.kind),),proof="stable container binding and argument evaluation order")
         if isinstance(binding.info, _MaybeInfo):

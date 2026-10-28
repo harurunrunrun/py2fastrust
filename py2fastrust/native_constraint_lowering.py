@@ -165,6 +165,12 @@ def converted_result(g,node,result):
 def result_shapes(method):
     @wraps(method)
     def lower(self,node,environment):
+        from .native_lengths import try_expression as length_expression
+        length=length_expression(self,node,environment)
+        if length is not None:return converted_result(self,node,length)
+        from .native_callbacks import try_expression as callback_expression
+        callback=callback_expression(self,node,environment)
+        if callback is not None:return converted_result(self,node,callback)
         return converted_result(self,node,method(self,node,environment))
     return lower
 

@@ -218,8 +218,10 @@ class Planner:
                 return self.reverse_stream(plan, environment)
         if plan.kind is ProducerKind.SEQUENCE:
             values = [g.expression(value, environment) for value in plan.elements]
+            from .native_types import EMPTY
             kind = ("list_int" if values and all(value.kind == "list_int" and value.owned for value in values)
-                    else g.scalar_kind(values) if values else "int")
+                    else g.scalar_kind(values) if values else EMPTY)
+            if not values:g.register_type(kind)
             owner, cursor = g.temporary(), g.temporary()
             code = ", ".join(_owned(g, value, kind) for value in values)
             setup = f"let {owner}: [{rust_type(kind)}; {len(values)}] = [{code}];"

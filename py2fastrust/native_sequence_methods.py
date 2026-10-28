@@ -73,7 +73,8 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
         # value may alias this receiver, so it cannot be read by the comparator.
         setup=f"let {direction}={reverse};"
         code=("{"+setup+"()}" if isinstance(element,EmptyType) else
-              "{"+setup+_sort_code(g,f"({storage.mutable})",element,node,environment,direction,sort_key)+"}")
+              "{"+setup+_sort_code(g,f"({storage.mutable})",element,node,environment,direction,sort_key,
+                                   forbidden_owners=storage.forbidden_owners+((storage.binding_name,)if storage.binding_name else()))+"}")
     else:raise _Unsupported(f"the shared sequence operation {name!r} has no native method implementation",node=node,types=(("receiver",storage.kind),))
     kind=(storage.kind if method.result=="copy" else element if method.result=="element"else method.result)
     return _Expression(code,kind)
