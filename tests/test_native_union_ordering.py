@@ -168,16 +168,16 @@ print(make()[0],("a"+input())[-1],str("uvw")[-1])
                       ("-4\n","-3\n","-1\n","0\n","2\n","3\n"))
         self.exercise('print("海🐈"[-1],("海"+"🐈")[0])\n',("",),string_mode="unicode")
 
-    def test_unproved_mutable_and_tuple_float_identity_remain_explicit_gaps(self):
-        # These check proof boundaries, not accepted-language completion.
+    def test_nullable_builtin_list_ordering_is_identity_preserving(self):
+        source='value=[1] if int(input()) else None\nprint(value<[2])\n'
+        self.exercise(source,('0\n','1\n'))
+
+    def test_tuple_float_identity_remains_an_explicit_gap(self):
+        source='value=(float("nan"),) if int(input()) else None\nprint(value<=(float("nan"),))\n'
         for mode in ("i64", "i128", "bigint"):
-            for source in (
-                'value=[1] if int(input()) else None\nprint(value<[2])\n',
-                'value=(float("nan"),) if int(input()) else None\nprint(value<=(float("nan"),))\n',
-            ):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+            result=transpile(source,TranspileOptions(integer=mode))
+            self.assertFalse(result.success)
+            self.assertEqual(result.diagnostics[0].code,"E006")
 
 
 if __name__=="__main__":

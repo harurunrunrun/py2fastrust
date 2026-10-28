@@ -1222,7 +1222,11 @@ class _Generator:
                     types = types.join(TypeSet(unknown=True))
             from .native_types import SharedListType
             physical=[unmaybe(value.kind) for value in values if isinstance(value,_Binding)]
-            kind = physical[0] if physical and isinstance(physical[0],SharedListType) and all(item==physical[0] for item in physical) else types.native_kind
+            kind=types.native_kind
+            from .native_expression_results import has_shared,join_layouts
+            if kind is not None and any(has_shared(item)for item in physical):
+                kind=physical[0]
+                for item in physical[1:]:kind=join_layouts(kind,item)
             if kind is not None:
                 from .native_constraints import native_kind
                 kind=native_kind(kind,self.bits)
@@ -1456,10 +1460,11 @@ class _Generator:
                 return f"let {result} = {value.code};\nlet {offset} = {self.number(index)};\n{setter};", environment
             if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
-            if not immutable(value.kind) and (not value.owned or len(node.targets) != 1):
+            from .native_types import reference_cloneable
+            if not reference_cloneable(value.kind) and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported("these names would share one mutable container, but the selected storage requires a proved unique owner; alias-preserving shared mutable storage is not implemented for this assignment",node=node,types=(("value",value.kind),),proof="mutable alias identity and lifetime")
             name = self.temporary()
-            assigned=self.coerce(value,value.kind) if immutable(value.kind) and not value.owned else value.code
+            assigned=self.coerce(value,value.kind) if reference_cloneable(value.kind) and not value.owned else value.code
             lines = [f"let {name} = {assigned};"]
             for index,target in enumerate(node.targets):
                 item=self.coerce(_Expression(name,value.kind),value.kind) if index+1<len(node.targets) else name
@@ -1998,9 +2003,10 @@ class _Specializations:
         signature.append("mut native_output: &mut String")
         body, remaining = local.statements(function.node.body, environment)
         if remaining is not None:local.return_kinds.add("none")
+        from .native_expression_results import join_layouts
         result=None
         for kind in sorted(local.return_kinds,key=kind_tag):
-            result=kind if result is None else join_types(result,kind)
+            result=kind if result is None else join_layouts(result,kind)
             if result is None:raise _Unsupported
         variant.return_kind=result or "none"
         local.register_type(variant.return_kind)

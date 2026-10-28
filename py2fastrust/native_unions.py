@@ -2,8 +2,8 @@
 import ast
 from contextvars import ContextVar
 
-from .native_types import (UnionType,NullableType,TupleType,ListType,alternatives,
-                          union_variant,union_declaration,immutable,join_types,rust_type)
+from .native_types import (UnionType,NullableType,TupleType,ListType,SharedListType,EmptyType,list_type,alternatives,
+                          union_variant,union_declaration,immutable,reference_cloneable,join_types,rust_type)
 
 
 def union_kind(kind):
@@ -48,14 +48,14 @@ def coerce_union(value,target,coerce):
     if not union_kind(target) and not union_kind(value.kind):return None
     source=value.kind
     if source==target:
-        if immutable(target):return f"({value.code}).clone()"
+        if reference_cloneable(target):return f"({value.code}).clone()"
         if not value.owned:
             raise _Unsupported("this finite alternative contains borrowed mutable storage; copying or moving it would change alias identity without a shared native carrier",types=(("source",source),("target",target)),proof="mutable alternative ownership")
         return value.code
     # Moving an owned enum preserves unique mutable payload ownership. Cloning
-    # is permitted only for recursively immutable alternatives.
+    # is permitted only for immutable values or stable shared object handles.
     code=value.code
-    if immutable(source):
+    if reference_cloneable(source):
         code=f"({code}).clone()"
     elif not value.owned:
         raise _Unsupported("conversion between finite alternatives would move borrowed mutable storage; an alias-preserving shared carrier is not implemented",types=(("source",source),("target",target)),proof="mutable alternative ownership")
@@ -111,22 +111,49 @@ def compare(g,node,values):
     from .native import _Expression,_Unsupported
     from .native_comparisons import ORDERING,ordering
     if not any(union_kind(value.kind) or value.kind=="none" for value in values):return None
-    if any(type(op) not in {ast.Is,ast.IsNot,ast.Eq,ast.NotEq}|ORDERING.keys() for op in node.ops):raise _Unsupported
-    if any(type(op) in ORDERING for op in node.ops) and any(not immutable(value.kind) for value in values):
-        raise _Unsupported("ordering finite alternatives containing mutable containers requires native sequence comparison with preserved alias/iteration semantics; this path currently only implements immutable alternative ordering",node=node,types=tuple((f"operand {i+1}",value.kind)for i,value in enumerate(values)),proof="mutable-sequence comparison across finite alternatives")
+    if any(type(op) not in {ast.Is,ast.IsNot,ast.Eq,ast.NotEq,ast.In,ast.NotIn}|ORDERING.keys() for op in node.ops):raise _Unsupported
+    def ordered(kind):
+        # List comparisons borrow captured contents only at the comparison, so
+        # a unique raw Vec operand needs no cloning or shared carrier.
+        return all(immutable(part) or list_type(part) or part=="matrix_int" for part in alternatives(kind))
+    if any(type(op) in ORDERING for op in node.ops) and any(not ordered(value.kind) for value in values):
+        raise _Unsupported("ordering this finite alternative needs a native comparison protocol beyond immutable values and typed builtin lists",node=node,types=tuple((f"operand {i+1}",value.kind)for i,value in enumerate(values)),proof="comparison protocol over finite alternatives")
     names=[g.temporary() for _ in values]
     def pair(left,right,operator):
         def both(a,x,b,y):
+            # An empty-field read can only raise before producing a value.
+            # Retain its operand capture and the chain's short-circuit edge.
+            if isinstance(a,EmptyType):return f"native_empty::<bool>({x})"
+            if isinstance(b,EmptyType):return f"native_empty::<bool>({y})"
+            if isinstance(operator,(ast.In,ast.NotIn)):
+                from .native_key_containers import contains
+                found=contains(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)
+                if found is not None:return found.code
+                if b in {"set_int","dict_int"} and a in {"int","bool","int_bool"}:
+                    argument=g.number(_Expression(x,a,owned=False))
+                    call=f"({y}).contains("+(f"&({argument})"if b=="set_int"else argument)+")"
+                    return f"!({call})"if isinstance(operator,ast.NotIn)else call
+                raise _Unsupported("membership for this finite alternative needs its native container protocol adapter",node=node,types=(("key",a),("owner",b)),proof="membership over finite actual-value results")
             if type(operator) in ORDERING:
+                if list_type(a) or list_type(b) or a=="matrix_int" or b=="matrix_int":
+                    from .native_nested_lists import ordering as list_ordering
+                    return list_ordering(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)
                 return ordering(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)
             elif isinstance(operator,(ast.Is,ast.IsNot)):
+                if isinstance(a,SharedListType) or isinstance(b,SharedListType):
+                    result=f"std::rc::Rc::ptr_eq(&({x}),&({y}))" if a==b else "false"
+                    return f"!({result})" if isinstance(operator,ast.IsNot) else result
                 if a!="none" and b!="none":
                     raise _Unsupported("identity comparison between non-None scalar alternatives requires stable Python object identities; the selected copied-scalar representation does not retain them",node=node,operation="identity comparison 'is'/'is not'",types=(("left",a),("right",b)),proof="Python object identity for scalar alternatives")
                 result=str(a==b=="none").lower()
             elif a=="none" or b=="none":result=str(a==b).lower()
             else:
-                from .native_tuples import tuple_compare
-                result=tuple_compare(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),ast.Eq(),node)
+                if list_type(a) or list_type(b) or a=="matrix_int" or b=="matrix_int":
+                    from .native_nested_lists import equality
+                    result=equality(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),node)
+                else:
+                    from .native_tuples import tuple_compare
+                    result=tuple_compare(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),ast.Eq(),node)
             return f"!({result})" if isinstance(operator,(ast.IsNot,ast.NotEq)) else result
         return project(left.kind,left.code,lambda a,x:project(right.kind,right.code,lambda b,y:both(a,x,b,y)))
     tail="true"
@@ -139,4 +166,4 @@ def compare(g,node,values):
 
 
 def render_types(kinds):
-    return "\n".join(union_declaration(kind,clone=immutable(kind)) for kind in sorted(kinds,key=rust_type))
+    return "\n".join(union_declaration(kind,clone=reference_cloneable(kind)) for kind in sorted(kinds,key=rust_type))

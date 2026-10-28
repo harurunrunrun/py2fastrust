@@ -144,9 +144,13 @@ supported comprehension filters use short-circuit Rust boolean operations.
 Lists and other supported containers can participate without constructing a
 mutable list/scalar value union. Receiver effects and skipped operands retain
 their source order, and loop-exit facts remain conservative after mutations.
-Value-returning mutable `and`/`or` and conditional expressions require their
-separate result-carrier implementation; custom class truth protocols remain
-unfinished.
+Value-returning `and`/`or` and conditional expressions use typed result carriers.
+An owned container can move into its selected result; a proved shared list keeps
+the same reference through nullable values, finite alternatives, function
+returns and control-flow joins. Different shared element layouts retain separate
+typed alternatives rather than copying or widening an existing object. Borrowed
+mutable dictionaries and sets still need shared storage before they can use
+these result paths. Custom class truth protocols remain unfinished.
 
 Non-escaping lambdas support immediate calls and `sort`/`sorted` key callbacks.
 Definition-time immutable defaults run once, parameters retain their own lexical

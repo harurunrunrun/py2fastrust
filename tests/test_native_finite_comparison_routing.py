@@ -163,16 +163,16 @@ print("start",end="|")
 print(payload==None==mark(7))
 ''',("0\n","1\n"))
 
-    def test_common_identity_and_mutable_proof_boundaries_remain_explicit(self):
-        # These are unfinished language features, not successful acceptance.
+    def test_nullable_builtin_list_and_bytes_equality_uses_concrete_protocol(self):
+        source='value=[1] if int(input()) else None\nprint(value==b"ab")\n'
+        self.exercise(source,('0\n','1\n'))
+
+    def test_non_none_scalar_identity_remains_an_explicit_boundary(self):
+        source='value=b"ab" if int(input()) else None\nprint(value is b"ab")\n'
         for mode in("i64","i128","bigint"):
-            for source in(
-                'value=b"ab" if int(input()) else None\nprint(value is b"ab")\n',
-                'value=[1] if int(input()) else None\nprint(value==b"ab")\n',
-            ):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+            result=transpile(source,TranspileOptions(integer=mode))
+            self.assertFalse(result.success)
+            self.assertEqual(result.diagnostics[0].code,"E006")
 
 
 if __name__=="__main__":unittest.main()

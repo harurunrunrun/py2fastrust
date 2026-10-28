@@ -67,6 +67,7 @@ def branches(g,children,environment,*,node,evaluate):
 
 def lower(g,node,environment):
     from .native import _Expression
+    from .native_types import rust_type
     if isinstance(node,ast.Compare):
         values=capture(g,(node.left,*node.comparators),environment,
                        unconditional=2,read=True,node=node)
@@ -74,16 +75,19 @@ def lower(g,node,environment):
         return compare_values(g,node,values)
     if isinstance(node,ast.BoolOp):
         values=capture(g,node.values,environment,node=node)
-        kind=g.scalar_kind(values)
+        from .native_expression_results import kind as result_kind
+        kind=result_kind(g,values,node)
         code=g.coerce(values[-1],kind)
         for value in reversed(values[:-1]):
             name=g.temporary()
             check=g.truth(_Expression(name,kind))
-            yes,no=(code,name) if isinstance(node.op,ast.And)else(name,code)
-            code=f"{{let {name}={g.coerce(value,kind)};if {check}{{{yes}}}else{{{no}}}}}"
+            continued=f"{{drop({name});{code}}}"
+            yes,no=(continued,name) if isinstance(node.op,ast.And)else(name,continued)
+            code=f"{{let {name}:{rust_type(kind)}={g.coerce(value,kind)};if {check}{{{yes}}}else{{{no}}}}}"
         return _Expression(code,kind)
     assert isinstance(node,ast.IfExp)
     test=g.condition(node.test,environment)
     yes,no=branches(g,(node.body,node.orelse),environment,node=node,evaluate=g.expression)
-    kind=g.scalar_kind([yes,no])
+    from .native_expression_results import kind as result_kind
+    kind=result_kind(g,[yes,no],node)
     return _Expression(f"(if {g.truth(test)}{{{g.coerce(yes,kind)}}}else{{{g.coerce(no,kind)}}})",kind)

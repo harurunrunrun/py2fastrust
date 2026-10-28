@@ -354,15 +354,19 @@ def stream_value(generator,source,value,planner,allow_set=False,*,mode="keys",en
     owners={source.id} if isinstance(source,ast.Name) else set()
     return planner.leaf(setup,begin,cursor,fields,owners,tupled=mode=="items",length=value.length,nonempty=value.nonempty)
 
-def comparison(generator,node,values):
-    key,owner=values
+def contains(generator,key,owner,operator,node):
+    """Membership from captured operands; usable inside finite alternatives."""
     if not isinstance(owner.kind,(SetType,DictType)):return None
     receiver,keyname=generator.temporary(),generator.temporary()
     start=f"let {keyname}={_lookup_key(generator,key,owner.kind.key)};let {receiver}={owner.code if owner.owned else '&('+owner.code+')'};"
     from .native_types import EmptyType
     check="false" if isinstance(owner.kind.key,EmptyType) else f"{receiver}.contains(&({canonical(generator,_Expression(keyname,key.kind))}))"
-    if isinstance(node.ops[0],ast.NotIn):check="!"+check
+    if isinstance(operator,ast.NotIn):check="!"+check
     return _Expression("{"+start+check+"}","bool")
+
+
+def comparison(generator,node,values):
+    return contains(generator,*values,node.ops[0],node)
 
 
 def representation(g,value,leaf):

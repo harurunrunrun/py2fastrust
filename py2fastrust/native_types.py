@@ -181,6 +181,18 @@ def immutable(kind):
             or kind in {"int","bool","int_bool","str","bytes","float","none"})
 
 
+def reference_cloneable(kind):
+    """Cloning copies only immutable values or stable mutable object handles."""
+    if immutable(kind):return True
+    if isinstance(kind,SharedListType):return True
+    if isinstance(kind,(NullableType,)):
+        return reference_cloneable(kind.value)
+    if isinstance(kind,UnionType):return all(reference_cloneable(part) for part in kind.alternatives)
+    if isinstance(kind,TupleType):return all(reference_cloneable(part) for part in kind.fields)
+    if isinstance(kind,TupleSequenceType):return reference_cloneable(kind.element)
+    return False
+
+
 def join_types(left,right):
     if isinstance(left,EmptyType):return right
     if isinstance(right,EmptyType):return left

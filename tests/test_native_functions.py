@@ -179,7 +179,6 @@ print(accumulate(int(input()),int(input()),int(input())))
             "def f(x=int(input())): return x\nprint(f())",
             "def f(x=[]): return len(x)\nprint(f())",
             "def f(x): return x\nprint(f.__defaults__)",
-            "def f(x): return x\nprint(f([1]))",
             "def f(x): return x\nprint(f())",
             "def f(x): return x\nprint(f(1,2))",
             "def f(x): return x\nprint(f(1,x=2))",
@@ -209,6 +208,10 @@ print(accumulate(int(input()),int(input()),int(input())))
         result = transpile(source, TranspileOptions())
         self.assertTrue(result.success)
         self.assertEqual(result.backend, "native")
+
+    def test_identity_function_retains_the_shared_list_result(self):
+        source="def f(x): return x\nprint(f([1]))"
+        self.differential(source,modes=("i64","i128","bigint"))
 
     def test_bigint_scalar_functions_use_native_rust(self):
         source = "def f(x): return x*x\nprint(f(1<<256))"

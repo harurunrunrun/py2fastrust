@@ -6,6 +6,11 @@ from .native_types import TupleType
 
 def compare_values(g,node,values):
     from .native import _Expression,_Unsupported
+    # A finite wrapper can itself contain shared handles. Dispatch that wrapper
+    # before a concrete-list adapter sees only the other operand's layout.
+    from .native_unions import union_kind,compare as finite_compare
+    if any(union_kind(value.kind) for value in values):
+        return finite_compare(g,node,values)
     from .native_nested_lists import comparison as shared_comparison
     shared=shared_comparison(g,node,values)
     if shared is not None:return shared

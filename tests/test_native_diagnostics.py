@@ -74,21 +74,17 @@ class NativeDiagnosticTests(unittest.TestCase):
         self.assertTrue(supported.success,supported.diagnostics)
         self.assertEqual(supported.backend,'native')
 
-    def positive(self,source):
+    def positive(self,source,inputs=("",)):
         import test_native_union_ordering as helpers
         class Check(helpers.NativeUnionOrderingTests):pass
         Check.setUpClass()
-        try:Check().exercise(source,("",))
+        try:Check().exercise(source,inputs)
         finally:Check.tearDownClass()
 
-    def test_shared_aliases_and_unproved_expression_storage_are_distinct(self):
+    def test_shared_aliases_and_conditional_result_storage_are_positive(self):
         source='values=[1]\nalias=values\nalias.append(2)\nprint(values)\n'
         self.positive(source)
-        expression=self.reject('n=int(input())\nx=[1] if n else None\nprint(x)\n')
-        self.assertIn('conditional expression',expression.message)
-        self.assertIn('mutable branch',expression.message)
-        self.assertIn('alternative 1=list[int]',expression.message)
-        self.assertIn('alternative 2=None',expression.message)
+        self.positive('n=int(input())\nx=[1] if n else None\nprint(x)\n',('0\n','1\n'))
 
     def test_comprehension_context_reports_element_shape_and_selected_class_path(self):
         forms=(

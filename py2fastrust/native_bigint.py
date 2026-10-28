@@ -409,11 +409,12 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             if not all(isinstance(target,ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
             value = self.expression(node.value,environment)
-            if not immutable(value.kind) and (not value.owned or len(node.targets) != 1):
+            from .native_types import reference_cloneable
+            if not reference_cloneable(value.kind) and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported("these names would share one mutable container, but the selected storage requires a proved unique owner; alias-preserving shared mutable storage is not implemented for this assignment",node=node,types=(("value",value.kind),),proof="mutable alias identity and lifetime")
             name = self.temporary()
             from .native_unions import union_kind
-            assigned=self.coerce(value,value.kind) if immutable(value.kind) and not value.owned else value.code
+            assigned=self.coerce(value,value.kind) if reference_cloneable(value.kind) and not value.owned else value.code
             lines = [f"let {name}={assigned};"]
             for index,target in enumerate(node.targets):
                 # Expressions already produce an owned immutable scalar. The

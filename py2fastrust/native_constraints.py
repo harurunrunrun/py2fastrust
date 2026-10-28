@@ -12,7 +12,7 @@ from types import MappingProxyType
 from .call_semantics import FunctionSignature,normalize_call,CallBindingError
 from .literal_semantics import Literal
 from .native_types import (TupleType,TupleSequenceType,ListType,SharedListType,EmptyType,EMPTY,NullableType,UnionType,
-                          join_types,alternatives,unmaybe,is_maybe,kind_tag,shared_payload)
+                          join_types,union_type,alternatives,unmaybe,is_maybe,kind_tag,shared_payload)
 from .native_key_types import SetType,DictType
 from .references import BuiltinIdentity,DequeConstructor,CORE_BUILTINS
 
@@ -878,6 +878,18 @@ class Solver:
                 if any(part in active for part in members):return None
                 child=physical(element,active|members)
                 return None if child is None else SharedListType(child)
+            # Finite alternatives must retain the physical reference selected
+            # for each allocation even when None/scalar values can also flow.
+            handles={part for part in members if isinstance(part,Allocation) and part in shared}
+            if handles and handles!=members and not resolved.unknown:
+                others=members-handles
+                # Same-shape list groups are closed above. A remaining raw
+                # allocation needs an explicit layout proof rather than a copy.
+                if not any(isinstance(part,Allocation)and part.category=="list"for part in others):
+                    handle_kind=physical(Value(frozenset(handles)),active)
+                    other_kind=self.kind(Value(frozenset(others)))
+                    if handle_kind is not None and other_kind is not None:
+                        return union_type(handle_kind,other_kind)
             return self.kind(item)
         allocations={};headers={};expressions={};values={};storage={};header_storage={}
         def key(context):return self.contexts.get(context,root)

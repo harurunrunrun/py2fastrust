@@ -170,12 +170,9 @@ y=x or "fallback"
 print(x,y,bool(x),x is None,x==y)
 ''',inputs,release=False)
 
-    def test_mutable_union_aliases_remain_unproved(self):
-        for integer in ("i64","i128","bigint"):
-            source="if int(input()):x=[1]\nelse:x=True\ny=x\nprint(x,y)"
-            result=transpile(source,TranspileOptions(integer=integer))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,"E006")
+    def test_mutable_union_aliases_retain_the_selected_shared_reference(self):
+        source="if int(input()):x=[1]\nelse:x=True\ny=x\nprint(x,y)"
+        self.compare(source,release=True)
 
     def test_promoted_exact_tuple_shape_and_index_sources(self):
         self.compare("t=(1,'x')\nprint(t[int(input())])\n",("-3\n","-2\n","-1\n","0\n","1\n","2\n"),release=False)

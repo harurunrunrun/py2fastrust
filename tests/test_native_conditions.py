@@ -116,12 +116,8 @@ if []or value:print("true")
 print(not(value and []),bool([]or value))
 ''',('0\n','-0\n','nan\n','1.5\n'),modes=('i64','i128'))
 
-    def test_actual_value_returning_mixed_boolop_remains_explicit(self):
-        source='values=[]\nresult=values and 7\nprint(result)\n'
-        for mode in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
+    def test_actual_value_returning_mixed_boolop_preserves_selected_value(self):
+        self.exercise('values=[]\nresult=values and 7\nprint(result)\n',('',))
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
