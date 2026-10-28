@@ -3,6 +3,17 @@ from .native import _Expression, _Unsupported, _text_expression
 from .references import BuiltinIdentity
 
 
+def integer_from_float(g, value, node):
+    if value.kind != 'float':
+        raise _Unsupported
+    if g.bits:
+        g.has_extended_scalars = True
+        operation = f'native_float_integer({value.code})'
+    else:
+        operation = f'Int::from_f64({value.code})'
+    return _Expression(g.at(operation, node), 'int')
+
+
 def unary(g, identity, value, node):
     if not isinstance(identity, BuiltinIdentity):
         return None
@@ -10,6 +21,8 @@ def unary(g, identity, value, node):
     if name == "bool":
         return _Expression(g.truth(value),"bool")
     if name == "int":
+        if value.kind == 'float':
+            return integer_from_float(g, value, node)
         if value.kind in {"int","bool","int_bool"}:
             return _Expression(g.number(value),"int",value.constant)
         if value.kind in {"str","bytes"}:

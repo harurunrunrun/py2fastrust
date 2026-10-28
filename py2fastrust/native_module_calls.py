@@ -1,6 +1,6 @@
 """Resolve standard callables to typed operations, independent of source spelling."""
 import ast
-from .call_semantics import FunctionSignature, CallBindingError, normalize_call
+from .call_semantics import CallBindingError, normalize_call
 from dataclasses import dataclass
 
 from .native import _Expression, _Unsupported
@@ -31,7 +31,7 @@ from .native_heapq import NAMES as HEAP_NAMES
 MEMBERS["heapq"]={name:BuiltinRef("heapq",name)for name in HEAP_NAMES}
 
 
-HELPERS = r'''
+MATH_HELPERS = r'''
 fn native_math_abs(value:&Int)->Int {if value.is_negative(){value.exact_neg()}else{value.clone()}}
 fn native_math_gcd_pair(a:&Int,b:&Int)->Int {
     let mut a=native_math_abs(a);let mut b=native_math_abs(b);
@@ -59,15 +59,17 @@ fn native_math_isqrt(value:&Int)->Result<Int,String> {
 fn native_math_factorial(n:&Int)->Result<Int,String> {
     if n.is_negative(){return Err("ValueError: factorial() not defined for negative values".into());}
     let count=n.to_i128().and_then(|n|isize::try_from(n).ok())
-        .ok_or_else(||"OverflowError: factorial() argument is too large".to_owned())?;
+        .ok_or_else(||format!("OverflowError: factorial() argument should not exceed {}",isize::MAX))?;
     let mut result=Int::exact_small(1);
     for factor in 2..=count {result=result.exact_mul(&Int::exact_small(factor as i128));}Ok(result)
 }
 fn native_math_comb(n:&Int,k:&Int)->Result<Int,String> {
-    if n.is_negative()||k.is_negative(){return Err("ValueError: n and k must be non-negative integers".into());}
+    if n.is_negative(){return Err("ValueError: n must be a non-negative integer".into());}
+    if k.is_negative(){return Err("ValueError: k must be a non-negative integer".into());}
     if k>n{return Ok(Int::exact_small(0));}
     let other=n.exact_add(&k.exact_neg());let k=if k<&other{k}else{&other};
-    let count=k.to_usize().ok_or_else(||"OverflowError: number of terms is too large".to_owned())?;
+    let count=k.to_i128().and_then(|value|isize::try_from(value).ok())
+        .ok_or_else(||format!("OverflowError: min(n - k, k) must not exceed {}",isize::MAX))? as usize;
     let base=n.exact_add(&k.exact_neg());let mut result=Int::exact_small(1);
     for i in 1..=count {
         let i=Int::exact_small(i as i128);
@@ -75,22 +77,26 @@ fn native_math_comb(n:&Int,k:&Int)->Result<Int,String> {
     }Ok(result)
 }
 fn native_math_perm(n:&Int,k:Option<&Int>)->Result<Int,String> {
-    let k=k.unwrap_or(n);
-    if n.is_negative()||k.is_negative(){return Err("ValueError: n and k must be non-negative integers".into());}
+    let k=match k{Some(value)=>value,None=>return native_math_factorial(n)};
+    if n.is_negative(){return Err("ValueError: n must be a non-negative integer".into());}
+    if k.is_negative(){return Err("ValueError: k must be a non-negative integer".into());}
     if k>n{return Ok(Int::exact_small(0));}
-    let count=k.to_usize().ok_or_else(||"OverflowError: number of terms is too large".to_owned())?;
+    let count=k.to_i128().and_then(|value|isize::try_from(value).ok())
+        .ok_or_else(||format!("OverflowError: k must not exceed {}",isize::MAX))? as usize;
     let mut result=Int::exact_small(1);
     for i in 0..count {result=result.exact_mul(&n.exact_add(&Int::exact_small(-(i as i128))));}Ok(result)
 }
 '''
 
 from .native_heapq import HELPERS as HEAP_HELPERS
-HELPERS += HEAP_HELPERS
+HELPERS = MATH_HELPERS + HEAP_HELPERS
 
 
 def helpers(generator):
     from .native_bisect import helpers as bisection_helpers
-    return HELPERS+bisection_helpers(generator.bits)
+    from .native_math_calls import helpers as math_helpers
+    integer='bigint'if not generator.bits else'i'+str(generator.bits)
+    return math_helpers(integer)+HEAP_HELPERS+bisection_helpers(generator.bits)
 
 
 def reference(node,environment):
@@ -131,38 +137,6 @@ def try_statement(g,node,environment):
     return "",environment
 
 
-def _exact(g,value):
-    code=g.number(value)
-    return code if not g.bits else f"Int::from_i128(({code})as i128)"
-
-
-def _result(g,code):
-    return code if not g.bits else f"({code}).normalized().to_i128().unwrap()as NativeInt"
-
-
-def _bind(g,node,environment,parameters,*,minimum,defaults=(),kwonly=(),positional_only=()):
-    optional=tuple(dict.fromkeys((*parameters[minimum:],*defaults,*kwonly)))
-    signature=FunctionSignature.declaration(parameters,positional_only=positional_only,keyword_only=kwonly,default_names=optional)
-    lines=[]
-    def save(value,name):
-        if name=="key":
-            if not(isinstance(value,ast.Constant)and value.value is None):raise _Unsupported
-            return None
-        if isinstance(value,ast.Constant)and value.value is None:
-            if name not in {"hi","k"}:raise _Unsupported
-            return None
-        result=g.expression(value,environment)
-        temporary=g.temporary()
-        lines.append(f"let {temporary}={_exact(g,result)};")
-        return temporary
-    try:
-        plan=signature.plan(normalize_call(node))
-        bound=plan.capture(save,defaults={name:None for name in optional})
-    except CallBindingError:
-        raise _Unsupported from None
-    return lines,bound.by_name
-
-
 def try_expression(g,node,environment):
     if not isinstance(node,ast.Call):return None
     function=reference(node.func,environment)
@@ -174,26 +148,17 @@ def try_expression(g,node,environment):
     if function.module=="bisect":
         from .native_bisect import lower
         return lower(g,node,environment,function)
-    g.has_native_modules=True
-    g.needs_integer_runtime=True
-    name=function.name
     if function.module=="math":
-        if name in {"gcd","lcm"}:
-            try:arguments=normalize_call(node)
-            except CallBindingError:raise _Unsupported from None
-            if arguments.keywords:raise _Unsupported
-            values=[g.expression(argument.expression,environment)for argument in arguments.positional]
-            names=[g.temporary()for _ in values]
-            lines=[f"let {name}={_exact(g,value)};"for name,value in zip(names,values)]
-            code=f"native_math_{name}(&[{','.join(names)}])"
-        else:
-            params=("n","k")if name in {"comb","perm"}else("n",)
-            minimum=2 if name=="comb"else 1
-            lines,args=_bind(g,node,environment,params,minimum=minimum,defaults=("k",)if name=="perm"else(),positional_only=params)
-            if args.get("n") is None or name=="comb"and args.get("k") is None:raise _Unsupported
-            values=[f"&{args['n']}"]
-            if name=="comb":values.append(f"&{args['k']}")
-            elif name=="perm":values.append("None"if args["k"]is None else f"Some(&{args['k']})")
-            code=g.at(f"native_math_{name}({','.join(values)})",node)
-        return _Expression("{ "+" ".join(lines)+f" {_result(g,code)} }}","int")
+        from .native_math_calls import emit
+        try:arguments=normalize_call(node)
+        except CallBindingError:raise _Unsupported from None
+        lines=[];positional=[];keywords={}
+        for argument in arguments.evaluation_order:
+            value=g.expression(argument.expression,environment)
+            name=g.temporary();lines.append(f"let {name}={value.code};")
+            captured=_Expression(name,value.kind,value.constant)
+            if argument.name is None:positional.append(captured)
+            else:keywords[argument.name]=captured
+        result=emit(g,node,function,positional,keywords)
+        return _Expression("{"+"".join(lines)+result.code+"}",result.kind)
     raise _Unsupported('this standard callable has no registered native lowering',node=node)

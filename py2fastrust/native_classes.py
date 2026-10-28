@@ -1696,7 +1696,9 @@ class Emitter:
             elif domain(arguments[0].kind) in {"int","bool","int_bool"}:code=self.number(arguments[0])
             elif arguments[0].kind=='str':code=self.at(f"class_parse_text(&{arguments[0].code})",node)
             elif arguments[0].kind=='bytes':code=self.at(f"class_parse_bytes(&{arguments[0].code})",node)
-            elif arguments[0].kind=='float':code=self.at(f"native_float_integer({arguments[0].code})",node)
+            elif arguments[0].kind=='float':
+                operation='Int::from_f64'if self.model.integer=='bigint'else'native_float_integer'
+                code=self.at(f"{operation}({arguments[0].code})",node)
             else:raise ClassUnsupported(node)
         elif name == "str":
             code=('NativeText::new()'if not arguments else arguments[0].code+'.clone()'
@@ -2047,12 +2049,8 @@ class Emitter:
 
 def _named_helpers(source,wanted):
     """Select complete shared Rust primitives without unrelated owner impls."""
-    from .rust_pruning import _lex, _parse
-    tokens,comments,pairs=_lex(source)
-    selected=[item for item in _parse(source,tokens,comments,pairs)if item.name in wanted]
-    if {item.name for item in selected}!=wanted:
-        raise ValueError("missing shared native helper")
-    return "\n".join(source[item.start:item.end]for item in selected)
+    from .rust_pruning import select_named_rust_items
+    return select_named_rust_items(source,wanted)
 
 
 def _text_helpers(runtime):
@@ -2190,6 +2188,10 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         from .native_bigint import _HELPERS as bigint_helpers
         pieces.extend([bigint_helpers,_named_helpers(_INPUT_HELPERS,{"native_space"}),
                        "fn native_parse_integer(value:&str)->Result<Int,String>{Int::parse(value,10)}"])
+        if any(has_float_payload(shape(value))for value in model.records.values()):
+            from .native_scalar import SCALAR_HELPERS
+            pieces.extend([_named_helpers(SCALAR_HELPERS,{"native_float_text"}),
+                           "impl ClassDisplay for f64 {fn class_str(&self)->String{native_float_text(*self)}}"])
     else:
         from .native_scalar import SCALAR_HELPERS
         from .native_integer_parsing import render_helpers as parsing_helpers

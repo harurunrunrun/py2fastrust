@@ -326,6 +326,19 @@ retained data carries its Unicode notice. BigInt conversions keep exact parsing.
 Static module and callable references support integer `math.gcd`, `lcm`,
 `isqrt`, `factorial`, `comb`, and `perm`. Internal combinatorial arithmetic is
 exact, and the returned result follows the selected integer mode.
+Fixed-width results are computed with native integer operations without BigInt
+temporaries. Combinations separate powers of two and use an odd modular inverse;
+variadic LCM retains bounded factors so intermediate wrapping cannot corrupt
+later gcd reductions. Mathematical argument expressions run before binding and
+integer-index validation, preserving their effects and Python errors. Module
+linking on typed frames remains required work.
+
+Float literals, variables, ordinary arguments/results, unary signs, truth and
+display retain their binary64 representation in every integer mode. Typed
+frames can also store and return these values. `int(float_value)` uses the
+selected integer representation, including nonfinite conversion errors. General
+BigInt/f64 arithmetic and identity-sensitive floating containers remain required
+work.
 
 The ten `heapq` operations `heapify`, `heappush`, `heappop`, `heappushpop`,
 `heapreplace`, and their `_max` counterparts operate directly on the original

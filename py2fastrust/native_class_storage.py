@@ -47,8 +47,6 @@ def validate(cell,node,integer,*,field_value=False,seen=frozenset()):
         raise ClassUnsupported(node,"recursive nested element storage needs cycle-aware layout/lifetime management, which is not implemented",proof="finite nested storage layout")
     if cell.tag is None or cell.tag not in Model.DATA:
         raise ClassUnsupported(node,"the class frame's field/result kind has no resolved native stored-value representation; storage for this value or escaping stream/callable has not been implemented",types=(("value",cell),),proof="resolved stored class-frame value")
-    if integer=="bigint"and cell.tag=="float":
-        raise ClassUnsupported(node,"native binary64 value/operation storage has not been integrated with the BigInt class path",types=(("value","float"),),proof="BigInt/f64 value representation and interoperation")
     if cell.tag=="object"and field_value:
         raise ClassUnsupported(node,"an instance-reference field needs alias-preserving object handles and lifetime/cycle management; that field representation is not implemented on this class path",types=(("field",cell),),proof="object-field identity and lifetime")
     seen=seen|{id(cell)}

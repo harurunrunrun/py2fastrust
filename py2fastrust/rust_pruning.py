@@ -473,3 +473,13 @@ def prune_rust_source_with_report(source: str, *, roots=("main",)) -> RustPruneR
 def prune_rust_source(source: str, *, roots=("main",)) -> str:
     """Return the conservatively pruned source, preserving unsupported input."""
     return prune_rust_source_with_report(source, roots=roots).source
+
+
+def select_named_rust_items(source: str, names) -> str:
+    """Select complete shared primitives without unrelated owner impls."""
+    names = set(names)
+    tokens, comments, pairs = _lex(source)
+    selected = [item for item in _parse(source, tokens, comments, pairs) if item.name in names]
+    if {item.name for item in selected} != names:
+        raise ValueError('missing shared native helper')
+    return '\n'.join(source[item.start:item.end] for item in selected)

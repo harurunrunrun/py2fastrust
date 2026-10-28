@@ -88,6 +88,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     def __init__(self, bits=0, functions=None, function=None, function_input=False, constructors=None, specializations=None):
         super().__init__(0, functions, function, function_input, constructors, specializations)
+        self.has_extended_scalars = False
 
     def normalize(self, value):
         from .literal_semantics import integer_policy
@@ -99,8 +100,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     def slot(self, kind):
         if isinstance(unmaybe(kind),(TupleType,TupleSequenceType,ListType,DequeType,UnionType,NullableType,EmptyType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
-        if kind == "str":
-            self.has_big_text = True
+        if kind in {"str","float"}:
+            if kind == "str":self.has_big_text = True
             slot = f"native_var_{len(self.bindings)}"
             self.bindings[slot] = kind
             return slot
@@ -172,13 +173,15 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             return f"!({expression.code}).is_zero()"
         if expression.kind == "int_bool":
             return f"({expression.code}).truth()"
+        if expression.kind == "float":
+            return f"({expression.code})!=0.0"
         if expression.kind == "bool":
             return expression.code
         raise _Unsupported
 
     def scalar_kind(self, values):
-        if values and all(value.kind == "str" for value in values):
-            return "str"
+        if values and all(value.kind == values[0].kind for value in values)and values[0].kind in {"str","float"}:
+            return values[0].kind
         return super().scalar_kind(values)
 
     def integer_bit_query(self, node, environment):
@@ -258,17 +261,21 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 return super().expression(node,environment)
             if isinstance(binding, _Binding) and (is_maybe(binding.kind) or isinstance(binding.kind,EmptyType)):
                 return super().expression(node, environment)
-            if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool"}:
+            if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool", "float"}:
                 raise _Unsupported
             return _Expression(self.coerce(_Expression(binding.slot,binding.kind),binding.kind),binding.kind)
         if isinstance(node, ast.Constant):
             from .literal_semantics import Literal
             literal=Literal.from_ast(node)
-            if literal is not None and literal.kind in {"int","bool"}:
+            if literal is not None and literal.kind in {"int","bool","float"}:
                 return _Expression(literal.rust_atom(self.literal,_string),literal.kind,literal.value)
             raise _Unsupported("this literal kind has no integrated native value/operation representation on the BigInt scalar path",node=node,types=(("literal",literal.kind if literal is not None else None),),proof="BigInt-path literal value representation")
         if isinstance(node, ast.UnaryOp):
             value = self.expression(node.operand,environment)
+            if value.kind=="float"and isinstance(node.op,(ast.UAdd,ast.USub)):
+                code=value.code if isinstance(node.op,ast.UAdd)else f"-({value.code})"
+                constant=(None if value.constant is None else value.constant if isinstance(node.op,ast.UAdd)else-value.constant)
+                return _Expression(code,"float",constant)
             if isinstance(node.op, ast.Not):
                 return _Expression(f"!({self.truth(value)})","bool",None if value.constant is None else not value.constant)
             number = self.number(value)
@@ -300,6 +307,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 value = self.expression(argument,environment)
                 if name == "bool":
                     return _Expression(self.truth(value),"bool",None if value.constant is None else bool(value.constant))
+                if value.kind == 'float':
+                    from .native_builtin_values import integer_from_float
+                    return integer_from_float(self, value, node)
                 return _Expression(self.number(value),"int",value.constant)
             if name == "abs" and len(node.args) == 1:
                 value = self.expression(node.args[0],environment)
@@ -490,6 +500,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_mapping_delete |= any(local.has_mapping_delete for local in specializations.generators)
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
         generator.has_native_words |= any(local.has_native_words for local in specializations.generators)
+        generator.has_extended_scalars |= any(local.has_extended_scalars for local in specializations.generators)
     except (SyntaxError,_Unsupported,RecursionError,ConstraintFailure) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
@@ -504,6 +515,10 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
               "\n".join("// "+line for line in unicode_license.splitlines())+"\n",
               runtime.joinpath("integer.rs").read_text(encoding="utf-8"),
               _HELPERS,LIST_HELPERS,_OUTPUT_HELPERS]
+    if generator.has_extended_scalars:
+        from .native_scalar import SCALAR_HELPERS
+        from .rust_pruning import select_named_rust_items
+        result.append(select_named_rust_items(SCALAR_HELPERS,{"native_float_text"}))
     if generator.has_deques:
         from .native_deques import HELPERS as DEQUE_HELPERS
         result.append(DEQUE_HELPERS)

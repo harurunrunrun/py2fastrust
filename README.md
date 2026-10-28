@@ -192,6 +192,11 @@ Supported competitive-programming patterns include unpacked integer input,
 aggregation, key deletion and insertion-order iteration, and owned adjacency-list BFS.
 Standard input is buffered and read on demand. Output flushes before a blocking
 input operation, including inside supported ordinary functions.
+Resolved integer calls to `math.gcd`, `lcm`, `isqrt`, `factorial`, `comb` and
+`perm` use native fixed-width arithmetic in i64/i128 mode, including results
+larger than that width. Their mathematical result is normalized at the function
+boundary. BigInt mode retains exact results. The module adapter for typed frames
+is still being integrated.
 Immediate iterator producers and consumers share immutable semantic plans.
 `for`, reductions, `list`, `sorted`, `next`, unpacking, and string `join` consume
 those plans, with callable identities and argument roles resolved before Rust
