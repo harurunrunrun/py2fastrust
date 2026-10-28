@@ -207,7 +207,7 @@ def _scope_metadata(table):
     return tuple(scopes), tuple(tables)
 
 
-def _source_metadata(tree, scopes):
+def _source_metadata(tree, scopes, *, future_annotations=False):
     # CPython 3.14 inlines list/set/dict comprehensions in its physical symbol
     # tables. Keep the official IDs, and append logical binding scopes instead
     # of pretending that an iteration target writes the enclosing namespace.
@@ -215,6 +215,7 @@ def _source_metadata(tree, scopes):
     official_count=len(scopes)
     physical_parents=tuple(scope.parent for scope in scopes)
     nodes, bindings, ordinals, definitions, names = [], [], {}, {}, {}
+    annotation_syntax=set()
     pending_bindings=[]
     matched = {0}
     symbols = [{value.name: value for value in scope.symbols} for scope in scopes]
@@ -304,7 +305,7 @@ def _source_metadata(tree, scopes):
         while scopes[scope].kind=="comprehension"or scope in generator_scopes:
             scope=scopes[scope].parent
         return scope
-    def visit(node, scope=0, defaults_scope=None, first_iter_scope=None, annotation_scope=None, namespace=None, skip_defaults=False, skip_iter=False):
+    def visit(node, scope=0, defaults_scope=None, first_iter_scope=None, annotation_scope=None, namespace=None, skip_defaults=False, skip_iter=False, syntax_only=False):
         ordinal = len(nodes)
         ordinals[id(node)] = ordinal
         line, column = getattr(node, "lineno", 1), getattr(node, "col_offset", 0) + 1
@@ -319,6 +320,13 @@ def _source_metadata(tree, scopes):
             names[id(node)] = private_name(raw,private_owner[0])
         elif isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):
             names[id(node)] = private_name(node.name,private_owner[0])
+        if syntax_only:
+            # Stringized/local annotations retain their original AST and source
+            # locations, but create no executable bindings, comprehensions or
+            # callable frames in the official symbol table.
+            annotation_syntax.add(id(node))
+            for child in ast.iter_child_nodes(node):visit(child,scope,syntax_only=True)
+            return
         if isinstance(node, ast.Name):
             bind(node.id, "load" if isinstance(node.ctx, ast.Load) else "delete" if isinstance(node.ctx, ast.Del) else "store", scope, ordinal,namespace)
         elif isinstance(node, ast.arg):
@@ -345,7 +353,7 @@ def _source_metadata(tree, scopes):
             visit(node.args, body_scope, scope, annotation_scope=annotations_scope,skip_defaults=True)
             for parameter in getattr(node, "type_params", ()):
                 visit(parameter, definition_scope)
-            if getattr(node, "returns", None):visit(node.returns, annotations_scope)
+            if getattr(node, "returns", None):visit(node.returns, annotations_scope,syntax_only=future_annotations)
             body = node.body if not isinstance(node, ast.Lambda) else [node.body]
             for statement in body:visit(statement, body_scope)
             return
@@ -366,7 +374,13 @@ def _source_metadata(tree, scopes):
                     if isinstance(child,ast.AST):visit(child,owner,annotation_scope=annotation_scope)
             return
         if isinstance(node, ast.arg):
-            if node.annotation:visit(node.annotation, annotation_scope if annotation_scope is not None else scope)
+            if node.annotation:visit(node.annotation, annotation_scope if annotation_scope is not None else scope,syntax_only=future_annotations)
+            return
+        if isinstance(node,ast.AnnAssign):
+            visit(node.target,scope)
+            inactive=future_annotations or not node.simple or scopes[scope].kind=="function"
+            visit(node.annotation,scope,syntax_only=inactive)
+            if node.value is not None:visit(node.value,scope)
             return
         if isinstance(node,(ast.ListComp,ast.SetComp,ast.DictComp)):
             body_scope=inline_scope(node,scope)
@@ -433,7 +447,7 @@ def _source_metadata(tree, scopes):
     for scope in scopes:
         if scope.parent is not None:children[scope.parent].append(scope.ordinal)
     scopes=tuple(replace(scope,children=tuple(children[scope.ordinal]))for scope in scopes)
-    return scopes,tuple(nodes), tuple(bindings), MappingProxyType(ordinals), MappingProxyType(definitions), MappingProxyType(names)
+    return scopes,tuple(nodes), tuple(bindings), MappingProxyType(ordinals), MappingProxyType(definitions), MappingProxyType(names),frozenset(annotation_syntax)
 
 
 def parse_source(source, filename="<input>", *, name="__main__", package=False):
@@ -446,12 +460,13 @@ def parse_source(source, filename="<input>", *, name="__main__", package=False):
         raise CompilationError(Diagnostic(getattr(error, "msg", str(error)), filename,
             getattr(error, "lineno", 1) or 1, getattr(error, "offset", 1) or 1, "E001")) from None
     scopes, _ = _scope_metadata(table)
-    scopes,nodes, bindings, ordinals, definitions, names = _source_metadata(tree, scopes)
+    scopes,nodes, bindings, ordinals, definitions, names,annotation_syntax = _source_metadata(
+        tree,scopes,future_annotations=bool(compiled.co_flags & __future__.annotations.compiler_flag))
     unit=SourceUnit(source, filename, name, package, _freeze_tree(tree), table,
                       compiled.co_flags & _FUTURE_MASK, scopes, nodes, bindings, (), frozenset(), ordinals, definitions, names, MappingProxyType({}))
     from .call_semantics import FunctionSignature
     signatures={id(node):FunctionSignature.from_unit(node,unit) for node in ast.walk(unit.tree)
-                if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.Lambda))}
+                if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.Lambda))and id(node)not in annotation_syntax}
     return replace(unit,function_signatures=MappingProxyType(signatures))
 
 
