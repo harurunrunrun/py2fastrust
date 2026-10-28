@@ -142,6 +142,27 @@ test('starts one worker, waits for readiness, and uses the package option catalo
   assert.equal(ui.element('optimize').checked, true);
 });
 
+test('only the integer option is shown until advanced options are opened', () => {
+  const details = html.match(/<details\b([^>]*)>([\s\S]*?)<\/details>/);
+  assert.ok(details, 'Additional options must have a disclosure control.');
+  assert.match(details[1], /\bid="advanced-options"/);
+  assert.doesNotMatch(details[1], /\bopen(?:\s|=|$)/, 'Advanced options must start closed.');
+  assert.match(details[2], /<summary>Advanced options<\/summary>/);
+  for (const id of ['string-mode', 'license', 'optimize']) {
+    assert.match(details[2], new RegExp(`\\bid="${id}"`), `${id} must be inside advanced options.`);
+  }
+  assert.doesNotMatch(details[2], /\bid="(?:integer|convert)"/);
+  const visibleMarkup = html.replace(details[0], '');
+  assert.deepEqual([...visibleMarkup.matchAll(/<(?:select|input)\b[^>]*\bid="([^"]+)"/g)]
+    .map(([, id]) => id), ['integer']);
+
+  const ui = setup();
+  ui.submit();
+  assert.deepEqual(ui.workers[0].messages.at(-1).options, {
+    integer: 'i64', string_mode: 'ascii', license: 'CC0-1.0', optimize: true,
+  }, 'The closed advanced section must retain the converter defaults.');
+});
+
 test('sends source as data, blocks duplicate submissions, and reuses its worker', () => {
   const ui = setup();
   const worker = ui.workers[0];

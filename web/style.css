@@ -51,6 +51,18 @@ hr {
   gap: 0.4rem;
 }
 
+#advanced-options {
+  margin-top: 0.75rem;
+}
+
+#advanced-options summary {
+  cursor: pointer;
+}
+
+#advanced-options .controls {
+  margin-top: 0.75rem;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

@@ -4,8 +4,10 @@ The static interface uses plain HTML, CSS, and JavaScript. Its colors are black
 and white. Python source appears on the left and read-only Rust output on the
 right; narrow screens stack the editors. The converter runs in a module worker.
 
-Paste a single Python file, choose an integer mode, string mode and license, and press
-**Convert**. Ctrl+Enter or Command+Enter in the source editor also converts.
+Paste a single Python file, choose an integer mode, and press **Convert**.
+The integer mode is the only conversion option shown by default. Open
+**Advanced options** to change the string mode, fallback license, or optimization
+setting. Ctrl+Enter or Command+Enter in the source editor also converts.
 Leading `# pytors:` or `# py2fastrust:` directives take precedence over the
 selected options, as they do in the core API. The worker supplies the available
 integer modes, string modes and license identifiers from the installed package.

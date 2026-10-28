@@ -4,15 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <meta name="description" content="Convert Python source to Rust in your browser with pytors.">
-  <title>pytors — Python to Rust</title>
+  <meta name="description" content="Convert Python source to fast Rust in your browser with pytors.">
+  <title>pytors — Python to Fast Rust</title>
   <link rel="stylesheet" href="./style.css">
   <script type="module" src="./app.js"></script>
 </head>
 <body>
   <header>
     <h1>pytors</h1>
-    <p>Python to Rust</p>
+    <p>Python to Fast Rust</p>
   </header>
   <main>
     <form id="converter" aria-label="Python to Rust converter">
@@ -23,28 +23,33 @@
             <option value="i64">i64</option>
           </select>
         </label>
-        <label for="string-mode">Strings:
-          <select id="string-mode" name="string_mode" aria-describedby="options-note" disabled>
-            <option value="ascii">ASCII</option>
-            <option value="unicode">Unicode</option>
-          </select>
-        </label>
-        <label for="license">License:
-          <select id="license" name="license" aria-describedby="options-note" disabled>
-            <option value="CC0-1.0">CC0-1.0</option>
-          </select>
-        </label>
-        <label class="optimization" for="optimize">
-          <input id="optimize" name="optimize" type="checkbox" aria-describedby="options-note" checked disabled>
-          Optimize
-        </label>
         <div class="actions">
           <button id="convert" type="submit" disabled>Convert</button>
           <button id="cancel" type="button" hidden>Cancel</button>
           <button id="retry" type="button" hidden>Retry loading</button>
         </div>
       </div>
-      <p class="note" id="options-note">Leading source directives override these options.</p>
+      <details id="advanced-options">
+        <summary>Advanced options</summary>
+        <div class="controls">
+          <label for="string-mode">Strings:
+            <select id="string-mode" name="string_mode" aria-describedby="options-note" disabled>
+              <option value="ascii">ASCII</option>
+              <option value="unicode">Unicode</option>
+            </select>
+          </label>
+          <label for="license">License:
+            <select id="license" name="license" aria-describedby="options-note" disabled>
+              <option value="CC0-1.0">CC0-1.0</option>
+            </select>
+          </label>
+          <label class="optimization" for="optimize">
+            <input id="optimize" name="optimize" type="checkbox" aria-describedby="options-note" checked disabled>
+            Optimize
+          </label>
+        </div>
+        <p class="note" id="options-note">Leading source directives override these options.</p>
+      </details>
       <hr>
       <div class="editors" id="editors" aria-busy="true">
         <div class="editor">

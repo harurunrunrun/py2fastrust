@@ -121,6 +121,12 @@ try {
     return status === 'Ready.' || status.startsWith('Error:');
   }, undefined, { timeout: 180_000 });
   assert.equal(await page.locator('#status').textContent(), 'Ready.');
+  assert.equal(await page.locator('#advanced-options').getAttribute('open'), null);
+  assert(await page.locator('#integer').isVisible());
+  for (const option of ['string-mode', 'license', 'optimize']) {
+    assert.equal(await page.locator(`#${option}`).isVisible(), false,
+      `${option} must stay inside the initially closed advanced options.`);
+  }
   const ready = await page.evaluate(() => window.__workerMessages.find(m => m.type === 'ready'));
   assert(ready, 'The actual worker must report ready.');
   assert.deepEqual(ready.metadata.integer_modes, ['i64', 'i128', 'bigint']);
@@ -153,6 +159,10 @@ try {
     { name: 'html-is-data', source: 'print("</textarea><script>window.sourceWasExecuted = true</script>")\n',
       integer: 'i64', license: 'CC0-1.0', input: '' },
   ];
+  await page.locator('#advanced-options summary').click();
+  for (const option of ['string-mode', 'license', 'optimize']) {
+    assert(await page.locator(`#${option}`).isVisible());
+  }
   for (const item of cases) {
     const previousOutput = await page.locator('#output').inputValue();
     await page.locator('#source').fill(item.source);
@@ -205,6 +215,8 @@ try {
   assert.match(await page.locator('#diagnostic-list').textContent(), /main\.py:1:/);
   assert.equal(await page.locator('#output').inputValue(), previous);
   assert.equal(await page.evaluate(() => window.__workerCount), 1, 'Conversions must reuse the initialized worker.');
+  await page.locator('#advanced-options summary').click();
+  assert.equal(await page.locator('#license').isVisible(), false);
   await page.locator('#source').fill('print("keyboard")\n');
   await page.locator('#source').press('Control+Enter');
   await page.waitForFunction(() => document.getElementById('status').textContent === 'Conversion complete.');
