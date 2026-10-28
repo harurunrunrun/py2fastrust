@@ -149,9 +149,12 @@ def integer_map(g,source,planner,node,*,frame=None,inline=False):
         from .native_stdio import _enable
         _enable(g)
         parser="native_io_parse_bytes(@)"
-        if g.bits:parser+=".map(|value|value.to_i128().unwrap() as NativeInt)"
+        if g.bits:
+            from .native_integer_parsing import enable
+            enable(g)
     elif g.bits:
-        g.has_input=g.needs_integer_runtime=True
+        from .native_integer_parsing import enable
+        enable(g)
         parser="native_parse_integer(@)"
     else:
         parser="Int::parse(@,10)"

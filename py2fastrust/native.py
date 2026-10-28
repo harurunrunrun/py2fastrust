@@ -278,30 +278,7 @@ impl NativeInput {
 fn native_space(character: char) -> bool {
     character.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&character)
 }
-#[inline]
-fn native_parse_integer(word: &str) -> Result<NativeInt, String> {
-    // Decimal contest input avoids arbitrary-precision temporaries entirely.
-    // Accumulating with wrapping operations equals normalization of the full
-    // mathematical integer, including literals longer than the machine width.
-    if word.is_ascii() {
-        let word = word.trim_matches(|c: char| c.is_ascii_whitespace());
-        let bytes = word.as_bytes();
-        let negative = bytes.first() == Some(&b'-');
-        let digits = if negative || bytes.first() == Some(&b'+') { &bytes[1..] } else { bytes };
-        let mut value: NativeInt = 0;
-        let mut preceding_digit = false;
-        let mut valid = true;
-        for &byte in digits {
-            if byte.is_ascii_digit() {
-                value = value.wrapping_mul(10).wrapping_add((byte - b'0') as NativeInt);
-                preceding_digit = true;
-            } else if byte == b'_' && preceding_digit { preceding_digit = false; }
-            else { valid = false; break; }
-        }
-        if valid && preceding_digit { return Ok(if negative { value.wrapping_neg() } else { value }); }
-    }
-    Int::parse(word, 10).map(|n| n.to_i128().unwrap() as NativeInt)
-}
+
 '''
 
 
@@ -441,6 +418,7 @@ class _Generator:
         self.counter = 0
         self.loops = []
         self.needs_integer_runtime = False
+        self.has_fixed_parsing = False
         self.has_input = False
         self.has_lists = False
         self.has_dicts = False
@@ -1109,7 +1087,9 @@ class _Generator:
             if name == "int" and len(node.args) == 1:
                 argument = node.args[0]
                 if isinstance(argument, ast.Call) and isinstance(argument.func, ast.Name) and argument.func.id == "input" and not argument.args and not argument.keywords:
-                    self.needs_integer_runtime = self.has_input = True
+                    from .native_integer_parsing import enable
+                    enable(self)
+                    self.has_input = True
                     return _Expression(self.at("native_input.integer(&mut native_output)", argument), "int")
                 value = self.expression(argument, environment)
                 return _Expression(self.number(value), "int", value.constant)
@@ -2197,7 +2177,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         generator.type_analysis=specializations.type_analysis=analyze(unit)
         generator.constraint_facts=generator.type_analysis.scope()
         if function_input:
-            generator.has_input = generator.needs_integer_runtime = True
+            generator.has_input = True
         if wrapper:
             generator.return_label = "native_entrypoint"
             generator.entry_scope = wrapper[0]
@@ -2215,7 +2195,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             generator.union_types.update(local.union_types)
             generator.text_predicates.update(local.text_predicates)
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
+            for flag in ("needs_integer_runtime", "has_fixed_parsing", "has_input", "has_lists", "has_dicts", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2237,9 +2217,12 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         unicode_license = files("py2fastrust").joinpath("stdlib", "UNICODE_LICENSE.txt").read_text(encoding="utf-8")
         result.append("\n".join("// " + line for line in unicode_license.splitlines()) + "\n")
         result.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
+    if generator.has_fixed_parsing or generator.has_extended_scalars or generator.has_stdio:
+        from .native_integer_parsing import render_helpers as parsing_helpers
+        result.append(parsing_helpers(string_mode))
     if generator.has_input:
         result.append(runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"))
-        result.append(_INPUT_HELPERS if generator.needs_integer_runtime else TEXT_INPUT_HELPERS)
+        result.append(_INPUT_HELPERS if generator.has_fixed_parsing else TEXT_INPUT_HELPERS)
     if generator.has_key_containers:
         from .native_key_containers import HELPERS as KEY_HELPERS
         result.append(KEY_HELPERS)
@@ -2259,7 +2242,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         result.append(WORD_HELPERS)
     if generator.has_stdio:
         from .native_stdio import render_helpers
-        result.append(render_helpers(generator.bits))
+        result.append(render_helpers(generator.bits,integer_runtime=generator.needs_integer_runtime,input_runtime=generator.has_input))
     if generator.has_extended_scalars:
         result.append(SCALAR_HELPERS)
         for license_name in ("PYTHON_LICENSE.txt", "UNICODE_LICENSE.txt"):

@@ -82,7 +82,7 @@ print(a,b)
             print("α\\u001cβ\\u2003γ".split())
             print(b" a\\tb ".split())
             print(next(map(int,sys.stdin.buffer.readline().split())))
-        ''',("12 invalid\n",),modes=("i64","i128","bigint"))
+        ''',("12 invalid\n",),modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_definitely_bound_aliases_survive_branches_and_function_capture(self):
         self.differential('''

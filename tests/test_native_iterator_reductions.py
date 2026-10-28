@@ -210,7 +210,7 @@ print(int(input()))
             print(max(str(i) for i in range(12)))
             print(min(float(i)/3 for i in range(4)))
             print(any(word for word in input().split()))
-        ''', ("１２ 4 -3\nhi there\n", "\n\n"))
+        ''', ("１２ 4 -3\nhi there\n", "\n\n"),string_mode="unicode")
 
     def test_reduction_function_specialization_and_full_error_frames(self):
         self.differential('''

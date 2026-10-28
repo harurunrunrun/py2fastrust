@@ -507,7 +507,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         result.append(WORD_HELPERS)
     if generator.has_stdio:
         from .native_stdio import render_helpers
-        result.append(render_helpers(0))
+        result.append(render_helpers(0,input_runtime=generator.has_input))
     if generator.has_native_modules:
         from .native_module_calls import HELPERS as MODULE_HELPERS
         result.append(MODULE_HELPERS)

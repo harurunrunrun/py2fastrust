@@ -181,6 +181,12 @@ consumer paths. Text and byte splitting share word-stream adapters; integer
 parsing is selected from their proved element conversion, rather than from a
 particular spelling of `input().split()`. Unpacking pulls at most one extra
 converted item and assigns targets only after validating the item count.
+In fixed-width modes, decimal text and byte conversions accumulate directly in
+the selected Rust integer type. Scalar calls, captured builtin aliases, word
+streams and proved character projections share this parser; they do not create
+arbitrary-precision integer temporaries or acquire standard input solely to
+convert an existing value. Unicode digit and whitespace data is included only
+when the selected Unicode profile and retained operations require it.
 Immediately consumed generator expressions use typed loops for reductions.
 All integer modes also support character-based string slicing,
 `strip`/`lstrip`/`rstrip`, `count`, and `join` over proved string streams.

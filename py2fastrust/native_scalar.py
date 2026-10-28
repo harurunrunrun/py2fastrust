@@ -212,19 +212,9 @@ fn native_scalar_float(text: &str) -> Result<f64, String> {
     normalized.parse::<f64>().map_err(|_| "ValueError: could not convert string to float".into())
 }
 fn native_scalar_integer(text: &str) -> Result<NativeInt, String> {
-    let text = text.trim_matches(native_scalar_space);
-    let negative = text.starts_with('-');
-    let text = text.strip_prefix(['+', '-']).unwrap_or(text);
-    let mut value: NativeInt = 0;
-    let mut digit = false;
-    for c in text.chars() {
-        if let Some(d) = native_scalar_digit(c) { value = value.wrapping_mul(10).wrapping_add(d as NativeInt); digit = true; }
-        else if c == '_' && digit { digit = false; }
-        else { return Err("ValueError: invalid literal for int() with base 10".into()); }
-    }
-    if !digit { return Err("ValueError: invalid literal for int() with base 10".into()); }
-    Ok(if negative { value.wrapping_neg() } else { value })
+    native_parse_integer(text).map_err(|_|"ValueError: invalid literal for int() with base 10".to_owned())
 }
+
 fn native_string_add(mut left: String, right: &str) -> Result<String, String> {
     left.try_reserve(right.len()).map_err(|_| "MemoryError: string is too large".to_owned())?;
     left.push_str(right);

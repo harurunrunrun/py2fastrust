@@ -209,6 +209,15 @@ ASCII profile or opt-in strict UTF-8 Unicode profile. Custom/reconfigured
 streams and surrogate escapes need further
 direct implementation.
 
+Fixed-width decimal `int(text)` and `int(bytes)` conversions use a shared
+selected-width accumulator, including captured builtin aliases, lazy/eager word
+streams and proved character projections. Signs, underscores, whitespace and
+each integer mode's wrapping rules are preserved without an arbitrary-precision
+temporary. Conversion-helper selection does not itself construct a standard-input reader. The
+Unicode profile uses pinned Unicode 16.0 decimal and numeric-whitespace data;
+retained data carries its Unicode notice. BigInt conversions keep exact parsing.
+
+
 Static module and callable references support integer `math.gcd`, `lcm`,
 `isqrt`, `factorial`, `comb`, and `perm`, plus the `bisect`/`insort` aliases on
 integer lists with `key=None`. Argument expressions retain source evaluation

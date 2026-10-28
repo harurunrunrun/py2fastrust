@@ -120,20 +120,6 @@ _ASCII_PRIMITIVES = {
     "native_tuple_printable": r'''fn native_tuple_printable(c:char)->bool {(32..127).contains(&(c as u32))}''',
     "text_repr_str": r'''fn text_repr_str(source:&str)->String {native_ascii_repr(source)}''',
     "native_tuple_repr_str": r'''fn native_tuple_repr_str(source:&str)->String {native_ascii_repr(source)}''',
-    "native_parse_integer": r'''fn native_parse_integer(word:&str)->Result<NativeInt,String> {
-    let word=word.trim_matches(native_ascii_numeric_space);
-    let bytes=word.as_bytes();
-    let negative=bytes.first()==Some(&b'-');
-    let digits=if negative||bytes.first()==Some(&b'+'){&bytes[1..]}else{bytes};
-    let mut value:NativeInt=0;let mut preceding_digit=false;
-    for &byte in digits {
-        if byte.is_ascii_digit(){value=value.wrapping_mul(10).wrapping_add((byte-b'0')as NativeInt);preceding_digit=true;}
-        else if byte==b'_'&&preceding_digit{preceding_digit=false;}
-        else{return Err("ValueError: invalid literal for int()".into());}
-    }
-    if !preceding_digit{return Err("ValueError: invalid literal for int()".into());}
-    Ok(if negative{value.wrapping_neg()}else{value})
-}''',
     "decode_pending": r'''fn decode_pending(&mut self,_final:bool)->Result<(),StandardInputError> {
     if !self.pending.is_ascii(){
         let start=self.pending.iter().position(|byte|!byte.is_ascii()).unwrap();
@@ -279,10 +265,6 @@ def apply_text_policy(source: str, string_mode: str = "ascii") -> str:
                 cursor += 1
         if cursor == len(tokens):
             raise ValueError(f"missing body for internal text helper: {name}")
-        if name=='native_parse_integer'and any(part.text=='Int'for part in tokens[index:cursor]):
-            # The class BigInt emitter uses the same helper name with an exact
-            # Int result. Its parser gets ASCII digit/space definitions above.
-            continue
         edits.append((token.start, tokens[pairs[cursor]].end, replacement.strip()))
     for start, end, replacement in reversed(edits):
         source = source[:start] + replacement + source[end:]

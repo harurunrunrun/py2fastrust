@@ -49,6 +49,7 @@ fn main(){println!("{}",TEXT);}
     @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
     def test_every_ascii_character_uses_python_whitespace_and_number_rules(self):
         from py2fastrust.native import _INPUT_HELPERS
+        from py2fastrust.native_integer_parsing import render_helpers
         from py2fastrust.native_scalar import SCALAR_HELPERS
         from py2fastrust.native_text_methods import HELPERS as TEXT_HELPERS
         from py2fastrust.native_words import HELPERS as WORD_HELPERS
@@ -84,7 +85,7 @@ fn main(){for code in 0u8..128{
 '''
         with tempfile.TemporaryDirectory(prefix='pytors-ascii-properties-')as directory:
             for integer in ('i64','i128'):
-                program=f'type NativeInt={integer};\n'+_INPUT_HELPERS+SCALAR_HELPERS+TEXT_HELPERS+WORD_HELPERS+TUPLE_HELPERS+main
+                program=f'type NativeInt={integer};\n'+_INPUT_HELPERS+render_helpers('ascii')+SCALAR_HELPERS+TEXT_HELPERS+WORD_HELPERS+TUPLE_HELPERS+main
                 program=prune_rust_source(apply_text_policy(program))
                 path=Path(directory,'main.rs');path.write_text(program);binary=path.with_suffix('')
                 build=subprocess.run(['rustc','--edition=2021','-O',str(path),'-o',str(binary)],capture_output=True,text=True,timeout=90)

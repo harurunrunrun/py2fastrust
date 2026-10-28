@@ -119,10 +119,10 @@ print(answer)
             maximum=(1<<(bits-1))-1
             self.compare(source,(f'4\n{maximum}\nabcdef\nabxd\n',f'4\n{-maximum}\nabcdef\nabxd\n'),wrapping=True,trace=False,modes=(mode,),debug=True)
 
-    def test_out_of_domain_utf8_in_ascii_mode_remains_safe_and_whole_text_is_preserved(self):
-        # ASCII mode assumes ASCII characters for indexed operations. Invalid
-        # domain data still must not create invalid UTF-8, panic or crash;
-        # Unicode mode below provides exact codepoint behavior.
+    def test_ascii_reader_rejects_out_of_domain_utf8_without_corrupting_output(self):
+        # ASCII text input is rejected before indexed operations. Rejection must
+        # preserve UTF-8 output and a modeled exception; Unicode mode below
+        # provides exact codepoint behavior for these characters.
         source='''n=int(input())
 s=input()
 p=input()
@@ -139,9 +139,10 @@ print(answer)
                 actual=subprocess.run([str(guarded[1])],input=data.encode(),capture_output=True,timeout=5)
                 output=actual.stdout.decode('utf-8')
                 actual.stderr.decode('utf-8')
-                self.assertIn(actual.returncode,(0,1))
-                lines=data.splitlines()
-                self.assertTrue(output.startswith(lines[1]+" "+lines[2]+"\n"),output)
+                self.assertEqual(actual.returncode,1)
+                self.assertEqual(output,"")
+                self.assertIn(b"UnicodeDecodeError:",actual.stderr)
+                self.assertNotIn(b"panicked",actual.stderr)
 
     def test_unicode_mode_keeps_codepoint_behavior_and_lazy_errors(self):
         self.compare('''n=int(input())

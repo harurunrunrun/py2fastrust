@@ -25,6 +25,8 @@ fn main() { let text="const TEXT_PRINTABLE fn native_float_divmod"; }
         for definition, psf, unicode in (
             ("fn native_float_divmod() {}", True, False),
             ("const TEXT_PRINTABLE: &[(u32,u32)] = &[];", False, True),
+            ("const NATIVE_FIXED_INT_ZEROES: &[u32] = &[];", False, True),
+            ("const NATIVE_FIXED_INT_SPACE: &[(u32,u32)] = &[];", False, True),
             ("const NATIVE_TUPLE_PRINTABLE: &[(u32,u32)] = &[];", False, True),
             ("impl Int { fn decimal_digit() { const ZEROES:&[u32]=&[]; } }", False, True),
             ("impl Int { fn format_digit() { const RANGES:&[(u32,u32)]=&[]; } }", False, True),

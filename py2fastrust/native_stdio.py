@@ -56,7 +56,7 @@ fn native_bytes_repr(value:&[u8])->String {
     output.push(quote as char);output
 }
 fn native_io_parse_bytes(value:&[u8])->Result<Int,String> {
-    let invalid=||format!("ValueError: invalid literal for int() with base 10: {}",native_bytes_repr(value));
+    let invalid=||format!("ValueError: invalid literal for int() with base 10: {:.200}",native_bytes_repr(value));
     if value.iter().any(|&byte|byte>=127||(byte<32&&!native_bytes_space(byte))) {return Err(invalid());}
     Int::parse(std::str::from_utf8(value).unwrap(),10).map_err(|_|invalid())
 }
@@ -86,8 +86,26 @@ fn native_bytes_get(value:&[u8],index:i128)->Result<NativeInt,String> {
 '''
 
 
-def render_helpers(bits):
-    return HELPERS.replace("__NATIVE_NUMBER__", "value" if not bits else "value.to_i128().unwrap() as NativeInt")
+def render_helpers(bits,*,integer_runtime=True,input_runtime=True):
+    source=HELPERS.replace("__NATIVE_NUMBER__", "value" if not bits else "value.to_i128().unwrap() as NativeInt")
+    if bits:
+        first=source.index("fn native_io_parse_bytes(");last=source.index("fn native_io_number(",first)
+        source=source[:first]+r'''fn native_io_parse_bytes(value:&[u8])->Result<NativeInt,String> {
+    native_fixed_parse_ascii(value).ok_or_else(||format!("ValueError: invalid literal for int() with base 10: {:.200}",native_bytes_repr(value)))
+}
+fn native_io_parse_text(value:&str)->Result<NativeInt,String> {native_parse_integer(value)}
+'''+source[last:]
+    from .rust_pruning import _lex, _parse
+    excluded=set()
+    if bits and not integer_runtime:
+        excluded.update({"native_io_count","native_io_number","native_bytes_get"})
+    if not input_runtime:
+        excluded.update({"native_stdin_read_text","native_stdin_read_bytes"})
+    if excluded:
+        tokens,comments,pairs=_lex(source)
+        source="\n".join(source[item.start:item.end]for item in _parse(source,tokens,comments,pairs)
+                         if item.name not in excluded)
+    return source
 
 
 def reference(node,environment):
@@ -105,12 +123,14 @@ def _global_reference(generator,node,environment):
         generator.function.required.add(node.id)
 
 
-def _enable(generator):
-    generator.has_stdio=generator.has_input=generator.needs_integer_runtime=True
+def _enable(generator,*,integer_runtime=False):
+    generator.has_stdio=True
+    generator.needs_integer_runtime |= integer_runtime
 
 
 def _number(generator,code):
-    return code if not generator.bits else f"({code}).to_i128().unwrap() as NativeInt"
+    # Parsing wrappers already return the selected NativeInt in every mode.
+    return code
 
 
 def _size_number(generator,value):
@@ -168,6 +188,7 @@ def try_expression(generator,node,environment):
                 raise _Unsupported
             _global_reference(generator,node.func,environment)
             _enable(generator)
+            generator.has_input=True
             setup=""
             count="None"
             if node.args:
@@ -180,6 +201,7 @@ def try_expression(generator,node,environment):
                     value=generator.expression(argument,environment)
                     name=generator.temporary()
                     size=generator.at(f"native_io_count(&{name},{str(reader.binary and not reader.line).lower()})",node)
+                    generator.needs_integer_runtime=True
                     setup=f"let {name}={_size_number(generator,value)};"
                     count=size
             kind="bytes" if reader.binary else "text"
@@ -204,7 +226,8 @@ def try_expression(generator,node,environment):
                     return _Expression(generator.truth(value),"bool")
                 _enable(generator)
                 kind="bytes" if value.kind == "bytes" else "text"
-                code=generator.at(f"native_io_parse_{kind}(&({value.code}))",node)
+                from .native_integer_parsing import parse_value
+                code=parse_value(generator,value,node) or generator.at(f"native_io_parse_{kind}(&({value.code}))",node)
                 return _Expression(_number(generator,code),"int")
         if isinstance(node.func,ast.Attribute):
             method=node.func.attr
@@ -225,7 +248,7 @@ def try_expression(generator,node,environment):
     if isinstance(node,ast.Subscript) and not isinstance(node.slice,ast.Slice):
         value=generator.expression(node.value,environment)
         if value.kind == "bytes":
-            _enable(generator)
+            _enable(generator,integer_runtime=True)
             index=generator.expression(node.slice,environment)
             owner,offset=generator.temporary(),generator.temporary()
             number=generator.number(index)

@@ -16,7 +16,9 @@ def unary(g, identity, value, node):
             from .native_stdio import _enable, _number
             _enable(g)
             parser="native_io_parse_text" if value.kind=="str" else "native_io_parse_bytes"
-            return _Expression(_number(g,g.at(f"{parser}(&({value.code}))",node)),"int")
+            from .native_integer_parsing import parse_value
+            call=parse_value(g,value,node) or g.at(f"{parser}(&({value.code}))",node)
+            return _Expression(_number(g,call),"int")
     if name == "abs" and value.kind in {"int","bool","int_bool"}:
         code=g.number(value)
         return _Expression(f"({code}).wrapping_abs()" if g.bits else f"({code}).abs()","int")

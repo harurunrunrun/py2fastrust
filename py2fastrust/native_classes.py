@@ -1859,7 +1859,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                        "fn native_parse_integer(value:&str)->Result<Int,String>{Int::parse(value,10)}"])
     else:
         from .native_scalar import SCALAR_HELPERS
-        pieces.extend([_HELPERS,_named_helpers(_INPUT_HELPERS,{"native_space","native_parse_integer"}),_SCALAR_UNION_HELPERS,SCALAR_HELPERS,
+        from .native_integer_parsing import render_helpers as parsing_helpers
+        pieces.extend([_HELPERS,_named_helpers(_INPUT_HELPERS,{"native_space"}),parsing_helpers(string_mode),_SCALAR_UNION_HELPERS,SCALAR_HELPERS,
                        "impl ClassDisplay for f64 {fn class_str(&self)->String{native_float_text(*self)}}"])
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),runtime.joinpath("native_classes.rs").read_text(encoding="utf-8"),layouts,*bodies])

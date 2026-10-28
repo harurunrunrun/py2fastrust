@@ -39,7 +39,8 @@ def retain_native_notices(source: str) -> str:
     # ZEROES and RANGES are function-local tables in the Unicode number parsers;
     # NATIVE_TUPLE_PRINTABLE is the renamed string-repr table. Token definitions, rather
     # than names mentioned in comments/strings, establish whether data remains.
-    if (constants & {"ZEROES", "RANGES", "TEXT_PRINTABLE", "NATIVE_TUPLE_PRINTABLE"}
+    if (constants & {"ZEROES", "RANGES", "TEXT_PRINTABLE", "NATIVE_TUPLE_PRINTABLE",
+                    "NATIVE_FIXED_INT_ZEROES", "NATIVE_FIXED_INT_SPACE"}
             or any(name.startswith("NATIVE_PRED_TABLE_") for name in constants)):
         notices.append(licenses["UNICODE_LICENSE.txt"])
     suffix = "\n\n" + "\n\n".join(notices) if notices else ""

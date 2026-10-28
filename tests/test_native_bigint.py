@@ -23,14 +23,14 @@ class NativeBigIntTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def compile(self,source,release=True,header=False):
+    def compile(self,source,release=True,header=False,*,string_mode="ascii"):
         if header:
-            result=transpile(source,TranspileOptions(integer="bigint",filename="main.py"))
+            result=transpile(source,TranspileOptions(integer="bigint",filename="main.py",string_mode=string_mode))
             self.assertTrue(result.success,result.diagnostics)
             self.assertEqual(result.backend,"native")
             rust=result.rust_source
         else:
-            rust=try_generate_native(source,"main.py","bigint")
+            rust=try_generate_native(source,"main.py","bigint",string_mode=string_mode)
         self.assertIsNotNone(rust,source)
         for forbidden in ["enum Value","enum Op","struct Runtime","fn step(","struct PegParser"]:
             self.assertNotIn(forbidden,rust)
@@ -50,8 +50,8 @@ class NativeBigIntTests(unittest.TestCase):
         if actual.returncode:
             self.assertEqual(actual.stderr.splitlines()[-1].split(":")[0],expected.stderr.splitlines()[-1].split(":")[0])
 
-    def differential(self,source,inputs=("",)):
-        binary,_=self.compile(source)
+    def differential(self,source,inputs=("",),*,string_mode="ascii"):
+        binary,_=self.compile(source,string_mode=string_mode)
         for data in inputs:
             self.compare(binary,source,data)
 

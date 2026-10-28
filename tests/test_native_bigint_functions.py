@@ -71,7 +71,7 @@ print(read_scaled(x))
 print(replace(x),x)
 show(x)
 '''
-        self.differential(source,["3\n","１２\n","bad\n",""])
+        self.differential(source,["3\n","１２\n","bad\n",""],string_mode="unicode")
 
     def test_mutual_call_dependencies_resolve_at_call_time(self):
         source='''def outer(value):
