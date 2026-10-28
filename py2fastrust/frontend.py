@@ -19,7 +19,7 @@ from types import MappingProxyType
 
 from .diagnostics import CompilationError, Diagnostic
 from .source_locations import SourceLocation
-from .module_catalog import BUILTIN_MODULES, VENDORED_MODULES
+from .module_catalog import BUILTIN_MODULES, VENDORED_MODULES, VENDORED_PACKAGES
 
 
 _FUTURE_MASK = sum(getattr(__future__, name).compiler_flag for name in __future__.all_feature_names) & ~0x10
@@ -133,6 +133,7 @@ class Module:
     package: bool
     # Resolver-only search paths never enter emitted source or source maps.
     search_paths: tuple[Path, ...] = ()
+    resource: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,9 @@ class SourceUnit:
 
     def signature_for(self, node):
         return self.function_signatures[id(node)]
+
+    def is_module_scope(self, scope_id):
+        return self.scopes[scope_id].kind == "module"
 
     def check_identity(self, source, filename):
         if self.source != source or self.filename != filename:
@@ -494,6 +498,21 @@ class _Resolver:
             if path.is_file():return Module(name, "user", str(path), False)
             if base.is_dir():namespaces.append(base)
         if namespaces:return Module(name, "namespace", None, True, tuple(namespaces))
+        parts = name.split(".")
+        resource_root = VENDORED_PACKAGES.get(parts[0])
+        if resource_root is None or any(not part.isidentifier() for part in parts):return None
+        # A user-supplied package owns all its children. Do not mix in bundled
+        # children merely because an identically named child is missing there.
+        if parent is not None and (parent.origin != "vendored" or parent.resource is None):return None
+        relative = resource_root + tuple(parts[1:])
+        resource = files("py2fastrust").joinpath(*relative)
+        package = resource.joinpath("__init__.py")
+        if package.is_file():
+            path = relative + ("__init__.py",)
+            return Module(name,"vendored","<pytors-ac-library-python>/"+"/".join(parts)+"/__init__.py",True,(),path)
+        path = relative[:-1] + (relative[-1]+".py",)
+        if files("py2fastrust").joinpath(*path).is_file():
+            return Module(name,"vendored","<pytors-ac-library-python>/"+"/".join(parts)+".py",False,(),path)
         return None
 
     def load(self, name, unit, node):
@@ -507,14 +526,14 @@ class _Resolver:
         module = self.find(name)
         if module is None:
             if parent and parent.origin != "builtin":self.fail(name, unit, node)
-            if name in VENDORED_MODULES:module = Module(name, "vendored", f"<pytors-stdlib>/{name}.py", False)
+            if name in VENDORED_MODULES:module = Module(name, "vendored", f"<pytors-stdlib>/{name}.py", False,(),("stdlib",name+".py"))
             elif name in BUILTIN_MODULES:module = Module(name, "builtin", None, name == "string")
             else:self.fail(name, unit, node)
         self.modules[name] = module
         if module.origin == "builtin" or module.origin == "namespace":return module
         try:
             if module.origin == "vendored":
-                content = files("py2fastrust").joinpath("stdlib", name + ".py").read_bytes()
+                content = files("py2fastrust").joinpath(*(module.resource or ("stdlib",name+".py"))).read_bytes()
                 encoding, _ = tokenize.detect_encoding(io.BytesIO(content).readline)
                 source = content.decode(encoding)
             else:

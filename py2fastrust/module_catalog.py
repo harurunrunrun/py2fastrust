@@ -6,3 +6,6 @@ BUILTIN_MODULES = frozenset({
     "gc", "time", "io", "_py2fastrust_functools", "__future__",
 })
 VENDORED_MODULES = frozenset({"heapq", "bisect", "collections", "functools", "__future__"})
+
+# Sources are data for the official frontend, never imported into the converter.
+VENDORED_PACKAGES = {"atcoder": ("vendor", "ac_library_python", "atcoder")}

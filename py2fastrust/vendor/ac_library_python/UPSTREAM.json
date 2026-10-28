@@ -1,0 +1,24 @@
+{
+  "repository": "not522/ac-library-python",
+  "commit": "27fdbb71cd0d566bdeb12746db59c9d908c6b5d5",
+  "files": {
+    "atcoder/__init__.py": "b30ba70649d7bfc88eb7e21f8fb5b490849fe972",
+    "atcoder/__main__.py": "ebd347a1cb25ae4a1cc1b367d7a1182316ad192f",
+    "atcoder/_bit.py": "9d1c93907c4009192d990e82a434c367ce8617f6",
+    "atcoder/_math.py": "7a3605c39bb959ab708d59878ce1f4ae73931d1d",
+    "atcoder/_scc.py": "7c5ea655def23512ba25388f5216d525d36ad78f",
+    "atcoder/convolution.py": "7e81c7b606d8b45fc62fa40a47b9467724fa092a",
+    "atcoder/dsu.py": "d6cbcc95c7992c35963f9a29eb78cf95bda6ef34",
+    "atcoder/fenwicktree.py": "a49e4e2ee315cbc32820697c22c856fbd3a63da7",
+    "atcoder/lazysegtree.py": "0a49053b73adcc2a37e88323ee124d7d9db60d10",
+    "atcoder/math.py": "c0dbd515367a8271924fe0be528ee3f925d27643",
+    "atcoder/maxflow.py": "eb75ddeeaa195ae4d3d5c40ab8b666d3b26024af",
+    "atcoder/mincostflow.py": "db76cdcba5732f7eb1d765ed3eb4c947f68729c9",
+    "atcoder/modint.py": "d599327888987e995cd785f2c8651d5028c4c9e6",
+    "atcoder/scc.py": "15ba45c55f0df2a05a24427fb1f8f83da42c890e",
+    "atcoder/segtree.py": "25c263e26375c13e1e7251eea946abd6cae19494",
+    "atcoder/string.py": "60156b8a18c9265dfe63189c57f510551de33f00",
+    "atcoder/twosat.py": "da56b51a7ee1a6992e9738913ef9a7964173a153",
+    "LICENSE": "3bbbc1ee92562e6a2eebfc6a366f4309d06c7d54"
+  }
+}

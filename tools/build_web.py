@@ -19,7 +19,7 @@ import zipfile
 PYODIDE_VERSION = "314.0.7"
 PYODIDE_INDEX_URL = f"https://cdn.jsdelivr.net/pyodide/v{PYODIDE_VERSION}/full/"
 SITE_FILES = ("index.html", "style.css", "app.js", "worker.mjs", "bridge.py")
-RESOURCE_DIRECTORIES = {"runtime", "stdlib", "grammar", "licenses", "unicode"}
+RESOURCE_DIRECTORIES = {"runtime", "stdlib", "grammar", "licenses", "unicode", "vendor"}
 
 
 def sha256(data):

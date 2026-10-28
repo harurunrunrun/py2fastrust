@@ -1,3 +1,10 @@
+The sources under `py2fastrust/vendor/ac_library_python/` come from
+[ac-library-python](https://github.com/not522/ac-library-python), pinned to
+commit `27fdbb71cd0d566bdeb12746db59c9d908c6b5d5`. Its CC0-1.0 license is retained
+in that directory. `UPSTREAM.json` records each original Git blob identifier;
+the bundled source bytes are unchanged. These sources are parsed as compiler
+inputs and are also packaged for the browser converter.
+
 The bundled `py2fastrust/stdlib/heapq.py` and `bisect.py` are adapted from
 CPython 3.14.4. Optional C accelerators and the heapq doctest entry point were
 removed; the Python algorithm implementations are preserved.

@@ -32,9 +32,10 @@ spec.loader.exec_module(bridge)
 def manifest():
     resources = []
     package = ROOT / "py2fastrust"
-    for folder in ("runtime", "stdlib", "grammar", "licenses", "unicode"):
-        for path in sorted((package / folder).iterdir()):
-            if path.is_file() and not path.name.endswith(".pyc"):
+    for folder in ("runtime", "stdlib", "grammar", "licenses", "unicode", "vendor"):
+        for path in sorted((package / folder).rglob("*")):
+            if (path.is_file() and not path.name.endswith(".pyc")
+                    and not any(part.startswith('.env') or part=='__pycache__' for part in path.relative_to(package).parts)):
                 data = path.read_bytes()
                 resources.append({"path": path.relative_to(package).as_posix(), "size": len(data),
                                   "sha256": hashlib.sha256(data).hexdigest()})

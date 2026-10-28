@@ -19,7 +19,7 @@ Repository = "https://github.com/harurunrunrun/py2fastrust"
 pytors = "py2fastrust.cli:main"
 
 [tool.setuptools.package-data]
-py2fastrust = ["runtime/*.rs", "runtime/NOTICE.txt", "stdlib/*.py", "stdlib/*LICENSE.txt", "grammar/*.gram", "grammar/Tokens", "grammar/NOTICE.txt", "licenses/*.txt", "unicode/*.txt"]
+py2fastrust = ["runtime/*.rs", "runtime/NOTICE.txt", "stdlib/*.py", "stdlib/*LICENSE.txt", "grammar/*.gram", "grammar/Tokens", "grammar/NOTICE.txt", "licenses/*.txt", "unicode/*.txt", "vendor/ac_library_python/atcoder/*.py", "vendor/ac_library_python/LICENSE", "vendor/ac_library_python/UPSTREAM.json"]
 
 [tool.setuptools.packages.find]
 include = ["py2fastrust*"]
