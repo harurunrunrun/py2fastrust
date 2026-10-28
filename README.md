@@ -67,6 +67,12 @@ non-ASCII digits, whitespace, and code-point operations where supported.
 
 ## Options in source comments
 
+Use `--license none` to omit the generated program's license text. The output
+records `LICENSE: NONE` and keeps the original source and generator metadata.
+An existing source license still takes precedence, and notices for retained
+third-party code or data remain included. `Unlicense` is a separate license
+choice; the default remains `CC0-1.0`.
+
 Conversion options can be recorded in the initial comment block:
 
 ```python

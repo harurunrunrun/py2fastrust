@@ -69,7 +69,8 @@ class BridgeTests(unittest.TestCase):
     def test_smoke_checks_and_complete_license_catalog(self):
         self.assertTrue(all(self.metadata["smoke_checks"].values()))
         self.assertEqual(self.metadata["licenses"], list(LICENSES))
-        self.assertEqual(len(self.metadata["licenses"]), 20)
+        self.assertEqual(len(self.metadata["licenses"]), 21)
+        self.assertIn("NONE", self.metadata["licenses"])
         self.assertEqual(self.metadata["integer_modes"], ["i64", "i128", "bigint"])
         self.assertEqual(self.metadata["string_modes"], ["ascii", "unicode"])
         self.assertEqual(self.metadata["defaults"]["string_mode"], "ascii")
@@ -110,10 +111,20 @@ class BridgeTests(unittest.TestCase):
                 result = self.assert_api_parity(source, license=license)
                 rust = result["rust_source"]
                 self.assertTrue(rust.startswith("// LICENSE: " + license + "\n"))
-                text = (ROOT / "py2fastrust" / "licenses" / (license + ".txt")).read_text()
+                from py2fastrust.settings import license_text
+                text = license_text(license)
                 for line in text.rstrip().split("\n"):
                     self.assertIn("// " + line + "\n" if line else "//\n", rust)
                 self.assertIn("// If the original Python source specifies a license, that license takes precedence.\n", rust)
+
+    def test_no_license_and_source_override_match_api(self):
+        for mode in ("i64","i128","bigint"):
+            result=self.assert_api_parity('print(3)\n',integer=mode,license="none")
+            self.assertTrue(result['rust_source'].startswith('// LICENSE: NONE\n'))
+            self.assertNotIn('Creative Commons Legal Code',result['rust_source'])
+        source='# pytors: --license none\nprint(3)\n'
+        result=self.assert_api_parity(source,license="MIT")
+        self.assertTrue(result['rust_source'].startswith('// LICENSE: NONE\n'))
 
     def test_directives_override_options_with_original_source_intact(self):
         source = '# pytors: --int i128 --license Unlicense --no-optimize\nprint(2**70)\n'

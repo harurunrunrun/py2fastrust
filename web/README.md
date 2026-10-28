@@ -40,6 +40,8 @@ An existing license in the original Python source takes precedence. The license
 selector supplies the generated file's fallback license; it does not replace
 the original source's license. Generated attribution, license text, and the
 commented original source are supplied by the same converter used by the CLI.
+Select `NONE` to omit the program license text. Required notices for retained
+third-party code or data still accompany that code or data.
 
 ## Files and deployment paths
 

@@ -10,17 +10,24 @@ from pathlib import Path
 from .diagnostics import CompilationError, Diagnostic
 
 
-LICENSES = tuple(sorted(path.name[:-4] for path in files("py2fastrust").joinpath("licenses").iterdir()
-                        if path.name.endswith(".txt") and path.name != "NOTICE.txt"))
+LICENSES = tuple(sorted({"NONE"} | {path.name[:-4] for path in files("py2fastrust").joinpath("licenses").iterdir()
+                        if path.name.endswith(".txt") and path.name != "NOTICE.txt"}))
 
 
 def license_name(value):
     aliases = {name.casefold(): name for name in LICENSES}
     aliases["cc0"] = "CC0-1.0"
+    aliases.update({"no-license":"NONE", "no_license":"NONE"})
     try:
         return aliases[value.casefold()]
     except (KeyError, AttributeError):
         raise ValueError("unsupported license; use pytors --list-licenses") from None
+
+
+def license_text(name):
+    if name == "NONE":
+        return ""
+    return files("py2fastrust").joinpath("licenses", name + ".txt").read_text(encoding="utf-8")
 
 
 def add_conversion_arguments(parser, *, defaults=True):
@@ -31,7 +38,7 @@ def add_conversion_arguments(parser, *, defaults=True):
                         help="string indexing model (default: ascii)",
                         **({"default": "ascii"} if defaults else default))
     parser.add_argument("--license", type=license_name, metavar="LICENSE",
-                        help="generated program license (default: CC0-1.0); see --list-licenses",
+                        help="generated program license (default: CC0-1.0; none omits license text); see --list-licenses",
                         **({"default": "CC0-1.0"} if defaults else default))
     parser.add_argument("--module-path", type=Path, action="append", **default)
     parser.add_argument("--include-module", action="append", **default)

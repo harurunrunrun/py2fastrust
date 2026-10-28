@@ -130,7 +130,8 @@ try {
   const ready = await page.evaluate(() => window.__workerMessages.find(m => m.type === 'ready'));
   assert(ready, 'The actual worker must report ready.');
   assert.deepEqual(ready.metadata.integer_modes, ['i64', 'i128', 'bigint']);
-  assert.equal(ready.metadata.licenses.length, 20);
+  assert.equal(ready.metadata.licenses.length, 21);
+  assert(ready.metadata.licenses.includes('NONE'));
   assert.equal(ready.metadata.source_commit, manifest.source_commit);
   assert.equal(ready.metadata.wheel_sha256, manifest.wheel.sha256);
   assert.equal(ready.metadata.resource_count, manifest.resources.length);
@@ -147,6 +148,7 @@ try {
   await context.route('**/*', route => route.abort('internetdisconnected'));
   const cases = [
     { name: 'default', source: 'print(1 + 2)\n', integer: 'i64', license: 'CC0-1.0', input: '' },
+    { name: 'no-license', source: 'print("unlicensed")\n', integer: 'i64', license: 'NONE', input: '' },
     { name: 'source-options', source: '# pytors: --int i128 --license Unlicense\nimport sys\nprint(2 ** 100)\n',
       integer: 'i64', license: 'MIT', input: '' },
     { name: 'bigint', source: 'print(10 ** 50 + 1)\n', integer: 'bigint', license: 'MIT', input: '' },
