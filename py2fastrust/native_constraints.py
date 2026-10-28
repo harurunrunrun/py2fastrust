@@ -319,6 +319,27 @@ class Solver:
 
     def field(self,allocation,name):return value(Variable(allocation.site,name))
 
+    def provenance(self,item,active=frozenset()):
+        """Follow symbolic fields without replacing object identities by types.
+
+        A mutation of rows[i] constrains the row allocation, rather than the
+        outer list's element type. Variables and projections retain that path
+        through tuples, iteration and function arguments. Recursive symbolic
+        paths contribute no new lower bound until another edge supplies one.
+        """
+        result=Value(unbound=item.unbound,unknown=item.unknown)
+        for part in item.alternatives:
+            if isinstance(part,(Variable,Projection)):
+                if part in active:continue
+                if isinstance(part,Variable):
+                    incoming=self.variables.get(part,BOTTOM)
+                else:
+                    owner=self.provenance(part.receiver,active|{part})
+                    incoming=self.field_values(owner,part.role,part.index)
+                result=result.join(self.provenance(incoming,active|{part}))
+            else:result=result.join(value(part))
+        return result
+
     def lookup(self,name,state,globals,locals):
         if name in state:return state[name]
         if name in locals:return MISSING
@@ -354,8 +375,15 @@ class Solver:
         return Value(result.alternatives,result.unbound or item.unbound,result.unknown or item.unknown)
 
     def insert(self,receiver,role,item):
-        for part in receiver.alternatives:
+        for part in self.provenance(receiver).alternatives:
             if isinstance(part,Allocation):self.constrain(Variable(part.site,role),item)
+
+    def store_index(self,receiver,index,item):
+        receiver=self.provenance(receiver)
+        categories={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
+        if "dict" in categories:
+            self.insert(receiver,"key",index);self.insert(receiver,"value",item)
+        if "list" in categories:self.insert(receiver,"element",item)
 
     def assign(self,target,item,state):
         if target[0]=="name":state[target[1]]=item
@@ -456,14 +484,15 @@ class Solver:
         if isinstance(identity,FunctionValue):return self.function(identity,args,keywords,state if context[0] is None else globals)
         if isinstance(identity,DequeConstructor):return value("deque_int")
         if isinstance(identity,MethodValue):
-            receiver=identity.receiver;name=identity.name
+            receiver=self.provenance(identity.receiver);name=identity.name
             category={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
             kinds={part for part in receiver.alternatives if isinstance(part,(str,ListType,DictType,SetType))}
             if name in {"append","add"} and args and (category&{"list","set"}):
                 self.insert(receiver,"element" if name=="append" else "key",args[0]);return value("none")
             if name in {"extend","update"} and args and (category&{"list","set"}):
                 self.insert(receiver,"element" if name=="extend" else "key",self.field_values(args[0],"iteration"));return value("none")
-            if name=="clear" and not args and not keywords and len(category)==1:
+            if (name=="clear" and not args and not keywords and len(category)==1
+                    and any(isinstance(part,Allocation) for part in identity.receiver.alternatives)):
                 # Clearing a uniquely owned object creates a new content epoch,
                 # not a new Python identity. All abstract aliases share it; the
                 # emitter must prove unique ownership before changing storage.
@@ -573,13 +602,21 @@ class Solver:
                 for target in operation.data:
                     if target[0]=="index":
                         receiver=evaluate(target[1]);index=evaluate(target[2])
-                        categories={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
-                        if "dict" in categories:self.insert(receiver,"key",index);self.insert(receiver,"value",item)
-                        if "list" in categories:self.insert(receiver,"element",item)
+                        self.store_index(receiver,index,item)
                     else:self.assign(target,item,state)
             elif op=="augment":
-                first,second=(evaluate(term) for term in args)
-                self.assign(operation.data[0],self.compute("binary:"+operation.data[1],(first,second)),state)
+                target,operator=operation.data
+                if target[0]=="index":
+                    receiver=evaluate(target[1]);index=evaluate(target[2])
+                    literal=self.graph.literals.get(target[2].site)
+                    offset=(literal.value if literal is not None and literal.kind=="int"
+                            and -(1<<63)<=literal.value<(1<<63)else None)
+                    first=self.field_values(receiver,"value",offset)
+                    second=evaluate(args[1])
+                    self.store_index(receiver,index,self.compute("binary:"+operator,(first,second)))
+                else:
+                    first,second=(evaluate(term) for term in args)
+                    self.assign(target,self.compute("binary:"+operator,(first,second)),state)
             elif op=="expression":evaluate(args[0])
             elif op=="branch":
                 evaluate(args[0]);yes=self.block(operation.blocks[0],state,globals,locals,context);no=self.block(operation.blocks[1],state,globals,locals,context)

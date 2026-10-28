@@ -158,6 +158,14 @@ loop exits without a proven shared carrier, recursive mutable object graphs,
 and the class allocation/field adapter still require implementation and produce
 `E006`; no alternate execution backend is selected.
 
+Symbolic container fields preserve their allocation provenance through nested
+indexing, tuple projections, iteration, and ordinary function parameters.
+Mutating a selected row therefore constrains that row's elements. In fixed-width
+modes this restores adjacency-list construction from initially empty rows,
+including `examples/bfs.py`, without assigning an arbitrary integer type to
+unconstrained rows. BigInt matrix/deque execution and general mutable aliases
+still require direct implementation.
+
 Stable, definitely bound string owners can be borrowed once at a loop or
 generator entry. Indexed characters carry a code-point projection for direct
 comparison, while escaping characters retain the configured string semantics.
@@ -186,8 +194,9 @@ direct reads through the same buffered input object. Ordinary entry functions
 and function-local imports retain scope analysis. Text readers retain newlines
 and return an empty string at EOF; binary readers return immutable `Vec<u8>`
 values and use ASCII rules for integer splitting/parsing. Builtin `input()`
-keeps its distinct EOF and newline behavior. The current text input profile is
-strict UTF-8; custom/reconfigured streams and surrogate escapes need further
+keeps its distinct EOF and newline behavior. Text input follows the selected
+ASCII profile or opt-in strict UTF-8 Unicode profile. Custom/reconfigured
+streams and surrogate escapes need further
 direct implementation.
 
 Static module and callable references support integer `math.gcd`, `lcm`,
