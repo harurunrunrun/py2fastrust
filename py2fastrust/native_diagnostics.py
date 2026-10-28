@@ -40,6 +40,8 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
     name = type(kind).__name__
     if name == "ListType":
         return "list[" + nested(kind.element) + "]"
+    if name == "TupleSequenceType":
+        return "tuple[" + nested(kind.element) + ", ...]"
     if name == "TupleType":
         return "tuple[" + fields(kind.fields) + "]"
     if name == "DictType":

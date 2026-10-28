@@ -6,13 +6,16 @@ from .native_types import TupleType
 
 def compare_values(g,node,values):
     from .native import _Expression,_Unsupported
-    from .native_unions import compare as finite_compare
-    finite=finite_compare(g,node,values)
-    if finite is not None:return finite
     if len(node.ops)==1 and isinstance(node.ops[0],(ast.In,ast.NotIn)):
         from .native_key_containers import comparison as keyed_comparison
         keyed=keyed_comparison(g,node,values)
         if keyed is not None:return keyed
+    from .native_tuple_sequences import comparison as sequence_comparison
+    sequence=sequence_comparison(g,node,values)
+    if sequence is not None:return sequence
+    from .native_unions import compare as finite_compare
+    finite=finite_compare(g,node,values)
+    if finite is not None:return finite
     if any(isinstance(value.kind,TupleType)for value in values):
         from .native_tuples import comparison as tuple_comparison
         return tuple_comparison(g,node,values)

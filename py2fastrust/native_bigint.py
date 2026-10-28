@@ -11,7 +11,7 @@ from .native_constraint_lowering import result_shapes
 
 import ast
 from dataclasses import replace
-from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
+from .native_types import (TupleType,TupleSequenceType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
                            is_maybe,unmaybe,maybe_type,immutable,list_type,default_value,UnionType,NullableType,EmptyType,EMPTY)
 from importlib.resources import files
 import symtable
@@ -98,7 +98,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return integer_policy(0).rust_literal(value,_string)
 
     def slot(self, kind):
-        if isinstance(unmaybe(kind),(TupleType,ListType,UnionType,NullableType,EmptyType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
+        if isinstance(unmaybe(kind),(TupleType,TupleSequenceType,ListType,UnionType,NullableType,EmptyType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
         if kind == "str":
             self.has_big_text = True
             slot = f"native_var_{len(self.bindings)}"
@@ -160,7 +160,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         from .native_unions import truth
         finite=truth(expression,BigIntGenerator.truth)
         if finite is not None:return finite
-        if isinstance(expression.kind,(TupleType,ListType)) or getattr(expression.kind,"_key_container",False):return _Generator.truth(expression)
+        if isinstance(expression.kind,(TupleType,TupleSequenceType,ListType)) or getattr(expression.kind,"_key_container",False):return _Generator.truth(expression)
         if expression.kind in {"str","bytes"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind == "list_int":
@@ -399,7 +399,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 raise _Unsupported("these names would share one mutable container, but the selected storage requires a proved unique owner; alias-preserving shared mutable storage is not implemented for this assignment",node=node,types=(("value",value.kind),),proof="mutable alias identity and lifetime")
             name = self.temporary()
             from .native_unions import union_kind
-            assigned=self.coerce(value,value.kind) if union_kind(value.kind) and not value.owned else value.code
+            assigned=self.coerce(value,value.kind) if (union_kind(value.kind) or isinstance(value.kind,TupleSequenceType)) and not value.owned else value.code
             lines = [f"let {name}={assigned};"]
             for index,target in enumerate(node.targets):
                 # Expressions already produce an owned immutable scalar. The

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .native import _Binding, _DequeInfo, _Expression, _MaybeInfo, _Unsupported, _string
-from .native_types import TupleType, immutable, maybe_type, rust_type, tuple_code, tuple_field
+from .native_types import TupleType,TupleSequenceType, immutable, maybe_type, rust_type, tuple_code, tuple_field
 from .call_semantics import CallBindingError
 from .native_stream_plans import ConsumerKind, ProducerKind, consumer_plan, context
 from .references import BuiltinIdentity
@@ -99,12 +99,14 @@ class Stream:
     words: object = None
     integer_words: object = None
     range_capture: object = None
+    binding_checks: tuple = ()
 
     def construct(self):
         return self.setup + "\n" + self.begin
 
     def emit(self, action, caller_scope, line, continue_label=None):
-        return self.emit_body(action, caller_scope, line, continue_label)
+        prefix="".join(code(caller_scope,line)for _site,code in self.binding_checks)
+        return self.emit_body(prefix+action, caller_scope, line, continue_label)
 
 
 @dataclass(frozen=True)
@@ -235,6 +237,11 @@ class Planner:
         typed = typed_stream(g,node,environment,self,value=value)
         if typed is not None:
             return typed
+        if isinstance(value.kind,TupleSequenceType):
+            owner,cursor=g.temporary(),g.temporary()
+            setup=f"let {owner}=({value.code}).clone();"
+            begin=f"let {cursor}={owner}.iter();"
+            return self.leaf(setup,begin,cursor,((value.kind.element,"(*@)",False),),length=value.length)
         if isinstance(value.kind,TupleType):
             owner,cursor = g.temporary(),g.temporary()
             values = [_Expression(tuple_field(owner,index),kind,owned=False)
@@ -304,6 +311,19 @@ class Planner:
         def unpack(target,value):
             if isinstance(target,ast.Name):
                 return [(target,value)]
+            if isinstance(target,(ast.Tuple,ast.List))and isinstance(value.kind,TupleSequenceType):
+                if any(not isinstance(child,ast.Name)for child in target.elts):
+                    raise _Unsupported("nested dynamic tuple unpacking requires ordered staged target binding; that adapter is not implemented yet",node=target,proof="ordered nested unpacking")
+                helper="native_unpack_length"if g.bits else"native_big_unpack_length"
+                g.has_lists=True
+                def check(caller,line):
+                    caller=_context(caller)
+                    location=caller.name.line_code if isinstance(caller.name,DeferredScope)else target.lineno
+                    code=f"native_at({helper}(({value.code}).len(),{len(target.elts)}),{location},{_scope_code(caller.name)})"
+                    if caller.trace_id is not None:code+=f".map_err(&{caller.trace_id})"
+                    return code+"?;"
+                if not any(site==id(target)for site,_code in stream.binding_checks):stream.binding_checks+=((id(target),check),)
+                return [(child,_Expression(f"({value.code}).as_slice()[{index}]",value.kind.element,owned=False))for index,child in enumerate(target.elts)]
             if not (isinstance(target,(ast.Tuple,ast.List)) and isinstance(value.kind,TupleType)
                     and len(target.elts) == len(value.kind.fields)):
                 raise _Unsupported
@@ -647,7 +667,7 @@ def try_reduction(generator, node, environment):
         item, previous = g.temporary(), g.temporary()
         candidate = _Expression(item, kind)
         before = _Expression(f"(*{previous})", kind)
-        if isinstance(kind,TupleType):
+        if isinstance(kind,(TupleType,TupleSequenceType)):
             from .native_tuples import tuple_compare, _scalar
             if not _scalar(kind):
                 raise _Unsupported

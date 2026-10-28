@@ -4,7 +4,7 @@ import re
 from importlib.resources import files
 
 from .native import _Binding, _Expression, _Function, _Unsupported, _string, _text_expression
-from .native_types import TupleType,ListType,TypedListInfo,join_types,tuple_code,tuple_field,unmaybe
+from .native_types import TupleType,TupleSequenceType,ListType,TypedListInfo,join_types,tuple_code,tuple_field,unmaybe
 
 
 HELPERS = r'''
@@ -42,7 +42,8 @@ def render_helpers():
     table=re.search(r"const TEXT_PRINTABLE: &\[\(u32, u32\)\] = &\[.*?\n\];",text,re.S)
     if table is None:
         raise RuntimeError("the bundled Unicode printable table is missing")
-    return table[0].replace("TEXT_PRINTABLE","NATIVE_TUPLE_PRINTABLE")+"\n"+HELPERS
+    from .native_tuple_sequences import HELPERS as sequence_helpers
+    return table[0].replace("TEXT_PRINTABLE","NATIVE_TUPLE_PRINTABLE")+"\n"+HELPERS+sequence_helpers
 
 
 def tuple_kind(kind):
@@ -50,6 +51,10 @@ def tuple_kind(kind):
 
 
 def coerce_structural(expression,kind,coerce):
+    if isinstance(kind,TupleSequenceType):
+        if expression.kind!=kind:
+            raise _Unsupported("converting an existing tuple to a different homogeneous element representation would change tuple identity; preserve a finite typed alternative instead",types=(("source",expression.kind),("destination",kind)),proof="tuple identity during value flow")
+        return f"({expression.code}).clone()"
     if isinstance(kind,TupleType):
         if not isinstance(expression.kind,TupleType) or len(kind.fields)!=len(expression.kind.fields):
             raise _Unsupported
@@ -77,6 +82,7 @@ def _scalar(kind):
     from .native_types import UnionType,NullableType
     if isinstance(kind,UnionType):return all(_scalar(value) for value in kind.alternatives)
     if isinstance(kind,NullableType):return _scalar(kind.value)
+    if isinstance(kind,TupleSequenceType):return _scalar(kind.element)
     return (all(_scalar(field) for field in kind.fields) if isinstance(kind,TupleType) else
             kind in {"int","bool","int_bool","str","bytes","none"})
 
@@ -86,6 +92,9 @@ def _equal(generator,left,right):
     if union_kind(left.kind) or union_kind(right.kind):
         return project(left.kind,left.code,lambda a,x:project(right.kind,right.code,
             lambda b,y:_equal(generator,_Expression(x,a,owned=False),_Expression(y,b,owned=False))))
+    if isinstance(left.kind,TupleSequenceType)or isinstance(right.kind,TupleSequenceType):
+        from .native_tuple_sequences import _equal as sequence_equal
+        return sequence_equal(generator,left,right,None)
     if left.kind=="none" or right.kind=="none":return str(left.kind==right.kind).lower()
     if isinstance(left.kind,TupleType) or isinstance(right.kind,TupleType):
         return tuple_compare(generator,left,right,ast.Eq(),None)
@@ -176,6 +185,9 @@ def tuple_repr(generator,value):
 
 
 def try_expression(generator,node,environment):
+    from .native_tuple_sequences import try_expression as sequence_expression
+    sequence=sequence_expression(generator,node,environment)
+    if sequence is not None:return sequence
     if isinstance(node,ast.Tuple):
         values=[generator.expression(value,environment) for value in node.elts]
         if any(not _scalar(value.kind) for value in values):
@@ -188,7 +200,9 @@ def try_expression(generator,node,environment):
             _mark(generator,binding.kind)
             return _Expression(binding.slot,binding.kind,owned=False,length=len(binding.kind.fields))
     if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and not node.keywords:
-        name=node.func.id
+        from .references import BuiltinIdentity,callable_reference
+        identity=callable_reference(generator,node.func,environment)
+        name=identity.name if isinstance(identity,BuiltinIdentity)else None
         if name=="tuple" and not node.args:
             kind=TupleType(());_mark(generator,kind)
             return _Expression("()",kind,length=0)

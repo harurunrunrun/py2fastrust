@@ -8,7 +8,7 @@ the public API; it never selects a general execution backend.
 """
 
 import ast
-from .native_types import (TupleType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
+from .native_types import (TupleType,TupleSequenceType,ListType,MaybeType,TypedListInfo,rust_type,kind_tag,
                            is_maybe,unmaybe,maybe_type,immutable,list_type,default_value,
                            UnionType,NullableType,join_types,EmptyType,EMPTY)
 from dataclasses import dataclass, field, replace
@@ -478,7 +478,7 @@ class _Generator:
 
     def slot(self, kind):
         inner=unmaybe(kind)
-        if isinstance(inner,(TupleType,ListType,UnionType,NullableType,EmptyType)) or getattr(inner,"_key_container",False):
+        if isinstance(inner,(TupleType,TupleSequenceType,ListType,UnionType,NullableType,EmptyType)) or getattr(inner,"_key_container",False):
             self.register_type(inner)
             slot=f"native_var_{len(self.bindings)}"
             self.bindings[slot]=kind
@@ -516,6 +516,9 @@ class _Generator:
         elif kind=="str":
             if self.bits:self.has_extended_scalars=True
             else:self.has_big_text=True
+        elif isinstance(kind,TupleSequenceType):
+            self.has_tuples=True
+            self.register_type(kind.element)
         elif isinstance(kind,TupleType):
             self.has_tuples=True
             for field in kind.fields:self.register_type(field)
@@ -623,6 +626,7 @@ class _Generator:
     def truth(expression):
         if isinstance(expression.kind,EmptyType):return f"native_empty::<bool>({expression.code})"
         if getattr(expression.kind,"_key_container",False):return f"!({expression.code}).is_empty()"
+        if isinstance(expression.kind,TupleSequenceType):return f"!({expression.code}).is_empty()"
         if isinstance(expression.kind,TupleType):
             return f"{{let _=&({expression.code}); {str(bool(expression.kind.fields)).lower()}}}"
         if isinstance(expression.kind,ListType):return f"!({expression.code}).is_empty()"
@@ -719,7 +723,7 @@ class _Generator:
         # into Rust's fixed signature. Defaults are proved pure constants.
         def argument_value(argument):
             value = self.expression(argument, environment)
-            if value.kind not in {"int", "bool", "int_bool", "none", "list_int", "float", "str", "bytes"} and not isinstance(value.kind,(TupleType,ListType,UnionType,NullableType)):
+            if value.kind not in {"int", "bool", "int_bool", "none", "list_int", "float", "str", "bytes"} and not isinstance(value.kind,(TupleType,TupleSequenceType,ListType,UnionType,NullableType)):
                 raise _Unsupported
             if list_type(value.kind) and not value.owned:
                 # Resolve the binding now, including an unbound-name error,
@@ -734,7 +738,7 @@ class _Generator:
                 return _Expression(read.owner,value.kind,owned=False,length=value.length,
                                    nonempty=value.nonempty)
             name = self.temporary()
-            code=self.coerce(value,value.kind) if isinstance(value.kind,(TupleType,UnionType,NullableType)) and not value.owned else value.code
+            code=self.coerce(value,value.kind) if isinstance(value.kind,(TupleType,TupleSequenceType,UnionType,NullableType)) and not value.owned else value.code
             lines.append(f"let {name} = {code};")
             return _Expression(name, value.kind, owned=value.owned)
 
@@ -1250,7 +1254,7 @@ class _Generator:
                 info = _MaybeInfo(kind, owner)
                 kind = maybe_type(kind)
             else:
-                info = kind if kind == "int_bool" or isinstance(kind,(TupleType,UnionType,NullableType)) else infos[0]
+                info = kind if kind == "int_bool" or isinstance(kind,(TupleType,TupleSequenceType,UnionType,NullableType)) else infos[0]
                 if isinstance(kind,ListType):
                     lengths=[info.length for info in infos if isinstance(info,TypedListInfo)]
                     info=TypedListInfo(kind,lengths[0] if lengths and all(length==lengths[0] for length in lengths) else None)
@@ -1466,7 +1470,7 @@ class _Generator:
             if not immutable(value.kind) and (not value.owned or len(node.targets) != 1):
                 raise _Unsupported("these names would share one mutable container, but the selected storage requires a proved unique owner; alias-preserving shared mutable storage is not implemented for this assignment",node=node,types=(("value",value.kind),),proof="mutable alias identity and lifetime")
             name = self.temporary()
-            assigned=self.coerce(value,value.kind) if isinstance(value.kind,(UnionType,NullableType)) and not value.owned else value.code
+            assigned=self.coerce(value,value.kind) if isinstance(value.kind,(UnionType,NullableType,TupleSequenceType)) and not value.owned else value.code
             lines = [f"let {name} = {assigned};"]
             for index,target in enumerate(node.targets):
                 item=self.coerce(_Expression(name,value.kind),value.kind) if index+1<len(node.targets) else name
@@ -1954,7 +1958,7 @@ class _Specializations:
         # Further specialization growth needs a direct-generation implementation.
         if len(self.variants) + len(self.active) >= 128:
             raise _Unsupported("native function specialization exceeded its 128-variant budget; a finite shared call representation is not implemented for further variants",operation=f"specialization of function {function.node.name!r}",proof="bounded specialization growth")
-        if any(kind not in {"int", "bool", "int_bool", "none", "list_int", "float", "str", "bytes"} and not isinstance(kind,(TupleType,ListType,UnionType,NullableType)) for kind in kinds):
+        if any(kind not in {"int", "bool", "int_bool", "none", "list_int", "float", "str", "bytes"} and not isinstance(kind,(TupleType,TupleSequenceType,ListType,UnionType,NullableType)) for kind in kinds):
             raise _Unsupported
         self.active.add(id(function.node))
         rust_name = function.rust_name + "_" + ("_".join(kind_tag(kind) for kind in kinds) or "void")

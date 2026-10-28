@@ -11,7 +11,7 @@ from types import MappingProxyType
 
 from .call_semantics import FunctionSignature,normalize_call,CallBindingError
 from .literal_semantics import Literal
-from .native_types import (TupleType,ListType,EmptyType,EMPTY,NullableType,UnionType,
+from .native_types import (TupleType,TupleSequenceType,ListType,EmptyType,EMPTY,NullableType,UnionType,
                           join_types,alternatives,unmaybe,is_maybe,kind_tag)
 from .native_key_types import SetType,DictType
 from .references import BuiltinIdentity,DequeConstructor,CORE_BUILTINS
@@ -351,9 +351,9 @@ class Solver:
         result=BOTTOM
         for part in item.alternatives:
             if isinstance(part,Allocation):
-                name="element" if part.category=="list" else "key" if role=="iteration" else role
+                name="element" if part.category in {"list","tuple_sequence"} else "key" if role=="iteration" else role
                 result=result.join(self.field(part,name))
-            elif isinstance(part,ListType):result=result.join(value(part.element))
+            elif isinstance(part,(ListType,TupleSequenceType)):result=result.join(value(part.element))
             elif isinstance(part,SetType):result=result.join(value(part.key))
             elif isinstance(part,DictType):result=result.join(value(part.key if role=="iteration" else part.value))
             elif isinstance(part,IteratorValue):result=result.join(part.item)
@@ -590,6 +590,11 @@ class Solver:
             if "default" in dict(keywords):result=result.join(dict(keywords)["default"])
             return result
         if name=="tuple" and not args:return value(TupleValue(()))
+        if name=="tuple"and len(args)==1 and not keywords:
+            if all(isinstance(part,(TupleValue,TupleType,TupleSequenceType))or isinstance(part,Allocation)and part.category=="tuple_sequence"for part in args[0].alternatives):return args[0]
+            result=value(self.allocation(term.site,"tuple_sequence",context))
+            self.insert(result,"element",self.field_values(args[0],"iteration"))
+            return result
         return UNKNOWN
 
     def function(self,identity,args,keywords,globals):
@@ -686,9 +691,9 @@ class Solver:
                 current=EMPTY if part in active else self.kind(self.variables.get(part,BOTTOM),active|{part})
             elif isinstance(part,Allocation):
                 if part in active:return None
-                fields=("element",) if part.category=="list" else ("key",) if part.category=="set" else ("key","value")
+                fields=("element",) if part.category in {"list","tuple_sequence"} else ("key",) if part.category=="set" else ("key","value")
                 kinds=tuple(self.kind(self.field(part,name),active|{part}) for name in fields)
-                current=None if None in kinds else ListType(kinds[0]) if part.category=="list" else SetType(kinds[0]) if part.category=="set" else DictType(*kinds)
+                current=None if None in kinds else TupleSequenceType(kinds[0]) if part.category=="tuple_sequence" else ListType(kinds[0]) if part.category=="list" else SetType(kinds[0]) if part.category=="set" else DictType(*kinds)
             elif isinstance(part,TupleValue):
                 fields=tuple(self.kind(field,active) for field in part.fields);current=None if None in fields else TupleType(fields)
             elif isinstance(part,Computed):
@@ -699,7 +704,7 @@ class Solver:
                 current=EMPTY
                 if owner is None:return None
                 for shape in alternatives(owner):
-                    if isinstance(shape,ListType):item=shape.element
+                    if isinstance(shape,(ListType,TupleSequenceType)):item=shape.element
                     elif isinstance(shape,SetType):item=shape.key
                     elif isinstance(shape,DictType):item=shape.key if part.role=="iteration" else shape.value
                     elif isinstance(shape,TupleType):
@@ -712,7 +717,7 @@ class Solver:
                     elif isinstance(shape,EmptyType):item=EMPTY
                     else:return None
                     current=join_types(current,item)
-            elif isinstance(part,(str,TupleType,ListType,SetType,DictType,UnionType,NullableType,EmptyType)):current=part
+            elif isinstance(part,(str,TupleType,TupleSequenceType,ListType,SetType,DictType,UnionType,NullableType,EmptyType)):current=part
             elif getattr(part,"_native_kind_tag",None) is not None:current=part
             else:return None
             if current is None:return None

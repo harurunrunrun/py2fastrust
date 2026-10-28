@@ -2,7 +2,7 @@
 import ast
 
 from .native import _Binding,_Expression,_DictInfo,_SetInfo,_Unsupported,_string
-from .native_types import TupleType,immutable,join_types,tuple_field,rust_type,unmaybe
+from .native_types import TupleType,TupleSequenceType,immutable,join_types,tuple_field,rust_type,unmaybe
 from .native_key_types import DictType,SetType,KeyInfo,canonical_tuple,compatible_keys
 
 
@@ -56,6 +56,7 @@ impl std::hash::Hash for Int {
 def key_kind(kind):
     from .native_types import EmptyType
     return (isinstance(kind,EmptyType) or kind in {"int","bool","int_bool","str"} or
+            isinstance(kind,TupleSequenceType) and key_kind(kind.element) or
             isinstance(kind,TupleType) and all(key_kind(field) for field in kind.fields))
 
 
@@ -80,6 +81,10 @@ def canonical(generator,value):
     if value.kind in {"int","bool","int_bool"}:
         return f"({generator.number(value)}).clone()"
     if value.kind=="str":return f"({value.code}).clone()"
+    if isinstance(value.kind,TupleSequenceType):
+        item=generator.temporary()
+        key=canonical(generator,_Expression(f"(*{item})",value.kind.element,owned=False))
+        return f"({value.code}).iter().map(|{item}|{key}).collect::<Vec<_>>()"
     if isinstance(value.kind,TupleType):
         return canonical_tuple(canonical(generator,_Expression(tuple_field(value.code,index),kind,owned=False)) for index,kind in enumerate(value.kind.fields))
     raise _Unsupported
@@ -105,6 +110,9 @@ def _value(generator,value,kind):
 
 
 def _repr(generator,value):
+    if isinstance(value.kind,TupleSequenceType):
+        from .native_tuple_sequences import representation
+        return representation(generator,value)
     if isinstance(value.kind,TupleType):
         from .native_tuples import tuple_repr
         return tuple_repr(generator,value)

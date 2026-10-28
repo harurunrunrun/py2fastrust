@@ -17,6 +17,12 @@ class TupleType:
 
 
 @dataclass(frozen=True)
+class TupleSequenceType:
+    """Immutable homogeneous tuple whose length is known only at runtime."""
+    element: object
+
+
+@dataclass(frozen=True)
 class ListType:
     element: object
 
@@ -130,6 +136,7 @@ def render_type(kind, leaf_override=None):
     if isinstance(kind,UnionType):return union_name(kind)
     if isinstance(kind,TupleType):
         return tuple_code(recurse(field) for field in kind.fields)
+    if isinstance(kind,TupleSequenceType):return "NativeTuple<"+recurse(kind.element)+">"
     if isinstance(kind,ListType):
         return "Vec<"+recurse(kind.element)+">"
     if getattr(kind,"_key_container",False):
@@ -150,6 +157,7 @@ def kind_tag(kind):
     if isinstance(kind,UnionType):return "union_"+"_".join(kind_tag(value) for value in kind.alternatives)+"_end"
     if isinstance(kind,TupleType):
         return "tuple"+str(len(kind.fields))+"_"+"_".join(kind_tag(field) for field in kind.fields)+"_end"
+    if isinstance(kind,TupleSequenceType):return "tuple_sequence_"+kind_tag(kind.element)+"_end"
     if isinstance(kind,ListType):
         return "list_"+kind_tag(kind.element)+"_end"
     if getattr(kind,"_key_container",False):
@@ -162,6 +170,7 @@ def immutable(kind):
             or isinstance(kind,UnionType) and all(immutable(value) for value in kind.alternatives)
             or isinstance(kind,NullableType) and immutable(kind.value)
             or isinstance(kind,TupleType) and all(immutable(field) for field in kind.fields)
+            or isinstance(kind,TupleSequenceType) and immutable(kind.element)
             or kind in {"int","bool","int_bool","str","bytes","float","none"})
 
 
@@ -175,6 +184,10 @@ def join_types(left,right):
     if isinstance(left,TupleType) and isinstance(right,TupleType) and len(left.fields)==len(right.fields):
         fields=tuple(join_types(a,b) for a,b in zip(left.fields,right.fields))
         return None if None in fields else TupleType(fields)
+    if isinstance(left,TupleSequenceType)and isinstance(right,TupleSequenceType):
+        # Widening an existing tuple's payload by copying it would change its
+        # observable identity. Keep separately typed shared tuple alternatives.
+        return union_type(left,right)
     if isinstance(left,ListType) and isinstance(right,ListType):
         element=join_types(left.element,right.element)
         return None if element is None else ListType(element)
@@ -193,6 +206,7 @@ def default_value(kind,zero):
         value=kind.alternatives[0]
         return f"{union_variant(kind,value)}({default_value(value,zero)})"
     if isinstance(kind,TupleType):return tuple_code(default_value(field,zero) for field in kind.fields)
+    if isinstance(kind,TupleSequenceType):return "NativeTuple::from_vec(Vec::new())"
     if isinstance(kind,ListType):return "Vec::new()"
     if getattr(kind,"_key_container",False):return "NativeKeySet::new()" if kind._key_container=="set" else "NativeKeyDict::new()"
     return {"none":"()","int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"NativeText::new()",

@@ -3,12 +3,12 @@ import ast
 
 from .native import _Expression, _Unsupported
 from .native_stream_plans import ConsumerKind
-from .native_types import TupleType, UnionType, NullableType
+from .native_types import TupleType,TupleSequenceType, UnionType, NullableType
 
 
 def comparison(g,left,right,maximum,node):
     operator=ast.Gt() if maximum else ast.Lt()
-    if isinstance(left.kind,(TupleType,UnionType,NullableType)) or left.kind=="none":
+    if isinstance(left.kind,(TupleType,TupleSequenceType,UnionType,NullableType)) or left.kind=="none":
         from .native_tuples import tuple_compare,_scalar
         if not _scalar(left.kind):raise _Unsupported
         return tuple_compare(g,left,right,operator,node)

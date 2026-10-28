@@ -33,19 +33,21 @@ def canonical_tuple(fields):
 
 
 def compatible_keys(left,right):
-    from .native_types import TupleType,EmptyType
+    from .native_types import TupleType,TupleSequenceType,EmptyType
     if isinstance(left,EmptyType) or isinstance(right,EmptyType):return True
     if left in {"int","bool","int_bool"} and right in {"int","bool","int_bool"}:return True
     if left==right=="str":return True
+    if isinstance(left,TupleSequenceType)and isinstance(right,TupleSequenceType):return compatible_keys(left.element,right.element)
     return (isinstance(left,TupleType) and isinstance(right,TupleType) and len(left.fields)==len(right.fields)
             and all(compatible_keys(a,b) for a,b in zip(left.fields,right.fields)))
 
 
 def canonical_type(kind):
-    from .native_types import TupleType,EmptyType
+    from .native_types import TupleType,TupleSequenceType,EmptyType
     if isinstance(kind,EmptyType):return "NativeEmpty"
     if kind in {"int","bool","int_bool"}:return "NativeInt"
     if kind=="str":return "NativeText"
+    if isinstance(kind,TupleSequenceType):return "Vec<"+canonical_type(kind.element)+">"
     if isinstance(kind,TupleType):return canonical_tuple(canonical_type(field) for field in kind.fields)
     raise KeyError(kind)
 

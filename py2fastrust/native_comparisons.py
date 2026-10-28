@@ -1,7 +1,7 @@
 """Ordering of proved immutable values through ordinary Rust operations."""
 import ast
 
-from .native_types import TupleType, immutable
+from .native_types import TupleType,TupleSequenceType, immutable
 
 
 ORDERING = {ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
@@ -10,7 +10,7 @@ _INTEGERS = {"int", "bool", "int_bool"}
 
 def _type_name(value):
     from .native import _Unsupported, _string
-    if isinstance(value.kind, TupleType):
+    if isinstance(value.kind, (TupleType,TupleSequenceType)):
         return _string("tuple")
     if value.kind == "int_bool":
         return (f'match &({value.code}){{NativeScalar::Bool(_)=>"bool",'
@@ -46,6 +46,9 @@ def ordering(g, left, right, operator, node):
             lambda b, y: ordering(g, _Expression(x, a, owned=False),
                                   _Expression(y, b, owned=False), operator, node)))
 
+    if isinstance(left.kind,TupleSequenceType)or isinstance(right.kind,TupleSequenceType):
+        from .native_tuple_sequences import _ordering
+        return _ordering(g,left,right,operator,node)
     symbol = ORDERING[type(operator)]
     if isinstance(left.kind, TupleType) or isinstance(right.kind, TupleType):
         from .native_tuples import _scalar, tuple_compare

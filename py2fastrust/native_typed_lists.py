@@ -3,7 +3,7 @@
 import ast
 
 from .native import _Binding, _DequeInfo, _Expression, _ListInfo, _Unsupported, _string
-from .native_types import ListType, TupleType, TypedListInfo, immutable, join_types, rust_type, tuple_code
+from .native_types import ListType, TupleType, TupleSequenceType, TypedListInfo, immutable, join_types, rust_type, tuple_code
 from .call_semantics import FunctionSignature
 from .native_stream_plans import ConsumerKind, ConsumerPlan, consumer_plan, context
 
@@ -63,6 +63,9 @@ def _ordering(g,left,right,node):
         return f"({g.number(left)}).cmp(&({g.number(right)}))"
     if left.kind == right.kind and left.kind in {"str","bytes"}:
         return f"({left.code}).cmp(&({right.code}))"
+    if isinstance(left.kind,TupleSequenceType)and isinstance(right.kind,TupleSequenceType):
+        from .native_tuple_sequences import total_order
+        return total_order(g,left,right,node)
     if isinstance(left.kind,TupleType) and isinstance(right.kind,TupleType):
         from .native_tuples import tuple_ordering
         return tuple_ordering(g,left,right,node)
@@ -320,6 +323,9 @@ def _representation(g,value,*,quoted=False):
         from .native_stdio import _enable
         _enable(g)
         return f"native_bytes_repr(&({code}))"
+    if isinstance(kind,TupleSequenceType):
+        from .native_tuple_sequences import representation
+        return representation(g,value)
     if isinstance(kind,TupleType):
         owner,result = g.temporary(),g.temporary()
         lines = [f"let {owner}=&({code});",f'let mut {result}=String::from("(");']
@@ -352,7 +358,7 @@ def _print(g,node,environment,*,values=None):
                   for argument in call.args]
     from .native_unions import union_kind
     from .native_types import EmptyType
-    if not any(isinstance(value.kind,(ListType,TupleType,EmptyType)) or union_kind(value.kind) or value.kind=="none" or not star and value.kind == "list_int" for star,value in values):
+    if not any(isinstance(value.kind,(ListType,TupleType,TupleSequenceType,EmptyType)) or union_kind(value.kind) or value.kind=="none" or not star and value.kind == "list_int" for star,value in values):
         return None
     separator,end,flush = " ","\n",False
     seen = set()
@@ -376,7 +382,7 @@ def _print(g,node,environment,*,values=None):
     arguments = []
     for star,value in values:
         temporary = g.temporary()
-        code = f"&({value.code})" if (isinstance(value.kind,(ListType,TupleType)) or union_kind(value.kind) or value.kind == "list_int") and not value.owned else value.code
+        code = f"&({value.code})" if (isinstance(value.kind,(ListType,TupleType,TupleSequenceType)) or union_kind(value.kind) or value.kind == "list_int") and not value.owned else value.code
         lines.append(f"let {temporary}={code};")
         arguments.append((star,_Expression(temporary,value.kind)))
     first = g.temporary()
@@ -388,7 +394,7 @@ def _print(g,node,environment,*,values=None):
     for star,value in arguments:
         if not star:
             lines.append(write(value))
-        elif value.kind == "list_int" or isinstance(value.kind,ListType):
+        elif value.kind == "list_int" or isinstance(value.kind,(ListType,TupleSequenceType)):
             element = "int" if value.kind == "list_int" else value.kind.element
             item = g.temporary()
             lines.append(f"for {item} in {value.code}.iter() {{\n{write(_Expression(f'(*{item})',element,owned=False))}\n}}")
