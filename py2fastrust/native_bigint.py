@@ -433,7 +433,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
 
 def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None,trusted_imports=frozenset(),unit=None,
-                        string_mode="ascii"):
+                        string_mode="ascii",type_analysis=None):
     """Return a complete direct-Rust program only after a full scalar proof."""
     from .frontend import build_program, native_namespace_diagnostic
     from .diagnostics import CompilationError
@@ -468,7 +468,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.trusted_imports=trusted_imports
         generator.source_unit=unit
         from .native_constraints import analyze
-        generator.type_analysis=specializations.type_analysis=analyze(unit)
+        generator.type_analysis=specializations.type_analysis=analyze(unit)if type_analysis is None else type_analysis
         generator.constraint_facts=generator.type_analysis.scope()
         from .native_range_facts import derive_regions
         generator.range_facts=derive_regions(generator.type_analysis,generator.constraint_facts,0)

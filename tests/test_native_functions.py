@@ -1,4 +1,4 @@
-"""Ordinary native user calls with proved signatures and no dynamic globals."""
+"""Ordinary calls use native Rust functions or canonically required typed frames."""
 
 from pathlib import Path
 import random
@@ -8,9 +8,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from py2fastrust import TranspileOptions, transpile
 from py2fastrust.native import try_generate_native
+from py2fastrust.frontend import build_program
+from py2fastrust.native_frame_selection import select_frames
 from wrapping_reference import execute
 
 
@@ -26,11 +29,17 @@ class NativeFunctionTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def compile(self, source, integer, optimized):
-        rust = try_generate_native(source, "native_functions.py", integer)
-        self.assertIsNotNone(rust, source)
-        self.assertIn("fn native_function_", rust)
-        self.assertNotIn("enum Value", rust)
-        self.assertNotIn("struct Runtime", rust)
+        unit = build_program(source, "native_functions.py").main
+        selection = select_frames(unit)
+        with patch("py2fastrust.codegen.generate", side_effect=AssertionError("VM fallback")):
+            result = transpile(source, TranspileOptions(integer=integer, filename=unit.filename))
+        self.assertTrue(result.success, result.diagnostics)
+        self.assertEqual(result.backend, "native")
+        rust = result.rust_source
+        expected_function = "fn class_function_" if selection.required else "fn native_function_"
+        self.assertIn(expected_function, rust)
+        for marker in ("enum Value", "enum Op", "struct Runtime", "struct PegParser"):
+            self.assertNotIn(marker, rust)
         type(self).counter += 1
         path = Path(self.tmp.name) / f"functions{self.counter}.rs"
         path.write_text(rust, encoding="utf-8")
@@ -171,13 +180,10 @@ def accumulate(a,b,n):
 print(accumulate(int(input()),int(input()),int(input())))
 ''', inputs, wrapping=True)
 
-    def test_dynamic_globals_alias_defaults_binding_and_recursion_fall_back(self):
+    def test_unsupported_callable_protocols_have_positioned_diagnostics(self):
         programs = [
             "offset=3\ndef f(x): return x+offset\nprint(f(2))",
-            "def f(x):\n global y\n y=x\n return x\nprint(f(2))",
             "def outer(x):\n def inner(y): return x+y\n return inner(2)\nprint(outer(3))",
-            "def f(x=int(input())): return x\nprint(f())",
-            "def f(x=[]): return len(x)\nprint(f())",
             "def f(x): return x\nprint(f.__defaults__)",
             "def f(x): return x\nprint(f())",
             "def f(x): return x\nprint(f(1,2))",
@@ -188,8 +194,6 @@ print(accumulate(int(input()),int(input()),int(input())))
             "def f(**xs): return len(xs)\nprint(f(x=1))",
             "def f(x): return x\nprint(f(*[1]))",
             "def f(x): return x\nprint(f(**{'x':1}))",
-            "def f(x): return 1 if x==0 else f(x-1)\nprint(f(5))",
-            "def f(x): return g(x)\ndef g(x): return f(x)\nprint(f(1))",
             "def first(x): return later(x)\nprint(first(1))\ndef later(x): return x",
             "if int(input()):\n def f(x): return x\nprint(f(1))",
             "def f(x): return y\nprint(f(1))",
@@ -203,11 +207,35 @@ print(accumulate(int(input()),int(input()),int(input())))
                                   for i in range(130)) + "\nprint(f0(1))")
         for source in programs:
             with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+                with patch("py2fastrust.codegen.generate", side_effect=AssertionError("VM fallback")):
+                    result = transpile(source, TranspileOptions(integer="i64", filename="unsupported.py"))
+                self.assertFalse(result.success)
+                self.assertEqual(result.diagnostics[0].code, "E006")
+                self.assertGreater(result.diagnostics[0].line, 0)
         source = "def f(x): return x\ng=f\nprint(g(1))"
         result = transpile(source, TranspileOptions())
         self.assertTrue(result.success)
         self.assertEqual(result.backend, "native")
+
+    def test_module_store_uses_the_current_native_module_binding(self):
+        source="def f(x):\n global y\n y=x\n return x\nprint(f(2))"
+        self.differential(source, modes=("i64", "i128", "bigint"))
+
+    def test_effectful_default_runs_at_definition_and_preserves_errors(self):
+        source="def f(x=int(input())): return x\nprint(f())"
+        self.differential(source, ("5\n", "bad\n", ""), modes=("i64", "i128", "bigint"))
+
+    def test_mutable_default_empty_payload_is_materialized(self):
+        source="def f(x=[]): return len(x)\nprint(f())"
+        self.differential(source, modes=("i64", "i128", "bigint"))
+
+    def test_ordinary_recursive_conditional_result_is_native(self):
+        source="def f(x): return 1 if x==0 else f(x-1)\nprint(f(5))"
+        self.differential(source, modes=("i64", "i128", "bigint"))
+
+    def test_mutual_recursion_preserves_recursion_error(self):
+        source="def f(x): return g(x)\ndef g(x): return f(x)\nprint(f(1))"
+        self.differential(source, modes=("i64", "i128", "bigint"))
 
     def test_identity_function_retains_the_shared_list_result(self):
         source="def f(x): return x\nprint(f([1]))"

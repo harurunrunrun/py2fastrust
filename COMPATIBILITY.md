@@ -342,8 +342,14 @@ onto positional-only, ordinary and keyword-only parameters. The binder consumes
 captured defaults without reevaluating their Python expressions. Class input
 aliases retain a bound flag, so reading an unset alias reports its Python
 name error before performing input or copying another alias.
-Dynamic argument expansion, emitted variadic functions, effectful/mutable
-defaults, and versioned mutable global namespaces remain unfinished.
+Definition-time defaults on the typed frame path run once in their original
+execution scope, including mutable defaults and calls with effects. Optional
+typed module cells distinguish an unset name from `None`, preserve shared list
+identity and let functions read the latest assigned global value. Local and
+parameter bindings keep their own representations. Rebinding or deleting a
+function-valued alias still requires typed callable cells; dynamic argument
+expansion, emitted variadic functions and general dynamic namespaces remain
+unfinished.
 
 Class values, method signatures, fields, and list elements use the shared
 scalar, `TupleType`, `ListType`, `MaybeType`, `NullableType`, and `UnionType`
@@ -354,11 +360,16 @@ control-flow planner still needs migration to the shared semantic graph. Nullabl
 mutable handles and identity-sensitive floating-point container comparisons remain
 outside this direct proof.
 
-A resolved class-path call graph selects ordinary Rust functions for small
-acyclic call paths. Recursive components, their callers and longer chains retain
-the typed compiled-future stack; no generic source instruction interpreter is
-introduced. Both representations share logical recursion depth checks and error
-frames. Constructor initialization retains its single Python call frame.
+A resolved call graph selects ordinary Rust functions for small acyclic class
+call paths. Recursive components, their callers and longer chains retain the
+typed compiled-future stack. The same typed frames support classless recursive
+functions, module writes and definition-time default captures. Selection uses
+canonical lexical bindings and reached callable identities before lowering;
+lowering failures never select a different backend. Pure call-only aliases can
+retain their proved definition identity, while unproved rebinding/deletion is
+diagnosed. Both representations share logical recursion depth checks and error
+frames. Constructor initialization retains its single Python call frame. These
+are compiled Rust function bodies, with no generic source instruction dispatch.
 
 Concrete field reads may be reused inside a loop only when its receiver binding
 is stable and the loop has no attribute stores, user calls or inner lexical

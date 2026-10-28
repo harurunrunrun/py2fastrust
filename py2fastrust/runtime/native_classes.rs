@@ -164,6 +164,9 @@ fn class_read_text(scope:&ClassScope,line:bool,builtin_input:bool)->Result<Strin
 fn class_read_bytes(scope:&ClassScope,line:bool)->Result<Vec<u8>,String> {
     match class_read(scope,true,line,false)?{ClassRead::Bytes(value)=>Ok(value),_=>unreachable!()}
 }
+fn class_parse_text(value:&str)->Result<NativeInt,String> {
+    native_parse_integer(value).map_err(|_|format!("ValueError: invalid literal for int() with base 10: {}",text_repr_str(value)))
+}
 fn class_parse_bytes(value:&[u8])->Result<NativeInt,String> {
     let parsed=if value.iter().all(|byte|byte.is_ascii()&&!matches!(*byte,0..=8|14..=31|127)){native_parse_integer(std::str::from_utf8(value).unwrap())}
         else{Err("ValueError: invalid literal".into())};

@@ -2058,17 +2058,22 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         if diagnostic_out is not None:diagnostic_out.append(namespace_error)
         return None
     trusted_imports = unit.native_imports
-    has_classes = any(isinstance(node, ast.ClassDef) for node in ast.walk(unit.tree))
-    if has_classes:
+    from .native_frame_selection import select_frames
+    try:
+        frame_selection=select_frames(unit)
+    except (SyntaxError,_Unsupported,RecursionError,ConstraintFailure)as error:
+        if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
+        return None
+    if frame_selection.required:
         from .native_classes import try_generate_classes
         return try_generate_classes(source, filename, integer, trusted_imports=trusted_imports,
                                     prune_output=prune_output, diagnostic_out=diagnostic_out, unit=unit,
-                                    string_mode=string_mode)
+                                    string_mode=string_mode,frame_selection=frame_selection)
     if integer == "bigint":
         from .native_bigint import try_generate_bigint
         return try_generate_bigint(source, filename, prune_output=prune_output,
                                    diagnostic_out=diagnostic_out,trusted_imports=trusted_imports,unit=unit,
-                                   string_mode=string_mode)
+                                   string_mode=string_mode,type_analysis=frame_selection.analysis)
     if integer not in {"i64", "i128"}:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source, filename, unit=unit))
@@ -2102,7 +2107,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         generator.trusted_imports = trusted_imports
         generator.source_unit=unit
         from .native_constraints import analyze
-        generator.type_analysis=specializations.type_analysis=analyze(unit)
+        generator.type_analysis=specializations.type_analysis=frame_selection.analysis
         generator.constraint_facts=generator.type_analysis.scope()
         if function_input:
             generator.has_input = True

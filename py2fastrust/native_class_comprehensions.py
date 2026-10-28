@@ -123,6 +123,7 @@ def analyze(model, plan, node, environment):
     record.sources=tuple(sources)
     result=model.cell(plan,node,"list",(Cell(),))
     model.contribute(result.root().args[0],model.expression(plan,semantic.element,inside),semantic.element)
+    model.namespace.comprehension_effects(plan,node,environment,inside)
     return result
 
 
