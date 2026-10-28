@@ -252,7 +252,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             literal=Literal.from_ast(node)
             if literal is not None and literal.kind in {"int","bool"}:
                 return _Expression(literal.rust_atom(self.literal,_string),literal.kind,literal.value)
-            raise _Unsupported
+            raise _Unsupported("this literal kind has no integrated native value/operation representation on the BigInt scalar path",node=node,types=(("literal",literal.kind if literal is not None else None),),proof="BigInt-path literal value representation")
         if isinstance(node, ast.UnaryOp):
             value = self.expression(node.operand,environment)
             if isinstance(node.op, ast.Not):
@@ -392,7 +392,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 raise _Unsupported
             value = self.expression(node.value,environment)
             if not immutable(value.kind) and (not value.owned or len(node.targets) != 1):
-                raise _Unsupported
+                raise _Unsupported("these names would share one mutable container, but the selected storage requires a proved unique owner; alias-preserving shared mutable storage is not implemented for this assignment",node=node,types=(("value",value.kind),),proof="mutable alias identity and lifetime")
             name = self.temporary()
             from .native_unions import union_kind
             assigned=self.coerce(value,value.kind) if union_kind(value.kind) and not value.owned else value.code
@@ -408,6 +408,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         if isinstance(node,ast.For):
             if not isinstance(node.iter,ast.Call) or not isinstance(node.iter.func,ast.Name) or node.iter.func.id != "range":
                 raise _Unsupported
+        if isinstance(node,ast.ImportFrom)and node.module=="collections"and any(alias.name=="deque"for alias in node.names):
+            raise _Unsupported("collections.deque has fixed-width storage adapters, but its arbitrary-precision element storage and deque operations are not implemented on the BigInt path",node=node,operation="import 'collections.deque' in BigInt mode",proof="BigInt deque storage and operations")
         if isinstance(node,(ast.Pass,ast.FunctionDef,ast.Return,ast.AugAssign,ast.If,ast.For,ast.While,ast.Break,ast.Continue,ast.Expr)):
             return super().statement(node,environment)
         raise _Unsupported

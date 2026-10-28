@@ -35,17 +35,17 @@ def capture(g, node, value, environment):
     if term is not None and term.operation == "name":
         binding = environment.get(term.data)
         if not isinstance(binding, _Binding):
-            raise _Unsupported
+            raise _Unsupported("the container name has no resolved native storage binding; its identity cannot be captured before later argument effects",node=node,types=(("container",value.kind),),proof="stable container binding and argument evaluation order")
         if isinstance(binding.info, _MaybeInfo):
             if binding.info.kind != value.kind:
-                raise _Unsupported
+                raise _Unsupported("the possibly-unbound container binding and captured value have different storage types; an identity-preserving projection is not proved",node=node,types=(("binding",binding.info.kind),("container",value.kind)),proof="consistent container storage across unbound-name checking and deferred borrowing")
             # This checked read owns no persistent borrow. It raises at the
             # original source position before later argument side effects.
             setup = f"let _=&({value.code});"
             owner = f'{binding.slot}.as_ref().expect("validated container binding")'
             return ContainerRead(setup, owner)
         if value.code != binding.slot:
-            raise _Unsupported
+            raise _Unsupported("the captured container expression is not the resolved binding's storage slot; stable object identity across later argument effects is not proved",node=node,types=(("container",value.kind),),proof="stable container binding without replaying or copying its producer")
         return ContainerRead("", binding.slot)
 
     # A subscript, call, or other producer can raise or have side effects.

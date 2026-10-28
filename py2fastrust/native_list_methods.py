@@ -64,7 +64,8 @@ def try_expression(g,node,environment):
                         sort_key=operand.expression
                         continue
                 value=g.expression(operand.expression,environment)
-                if value.kind!="none":raise _Unsupported
+                if value.kind!="none":
+                    raise _Unsupported("this list.sort key is neither None nor a resolved native callable reference; capturing and invoking this callable value once per element is not implemented",node=operand.expression,operation="list.sort key",types=(("key",value.kind),),proof="stable key-callable identity and once-per-element evaluation")
             else:value=g.expression(operand.expression,environment)
             if method.name=="sort"and operand.parameter=="reverse":
                 from .native_sequence_storage import deferred_truth

@@ -38,9 +38,9 @@ def ordering(g, left, right, operator, node):
     from .native import _Expression, _Unsupported
     from .native_unions import project, union_kind
     if type(operator) not in ORDERING:
-        raise _Unsupported
+        raise _Unsupported("the selected ordering adapter only handles '<', '<=', '>' and '>='; no adapter for this requested comparison was selected",node=node,operation=f"comparison {type(operator).__name__!r}",types=(("left",left.kind),("right",right.kind)),proof="comparison-operator adapter selection")
     if not immutable(left.kind) or not immutable(right.kind):
-        raise _Unsupported
+        raise _Unsupported("this native ordering adapter handles recursively immutable values; mutable-container/alternative ordering and its alias-preserving Python sequence semantics are not implemented",node=node,operation=f"comparison {ORDERING[type(operator)]!r}",types=(("left",left.kind),("right",right.kind)),proof="native mutable-sequence comparison semantics")
     if union_kind(left.kind) or union_kind(right.kind):
         return project(left.kind, left.code, lambda a, x: project(right.kind, right.code,
             lambda b, y: ordering(g, _Expression(x, a, owned=False),
@@ -53,7 +53,7 @@ def ordering(g, left, right, operator, node):
         # deliberately excludes float payloads, including NaN identity cases.
         for value in (left, right):
             if isinstance(value.kind, TupleType) and not _scalar(value.kind):
-                raise _Unsupported
+                raise _Unsupported("tuple element comparison needs Python identity-aware equality shortcuts, including floating NaN and custom/mutable payload semantics; that element comparator is not implemented for this tuple",node=node,operation=f"tuple comparison {symbol!r}",types=(("left",left.kind),("right",right.kind)),proof="identity-aware tuple element equality and ordering")
         if isinstance(left.kind, TupleType) and isinstance(right.kind, TupleType):
             return tuple_compare(g, left, right, operator, node)
         return _unsupported_pair(g, left, right, operator, node)
@@ -65,7 +65,7 @@ def ordering(g, left, right, operator, node):
             or right.kind == "float" and left.kind in _INTEGERS):
         if not g.bits:
             # BigInt/float interoperation still needs a shared exact proof.
-            raise _Unsupported
+            raise _Unsupported("exact arbitrary-precision-integer/binary64 comparison is not implemented on the BigInt path; converting the integer to float would lose ordering precision",node=node,operation=f"integer/float comparison {symbol!r}",types=(("left",left.kind),("right",right.kind)),proof="exact BigInt/float ordering and NaN behavior")
         g.has_extended_scalars = True
         integer = g.number(right if left.kind == "float" else left)
         floating = left.code if left.kind == "float" else right.code

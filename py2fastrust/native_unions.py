@@ -49,14 +49,16 @@ def coerce_union(value,target,coerce):
     source=value.kind
     if source==target:
         if immutable(target):return f"({value.code}).clone()"
-        if not value.owned:raise _Unsupported
+        if not value.owned:
+            raise _Unsupported("this finite alternative contains borrowed mutable storage; copying or moving it would change alias identity without a shared native carrier",types=(("source",source),("target",target)),proof="mutable alternative ownership")
         return value.code
     # Moving an owned enum preserves unique mutable payload ownership. Cloning
     # is permitted only for recursively immutable alternatives.
     code=value.code
     if immutable(source):
         code=f"({code}).clone()"
-    elif not value.owned:raise _Unsupported
+    elif not value.owned:
+        raise _Unsupported("conversion between finite alternatives would move borrowed mutable storage; an alias-preserving shared carrier is not implemented",types=(("source",source),("target",target)),proof="mutable alternative ownership")
     def inject(kind,inner):
         expression=_Expression(inner,kind)
         if isinstance(target,NullableType):
@@ -110,14 +112,16 @@ def compare(g,node,values):
     from .native_comparisons import ORDERING,ordering
     if not any(union_kind(value.kind) or value.kind=="none" for value in values):return None
     if any(type(op) not in {ast.Is,ast.IsNot,ast.Eq,ast.NotEq}|ORDERING.keys() for op in node.ops):raise _Unsupported
-    if any(type(op) in ORDERING for op in node.ops) and any(not immutable(value.kind) for value in values):raise _Unsupported
+    if any(type(op) in ORDERING for op in node.ops) and any(not immutable(value.kind) for value in values):
+        raise _Unsupported("ordering finite alternatives containing mutable containers requires native sequence comparison with preserved alias/iteration semantics; this path currently only implements immutable alternative ordering",node=node,types=tuple((f"operand {i+1}",value.kind)for i,value in enumerate(values)),proof="mutable-sequence comparison across finite alternatives")
     names=[g.temporary() for _ in values]
     def pair(left,right,operator):
         def both(a,x,b,y):
             if type(operator) in ORDERING:
                 return ordering(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)
             elif isinstance(operator,(ast.Is,ast.IsNot)):
-                if a!="none" and b!="none":raise _Unsupported
+                if a!="none" and b!="none":
+                    raise _Unsupported("identity comparison between non-None scalar alternatives requires stable Python object identities; the selected copied-scalar representation does not retain them",node=node,operation="identity comparison 'is'/'is not'",types=(("left",a),("right",b)),proof="Python object identity for scalar alternatives")
                 result=str(a==b=="none").lower()
             elif a=="none" or b=="none":result=str(a==b).lower()
             else:

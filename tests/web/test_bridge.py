@@ -133,6 +133,23 @@ class BridgeTests(unittest.TestCase):
         self.assert_api_parity("print(1)\n", license="unknown")
         self.assert_api_parity("print(1)\n", string_mode="unknown")
 
+    def test_missing_native_feature_reasons_and_source_details_survive_transport(self):
+        cases=(
+            ('class Item:pass\nn=3\nvalues=[[] for i in range(n)]\n',{},('list comprehension','class-aware','list[list[unresolved element]]')),
+            ('from collections import deque\nvalues=deque([1])\n',{'integer':'bigint'},('collections.deque','BigInt','element storage')),
+            ('def f(*items):return len(items)\nprint(f(1))\n',{},('signature','items','packing')),
+            ('values=[1]\nalias=values\n',{},('mutable container','alias identity','value=list[int]')),
+            ('s=input()\nprint(s.replace("<img src=x>","x"))\n',{},("call 's.replace'",'receiver=str','<img src=x>')),
+        )
+        for source,options,tokens in cases:
+            with self.subTest(source=source):
+                result=self.assert_api_parity(source,**options)
+                self.assertIsNone(result['rust_source'])
+                diagnostic=result['diagnostics'][0]
+                self.assertEqual((diagnostic['filename'],diagnostic['code']),('main.py','E006'))
+                self.assertIn('Source:',diagnostic['message'])
+                for token in tokens:self.assertIn(token,diagnostic['message'])
+
     def test_transport_values_are_validated(self):
         for value in ({"source": None}, {"source": "print(1)", "options": []},
                       {"source": "print(1)", "options": {"optimize": "false"}},

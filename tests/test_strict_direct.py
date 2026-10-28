@@ -41,7 +41,8 @@ class StrictDirectTests(unittest.TestCase):
                             self.assertEqual(result.diagnostics[0].code, "E006")
                             self.assertEqual(result.diagnostics[0].filename, "fresh_solution.py")
                             self.assertGreaterEqual(result.diagnostics[0].line, 1)
-                            self.assertIn("not implemented", result.diagnostics[0].message)
+                            self.assertIn("Cannot lower ", result.diagnostics[0].message)
+                            self.assertIn("Source:", result.diagnostics[0].message)
             general.assert_not_called()
 
     def test_proved_class_programs_never_select_general_codegen(self):

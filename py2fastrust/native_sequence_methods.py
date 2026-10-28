@@ -7,7 +7,8 @@ from .native_sequence_plans import element_type
 def lower(g,storage,method,bound,node,environment,*,sort_key=None):
     """Consume already captured explicit values; borrow contents at the operation."""
     element=storage.element
-    if not immutable(element):raise _Unsupported
+    if not immutable(element):
+        raise _Unsupported("this sequence operation has mutable element values, but its element ownership/alias-preserving storage adapter is not implemented",node=node,types=(("receiver",storage.kind),("element",element)),proof="mutable element identity across sequence operations")
     name=method.name
     if name=="append":
         value=bound["value"]
@@ -15,9 +16,11 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
         code=g.at(f"native_typed_push({storage.mutable},{owned})",node)
     elif name=="extend":
         value=bound["iterable"]
-        if not list_type(value.kind):raise _Unsupported
+        if not list_type(value.kind):
+            raise _Unsupported("list.extend currently consumes a resolved native list; iteration and ordered element conversion for this other iterable representation are not implemented on the shared sequence path",node=node,types=(("receiver",storage.kind),("iterable",value.kind)),proof="ordered iterable consumption and element conversion")
         source=element_type(value.kind)
-        if not immutable(source):raise _Unsupported
+        if not immutable(source):
+            raise _Unsupported("list.extend would copy mutable elements whose shared Python identities must be retained; the identity-preserving element adapter is not implemented for these source/destination storages",node=node,types=(("receiver",storage.kind),("iterable",value.kind)),proof="mutable element sharing during extend")
         if not storage.shared and value.owned:
             if source==element:
                 code=g.at(f"native_typed_extend({storage.mutable},{value.code})",node)
@@ -47,7 +50,8 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
     elif name in {"index","count"}:
         from .native_list_methods import _supported
         needle=bound["value"]
-        if not _supported(element)or not _supported(needle.kind):raise _Unsupported
+        if not _supported(element)or not _supported(needle.kind):
+            raise _Unsupported(f"list.{name} needs Python equality for this element/needle pair, including their identity or special-method behavior; that equality adapter is not implemented",node=node,types=(("element",element),("needle",needle.kind)),proof="Python sequence-search equality and identity behavior")
         item=g.temporary()
         if isinstance(element,EmptyType):equal=f"match *{item} {{}}"
         elif isinstance(needle.kind,EmptyType):equal=f"match {needle.code} {{}}"
@@ -70,14 +74,15 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
         setup=f"let {direction}={reverse};"
         code=("{"+setup+"()}" if isinstance(element,EmptyType) else
               "{"+setup+_sort_code(g,f"({storage.mutable})",element,node,environment,direction,sort_key)+"}")
-    else:raise _Unsupported
+    else:raise _Unsupported(f"the shared sequence operation {name!r} has no native method implementation",node=node,types=(("receiver",storage.kind),))
     kind=(storage.kind if method.result=="copy" else element if method.result=="element"else method.result)
     return _Expression(code,kind)
 
 
 def _bound(g,value,default):
     if value is None:return default
-    if value.kind not in {"int","bool","int_bool"}:raise _Unsupported
+    if value.kind not in {"int","bool","int_bool"}:
+        raise _Unsupported("this sequence index/bound requires Python __index__ conversion or its TypeError; conversion/error emission for this argument type is not implemented",types=(("index/bound",value.kind),),proof="Python integer-index protocol")
     code=g.number(value)
     return f"({code}) as i128" if g.bits else f"({code}).to_i128().unwrap_or_else(||if ({code}).is_negative(){{i128::MIN}}else{{i128::MAX}})"
 

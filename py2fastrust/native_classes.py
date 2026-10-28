@@ -64,8 +64,8 @@ def has_float_payload(kind):
 
 
 class ClassUnsupported(_Unsupported):
-    def __init__(self, node):
-        self.node = node
+    def __init__(self, node, reason=None, **context):
+        super().__init__(reason,node=node,**context)
 
 
 @dataclass(eq=False)
@@ -303,12 +303,17 @@ class Model:
         return result.cell
 
     def function(self, node, owner=None):
-        if (node.decorator_list or node.returns is not None or node.type_params
-                or node.args.vararg or node.args.kwarg):
-            raise ClassUnsupported(node)
+        if node.args.vararg or node.args.kwarg:
+            raise ClassUnsupported(node,"variadic method/function arguments need tuple/dictionary packing and native argument-frame binding; that storage is not implemented on the class path",operation=f"signature of function {node.name!r}")
+        if node.decorator_list:
+            raise ClassUnsupported(node.decorator_list[0],"decorator calls can replace the method/function object at definition time; that native decorated-callable capture is not implemented on the class path",operation=f"decorator of function {node.name!r}")
+        if node.returns is not None:
+            raise ClassUnsupported(node.returns,"lazy return-annotation objects and their namespace evaluation are not implemented on the class path",operation=f"annotation of function {node.name!r}")
+        if node.type_params:
+            raise ClassUnsupported(node,"generic type-parameter objects and lazy bound/default evaluation are not implemented on the class path",operation=f"generic function definition {node.name!r}")
         arguments = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
         if any(value.annotation is not None for value in arguments):
-            raise ClassUnsupported(node)
+            raise ClassUnsupported(node,"lazy parameter-annotation objects and their namespace evaluation are not implemented on the class path",operation=f"annotations of function {node.name!r}")
         plan = FunctionPlan(node, len(self.plans), owner)
         if self.unit is not None:
             signature=self.unit.signature_for(node)
@@ -328,7 +333,7 @@ class Model:
         for name, value in defaults:
             literal = value.operand if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)) else value
             if not isinstance(literal, ast.Constant) or type(literal.value) not in {int, bool, float, str, type(None)}:
-                raise ClassUnsupported(value)
+                raise ClassUnsupported(value,f"default parameter {name!r} needs definition-time capture beyond the proved immutable literal defaults on this class path; shared mutable/effectful default storage is not implemented",operation=f"default of function {node.name!r}",proof="definition-time default identity/effects")
             plan.defaults[name] = value
             # These are total, immutable literal defaults. Capture their value
             # once at definition planning, including unused methods.
@@ -362,7 +367,8 @@ class Model:
                     if not isinstance(member, ast.FunctionDef):
                         raise ClassUnsupported(member)
                     if member.name.startswith("__") and member.name.endswith("__") and member.name != "__init__":
-                        raise ClassUnsupported(member)
+                        protocol="truth-value"if member.name in {"__bool__","__len__"}else"special-method"
+                        raise ClassUnsupported(member,f"class {node.name!r} defines {member.name}; native {protocol} protocol dispatch for this override is not implemented",operation=f"special method {node.name+'.'+member.name!r}",proof=f"Python {member.name} protocol dispatch")
                     name = self.unit.name_for(member) if self.unit is not None else mangle(member.name, node.name)
                     if name in owner.methods:
                         raise ClassUnsupported(member)
@@ -465,14 +471,15 @@ class Model:
     def storage(self, cell, node, field_value=False):
         cell = cell.root()
         if cell.tag is None or cell.tag not in self.DATA:
-            raise ClassUnsupported(node)
+            raise ClassUnsupported(node,"the class frame's field/result kind has no resolved native stored-value representation; storage for this value or escaping stream/callable has not been implemented",types=(("value",cell),),proof="resolved stored class-frame value")
         if self.integer == "bigint" and cell.tag == "float":
-            raise ClassUnsupported(node)
+            raise ClassUnsupported(node,"native binary64 value/operation storage has not been integrated with the BigInt class path",types=(("value","float"),),proof="BigInt/f64 value representation and interoperation")
         if cell.tag == "object" and field_value:
-            raise ClassUnsupported(node)
+            raise ClassUnsupported(node,"an instance-reference field needs alias-preserving object handles and lifetime/cycle management; that field representation is not implemented on this class path",types=(("field",cell),),proof="object-field identity and lifetime")
         if cell.tag == "list":
             item = cell.args[0].root()
-            if not immutable_cell(item):raise ClassUnsupported(node)
+            if not immutable_cell(item):
+                raise ClassUnsupported(node,"this class list stores mutable/instance elements; preserving inner aliases and lifetimes requires a shared nested-element representation that is not implemented on this path",types=(("element",item),),proof="shared nested-element identity and lifetime")
             self.storage(item, node)
         if cell.tag == "union":
             for value in cell.args:self.storage(value,node,field_value=field_value)
@@ -481,6 +488,9 @@ class Model:
                 self.storage(value, node, field_value=field_value)
 
     def expression(self, plan, node, environment):
+        if isinstance(node,(ast.ListComp,ast.SetComp,ast.DictComp,ast.GeneratorExp)):
+            from .native_diagnostics import comprehension_context,operation_name
+            raise ClassUnsupported(node,"the class-aware native path has no comprehension scope/iteration/materialization implementation yet; it must preserve comprehension-local bindings, evaluation order and each allocated element's identity",operation=operation_name(node)+" on the class-aware path",types=comprehension_context(node),proof="comprehension scope and alias-preserving element storage")
         if isinstance(node, ast.Constant):
             from .literal_semantics import Literal
             literal=Literal.from_ast(node)
@@ -507,6 +517,8 @@ class Model:
                     return self.remember(plan,node,result)
                 if not self.final:
                     return self.cell(plan,node)
+            if node.id in self.functions or node.id in self.classes:
+                raise ClassUnsupported(node,"the class-aware path can call this definition by its resolved name, but cannot store/pass its function or class object as a first-class value; native callable/class-object storage and dispatch are not implemented",proof="first-class callable/class-object identity and dispatch")
             raise ClassUnsupported(node)
         if isinstance(node, ast.List):
             result = self.cell(plan, node, "list", (Cell(),))
@@ -746,7 +758,7 @@ class Model:
                     if method.name=="append":self.contribute(item,bound["value"],node)
                     elif method.name=="extend":self.contribute(item,self.item(bound["iterable"],node),node)
                     elif method.name=="sort"and bound["key"].root().tag not in {None,"none"}:
-                        raise ClassUnsupported(node)
+                        raise ClassUnsupported(node,"the class-aware sequence path only captures None for list.sort key; retaining and invoking a user key callable once per element is not implemented",types=(("key",bound["key"]),),proof="key callable capture and ordered once-per-element evaluation")
                     if method.result=="copy":return self.cell(plan,node,"list",(item,))
                     if method.result=="element":return self.remember(plan,node,item)
                     return self.cell(plan,node,method.result)
@@ -1057,8 +1069,10 @@ class Emitter:
             return "false"
         if tag == "object":
             owner=self.model.classes[value.kind.name]
-            if owner.node.bases or any(name in owner.methods for name in {"__bool__","__len__"}):
-                raise ClassUnsupported(owner.node)
+            methods=sorted({"__bool__","__len__"}.intersection(owner.methods))
+            if owner.node.bases or methods:
+                required="/".join(methods)if methods else"inherited __bool__/__len__ slots"
+                raise ClassUnsupported(None,f"class {owner.node.name!r} requires {required} truth-value dispatch; this native path only implements default object truth and does not yet invoke overridden/inherited truth methods",operation=f"truth-value test of class {owner.node.name!r}",types=(("value",value.kind),),proof="Python special-method truth dispatch")
             return "true"
         if tag == "tuple":
             return str(bool(value.kind.fields)).lower()
@@ -1346,7 +1360,8 @@ class Emitter:
             before,value=self.capture(self.expression(argument.expression))
             lines.append(before)
             bound[name]=value
-        if method.name=="sort"and "key"in bound and bound["key"].kind!="none":raise ClassUnsupported(node)
+        if method.name=="sort"and "key"in bound and bound["key"].kind!="none":
+            raise ClassUnsupported(node,"the class-aware sequence path only captures None for list.sort key; retaining and invoking a user key callable once per element is not implemented",types=(("key",bound["key"].kind),),proof="key callable capture and ordered once-per-element evaluation")
         result=lower(adapter,storage,method,bound,node,{},sort_key=None)
         temporary=self.fresh()
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)

@@ -46,7 +46,8 @@ def allocation_expression(g,node,environment):
     term=g.type_analysis.graph.expressions[site]
     if term.operation not in {"list","set","dict","call"}:return None
     kind=facts.allocations[site]
-    if kind is None:raise _Unsupported
+    if kind is None:
+        raise _Unsupported("the allocation's element/key/value kinds remain unresolved after type analysis; a finite typed storage representation has not been established",node=node,types=(("allocation",None),),proof="finite allocation-field types")
     if term.operation=="call":
         # The semantic allocation fact proves the callable identity and result
         # shape; source spelling alone cannot establish a container operation.
@@ -69,7 +70,10 @@ def allocation_expression(g,node,environment):
     if isinstance(kind,ListType) and not immutable(kind.element):return None
     if isinstance(kind,(SetType,DictType)):
         from .native_key_containers import _construct,key_kind
-        if not key_kind(kind.key) or isinstance(kind,DictType) and not immutable(kind.value):raise _Unsupported
+        if not key_kind(kind.key):
+            raise _Unsupported("this collection key requires Python hash/equality protocol handling beyond the registered native key representations",node=node,types=(("key",kind.key),),proof="hash/equality semantics for the key")
+        if isinstance(kind,DictType)and not immutable(kind.value):
+            raise _Unsupported("dictionary values contain mutable storage whose alias identity cannot be preserved by the selected owned-value representation",node=node,types=(("dictionary",kind),),proof="shared mutable value storage")
         if term.operation=="dict":
             keys=[];values=[]
             for key,item in term.operands:
@@ -119,8 +123,10 @@ def reset_statement(g,node,environment):
     if callee.operation!="attribute" or callee.data!="clear" or callee.operands[0].operation!="name":raise _Unsupported
     name=callee.operands[0].data;binding=environment.get(name)
     if not isinstance(binding,_Binding) or is_maybe(binding.kind):raise _Unsupported
-    if name in g.iterating_lists or binding.slot in g.borrowed_slots:raise _Unsupported
-    if any(other!=name and isinstance(value,_Binding) and value.slot==binding.slot for other,value in environment.items()):raise _Unsupported
+    if name in g.iterating_lists or binding.slot in g.borrowed_slots:
+        raise _Unsupported(f"clearing {name!r} changes its element representation while an iterator or borrow still observes its storage; this shared storage transition is not implemented",node=node,types=((name,binding.kind),),proof="no live borrows during storage transition")
+    if any(other!=name and isinstance(value,_Binding) and value.slot==binding.slot for other,value in environment.items()):
+        raise _Unsupported(f"clearing {name!r} would replace storage that is also referenced by another name; an alias-preserving shared representation transition is not implemented",node=node,types=((name,binding.kind),),proof="shared mutable identity through clear()")
     kind=facts.resets[site]
     if kind is None:raise _Unsupported
     kind=native_kind(kind,g.bits);g.register_type(kind)
@@ -197,7 +203,8 @@ def loop_header(g,node,environment):
         if fact is None:continue
         old=environment.get(name)
         if old is not None and not isinstance(old,_Binding):continue
-        if fact.kind is None:raise _Unsupported
+        if fact.kind is None:
+            raise _Unsupported(f"the compiler has not resolved a finite merged type for loop variable {name!r}, so its loop-carried native storage cannot be selected",node=node,types=((name,None),),proof="type fixed point across loop backedges")
         kind=native_kind(fact.kind,g.bits)
         optional=fact.maybe_unbound or isinstance(old,_Binding) and is_maybe(old.kind)
         wanted=maybe_type(kind) if optional else kind
@@ -265,7 +272,8 @@ def finish_loop(g,node,entry,header,context,body,remaining,nonempty,may_repeat,z
                 if name in targets:continue
                 current=environment.get(name)
                 if _static_reference(previous):
-                    if name in live and current is not previous:raise _Unsupported
+                    if name in live and current is not previous:
+                        raise _Unsupported(f"loop variable {name!r} changes callable identity while still live; native callable versioning/dispatch for this loop carrier is not implemented",node=node,proof="callable identity across loop backedges")
                     continue
                 if not isinstance(previous,_Binding):continue
                 compatible=isinstance(current,_Binding) and join_types(canonical_kind(previous.kind),canonical_kind(current.kind))==canonical_kind(previous.kind)
@@ -284,7 +292,8 @@ def finish_loop(g,node,entry,header,context,body,remaining,nonempty,may_repeat,z
         for transfer in destinations.values():
             source=transfer.source
             if source is not None and not immutable(unmaybe(source.kind)):
-                if source.slot in retained or source.slot in moved:raise _Unsupported
+                if source.slot in retained or source.slot in moved:
+                    raise _Unsupported("this loop transfer would both retain and move, or move twice, the same mutable value; alias-preserving shared loop carriers are not implemented for this merge",node=node,operation="loop state transfer",types=(("value",source.kind),),proof="single transfer of mutable identity")
                 moved.add(source.slot)
         replacements[marker]="\n".join(transfer.render(g) for transfer in destinations.values())
     body="\n".join(replacements.get(line,line) for line in body.split("\n"))

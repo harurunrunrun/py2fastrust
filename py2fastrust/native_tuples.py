@@ -179,7 +179,7 @@ def try_expression(generator,node,environment):
     if isinstance(node,ast.Tuple):
         values=[generator.expression(value,environment) for value in node.elts]
         if any(not _scalar(value.kind) for value in values):
-            raise _Unsupported
+            raise _Unsupported("this tuple payload needs value/identity or mutable-alias handling beyond the registered native scalar tuple fields; the required tuple storage/protocol adapter is not implemented",node=node,operation="tuple allocation",types=(("tuple",TupleType(tuple(value.kind for value in values))),),proof="tuple payload value and identity semantics")
         kind=TupleType(tuple(value.kind for value in values));_mark(generator,kind)
         return _Expression(tuple_code(value.code for value in values),kind,length=len(values))
     if isinstance(node,ast.Name):

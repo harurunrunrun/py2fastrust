@@ -49,7 +49,7 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
         program = build_program(source, options.filename, options.module_paths, options.include_modules)
         if options.include_modules:
             return TranspileResult(None, (Diagnostic(
-                "direct Rust generation for --include-module is not implemented",
+                "Cannot lower --include-module: native module bundling/linking for the requested modules (" + ", ".join(options.include_modules) + ") is not implemented; their Python namespaces and calls need direct Rust module adapters.",
                 options.filename, code="E006"),))
         diagnostics = []
         native = try_generate_native(source, options.filename, options.integer,
@@ -58,7 +58,7 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
                                      string_mode=options.string_mode)
         if native is None:
             return TranspileResult(None, tuple(diagnostics) or (Diagnostic(
-                "direct Rust generation is not implemented for this program",
+                "Cannot lower program analysis: native generation returned without a supported operation/storage path or a specific rejection context.",
                 options.filename, code="E006"),))
         source_map = program.source_map
         return TranspileResult(add_header(native, source, options, "native"), source_map=source_map, backend="native")

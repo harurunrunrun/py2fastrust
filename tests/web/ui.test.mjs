@@ -163,6 +163,27 @@ test('only the integer option is shown until advanced options are opened', () =>
   }, 'The closed advanced section must retain the converter defaults.');
 });
 
+test('conversion failures display the complete concrete cause and inert source text', () => {
+  const ui = setup();
+  ui.submit();
+  const message = "Cannot lower call 's.replace': the native callable/member adapter has no implementation for this callee. "
+    + "Types: receiver=str. Source: 's.replace(\"<img src=x>\",\"x\")'.";
+  ui.result(null, [{ filename: 'main.py', line: 2, column: 7, code: 'E006', message }]);
+  assert.equal(ui.element('diagnostics').hidden, false);
+  const rows = ui.element('diagnostic-list').children;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].textContent, `main.py:2:7 [E006]: ${message}`);
+  assert.equal(rows[0].children.length, 0, 'Source snippets must remain text, including HTML-like input.');
+  assert.equal(ui.element('convert').disabled, false, 'A missing native feature must allow another conversion.');
+  assert.equal(ui.workers[0].terminated, false);
+  ui.element('source').value = 'print(42)\n';
+  ui.element('source').emit('input');
+  ui.submit();
+  ui.result('fn main() { println!("42"); }\n');
+  assert.equal(ui.element('diagnostics').hidden, true);
+  assert.equal(ui.element('status').textContent, 'Conversion complete.');
+});
+
 test('sends source as data, blocks duplicate submissions, and reuses its worker', () => {
   const ui = setup();
   const worker = ui.workers[0];

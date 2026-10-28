@@ -24,7 +24,20 @@ from .references import DequeConstructor as _DequeConstructor, CANONICAL_REBINDA
 
 
 class _Unsupported(Exception):
-    pass
+    """A missing native operation or proof, with optional source context."""
+    def __init__(self, reason=None, *, node=None, operation=None, types=(), proof=None):
+        if isinstance(reason,ast.AST):
+            positional_node=reason
+            node=positional_node if node is None else node
+            reason=None
+            super().__init__(positional_node)
+        else:
+            super().__init__(*(()if reason is None else(reason,)))
+        self.reason=reason
+        self.node=node
+        self.operation=operation
+        self.operand_types=tuple(types)
+        self.proof=proof
 
 
 def _static_reference(value):
@@ -32,26 +45,8 @@ def _static_reference(value):
 
 
 def _direct_diagnostic(source, filename, error=None, node=None, unit=None):
-    """Locate the innermost AST operation whose direct lowering failed."""
-    node = getattr(error,"node",node)
-    traceback = getattr(error, "__traceback__", None)
-    while traceback is not None:
-        candidate = traceback.tb_frame.f_locals.get("node")
-        if isinstance(candidate, ast.AST) and hasattr(candidate, "lineno"):
-            node = candidate
-        traceback = traceback.tb_next
-    if node is None:
-        try:
-            tree = unit.tree if unit is not None else ast.parse(source, filename=filename)
-            node = tree.body[0] if tree.body else None
-        except (SyntaxError, ValueError, RecursionError):
-            pass
-    line = getattr(node, "lineno", getattr(error, "lineno", 1) or 1)
-    column = (getattr(node, "col_offset", 0) + 1 if node is not None else
-              getattr(error, "offset", 1) or 1)
-    construct = f" ({type(node).__name__})" if node is not None else ""
-    return Diagnostic("direct Rust generation is not implemented for this construct or type combination" + construct,
-                      filename, line, column, "E006")
+    from .native_diagnostics import direct_diagnostic
+    return direct_diagnostic(source,filename,error,node,unit)
 
 
 @dataclass(frozen=True)
@@ -616,8 +611,10 @@ class _Generator:
         kind=None
         for value in expressions:
             kind=value.kind if kind is None else join_types(kind,value.kind)
-            if kind is None:raise _Unsupported
-        if kind is None or not immutable(kind):raise _Unsupported
+            if kind is None:
+                raise _Unsupported("the expression alternatives have no compatible finite native result representation",types=tuple((f"alternative {i+1}",item.kind)for i,item in enumerate(expressions)),proof="finite expression-result type")
+        if kind is None or not immutable(kind):
+            raise _Unsupported("this expression-result handler only supports immutable values; native move/shared carriers for mutable branch or boolean-expression results are not implemented",types=tuple((f"alternative {i+1}",item.kind)for i,item in enumerate(expressions)),proof="expression-result storage preserving mutable identity")
         self.register_type(kind)
         return kind
 
@@ -1436,8 +1433,10 @@ class _Generator:
             return "", environment
         if isinstance(node, ast.FunctionDef):
             function = getattr(self.functions, "definitions", {}).get(node)
-            if self.function is not None or function is None or function.node is not node:
-                raise _Unsupported
+            if self.function is not None:
+                raise _Unsupported("a nested function needs a new callable object and captured lexical cells on each enclosing call; native closure/function-object binding is not implemented",node=node,operation=f"nested function definition {node.name!r}",proof="closure-cell lifetime and callable identity")
+            if function is None or function.node is not node:
+                raise _Unsupported("the function definition has no matching lexical native call plan",node=node,proof="definition/callable identity")
             environment[node.name] = function
             return "", environment
         if isinstance(node, ast.Return) and self.function is not None:
@@ -1501,7 +1500,7 @@ class _Generator:
             if not all(isinstance(target, ast.Name) and target.id not in self.iterating_lists for target in node.targets):
                 raise _Unsupported
             if not immutable(value.kind) and (not value.owned or len(node.targets) != 1):
-                raise _Unsupported
+                raise _Unsupported("these names would share one mutable container, but the selected storage requires a proved unique owner; alias-preserving shared mutable storage is not implemented for this assignment",node=node,types=(("value",value.kind),),proof="mutable alias identity and lifetime")
             name = self.temporary()
             assigned=self.coerce(value,value.kind) if isinstance(value.kind,(UnionType,NullableType)) and not value.owned else value.code
             lines = [f"let {name} = {assigned};"]
@@ -1851,13 +1850,21 @@ def _function_plans(tree, table, bits, generator_type=_Generator, unit=None):
             continue
         parameters = node.args
         arguments = parameters.posonlyargs + parameters.args + parameters.kwonlyargs
-        if (node.name in generator_type.BUILTINS | {"__builtins__", "__name__"}
-                or node.decorator_list or node.returns is not None or node.type_params
-                or parameters.vararg or parameters.kwarg
-                or any(argument.annotation is not None for argument in arguments)
-                or any(isinstance(value, (ast.Yield, ast.YieldFrom, ast.Await, ast.AsyncFor, ast.AsyncWith))
-                       for value in ast.walk(node))):
-            raise _Unsupported
+        if node.name in generator_type.BUILTINS | {"__builtins__", "__name__"}:
+            raise _Unsupported("a function definition replaces a builtin/reserved binding; native callable versioning for this definition is not implemented",node=node)
+        if node.decorator_list:
+            raise _Unsupported("decorator calls can replace the function object at definition time; native decorated-callable storage is not implemented",node=node.decorator_list[0],operation=f"decorator of function {node.name!r}")
+        if node.type_params:
+            raise _Unsupported("generic type-parameter objects and lazy bound/default evaluation are not implemented for native functions",node=node,operation=f"generic function definition {node.name!r}")
+        if node.returns is not None or any(argument.annotation is not None for argument in arguments):
+            raise _Unsupported("lazy function-annotation objects and their namespace evaluation are not implemented on this native function path",node=node,operation=f"annotations of function {node.name!r}")
+        for parameter,label in ((parameters.vararg,"positional"),(parameters.kwarg,"keyword")):
+            if parameter is not None:
+                raise _Unsupported(f"variadic {label} arguments require packing and binding {'a tuple'if label=='positional'else'a dictionary'} for {parameter.arg!r}; that native call-frame storage is not implemented",node=parameter,operation=f"signature of function {node.name!r}")
+        suspended=next((value for value in ast.walk(node)if isinstance(value,(ast.Yield,ast.YieldFrom,ast.Await,ast.AsyncFor,ast.AsyncWith))),None)
+        if suspended is not None:
+            raise _Unsupported("this suspension requires a resumable native generator/coroutine frame; function suspension is not implemented on this path",node=suspended)
+
         if unit is not None:
             signature=unit.signature_for(node)
         else:
@@ -1873,10 +1880,12 @@ def _function_plans(tree, table, bits, generator_type=_Generator, unit=None):
         # The shared call binder consumes these values and never reevaluates AST.
         default_nodes=[(slot.name,slot.expression)for slot in signature.defaults]
         for name, value in default_nodes:
+            if isinstance(value,(ast.List,ast.Set,ast.Dict)):
+                raise _Unsupported(f"default parameter {name!r} must retain one shared mutable object across calls; native definition-time default-cell storage is not implemented",node=value,operation=f"default of function {node.name!r}",proof="shared default-object identity")
             if isinstance(value,ast.Tuple):
                 if any(not isinstance(item,(ast.Tuple,ast.Load,ast.Constant,ast.BinOp,ast.UnaryOp,ast.operator,ast.unaryop))
                        or isinstance(item,ast.Constant) and type(item.value) not in {int,bool,str} for item in ast.walk(value)):
-                    raise _Unsupported
+                    raise _Unsupported(f"tuple default parameter {name!r} lacks a proved immutable, identity-preserving native representation for every element",node=value,operation=f"default of function {node.name!r}",proof="immutable default storage")
                 from .native_types import tuple_code
                 def tuple_default(item):
                     if isinstance(item,ast.Tuple):
@@ -1906,10 +1915,10 @@ def _function_plans(tree, table, bits, generator_type=_Generator, unit=None):
                                          ast.operator, ast.unaryop))
                    or isinstance(item, ast.Constant) and type(item.value) not in {int, bool}
                    for item in ast.walk(value)):
-                raise _Unsupported
+                raise _Unsupported(f"default parameter {name!r} needs definition-time expression evaluation and capture; calls, name lookups and their effects/exceptions cannot be folded away, and native initialization for this default is not implemented",node=value,operation=f"default of function {node.name!r}",proof="definition-time evaluation and capture")
             expression = default_generator.expression(value, {})
             if expression.kind not in {"int", "bool"} or expression.constant is None:
-                raise _Unsupported
+                raise _Unsupported(f"default parameter {name!r} is not a proved exception-free constant; native fallible default initialization is not implemented",node=value,operation=f"default of function {node.name!r}",types=(("default",expression.kind),))
             code = (str(expression.constant).lower() if expression.kind == "bool"
                     else default_generator.literal(expression.constant))
             defaults[name] = _Expression(code, expression.kind, expression.constant)
@@ -1957,10 +1966,10 @@ class _Specializations:
         for value in ast.walk(node):
             if isinstance(value, (ast.Name, ast.Subscript, ast.Attribute)):
                 if isinstance(value.ctx, (ast.Store, ast.Del)) and rooted(value):
-                    raise _Unsupported
+                    raise _Unsupported("this function argument borrows its caller's container for reads, but the function writes or deletes through that argument; shared mutable argument storage and alias-preserving call effects are not implemented on this ordinary-function path",node=value,proof="mutable function-argument identity and caller-visible effects")
             if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute):
                 if rooted(value.func.value) and value.func.attr not in {"count", "index", "copy"}:
-                    raise _Unsupported
+                    raise _Unsupported(f"method {value.func.attr!r} may mutate a borrowed container argument; this ordinary-function path has no alias-preserving mutable argument/call-effect representation",node=value,proof="mutable function-argument identity and caller-visible effects")
 
     def get(self, function, kinds, global_environment, global_names=None):
         # Function bodies can only read proved callable globals. Numeric or
@@ -1977,10 +1986,10 @@ class _Specializations:
         # Type-changing recursion is still recursion. Keep Python's frame and
         # RecursionError behavior instead of relying on Rust's host stack.
         if id(function.node) in self.active or len(self.active) >= 128:
-            raise _Unsupported
+            raise _Unsupported("a recursive ordinary function needs Python-compatible resumable frames and recursion-limit checks; that function-frame path is not implemented",operation=f"recursive call to {function.node.name!r}",types=tuple((f"argument {i+1}",kind)for i,kind in enumerate(kinds)),proof="recursive function frame state")
         # Further specialization growth needs a direct-generation implementation.
         if len(self.variants) + len(self.active) >= 128:
-            raise _Unsupported
+            raise _Unsupported("native function specialization exceeded its 128-variant budget; a finite shared call representation is not implemented for further variants",operation=f"specialization of function {function.node.name!r}",proof="bounded specialization growth")
         if any(kind not in {"int", "bool", "int_bool", "none", "list_int", "float", "str", "bytes"} and not isinstance(kind,(TupleType,ListType,UnionType,NullableType)) for kind in kinds):
             raise _Unsupported
         self.active.add(id(function.node))
@@ -2102,7 +2111,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         # families resolve the actual binding at each source position.
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in ScalarGenerator.BUILTINS-{"input"}-CANONICAL_REBINDABLES:
-                raise _Unsupported
+                raise _Unsupported(f"rebinding builtin name {node.id!r} invalidates existing static callable identities; native rebinding/versioning for this builtin is not implemented",node=node,operation=f"assignment to builtin {node.id!r}",proof="callable identity after rebinding")
         bits = 64 if integer == "i64" else 128
         constructors = {}
         if "collections" in trusted_imports:
