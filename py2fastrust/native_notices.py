@@ -7,6 +7,7 @@ from importlib.resources import files
 
 from .rust_pruning import _lex
 from .rust_layout import compact_blank_lines, strip_comments
+from .rust_cleanup import cleanup_rust_source
 
 
 def retain_native_notices(source: str) -> str:
@@ -45,4 +46,5 @@ def retain_native_notices(source: str) -> str:
         notices.append(licenses["UNICODE_LICENSE.txt"])
     suffix = "\n\n" + "\n\n".join(notices) if notices else ""
     code = strip_comments(source).strip()
+    code = cleanup_rust_source(code)
     return compact_blank_lines(code + suffix + "\n")

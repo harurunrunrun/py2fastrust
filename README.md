@@ -292,6 +292,10 @@ the project URL, the exact statement “Transpilation does not use generative AI
 the integer and string modes, the original source's SHA-256 hash, and the full selected license text.
 The original Python input, before import expansion, follows as line comments.
 Generated implementation code omits explanatory and documentation comments.
+Empty `else` blocks and unused scalar bindings are removed when their removal
+preserves Rust type inference and Python execution order. Expressions that still
+need evaluation keep their type context even when their result is discarded.
+Objects with uncertain destructor or borrow lifetimes retain their bindings.
 Required third-party attributions and license texts remain in a separate notice
 block when their code or data is included.
 Transpilation uses the compiler and runtime described above and does not call a generative-AI service.
