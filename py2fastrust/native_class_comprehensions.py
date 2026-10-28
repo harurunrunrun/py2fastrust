@@ -59,6 +59,11 @@ def _bind(model, plan, target, item, environment, record):
         name=model.resolved_name(plan,target)
         binding=record.targets[id(target)]
         model.contribute(binding,item,target)
+        captured=model.lexical.field_for(target)
+        if captured is not None:
+            model.contribute(captured[2],item,target)
+            binding=captured[2]
+            model.lexical.active.add(captured[0].scope)
         environment[name]=binding
         environment.definite.add(name)
         model.remember(plan,target,binding)
@@ -212,6 +217,8 @@ def _assign(emitter, target, value, bindings):
         name=emitter.model.resolved_name(emitter.plan,target)
         kind=emitter.kind(target)
         clearing="".join(f"{slot}=None;"for(other,other_kind),slot in bindings.items()if other==name and other_kind!=kind)
+        captured=emitter.model.lexical.emit_store(emitter,target,value)
+        if captured is not None:return captured
         return clearing+f"{bindings[(name,kind)]}=Some({emitter.coerce(value,kind,target)});"
     if isinstance(target,(ast.Tuple,ast.List)):
         setup,source=emitter.capture(value)
@@ -241,6 +248,11 @@ def emit(emitter, node):
         else:
             for child in target.elts:declare(child)
     for clause in record.semantic.clauses:declare(clause.target)
+    lexical_setup,lexical_context=emitter.model.lambda_cells.comprehension_initialize(emitter,node)
+    contexts=getattr(emitter,"comprehension_environments",None)
+    if contexts is None:contexts={};emitter.comprehension_environments=contexts
+    previous_context=contexts.get(lexical_context[0])if lexical_context is not None else None
+    if lexical_context is not None:contexts[lexical_context[0]]=lexical_context[1]
     declarations="".join(f"let mut {slot}:Option<{emitter.rust_type(kind)}>=None;"for(name,kind),slot in bindings.items())
     result=emitter.fresh()
     scopes=getattr(emitter,"comprehension_bindings",None)
@@ -262,6 +274,10 @@ def emit(emitter, node):
                 body+=before+reserve+";"+f"{result}.push({emitter.coerce(value,wanted.element,record.semantic.element)});"
             setup=""if index==0 else source.setup
             return setup+f"while let Some({current})={source.next}{{{body}}}"
-        code=first.setup+declarations+f"let mut {result}:Vec<{emitter.rust_type(wanted.element)}>=Vec::new();"+loop(0)+f"class_list({result})"
-    finally:scopes.pop()
+        code=first.setup+lexical_setup+declarations+f"let mut {result}:Vec<{emitter.rust_type(wanted.element)}>=Vec::new();"+loop(0)+f"class_list({result})"
+    finally:
+        scopes.pop()
+        if lexical_context is not None:
+            if previous_context is None:contexts.pop(lexical_context[0])
+            else:contexts[lexical_context[0]]=previous_context
     return Expression("{"+code+"}",wanted)

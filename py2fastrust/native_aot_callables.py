@@ -200,18 +200,41 @@ class CallableCells:
         definition=self.definition(self.model.functions[name])
         from .native_classes import Expression
         stored=dict(self.model.namespace.fields())[name]
-        value=Expression(f"ClassFunctionRef::F{definition}",AotFunctionType((definition,)))
+        value=Expression(self.reference_code(emitter,self.model.functions[name]),AotFunctionType((definition,)))
         return f"class_scope.globals.borrow_mut().value_{index}=Some({emitter.coerce(value,stored,node)});"
+
+    def reference_code(self,emitter,plan):return f"ClassFunctionRef::F{self.definition(plan)}"
+
+    def lambda_reference_code(self,emitter,plan,instance):
+        return f"ClassFunctionRef::F{self.definition(plan)}({instance})"
+
+    def call_pattern(self,definition):
+        result=f"ClassFunctionRef::F{definition}"
+        if self.model.lexical.parent_scope(self.plans[definition])or isinstance(self.plans[definition].node,ast.Lambda):result+="(class_selected_environment)"
+        return result
+
+    def reference_pattern(self,definition):
+        result=f"ClassFunctionRef::F{definition}"
+        if self.model.lexical.parent_scope(self.plans[definition])or isinstance(self.plans[definition].node,ast.Lambda):result+="(..)"
+        return result
+
+    def lexical_reference_code(self,emitter,plan,owner):
+        return f"ClassFunctionRef::F{self.definition(plan)}(({owner}).clone())"
+
+    def call_context_setup(self,emitter,target):return ""
 
     def runtime(self):
         if not self.used:return ""
         definitions=sorted(self.used)
-        if not any(self.model.lexical.parent_scope(self.plans[value])for value in definitions):
+        if not any(self.model.lexical.parent_scope(self.plans[value])or isinstance(self.plans[value].node,ast.Lambda)for value in definitions):
             return "#[derive(Clone,Copy,PartialEq,Eq)]\nenum ClassFunctionRef{"+",".join(f"F{value}"for value in definitions)+"}\n"
         variants=[];matches=[]
         for value in definitions:
             parent=self.model.lexical.parent_scope(self.plans[value])
-            if parent:
+            if isinstance(self.plans[value].node,ast.Lambda):
+                variants.append(f"F{value}(std::rc::Rc<{self.model.lambda_cells.payload_type(self.plans[value])}>)")
+                matches.append(f"(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(left,right)")
+            elif parent:
                 variants.append(f"F{value}(std::rc::Rc<{self.model.lexical.environment_type(parent)}>)")
                 matches.append(f"(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(left,right)")
             else:
@@ -222,7 +245,7 @@ class CallableCells:
 def binding_error(target,arguments,error):
     """Format the selected fixed signature's ordinary Python binding error."""
     signature=target.signature
-    name=getattr(target,"qualified_name",target.node.name)+"()"
+    name=getattr(target,"qualified_name",getattr(target.node,"name","<lambda>"))+"()"
     count=len(arguments.positional)
     maximum=len(signature.positional)
     defaults={slot.name for slot in signature.defaults}
@@ -298,18 +321,20 @@ def emit_call(emitter,node):
                 target=provider.plans[definition]
                 if definition in site.errors:result=error(site.errors[definition])
                 else:
-                    default_emitter=Emitter(emitter.model,target)
+                    default_emitter=emitter.model.emitter(target)
                     parent=emitter.model.lexical.parent_scope(target)
-                    if parent:default_emitter.lexical_environment_override="class_selected_environment"
+                    is_lambda=isinstance(target.node,ast.Lambda)
+                    if is_lambda:default_emitter.lambda_instance_override="class_selected_environment"
+                    if parent:default_emitter.lexical_environment_override="class_selected_environment.environment"if is_lambda else"class_selected_environment"
                     try:bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target))
                     except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
                     values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
-                    invocation=emitter.function_name(target)+"(class_scope.clone()"+(",class_selected_environment.clone()"if parent else"")+(","+",".join(values)if values else"")+")"
+                    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
                     from .native_class_calls import call
                     result=emitter.coerce(_Expression(call(emitter,invocation,target,node),shape(target.result)),wanted,node)
-                pattern=f"ClassFunctionRef::F{definition}"
-                if emitter.model.lexical.parent_scope(target):pattern+="(class_selected_environment)"
-                arms.append(pattern+"=>"+result)
+                context=provider.call_context_setup(emitter,target)
+                if context:result="{"+context+result+"}"
+                arms.append(provider.call_pattern(definition)+"=>"+result)
             if set(kind.definitions)!=provider.used:
                 arms.append('_=>unreachable!("callable binding contradicts finite target proof")')
             return "match "+code+"{"+",".join(arms)+"}"

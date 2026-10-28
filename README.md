@@ -177,8 +177,10 @@ Recursive functions use typed compiled frames. Finite source-function values
 retain the selected definition across arguments, results, containers and
 rebinding. Named nested functions capture typed environments belonging to each
 enclosing invocation, including shared mutable values, `nonlocal` writes and
-definition-time defaults. Escaping lambdas, repeated nested definition instances
-and cyclic closure ownership still require implementation.
+definition-time defaults. Escaping lambdas create a fresh function instance and
+default values on each evaluation, including inside list comprehensions.
+Repeated named nested definitions and cyclic closure ownership still require
+implementation.
 Python names can change type through distinct typed Rust slots. Compatible
 branches and loops merge proved kinds; finite boolean/integer unions use a
 small stack enum. ASCII string indexing accesses bytes directly. Opt-in Unicode

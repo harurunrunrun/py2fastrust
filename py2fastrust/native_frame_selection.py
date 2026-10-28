@@ -73,9 +73,14 @@ def _semantic_requirements(unit,analysis,targets):
     writes=any(binding.owner==0 and binding.role not in {'load','parameter'}
                and execution_scope(binding.scope)not in {0,None}
                and execution_scope(binding.scope)in reached for binding in unit.bindings)
+    from .native_lambda_cells import inline_definitions
+    inline=inline_definitions(unit,analysis)
+    signatures=((unit.ordinal(node),unit.signature_for(node))for node in nodes.values()
+                if id(node)in unit.function_signatures)
     defaults=any(slot.expression is not None and not _definition_literal(slot.expression)
                  and execution_scope(slot.definition_scope)in reached
-                 for signature in unit.function_signatures.values()for slot in signature.defaults)
+                 for definition,signature in signatures if definition not in inline
+                 for slot in signature.defaults)
     return (('module binding writes',)if writes else())+(('definition-time defaults',)if defaults else())
 
 
@@ -101,6 +106,8 @@ def select_frames(unit):
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
     references=prove(unit,analysis,targets)
     if requires_environments(unit,analysis,targets):reasons+=('lexical closure environments',)
+    from .native_lambda_cells import requires_instances
+    if requires_instances(unit,analysis,targets):reasons+=("escaping lambda instances",)
     from .native_aot_callables import requires_cells
     if requires_cells(unit,analysis,references):reasons+=("first-class AOT function references",)
     if not reasons:references=None

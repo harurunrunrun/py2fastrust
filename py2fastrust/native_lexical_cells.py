@@ -33,12 +33,18 @@ def requires_environments(unit,analysis,targets):
 def own_return_values(unit,node):
     """Nested returns do not determine an enclosing function's result ABI."""
     if unit is None:
+        if isinstance(node,ast.Lambda):
+            yield node.body
+            return
         pending=list(node.body)
         while pending:
             value=pending.pop()
             if isinstance(value,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):continue
             if isinstance(value,ast.Return):yield value.value
             pending.extend(child for child in ast.iter_child_nodes(value)if isinstance(child,ast.stmt))
+        return
+    if isinstance(node,ast.Lambda):
+        yield node.body
         return
     scope=unit.scope_for(node).ordinal
     for value in ast.walk(node):
@@ -50,7 +56,7 @@ class LexicalCells:
         from .native_classes import Cell
         self.model=model
         self.unit=model.unit
-        self.bindings={binding.node:binding for binding in self.unit.bindings}if self.unit else{}
+        self.bindings={binding.node:binding for binding in model.iter_bindings()}
         self.plans={}
         self.scope_plans={0:model.module}
         self.parents={0:None}
@@ -79,25 +85,35 @@ class LexicalCells:
             if not isinstance(plan.node,ast.FunctionDef):continue
             self.plans[self.definition(plan)]=plan
             self.scope_plans[self.scope(plan)]=plan
-        nodes={self.unit.ordinal(node):node for node in ast.walk(self.unit.tree)}
-        ast_parents={id(child):parent for parent in ast.walk(self.unit.tree)for child in ast.iter_child_nodes(parent)}
+            binding=self.bindings[self.definition(plan)]
+            self.parents[self.scope(plan)]=0 if self.unit.scopes[binding.owner].kind=="class"else binding.owner
+        nodes={self.unit.ordinal(node):node for node in self.model.iter_nodes()}
+        ast_parents={id(child):parent for parent in self.model.iter_nodes()for child in ast.iter_child_nodes(parent)}
         pending=[(ordinal,node)for ordinal,node in nodes.items()
-                 if isinstance(node,ast.FunctionDef)and ordinal not in self.plans]
+                 if isinstance(node,(ast.FunctionDef,ast.Lambda))and ordinal not in self.plans
+                 and id(node)in self.unit.function_signatures]
         while pending:
             remaining=[]
             for ordinal,node in pending:
                 binding=self.bindings.get(ordinal)
-                owner=binding.owner if binding else 0
+                owner=binding.owner if binding else self.unit.nodes[ordinal].scope
+                if isinstance(node,ast.Lambda):
+                    if not self.model.lambda_cells.register_scope(self,owner):
+                        remaining.append((ordinal,node));continue
+                    self.model.lambda_cells.register(self,ordinal,node,owner)
+                    continue
                 if self.unit.scopes[owner].kind!='function':
                     raise ClassUnsupported(node,'this function definition belongs to an unimplemented class/dynamic namespace',proof='canonical lexical callable ownership')
                 if owner not in self.scope_plans:remaining.append((ordinal,node));continue
                 plan=self.model.function(node)
                 self.plans[ordinal]=plan
                 self.scope_plans[self.scope(plan)]=plan
+                self.parents[self.scope(plan)]=owner
             if len(remaining)==len(pending):
                 raise ClassUnsupported(remaining[0][1],'the enclosing lexical function has no compiled frame plan',proof='lexical frame ancestry')
             pending=remaining
         for definition,plan in self.plans.items():
+            if isinstance(plan.node,ast.Lambda):continue
             binding=self.bindings[definition]
             owner=binding.owner
             if self.unit.scopes[owner].kind=='class':owner=0
@@ -122,17 +138,20 @@ class LexicalCells:
             cached=getattr(plan,'qualified_name',None)
             if cached is not None:return cached
             parent=self.parents[self.scope(plan)]
-            if plan.owner is not None:result=plan.owner.node.name+'.'+plan.node.name
-            elif parent:result=qualify(self.scope_plans[parent])+'.<locals>.'+plan.node.name
-            else:result=plan.node.name
+            while parent is not None and self.unit.scopes[parent].kind=="comprehension":parent=self.parents[parent]
+            name=getattr(plan.node,'name','<lambda>')
+            if plan.owner is not None:result=plan.owner.node.name+'.'+name
+            elif parent:result=qualify(self.scope_plans[parent])+'.<locals>.'+name
+            else:result=name
             plan.qualified_name=result
             return result
         for plan in self.plans.values():qualify(plan)
-        for binding in self.unit.bindings:
+        for binding in self.model.iter_bindings():
             key=binding.owner,binding.name
             if key in self.definitions and binding.role not in {'load','definition'}:
                 self.boundary_writes.add(key)
-            if binding.owner==0 or self.unit.scopes[binding.owner].kind!='function':continue
+            if binding.owner==0 or self.unit.scopes[binding.owner].kind not in {'function','comprehension'}:continue
+            if binding.owner not in self.scope_plans:continue
             if self.execution_scope(binding.scope)==binding.owner or key in self.definitions:continue
             environment=self.environment(binding.owner)
             environment.fields.setdefault(binding.name,self.Cell())
@@ -142,11 +161,14 @@ class LexicalCells:
             parent=environment.parent
             while parent not in {0,None}:
                 self.environment(parent)
-                parent=self.parents[parent]
+                parent=self.environment(parent).parent
 
     def environment(self,scope):
         if scope not in self.environments:
-            self.environments[scope]=EnvironmentShape(scope,self.scope_plans[scope],self.parents.get(scope,0))
+            plan=self.scope_plans[scope]
+            parent=self.parents.get(scope,0)
+            if isinstance(plan.node,ast.Lambda)and self.scope(plan)==scope:parent=self.model.lambda_cells.capture_parent(plan,parent)
+            self.environments[scope]=EnvironmentShape(scope,plan,parent)
         return self.environments[scope]
 
     def binding(self,node):return self.bindings.get(self.unit.ordinal(node))
@@ -222,9 +244,13 @@ class LexicalCells:
             for cell in environment.fields.values():
                 if cell.root().tag is None:cell.root().tag='int'
 
-    def parent_scope(self,plan):return self.parents.get(self.scope(plan),0)
+    def parent_scope(self,plan):
+        parent=self.parents.get(self.scope(plan),0)
+        return self.model.lambda_cells.capture_parent(plan,parent)if isinstance(plan.node,ast.Lambda)else parent
 
     def expression_environment(self,emitter,scope):
+        overrides=getattr(emitter,"comprehension_environments",{})
+        if scope in overrides:return overrides[scope]
         own=self.scope(emitter.plan)
         if own==scope and own in self.environments:return 'class_lexical_environment'
         current=self.parent_scope(emitter.plan)
@@ -277,7 +303,8 @@ class LexicalCells:
         if target is None:return None
         parent=self.parent_scope(target);definition=self.definition(target)
         owner=self.expression_environment(emitter,parent)
-        code=f'if ({owner}).defined_{definition}.get(){{Ok(ClassFunctionRef::F{definition}(({owner}).clone()))}}else{{Err({_string(self.error_message(emitter,node))}.to_owned())}}'
+        reference=self.model.callable_cells.lexical_reference_code(emitter,target,owner)
+        code=f'if ({owner}).defined_{definition}.get(){{Ok({reference})}}else{{Err({_string(self.error_message(emitter,node))}.to_owned())}}'
         value=Expression(emitter.at(code,node),AotFunctionType((definition,)))
         return Expression(emitter.coerce(value,wanted,node),wanted)
 
@@ -360,8 +387,11 @@ class LexicalCells:
         def targets(kind):
             if getattr(kind,'_native_function_reference',False):
                 for definition in kind.definitions:
-                    parent=self.parent_scope(self.plans[definition])
-                    if parent:yield('environment',parent)
+                    target=self.plans[definition]
+                    if isinstance(target.node,ast.Lambda):yield("lambda",definition)
+                    else:
+                        parent=self.parent_scope(target)
+                        if parent:yield("environment",parent)
             elif isinstance(kind,InstanceType):yield('object',kind.name)
             elif isinstance(kind,(NullableType,MaybeType)):yield from targets(kind.value)
             elif isinstance(kind,ListType):yield from targets(kind.element)
@@ -379,14 +409,14 @@ class LexicalCells:
                 edges[node].update(targets(shape(cell)))
         for name,owner in self.model.classes.items():
             edges[('object',name)]={target for field in owner.fields.values()for target in targets(shape(field.cell))}
+        self.model.lambda_cells.add_lifetime_edges(edges,targets)
         done=set();visiting=set()
         def visit(node):
             if node in visiting:
-                owner=next(iter(self.environments.values()))
-                raise ClassUnsupported(owner.plan.node,'these captured object/function fields can form a reference cycle; cycle-aware closure lifetime collection is not implemented, so an invocation environment cannot safely be retained by Rc alone',proof='cycle-safe lexical environment ownership')
+                owner=next(iter(self.environments.values()),None)
+                raise ClassUnsupported(owner.plan.node if owner is not None else self.model.tree,'these captured object/function fields can form a reference cycle; cycle-aware closure lifetime collection is not implemented, so an invocation environment cannot safely be retained by Rc alone',proof='cycle-safe lexical environment ownership')
             if node in done:return
             visiting.add(node)
             for target in edges.get(node,()):visit(target)
             visiting.remove(node);done.add(node)
-        if self.environments:
-            for node in edges:visit(node)
+        for node in edges:visit(node)

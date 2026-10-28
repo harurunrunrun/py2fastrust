@@ -188,7 +188,7 @@ class FunctionPlan:
 
     @property
     def scope(self):
-        return self.node.name if isinstance(self.node,(ast.FunctionDef,ast.ClassDef))else "<module>"
+        return self.node.name if isinstance(self.node,(ast.FunctionDef,ast.ClassDef))else "<lambda>"if isinstance(self.node,ast.Lambda)else "<module>"
 
     def name(self, value):
         return mangle(value, self.owner.node.name if self.owner else None)
@@ -248,10 +248,18 @@ class Model:
         from .native_class_globals import Namespace
         self.namespace=Namespace(self)
         self.discover()
+        from .native_lambda_cells import LambdaCells
+        self.lambda_cells=LambdaCells(self)
         from .native_lexical_cells import LexicalCells
         self.lexical=LexicalCells(self)
         from .native_aot_callables import CallableCells
         self.callable_cells=CallableCells(self)
+
+    def emitter(self,plan):return Emitter(self,plan)
+
+    def iter_nodes(self):return ast.walk(self.tree)
+
+    def iter_bindings(self):return iter(self.unit.bindings)if self.unit is not None else iter(())
 
     def resolved_name(self, plan, node):
         if self.unit is not None:return self.unit.name_for(node)
@@ -337,17 +345,18 @@ class Model:
         return result.cell
 
     def function(self, node, owner=None):
+        name=getattr(node,"name","<lambda>")
         if node.args.vararg or node.args.kwarg:
-            raise ClassUnsupported(node,"variadic method/function arguments need tuple/dictionary packing and native argument-frame binding; that storage is not implemented on the class path",operation=f"signature of function {node.name!r}")
-        if node.decorator_list:
-            raise ClassUnsupported(node.decorator_list[0],"decorator calls can replace the method/function object at definition time; that native decorated-callable capture is not implemented on the class path",operation=f"decorator of function {node.name!r}")
-        if node.returns is not None:
-            raise ClassUnsupported(node.returns,"lazy return-annotation objects and their namespace evaluation are not implemented on the class path",operation=f"annotation of function {node.name!r}")
-        if node.type_params:
-            raise ClassUnsupported(node,"generic type-parameter objects and lazy bound/default evaluation are not implemented on the class path",operation=f"generic function definition {node.name!r}")
+            raise ClassUnsupported(node,"variadic method/function arguments need tuple/dictionary packing and native argument-frame binding; that storage is not implemented on the class path",operation=f"signature of function {name!r}")
+        if getattr(node,"decorator_list",()):
+            raise ClassUnsupported(node.decorator_list[0],"decorator calls can replace the method/function object at definition time; that native decorated-callable capture is not implemented on the class path",operation=f"decorator of function {name!r}")
+        if getattr(node,"returns",None)is not None:
+            raise ClassUnsupported(node.returns,"lazy return-annotation objects and their namespace evaluation are not implemented on the class path",operation=f"annotation of function {name!r}")
+        if getattr(node,"type_params",()):
+            raise ClassUnsupported(node,"generic type-parameter objects and lazy bound/default evaluation are not implemented on the class path",operation=f"generic function definition {name!r}")
         arguments = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
         if any(value.annotation is not None for value in arguments):
-            raise ClassUnsupported(node,"lazy parameter-annotation objects and their namespace evaluation are not implemented on the class path",operation=f"annotations of function {node.name!r}")
+            raise ClassUnsupported(node,"lazy parameter-annotation objects and their namespace evaluation are not implemented on the class path",operation=f"annotations of function {name!r}")
         plan = FunctionPlan(node, len(self.plans), owner)
         if self.unit is not None:
             signature=self.unit.signature_for(node)
@@ -453,6 +462,12 @@ class Model:
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())))
 
+    def analyze_body(self,plan,environment):
+        if isinstance(plan.node,ast.Lambda):
+            self.contribute(plan.result,self.expression(plan,plan.node.body,environment),plan.node.body)
+            return None
+        return self.block(plan,plan.node.body,environment)
+
     def infer_until_stable(self):
         for _ in range(96):
             before = self.snapshot()
@@ -466,7 +481,7 @@ class Model:
                 self.lexical.seed_arguments(plan)
                 for name, value in plan.arguments.items():
                     self.canonical_local(plan, name, value)
-                remaining = self.block(plan, plan.node.body, environment)
+                remaining = self.analyze_body(plan,environment)
                 if remaining is not None:
                     merge(plan.result, Cell("none"), plan.node)
             if self.snapshot() == before:
@@ -507,7 +522,7 @@ class Model:
             if plan.reachable:
                 self.lexical.seed_arguments(plan)
                 global_names={name:value for name,value in self.global_symbols.items() if name not in plan.declared}
-                self.block(plan, plan.node.body, {**global_names, **plan.arguments})
+                self.analyze_body(plan,{**global_names, **plan.arguments})
         from .native_class_storage import validate_instance_graph
         validate_instance_graph(self)
         for owner in self.classes.values():
@@ -531,6 +546,7 @@ class Model:
         validate(cell,node,self.integer,field_value=field_value)
 
     def expression(self, plan, node, environment):
+        if isinstance(node,ast.Lambda):return self.lambda_cells.value(plan,node,environment)
         if isinstance(node,ast.ListComp):
             from .native_class_comprehensions import analyze
             return analyze(self,plan,node,environment)
@@ -1299,11 +1315,13 @@ class Emitter:
         result={name:self.literal_value(value,shape(callee.default_cells[name]),callee.defaults[name])
                 for name,value in callee.default_literals.items()}
         from .native_class_globals import default_read
+        if isinstance(callee.node,ast.Lambda):default_read=lambda emitter,plan,name:self.model.lambda_cells.default_read(emitter,plan,name)
         result.update({name:default_read(self,callee,name)for name in callee.defaults if name not in result})
         return result
 
     def expression(self, node):
         wanted = self.kind(node)
+        if isinstance(node,ast.Lambda):return self.model.lambda_cells.emit_value(self,node)
         if isinstance(node,ast.ListComp):
             from .native_class_comprehensions import emit
             return emit(self,node)
@@ -2023,7 +2041,10 @@ class Emitter:
         return "\n".join(data+references)
 
     def generate(self):
-        body=self.statements(self.plan.node.body)
+        if isinstance(self.plan.node,ast.Lambda):
+            value=self.expression(self.plan.node.body)
+            body="return Ok("+self.coerce(value,shape(self.plan.result),self.plan.node.body)+");"
+        else:body=self.statements(self.plan.node.body)
         parameters=[];initial=[]
         for i,name in enumerate(self.plan.parameters+self.plan.keyword_only):
             kind=shape(self.plan.arguments[name]);argument=f"class_argument_{i}"
@@ -2172,6 +2193,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
             if owner.used:
                 for value in owner.fields.values():add_kind(shape(value.cell))
         lexical_layouts=model.lexical.runtime(emitters[0])
+        lambda_layouts=model.lambda_cells.runtime(emitters[0])
+        if lambda_layouts:lexical_layouts+=("\n"if lexical_layouts else"")+lambda_layouts
         layouts=(lexical_layouts+"\n"if lexical_layouts else"")+model.callable_cells.runtime()+"\n"+"\n".join(union_declaration(kind,emitters[0].rust_type)for kind in unions)+"\n"+layouts
     except (SyntaxError,_Unsupported,RecursionError)as error:
         if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))

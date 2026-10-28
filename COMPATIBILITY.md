@@ -155,8 +155,8 @@ these result paths. Custom class truth protocols remain unfinished.
 Non-escaping lambdas support immediate calls and `sort`/`sorted` key callbacks.
 Definition-time immutable defaults run once, parameters retain their own lexical
 scope, and free bindings are read at invocation. Keys are computed once per item
-before stable sorting, including with `reverse=True`. Mutable arguments/defaults,
-variadic packing, escaping lambdas and callbacks observing the list currently
+before stable sorting, including with `reverse=True`. Mutable arguments/defaults
+on this eager path, variadic packing and callbacks observing the list currently
 being sorted remain unfinished and produce a specific diagnostic.
 
 Proved finite value alternatives share canonical types across ordinary binding
@@ -394,8 +394,17 @@ binding errors retain nested qualified function names. Unentered lexical scopes
 do not force frame selection or evaluate dormant defaults. Reexecuting a nested
 definition in one enclosing invocation, non-definition writes to that callable
 binding, and closure/object graphs requiring cycle collection remain required
-work and produce specific diagnostics. Escaping lambdas are not covered by this
-named-function implementation.
+work and produce specific diagnostics.
+
+Escaping lambdas use their original AST and official signature/body scopes.
+Each expression evaluation creates a fresh typed function instance with its own
+captured default values. Lexical captures and list-comprehension targets use
+shared cells, preserving late binding, nested comprehension lifetimes and
+first-iterable evaluation order. Official free-symbol information selects the
+environment actually retained by a lambda. Named functions and lambdas share
+the same finite callable carrier and direct Rust dispatch. Generic callbacks
+for `sort`, `sorted`, `map` and `filter` on the class/frame path, imported lambda
+lifetimes, reflection and cycle collection remain required work.
 
 Class values, method signatures, fields, and list elements use the shared
 scalar, `TupleType`, `ListType`, `MaybeType`, `NullableType`, and `UnionType`
