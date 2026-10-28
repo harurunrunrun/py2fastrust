@@ -10,7 +10,7 @@ import unittest
 
 from py2fastrust import TranspileOptions, transpile
 from py2fastrust.provenance import PROJECT_URL
-from py2fastrust.settings import source_directives
+from py2fastrust.settings import apply_source_options, source_directives
 
 
 class SourceOptionsTests(unittest.TestCase):
@@ -87,10 +87,19 @@ class SourceOptionsTests(unittest.TestCase):
             library.mkdir()
             (library / "included.py").write_text('value=17\n')
             source = '# py2fastrust: --module-path "local library" --include-module included\nexec("import included\\nprint(included.value)")\n'
-            result = transpile(source, TranspileOptions(filename=str(root / "main.py"),
-                               module_paths=(root / "wrong",), include_modules=("missing",)))
-            self.assertTrue(result.success, result.diagnostics)
-            self.assertIn('included.py', result.rust_source)
+            options = TranspileOptions(filename=str(root / "main.py"),
+                                       module_paths=(root / "wrong",), include_modules=("missing",))
+            resolved = apply_source_options(options, source_directives(source, options.filename))
+            self.assertEqual(resolved.module_paths, (library,))
+            self.assertEqual(resolved.include_modules, ("included",))
+            result = transpile(source, options)
+            self.assertFalse(result.success)
+            self.assertIsNone(result.rust_source)
+            self.assertEqual(len(result.diagnostics), 1)
+            self.assertEqual(result.diagnostics[0].code, "E006")
+            self.assertIn("--include-module", result.diagnostics[0].message)
+            self.assertIn("included", result.diagnostics[0].message)
+            self.assertNotIn("missing", result.diagnostics[0].message)
 
     def test_original_source_preserves_non_newline_unicode_separators(self):
         source = '# ordinary\x85comment\vwith\u2028separators\nprint("a\u2028b")\n'
