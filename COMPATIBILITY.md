@@ -271,6 +271,33 @@ control-flow planner still needs migration to the shared semantic graph. Nullabl
 mutable handles and identity-sensitive floating-point container comparisons remain
 outside this direct proof.
 
+Synchronous class-path list comprehensions use the common producer and generator
+plans to emit typed loops. Their first iterable is captured in the enclosing
+namespace; targets, later iterables, filters and elements use an isolated logical
+scope. Reused target names have separate typed versions, zero-iteration targets
+do not escape, and calls retain the callee's lexical namespace. List iteration
+loads one shared element handle at a time and releases its borrow before a
+callback or compiled function call. Class-path set/dict comprehensions, escaping
+generators, async clauses, walrus assignment and arbitrary iterator protocols
+remain unfinished.
+
+Nested class-path lists retain shared handles at each mutable level. Fresh list
+expressions allocate distinct containers; copy, concatenation, repetition,
+extension and in-place repetition preserve inner identity. Existing canonical
+list methods operate on these handles, including recursive built-in equality,
+search and supported lexicographic list/tuple sorting. Instance equality uses
+default object identity rather than structural field equality. Recursive storage
+layouts and possible instance/list ownership cycles are conservatively rejected
+until allocation-cycle proofs or cycle-aware collection exist. Mixed mutable
+alternative carriers, custom comparison protocols and floating element identity
+rules remain explicit boundaries.
+
+The shared frontend supplements Python 3.14's inlined list/set/dict tables with
+logical comprehension scopes. Official table objects and existing scope IDs are
+retained. Targets belong to the appended scopes, while free reads, walrus writes,
+class namespaces and nested lambda/generator scopes retain their lexical owners.
+This metadata does not itself implement an otherwise unsupported language feature.
+
 Exact builtin list methods share typed signatures and operation lowering across
 owned vectors and shared class-scope handles: `append`, list-to-list `extend`,
 `clear`, `reverse`, `copy`, `sort`, `index`, `count`, and `pop`. Receiver names,

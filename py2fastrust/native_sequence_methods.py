@@ -7,7 +7,8 @@ from .native_sequence_plans import element_type
 def lower(g,storage,method,bound,node,environment,*,sort_key=None):
     """Consume already captured explicit values; borrow contents at the operation."""
     element=storage.element
-    if not immutable(element):
+    shared_kind=getattr(g,"shared_element",lambda kind:False)
+    if not immutable(element)and not(storage.shared and shared_kind(element)):
         raise _Unsupported("this sequence operation has mutable element values, but its element ownership/alias-preserving storage adapter is not implemented",node=node,types=(("receiver",storage.kind),("element",element)),proof="mutable element identity across sequence operations")
     name=method.name
     if name=="append":
@@ -19,7 +20,7 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
         if not list_type(value.kind):
             raise _Unsupported("list.extend currently consumes a resolved native list; iteration and ordered element conversion for this other iterable representation are not implemented on the shared sequence path",node=node,types=(("receiver",storage.kind),("iterable",value.kind)),proof="ordered iterable consumption and element conversion")
         source=element_type(value.kind)
-        if not immutable(source):
+        if not immutable(source)and not(storage.shared and shared_kind(source)):
             raise _Unsupported("list.extend would copy mutable elements whose shared Python identities must be retained; the identity-preserving element adapter is not implemented for these source/destination storages",node=node,types=(("receiver",storage.kind),("iterable",value.kind)),proof="mutable element sharing during extend")
         if not storage.shared and value.owned:
             if source==element:
@@ -50,11 +51,14 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
     elif name in {"index","count"}:
         from .native_list_methods import _supported
         needle=bound["value"]
-        if not _supported(element)or not _supported(needle.kind):
+        custom_equal=getattr(g,"sequence_equal",None)if storage.shared else None
+        if custom_equal is None and (not _supported(element)or not _supported(needle.kind)):
             raise _Unsupported(f"list.{name} needs Python equality for this element/needle pair, including their identity or special-method behavior; that equality adapter is not implemented",node=node,types=(("element",element),("needle",needle.kind)),proof="Python sequence-search equality and identity behavior")
         item=g.temporary()
         if isinstance(element,EmptyType):equal=f"match *{item} {{}}"
         elif isinstance(needle.kind,EmptyType):equal=f"match {needle.code} {{}}"
+        elif custom_equal is not None:
+            equal=custom_equal(_Expression(f"(*{item}).clone()",element),needle,node)
         else:
             from .native_tuples import _equal
             equal=_equal(g,_Expression(f"(*{item})",element,owned=False),needle)

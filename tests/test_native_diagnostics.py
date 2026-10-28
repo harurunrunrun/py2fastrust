@@ -93,7 +93,6 @@ class NativeDiagnosticTests(unittest.TestCase):
 
     def test_comprehension_context_reports_element_shape_and_selected_class_path(self):
         forms=(
-            ('[[] for i in range(n)]','list comprehension','list[list[unresolved element]]'),
             ('{1 for i in range(n)}','set comprehension','set[int]'),
             ('{i:[] for i in range(n)}','dictionary comprehension','dict[unresolved, list[unresolved element]]'),
             ('(i for i in range(n))','generator expression','iterator[unresolved]'),

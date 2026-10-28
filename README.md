@@ -192,12 +192,15 @@ All integer modes also support character-based string slicing,
 `strip`/`lstrip`/`rstrip`, `count`, and `join` over proved string streams.
 
 Ordinary class instances can use concrete Rust structs, typed fields and
-methods, and shared flat scalar lists. Recursive methods compile to Rust
+methods, and shared lists with proved scalar, tuple, instance or nested-list
+elements. Shallow copies and repetition retain inner aliases. Synchronous list
+comprehensions on this path generate typed loops with isolated target bindings.
+Recursive methods compile to Rust
 futures with an iterative call executor and a logical Python recursion limit.
 This initial class implementation has a separate proof boundary; integrating
 it with common semantic lowering remains required work. Inheritance,
-descriptors, metaclasses, escaped methods, cyclic field ownership, and unproved
-container shapes are not yet implemented.
+descriptors, metaclasses, escaped methods, cyclic ownership, heterogeneous
+mutable alternatives and unproved container protocols are not yet implemented.
 
 If the implementation cannot establish a supported direct representation, it
 reports the missing construct or type combination. This currently includes

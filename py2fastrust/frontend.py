@@ -208,46 +208,103 @@ def _scope_metadata(table):
 
 
 def _source_metadata(tree, scopes):
+    # CPython 3.14 inlines list/set/dict comprehensions in its physical symbol
+    # tables. Keep the official IDs, and append logical binding scopes instead
+    # of pretending that an iteration target writes the enclosing namespace.
+    scopes=list(scopes)
+    official_count=len(scopes)
+    physical_parents=tuple(scope.parent for scope in scopes)
     nodes, bindings, ordinals, definitions, names = [], [], {}, {}, {}
+    pending_bindings=[]
     matched = {0}
     symbols = [{value.name: value for value in scope.symbols} for scope in scopes]
+    inline_targets={}
+    generator_scopes=set()
+    declarations={}
+    def physical_scope(scope):
+        while scope>=official_count:scope=scopes[scope].parent
+        return scope
+    def enclosing_owner(scope,name,class_cell=False):
+        while scope is not None:
+            current=scopes[scope]
+            symbol=symbols[scope].get(name)
+            if current.kind=="class":
+                if name in {"__class__","__classdict__"}:
+                    # Bare inline class-body reads are global. Only an
+                    # official free-variable closure captures the class cell.
+                    return scope if class_cell else 0
+            elif current.kind=="comprehension":
+                if symbol and symbol.has("local"):return scope
+            elif scope==0:return 0
+            elif symbol:
+                if symbol.has("global"):return 0
+                if name in {"__class__","__classdict__"}and (symbol.has("free")or symbol.has("nonlocal")):
+                    class_cell=True
+                if (symbol.has("local")or symbol.has("parameter"))and not symbol.has("free_class"):
+                    # The physical table may report a comp-only name as a
+                    # local even though another comprehension sees it global.
+                    if name not in inline_targets.get(scope,())or name in declarations.get(scope,()):return scope
+            scope=current.parent
+        return 0
     def scope_owner(scope, name):
         symbol = symbols[scope].get(name)
+        if scopes[scope].kind=="comprehension":
+            if symbol and symbol.has("local"):return scope
+            return enclosing_owner(scopes[scope].parent,name)
         if symbol and symbol.has("global"):
             return 0
         if symbol and (symbol.has("free") or symbol.has("nonlocal")):
-            parent = scopes[scope].parent
-            while parent is not None:
-                candidate = symbols[parent].get(name)
-                if scopes[parent].kind == "class" and name in {"__class__","__classdict__"}:
-                    return parent
-                if candidate and not candidate.has("free_class") and (candidate.has("local") or candidate.has("parameter")):
-                    return parent
-                parent = scopes[parent].parent
+            return enclosing_owner(scopes[scope].parent,name,class_cell=name in {"__class__","__classdict__"})
+        if name in inline_targets.get(scope,())and name not in declarations.get(scope,()):
+            return enclosing_owner(scopes[scope].parent,name)
         return scope
     private_owner = [None]
-    def bind(name, role, scope, ordinal):
+    def bind(name, role, scope, ordinal, namespace=None):
         name = private_name(name, private_owner[0])
-        bindings.append(Binding(name, role, scope, scope_owner(scope, name), ordinal))
+        pending_bindings.append((name,role,scope,ordinal,namespace))
     def child_scope(node, parent, name, kind):
-        candidates = [scope.ordinal for scope in scopes if scope.ordinal not in matched
+        candidates = [scope.ordinal for scope in scopes[:official_count] if scope.ordinal not in matched
                       and scope.name == name and scope.kind == kind
                       and scope.line == getattr(node, "lineno", 1)]
         # Hidden annotation/type-parameter scopes can sit between the lexical
         # definition and its function body in the official table.
         def descendant(index):
             while index is not None:
-                if index == parent:return True
-                index = scopes[index].parent
+                if index == physical_scope(parent):return True
+                index = physical_parents[index]
             return False
         candidates = [index for index in candidates if descendant(index)]
         if not candidates:
             return parent
+        def distance(index):
+            index=physical_parents[index];length=0
+            while index is not None and index!=physical_scope(parent):
+                index=physical_parents[index];length+=1
+            return length
+        candidates.sort(key=lambda index:(distance(index),index))
         result = candidates[0]
         matched.add(result)
         definitions[id(node)] = result
+        if parent>=official_count:
+            scopes[result]=replace(scopes[result],parent=parent)
         return result
-    def visit(node, scope=0, defaults_scope=None, first_iter_scope=None, annotation_scope=None):
+    def inline_scope(node,parent):
+        targets={private_name(value.id,private_owner[0]):None
+                 for generator in node.generators for value in ast.walk(generator.target)
+                 if isinstance(value,ast.Name)}
+        kind=type(node).__name__.lower()
+        index=len(scopes)
+        target_symbols=tuple(Symbol(name,frozenset({"local","assigned","comp_iter"}))for name in targets)
+        scopes.append(Scope(index,parent,kind,"comprehension",node.lineno,target_symbols,()))
+        symbols.append({symbol.name:symbol for symbol in target_symbols})
+        inline_targets.setdefault(physical_scope(parent),set()).update(targets)
+        definitions[id(node)]=index
+        return index
+    def walrus_scope(scope):
+        while scopes[scope].kind=="comprehension"or scope in generator_scopes:
+            scope=scopes[scope].parent
+        return scope
+    def visit(node, scope=0, defaults_scope=None, first_iter_scope=None, annotation_scope=None, namespace=None, skip_defaults=False, skip_iter=False):
         ordinal = len(nodes)
         ordinals[id(node)] = ordinal
         line, column = getattr(node, "lineno", 1), getattr(node, "col_offset", 0) + 1
@@ -263,7 +320,7 @@ def _source_metadata(tree, scopes):
         elif isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):
             names[id(node)] = private_name(node.name,private_owner[0])
         if isinstance(node, ast.Name):
-            bind(node.id, "load" if isinstance(node.ctx, ast.Load) else "delete" if isinstance(node.ctx, ast.Del) else "store", scope, ordinal)
+            bind(node.id, "load" if isinstance(node.ctx, ast.Load) else "delete" if isinstance(node.ctx, ast.Del) else "store", scope, ordinal,namespace)
         elif isinstance(node, ast.arg):
             bind(node.arg, "parameter", scope, ordinal)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -278,10 +335,14 @@ def _source_metadata(tree, scopes):
             name = "lambda" if isinstance(node, ast.Lambda) else node.name
             definition_scope = child_scope(node, scope, node.name, "type parameters") if getattr(node,"type_params",()) else scope
             annotations_scope = child_scope(node, definition_scope, "__annotate__", "annotation")
-            body_scope = child_scope(node, definition_scope, name, "function")
             for decorator in getattr(node, "decorator_list", ()):
                 visit(decorator, scope)
-            visit(node.args, body_scope, scope, annotation_scope=annotations_scope)
+            # The physical table lists default-expression lambdas before the
+            # callable itself, even when all lambdas share one source line.
+            for default in (*node.args.defaults,*node.args.kw_defaults):
+                if default is not None:visit(default,scope)
+            body_scope = child_scope(node, definition_scope, name, "function")
+            visit(node.args, body_scope, scope, annotation_scope=annotations_scope,skip_defaults=True)
             for parameter in getattr(node, "type_params", ()):
                 visit(parameter, definition_scope)
             if getattr(node, "returns", None):visit(node.returns, annotations_scope)
@@ -299,6 +360,7 @@ def _source_metadata(tree, scopes):
             return
         if isinstance(node, ast.arguments):
             for name,value in ast.iter_fields(node):
+                if skip_defaults and name in {"defaults","kw_defaults"}:continue
                 owner = defaults_scope if name in {"defaults","kw_defaults"} and defaults_scope is not None else scope
                 for child in value if isinstance(value,list) else [value]:
                     if isinstance(child,ast.AST):visit(child,owner,annotation_scope=annotation_scope)
@@ -306,21 +368,72 @@ def _source_metadata(tree, scopes):
         if isinstance(node, ast.arg):
             if node.annotation:visit(node.annotation, annotation_scope if annotation_scope is not None else scope)
             return
-        if isinstance(node, ast.GeneratorExp):
-            body_scope = child_scope(node, scope, "genexpr", "function")
-            visit(node.elt, body_scope)
+        if isinstance(node,(ast.ListComp,ast.SetComp,ast.DictComp)):
+            body_scope=inline_scope(node,scope)
             for index,generator in enumerate(node.generators):
-                visit(generator, body_scope, first_iter_scope=scope if index==0 else body_scope)
+                visit(generator,body_scope,first_iter_scope=scope if index==0 else body_scope)
+            if isinstance(node,ast.DictComp):
+                # The official table visits value before key. This is only
+                # metadata matching; the AST's key/value evaluation is intact.
+                visit(node.value,body_scope);visit(node.key,body_scope)
+            else:visit(node.elt,body_scope)
+            return
+        if isinstance(node, ast.GeneratorExp):
+            # A generator in this outer iterable is a sibling official scope,
+            # and precedes the containing generator even on the same line.
+            visit(node.generators[0].iter,scope)
+            body_scope = child_scope(node, scope, "genexpr", "function")
+            generator_scopes.add(body_scope)
+            for index,generator in enumerate(node.generators):
+                visit(generator, body_scope, first_iter_scope=scope if index==0 else body_scope,skip_iter=index==0)
+            visit(node.elt, body_scope)
             return
         if isinstance(node, ast.comprehension):
+            if not skip_iter:visit(node.iter, first_iter_scope if first_iter_scope is not None else scope)
             visit(node.target, scope)
-            visit(node.iter, first_iter_scope if first_iter_scope is not None else scope)
             for value in node.ifs:visit(value,scope)
+            return
+        if isinstance(node,ast.NamedExpr):
+            visit(node.value,scope)
+            visit(node.target,scope,namespace=walrus_scope(scope))
             return
         for child in ast.iter_child_nodes(node):visit(child, scope)
     definitions[id(tree)] = 0
     visit(tree)
-    return tuple(nodes), tuple(bindings), MappingProxyType(ordinals), MappingProxyType(definitions), MappingProxyType(names)
+    # Resolve owners after seeing all declarations, including assignments that
+    # occur later in a function and walrus stores executed inside a comp scope.
+    for name,role,scope,ordinal,namespace in pending_bindings:
+        where=scope if namespace is None else namespace
+        if role!="load"and scopes[where].kind!="comprehension":
+            symbol=symbols[where].get(name)
+            if symbol and (symbol.has("local")or symbol.has("parameter"))and not symbol.has("free")and not symbol.has("nonlocal")and not symbol.has("declared_global"):
+                declarations.setdefault(where,set()).add(name)
+    for name,role,scope,ordinal,namespace in pending_bindings:
+        owner=scope_owner(scope if namespace is None else namespace,name)
+        bindings.append(Binding(name,role,scope,owner,ordinal))
+    # Logical metadata does not expose a comp-only target as an enclosing local.
+    # The original symtable and the IDs of all its scopes remain untouched.
+    for index,targets in inline_targets.items():
+        remove=targets-declarations.get(index,set())
+        scopes[index]=replace(scopes[index],symbols=tuple(symbol for symbol in scopes[index].symbols
+            if symbol.name not in remove or not symbol.has("local")or symbol.has("parameter")))
+    for index in range(official_count,len(scopes)):
+        values={symbol.name:symbol.flags for symbol in scopes[index].symbols}
+        for binding in bindings:
+            if binding.scope==index:
+                flags=set(values.get(binding.name,()))
+                if binding.owner==index:flags.add("local")
+                else:flags.add("global"if binding.owner==0 else"free")
+                flags.add("referenced"if binding.role=="load"else"assigned")
+                values[binding.name]=frozenset(flags)
+            elif binding.owner==index:
+                values[binding.name]=values.get(binding.name,frozenset())|{"comp_cell"}
+        scopes[index]=replace(scopes[index],symbols=tuple(Symbol(name,flags)for name,flags in values.items()))
+    children={index:[]for index in range(len(scopes))}
+    for scope in scopes:
+        if scope.parent is not None:children[scope.parent].append(scope.ordinal)
+    scopes=tuple(replace(scope,children=tuple(children[scope.ordinal]))for scope in scopes)
+    return scopes,tuple(nodes), tuple(bindings), MappingProxyType(ordinals), MappingProxyType(definitions), MappingProxyType(names)
 
 
 def parse_source(source, filename="<input>", *, name="__main__", package=False):
@@ -333,7 +446,7 @@ def parse_source(source, filename="<input>", *, name="__main__", package=False):
         raise CompilationError(Diagnostic(getattr(error, "msg", str(error)), filename,
             getattr(error, "lineno", 1) or 1, getattr(error, "offset", 1) or 1, "E001")) from None
     scopes, _ = _scope_metadata(table)
-    nodes, bindings, ordinals, definitions, names = _source_metadata(tree, scopes)
+    scopes,nodes, bindings, ordinals, definitions, names = _source_metadata(tree, scopes)
     unit=SourceUnit(source, filename, name, package, _freeze_tree(tree), table,
                       compiled.co_flags & _FUTURE_MASK, scopes, nodes, bindings, (), frozenset(), ordinals, definitions, names, MappingProxyType({}))
     from .call_semantics import FunctionSignature

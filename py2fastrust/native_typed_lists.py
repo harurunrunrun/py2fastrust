@@ -58,6 +58,8 @@ def _clone(g, value, kind):
 
 
 def _ordering(g,left,right,node):
+    shared=getattr(g,"sequence_ordering",None)
+    if shared is not None:return shared(left,right,node)
     numeric = {"int","bool","int_bool"}
     if left.kind in numeric and right.kind in numeric:
         return f"({g.number(left)}).cmp(&({g.number(right)}))"

@@ -91,10 +91,21 @@ fn class_list_pop<T>(values:&ClassList<T>,index:&NativeInt)->Result<T,String> {
 }
 fn class_list_repeat<T:Clone>(values:&ClassList<T>,count:&NativeInt)->Result<ClassList<T>,String> {
     let count=class_repetition_count(count)?;let values=values.borrow();
+    if count==0||values.is_empty(){return Ok(class_list(Vec::new()));}
     let length=values.len().checked_mul(count).ok_or_else(||"MemoryError: list is too large".to_string())?;
     let mut result=Vec::new();result.try_reserve(length).map_err(|_|"MemoryError: cannot allocate list".to_string())?;
     for _ in 0..count {result.extend(values.iter().cloned());}
     Ok(class_list(result))
+}
+fn class_list_repeat_in_place<T:Clone>(values:&ClassList<T>,count:&NativeInt)->Result<(),String> {
+    let count=class_repetition_count(count)?;let mut values=values.borrow_mut();
+    if count==0 {values.clear();return Ok(());}
+    if count==1||values.is_empty(){return Ok(());}
+    let original=values.len();
+    let length=original.checked_mul(count).ok_or_else(||"MemoryError: list is too large".to_string())?;
+    values.try_reserve(length-original).map_err(|_|"MemoryError: cannot allocate list".to_string())?;
+    for _ in 1..count {for index in 0..original {let item=values[index].clone();values.push(item);}}
+    Ok(())
 }
 fn class_list_extend<T:Clone>(values:&ClassList<T>,other:&ClassList<T>) {
     let incoming=other.borrow().clone();values.borrow_mut().extend(incoming);

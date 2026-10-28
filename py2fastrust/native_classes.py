@@ -99,6 +99,9 @@ def merge(left, right, node):
     left, right = left.root(), right.root()
     if left is right:
         return left
+    if left.args or right.args:
+        from .native_class_storage import check_merge
+        check_merge(left,right,node)
     if left.tag is None:
         left.parent = right
         return right
@@ -208,6 +211,9 @@ class Model:
         self.member_allocations = {}
         self.constructors = {}
         self.sequence_calls = {}
+        self.comprehensions = {}
+        from .native_class_comprehensions import target_ordinals
+        self.comprehension_targets = target_ordinals(tree,unit)
         self.records = {}
         self.augmented = {}
         self.module = FunctionPlan(tree, 0, reachable=True, visible_definitions=set(),global_names=set())
@@ -390,7 +396,8 @@ class Model:
                 effects = True
         for value in ast.walk(self.tree):
             if isinstance(value, ast.Name) and isinstance(value.ctx, (ast.Store, ast.Del)) and value.id in names:
-                raise ClassUnsupported(value)
+                site=self.unit.ordinal(value)if self.unit is not None else id(value)
+                if site not in self.comprehension_targets:raise ClassUnsupported(value)
             if isinstance(value, ast.arg) and value.arg in names:
                 raise ClassUnsupported(value)
 
@@ -455,6 +462,8 @@ class Model:
             if plan.reachable:
                 global_names={name:value for name,value in self.global_symbols.items() if name not in plan.declared}
                 self.block(plan, plan.node.body, {**global_names, **plan.arguments})
+        from .native_class_storage import validate_instance_graph
+        validate_instance_graph(self)
         for owner in self.classes.values():
             if owner.used:
                 initializer=owner.methods.get("__init__")
@@ -469,26 +478,14 @@ class Model:
         return self
 
     def storage(self, cell, node, field_value=False):
-        cell = cell.root()
-        if cell.tag is None or cell.tag not in self.DATA:
-            raise ClassUnsupported(node,"the class frame's field/result kind has no resolved native stored-value representation; storage for this value or escaping stream/callable has not been implemented",types=(("value",cell),),proof="resolved stored class-frame value")
-        if self.integer == "bigint" and cell.tag == "float":
-            raise ClassUnsupported(node,"native binary64 value/operation storage has not been integrated with the BigInt class path",types=(("value","float"),),proof="BigInt/f64 value representation and interoperation")
-        if cell.tag == "object" and field_value:
-            raise ClassUnsupported(node,"an instance-reference field needs alias-preserving object handles and lifetime/cycle management; that field representation is not implemented on this class path",types=(("field",cell),),proof="object-field identity and lifetime")
-        if cell.tag == "list":
-            item = cell.args[0].root()
-            if not immutable_cell(item):
-                raise ClassUnsupported(node,"this class list stores mutable/instance elements; preserving inner aliases and lifetimes requires a shared nested-element representation that is not implemented on this path",types=(("element",item),),proof="shared nested-element identity and lifetime")
-            self.storage(item, node)
-        if cell.tag == "union":
-            for value in cell.args:self.storage(value,node,field_value=field_value)
-        if cell.tag == "tuple":
-            for value in cell.args:
-                self.storage(value, node, field_value=field_value)
+        from .native_class_storage import validate
+        validate(cell,node,self.integer,field_value=field_value)
 
     def expression(self, plan, node, environment):
-        if isinstance(node,(ast.ListComp,ast.SetComp,ast.DictComp,ast.GeneratorExp)):
+        if isinstance(node,ast.ListComp):
+            from .native_class_comprehensions import analyze
+            return analyze(self,plan,node,environment)
+        if isinstance(node,(ast.SetComp,ast.DictComp,ast.GeneratorExp)):
             from .native_diagnostics import comprehension_context,operation_name
             raise ClassUnsupported(node,"the class-aware native path has no comprehension scope/iteration/materialization implementation yet; it must preserve comprehension-local bindings, evaluation order and each allocated element's identity",operation=operation_name(node)+" on the class-aware path",types=comprehension_context(node),proof="comprehension scope and alias-preserving element storage")
         if isinstance(node, ast.Constant):
@@ -631,7 +628,7 @@ class Model:
     def bind_call(self, caller, node, callee, argument_cells, keyword_cells, environment):
         try:normalize_call(node)
         except CallBindingError:raise ClassUnsupported(node)from None
-        names=(set(environment)|set(caller.visible_definitions or ()))if caller is self.module else caller.global_names
+        names=(set(getattr(environment,"enclosing_global_names",environment))|set(caller.visible_definitions or ()))if caller is self.module else caller.global_names
         if names is None:raise ClassUnsupported(node)
         if callee.global_names is None:callee.global_names=set(names)
         else:callee.global_names.update(names)
@@ -1108,9 +1105,15 @@ class Emitter:
 
     def expression(self, node):
         wanted = self.kind(node)
+        if isinstance(node,ast.ListComp):
+            from .native_class_comprehensions import emit
+            return emit(self,node)
         if isinstance(node,ast.Constant):
             return self.literal_value(node.value,wanted,node)
         if isinstance(node,ast.Name):
+            from .native_class_comprehensions import read_binding
+            binding=read_binding(self,node,wanted)
+            if binding is not None:return binding
             name = self.model.resolved_name(self.plan,node)
             if domain(wanted) in self.model.INTRINSICS:
                 return self.reference_read(name,wanted,node)
@@ -1248,6 +1251,9 @@ class Emitter:
             else:
                 raise ClassUnsupported(node)
             return f"!({code})"if isinstance(operator,ast.IsNot)else code
+        from .native_class_storage import comparison as shared_comparison
+        shared_result=shared_comparison(self,operator,left,right,node)
+        if shared_result is not None:return shared_result
         if not isinstance(operator,(ast.In,ast.NotIn))and(isinstance(left.kind,TupleType)or isinstance(right.kind,TupleType)):
             from .native_tuples import tuple_compare,_scalar
             if not _scalar(left.kind)or not _scalar(right.kind):raise ClassUnsupported(node)
@@ -1349,6 +1355,12 @@ class Emitter:
             number=emitter.number
             truth=emitter.truth
             at=emitter.at
+            from .native_class_storage import shared_element
+            shared_element=staticmethod(shared_element)
+            def sequence_equal(self,left,right,node):return emitter.comparison(ast.Eq(),left,right,node)
+            def sequence_ordering(self,left,right,node):
+                from .native_class_storage import ordering
+                return ordering(emitter,left,right,node)
             def coerce(self,value,kind):return emitter.coerce(value,kind,node)
         adapter=Adapter()
         storage=capture_shared(adapter,self.expression(node.func.value))
@@ -1666,6 +1678,9 @@ class Emitter:
             wanted=self.kind(node.target)
             if domain(old.kind)=="list"and isinstance(node.op,ast.Add)and domain(right.kind)=="list":
                 operation=f"class_list_extend(&{old.code},&{right.code});"
+                result=Expression(old.code,old.kind)
+            elif domain(old.kind)=="list"and isinstance(node.op,ast.Mult):
+                operation=self.at(f"class_list_repeat_in_place(&{old.code},&({self.number(right)}))",node)+";"
                 result=Expression(old.code,old.kind)
             else:
                 result=self.binary(node.op,old,right,node,wanted)
