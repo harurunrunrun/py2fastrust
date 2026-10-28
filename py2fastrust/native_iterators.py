@@ -180,7 +180,9 @@ class Planner:
         if plan.kind in {ProducerKind.ITER,ProducerKind.RANGE,ProducerKind.MAP,ProducerKind.FILTER,
                          ProducerKind.ENUMERATE,ProducerKind.ZIP,ProducerKind.REVERSED}:
             if plan.kind is ProducerKind.ITER:
-                result = self.lower(plan.sources[0],environment)
+                # iter alone neither calls user code per item nor exposes a
+                # position. Consumers may retain an order-insensitive proof.
+                result = self.lower(plan.sources[0],environment,allow_set=allow_set)
                 result.eager = True
                 return result
             if plan.kind is ProducerKind.RANGE:
@@ -226,6 +228,9 @@ class Planner:
         if keyed is not None:return keyed
         view = g.dict_view(node, environment)if captured_value is None else None
         value = (view[0] if view else g.expression(node, environment))if captured_value is None else captured_value
+        from .native_key_containers import stream_value as keyed_value_stream
+        keyed=keyed_value_stream(g,node,value,self,allow_set,environment=environment)
+        if keyed is not None:return keyed
         from .native_typed_lists import stream as typed_stream
         typed = typed_stream(g,node,environment,self,value=value)
         if typed is not None:
@@ -264,16 +269,9 @@ class Planner:
                   {receiver.value.id} if isinstance(receiver, ast.Subscript)
                   and isinstance(receiver.value, ast.Name) else set())
         cursor = g.temporary()
-        if value.owned:
-            owner = g.temporary()
-            setup = f"let {owner} = {value.code};"
-        elif isinstance(receiver, ast.Name):
-            # Reading a proved name has no effects; defer the Rust borrow so
-            # sum(q, q.popleft()) can evaluate its start before iter(q).
-            owner, setup = value.code, ""
-        else:
-            owner = g.temporary()
-            setup = f"let {owner} = {value.code};"
+        from .native_container_reads import capture
+        read = capture(g,receiver,value,environment)
+        owner, setup = read.owner, read.setup
         if value.kind == "dict_int":
             begin = f"let {cursor} = {owner}.entries.iter();"
             mode = view[1] if view else "keys"

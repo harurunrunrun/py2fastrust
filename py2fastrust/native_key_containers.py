@@ -2,7 +2,7 @@
 import ast
 
 from .native import _Binding,_Expression,_DictInfo,_SetInfo,_Unsupported,_string
-from .native_types import TupleType,immutable,join_types,tuple_field,rust_type
+from .native_types import TupleType,immutable,join_types,tuple_field,rust_type,unmaybe
 from .native_key_types import DictType,SetType,KeyInfo,canonical_tuple,compatible_keys
 
 
@@ -143,6 +143,9 @@ def try_expression(generator,node,environment):
         binding=environment.get(node.id)
         if isinstance(binding,_Binding) and isinstance(binding.info,KeyInfo):
             return _Expression(binding.slot,binding.kind,owned=False,length=binding.info.length,nonempty=binding.info.nonempty)
+    from .native_sets import try_expression as set_expression
+    collected=set_expression(generator,node,environment)
+    if collected is not None:return collected
     if isinstance(node,ast.Set):
         keys=[generator.expression(key,environment) for key in node.elts]
         if not generator.bits or any(isinstance(key.kind,TupleType) for key in keys):
@@ -154,8 +157,8 @@ def try_expression(generator,node,environment):
             values=[generator.expression(value,environment) for value in node.values]
             return _construct(generator,keys,values,node)
     if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and not node.keywords:
-        if node.func.id in {"set","dict"} and not node.args and not generator.bits:
-            return _construct(generator,[],None if node.func.id=="set" else [],node)
+        if node.func.id=="dict" and not node.args and not generator.bits:
+            return _construct(generator,[],[],node)
         if node.func.id in {"len","bool"} and len(node.args)==1:
             value=generator.expression(node.args[0],environment)
             if isinstance(value.kind,(SetType,DictType)):
@@ -273,8 +276,11 @@ def try_statement(generator,node,environment):
         return "\n".join(lines),environment
     if isinstance(node,ast.Assign) and all(isinstance(target,ast.Name) for target in node.targets):
         candidate=node.value
+        from .references import callable_reference,BuiltinIdentity
+        identity=callable_reference(generator,candidate.func,environment) if isinstance(candidate,ast.Call) else None
+        constructor=isinstance(identity,BuiltinIdentity) and identity.name in {"set","dict"}
         known=(isinstance(candidate,(ast.Dict,ast.Set)) or isinstance(candidate,ast.Name) and isinstance(environment.get(candidate.id),_Binding) and isinstance(environment[candidate.id].kind,(SetType,DictType))
-               or isinstance(candidate,ast.Call) and (isinstance(candidate.func,ast.Name) and candidate.func.id in {"dict","set"}
+               or isinstance(candidate,ast.Call) and (constructor
                    or isinstance(candidate.func,ast.Attribute) and candidate.func.attr=="copy"))
         if not known:return None
         value=generator.expression(candidate,environment)
@@ -321,13 +327,19 @@ def stream(generator,node,environment,planner,allow_set=False):
         source=node.func.value;mode=node.func.attr
         if node.args or node.keywords:raise _Unsupported
     known=(isinstance(source,ast.Name) and isinstance(environment.get(source.id),_Binding)
-           and isinstance(environment[source.id].kind,(SetType,DictType)))
+           and isinstance(unmaybe(environment[source.id].kind),(SetType,DictType)))
     if not known and not isinstance(source,(ast.Dict,ast.Set)):return None
     value=generator.expression(source,environment)
+    return stream_value(generator,source,value,planner,allow_set,mode=mode,environment=environment)
+
+
+def stream_value(generator,source,value,planner,allow_set=False,*,mode="keys",environment):
+    """Adapt a resolved container without evaluating its source again."""
     if not isinstance(value.kind,(SetType,DictType)):return None
     if isinstance(value.kind,SetType) and not allow_set:raise _Unsupported
-    owner=generator.temporary() if value.owned else value.code
-    setup=f"let {owner}={value.code};" if value.owned else ""
+    from .native_container_reads import capture
+    read=capture(generator,source,value,environment)
+    owner,setup=read.owner,read.setup
     cursor=generator.temporary()
     begin=f"let {cursor}={owner}.entries.iter();"
     if isinstance(value.kind,SetType):fields=((value.kind.key,"*@",False),)

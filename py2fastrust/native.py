@@ -745,14 +745,17 @@ class _Generator:
             if value.kind not in {"int", "bool", "int_bool", "none", "list_int", "float", "str", "bytes"} and not isinstance(value.kind,(TupleType,ListType,UnionType,NullableType)):
                 raise _Unsupported
             if list_type(value.kind) and not value.owned:
-                # Reading an ordinary binding has no side effect. Delay the
-                # Rust borrow until all later arguments are evaluated, so a
-                # later argument can still mutate this uniquely owned list.
+                # Resolve the binding now, including an unbound-name error,
+                # and defer borrowing until later arguments have run.
                 # Row lookups have bounds checks/effects and require a richer
                 # reference representation before they can be accepted here.
                 if not isinstance(argument, ast.Name):
                     raise _Unsupported
-                return value
+                from .native_container_reads import capture
+                read = capture(self,argument,value,environment)
+                lines.append(read.setup)
+                return _Expression(read.owner,value.kind,owned=False,length=value.length,
+                                   nonempty=value.nonempty)
             name = self.temporary()
             code=self.coerce(value,value.kind) if isinstance(value.kind,(TupleType,UnionType,NullableType)) and not value.owned else value.code
             lines.append(f"let {name} = {code};")
@@ -1095,12 +1098,6 @@ class _Generator:
             return _Expression(f"(if {self.truth(test)} {{ {self.coerce(yes, kind)} }} else {{ {self.coerce(no, kind)} }})", kind)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
-            if name == "set" and len(node.args) <= 1:
-                self.has_sets = True
-                if not node.args:
-                    return _Expression("NativeSet::new()", "set_int", length=0)
-                setup, iterator = self.set_iterable(node.args[0], environment)
-                return _Expression(f"{{ {setup} ({iterator}).collect::<NativeSet>() }}", "set_int")
             if name == "dict" and not node.args:
                 self.has_dicts = True
                 return _Expression("NativeDict::new()", "dict_int", length=0)

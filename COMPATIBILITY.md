@@ -17,7 +17,7 @@ dynamic execution, general imports
 and many mixed-type/alias cases still require direct lowering. An `E006`
 diagnostic makes that gap explicit; it does not satisfy the missing feature.
 
-Immediate `for`, reduction, `list`, `sorted`, `next`, unpacking, and string
+Immediate `for`, reduction, `list`, `set`, `sorted`, `next`, unpacking, and string
 `join` consumers use the same normalized producer plans. Core builtin aliases
 are resolved from definite lexical bindings; a spelling alone does not prove
 builtin identity. An alias absent on a branch or loop edge is not treated as a
@@ -28,6 +28,16 @@ raising a cardinality error, while eager comprehensions finish before unpacking.
 Producer conversion errors and consumer cardinality errors retain their own
 source frames. General dynamic callable values and conflicting core-name
 rebinding still require direct implementation.
+
+`set(iterable)` and set comprehensions consume the same typed streams in every
+integer mode. Exact-set sorting with `key=None` permits traversal whose order
+cannot affect the result; this permission crosses a transparent `iter` adapter,
+but does not cross callbacks, generators, `enumerate`, or `zip`.
+Container name lookups, including unbound-name checks, occur before later call
+arguments. Their Rust borrows begin after those arguments, so mutations such as
+`sum(values, values.pop())` retain Python's evaluation order. The same rule
+applies to borrowed list arguments of native functions. Callbacks that replace
+bindings through unsupported namespace writes remain rejected.
 
 Positional `min` and `max` calls consume canonical call plans in every integer
 mode. Supported values include integers/bools, strings, bytes, and immutable

@@ -54,7 +54,7 @@ _BUILTINS={name:BuiltinIdentity(name)for name in CORE_BUILTINS}
 # These names have no spelling-based call implementation: their calls are
 # lowered only through the canonical identity plans. Other legacy builtin
 # spellings still require the conservative assignment boundary.
-CANONICAL_REBINDABLES=frozenset({"min","max"})
+CANONICAL_REBINDABLES=frozenset({"min","max","set"})
 
 
 def _known(value,name):

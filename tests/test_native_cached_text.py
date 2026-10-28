@@ -74,12 +74,9 @@ values={s,"other"}
 print(d[key],s in values,"other" in values,d.get((s,1)))
 ''',('あ🙂é\n','abc\n'))
 
-    def test_existing_sorted_set_proof_boundary_remains_explicit(self):
+    def test_sorted_set_string_keys_preserve_cached_storage(self):
         source='s=input()\nvalues={s,"other"}\nprint(sorted(values))\n'
-        for mode in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=mode,string_mode='unicode'))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
+        self.compare(source,('あ🙂é\n','abc\n','other\n'))
 
     def test_literal_sites_reuse_static_metadata_across_calls(self):
         literal='あ🙂éx'*250

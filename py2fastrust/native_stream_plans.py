@@ -39,6 +39,7 @@ class ConsumerKind(Enum):
     MIN_ARGUMENTS = "min_arguments"
     MAX_ARGUMENTS = "max_arguments"
     LIST = "list"
+    SET = "set"
     SORTED = "sorted"
     NEXT = "next"
     UNPACK = "unpack"
@@ -138,7 +139,7 @@ _PRODUCERS = {kind.value: kind for kind in ProducerKind
               if kind not in {ProducerKind.VALUE, ProducerKind.SEQUENCE, ProducerKind.GENERATOR, ProducerKind.METHOD}}
 _CONSUMERS = {kind.value: kind for kind in ConsumerKind
               if kind in {ConsumerKind.SUM, ConsumerKind.ANY, ConsumerKind.ALL, ConsumerKind.MIN,
-                          ConsumerKind.MAX, ConsumerKind.LIST, ConsumerKind.SORTED, ConsumerKind.NEXT}}
+                          ConsumerKind.MAX, ConsumerKind.LIST, ConsumerKind.SET, ConsumerKind.SORTED, ConsumerKind.NEXT}}
 
 
 def _signature(positional, *, positional_only=(), keywords=(), defaults=()):
@@ -308,6 +309,8 @@ class Normalizer:
             return ConsumerPlan(ConsumerKind.UNPACK, node, self.producer(node.value), target=node.targets[0])
         if isinstance(node, ast.ListComp):
             return ConsumerPlan(ConsumerKind.LIST, node, self.comprehension(node))
+        if isinstance(node, ast.SetComp):
+            return ConsumerPlan(ConsumerKind.SET, node, self.comprehension(node))
         if not isinstance(node, ast.Call):
             return None
         invocation = self.invocation(node)
@@ -324,7 +327,7 @@ class Normalizer:
                     source=self.producer(method.invocation.binding["iterable"].expression)
                     return ConsumerPlan(ConsumerKind.JOIN,node,source,method=method)
             return None
-        if kind is ConsumerKind.LIST and not invocation.arguments.evaluation_order:
+        if kind in {ConsumerKind.LIST,ConsumerKind.SET} and not invocation.arguments.evaluation_order:
             return ConsumerPlan(kind,node,ProducerPlan(ProducerKind.SEQUENCE,node))
         if kind in {ConsumerKind.MIN, ConsumerKind.MAX} and len(invocation.arguments.positional) != 1:
             if len(invocation.arguments.positional) < 2:

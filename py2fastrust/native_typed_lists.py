@@ -67,6 +67,15 @@ def _ordering(g,left,right,node):
     raise _Unsupported
 
 
+def _none_operand(g,operand):
+    """Query existing semantic facts without emitting an argument twice."""
+    if operand.expression is None:return operand.default is not None and operand.default.value is None
+    if isinstance(operand.expression,ast.Constant):return operand.expression.value is None
+    from .native_constraint_lowering import facts_for
+    facts,site=facts_for(g,operand.expression)
+    return facts is not None and facts.expressions.get(site)=="none"
+
+
 def _sort_options(g,node,environment,owners=()):
     reverse,key = "false",None
     lines=[]
@@ -82,25 +91,34 @@ def _sort_options(g,node,environment,owners=()):
             raise _Unsupported from error
     depth = len(g.iterating_lists)
     g.iterating_lists.extend(owners)
+    checks=[]
     try:
         for operand in bound.explicit_order:
             if operand.parameter=="iterable":continue
             value=operand.expression
             if operand.parameter == "key":
-                if isinstance(value,ast.Constant) and value.value is None:
+                if _none_operand(g,operand):
+                    if not (isinstance(value,ast.Constant) and value.value is None):
+                        captured=g.expression(value,environment)
+                        lines.append(f"let {g.temporary()}={captured.code};")
                     continue
                 if not isinstance(value,ast.Name):
                     raise _Unsupported
                 key = value
             else:
-                direction = (_Expression("false","bool",False) if isinstance(value,ast.Constant) and value.value is None else
-                             g.expression(value,environment))
-                name = g.temporary()
-                lines.append(f"let {name}={g.truth(direction)};")
+                direction=g.expression(value,environment)
+                captured,name = g.temporary(),g.temporary()
+                code=direction.code if direction.owned else f"&({direction.code})"
+                lines.append(f"let {captured}={code};")
+                if not direction.owned and isinstance(value,ast.Name):g.iterating_lists.append(value.id)
+                conversion=g.truth(_Expression(captured,direction.kind))
+                # All call arguments are evaluated before builtin reverse
+                # truth conversion. A later keyword can still raise or have effects.
+                checks.append(f"let {name}={conversion};")
                 reverse = name
     finally:
         del g.iterating_lists[depth:]
-    return lines,reverse,key
+    return lines+checks,reverse,key
 
 
 def _sort_code(g,owner,element,node,environment,reverse,key):
@@ -196,7 +214,11 @@ def try_expression(g, node, environment):
     plan=consumer_plan(g,node,environment,{ConsumerKind.LIST,ConsumerKind.SORTED})
     if plan is not None:
         from .native_iterators import Planner
-        source=Planner(g).lower(plan.source,environment)
+        # Only a key-free ordering of exact builtin values may discard set
+        # traversal order. Producer adapters with callbacks do not inherit
+        # this permission; transparent iter(...) alone may retain it.
+        order_free=plan.kind is ConsumerKind.SORTED and _none_operand(g,plan.binding.binding["key"])
+        source=Planner(g).lower(plan.source,environment,allow_set=order_free)
         if plan.kind is ConsumerKind.LIST:
             return _collect(g,source,node)
         result=_collect(g,source,node,constructed=True)
@@ -207,7 +229,7 @@ def try_expression(g, node, environment):
         owner=g.temporary()
         lines.append(f"let mut {owner}={result.code};")
         element="int"if result.kind=="list_int"else result.kind.element
-        lines.append(_sort_code(g,owner,element,node,environment,reverse,key))
+        if source.length!=0:lines.append(_sort_code(g,owner,element,node,environment,reverse,key))
         return _Expression("{\n"+"\n".join(lines)+f"\n{owner}\n}}",result.kind,length=result.length)
     if isinstance(node,ast.List) and node.elts:
         values = [g.expression(value,environment) for value in node.elts]
@@ -432,11 +454,9 @@ def stream(g,node,environment,planner,*,value=None):
     _enable(g)
     cursor = g.temporary()
     owners = {node.id} if isinstance(node,ast.Name) else set()
-    if value.owned:
-        owner = g.temporary()
-        setup = f"let {owner}={value.code};"
-    else:
-        owner,setup = value.code,""
+    from .native_container_reads import capture
+    read = capture(g,node,value,environment)
+    owner,setup = read.owner,read.setup
     fields = ((value.kind.element,"@.clone()",True),)
     return planner.leaf(setup,f"let {cursor}={owner}.iter();",cursor,fields,owners,length=value.length)
 
