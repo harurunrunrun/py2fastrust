@@ -137,7 +137,7 @@ print(sys.stdin.buffer.read())
 print(sys.stdin.read(),end='!')
 ''']
         for source in programs:
-            self.differential(source,[b"a\r\nb\r\nc\r",b"1\n2\n3\n", "é𝄞\nx\n".encode(),b""])
+            self.differential(source,[b"a\r\nb\r\nc\r",b"1\n2\n3\n", "é𝄞\nx\n".encode(),b""],string_mode="unicode")
 
     def test_sized_reads_characters_bytes_none_and_negative(self):
         source='''import sys
@@ -153,7 +153,7 @@ read=sys.stdin.buffer.read
 line=sys.stdin.buffer.readline
 print(read(2),line(2),line(None),read(-3))
 '''
-        self.differential(source,["é𝄞a\nbc\n".encode(),b"abcdef\n",b""])
+        self.differential(source,["é𝄞a\nbc\n".encode(),b"abcdef\n",b""],string_mode="unicode")
         self.differential(binary,[b"abcdef\ngh\nijk",b"",b"\xff\x00\n"])
         self.differential("import sys\nprint(sys.stdin.read(None),end='!')\n",[b"hello\n",b""])
 
@@ -162,7 +162,7 @@ print(read(2),line(2),line(None),read(-3))
         binary="import sys\nread=sys.stdin.buffer.readline\nprint(int(read()))\n"
         values=[b"12\n",b"\v\f+1_234\t\r\n",b"\x1c1\n",b"\x1f1\n",b"1__2\n",b"\xff\n",b"",
                 "\u200312\u0085\n".encode(),"١٢\n".encode(),b"1\x001\n"]
-        self.differential(text,values)
+        self.differential(text,values,string_mode="unicode")
         self.differential(binary,values)
         self.differential("import sys\nA=list(map(int,sys.stdin.buffer.read().split()))\nprint(len(A),sum(A))\n",
                           [b"1\t2\v3\f4\r5\n6 ",b"1\x1c2",b"1\xc2\xa02",b""])

@@ -136,7 +136,7 @@ print(input())
 xs=[s]
 print(s[0],s[-1],len(s),xs[0][1],s[1:-1],s.count(""))
 ''',('abcdef\n','x\n'),policies=('ascii','unicode'))
-        self.assertTrue(any('const NATIVE_TEXT_UNICODE:bool=false'in source for source in sources))
+        self.assertTrue(any('struct NativeText'in source and 'NATIVE_TEXT_UNICODE'not in source for source in sources))
         self.assertTrue(any('const NATIVE_TEXT_UNICODE:bool=true'in source for source in sources))
 
     def test_cached_index_helpers_never_rescan_the_owner(self):

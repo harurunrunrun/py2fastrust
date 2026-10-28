@@ -11,6 +11,48 @@ from py2fastrust.native_cached_text import HELPERS
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class NativeTextStorageTests(unittest.TestCase):
+    def test_ascii_snapshots_literals_and_index_reads_allocate_no_storage(self):
+        from py2fastrust.native_cached_text import _ASCII_HELPERS,_text_kernel
+        probe=r'''
+use std::alloc::{GlobalAlloc,Layout,System};
+use std::sync::atomic::{AtomicUsize,Ordering};
+struct Counting;
+static ALLOCATIONS:AtomicUsize=AtomicUsize::new(0);
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self,layout:Layout)->*mut u8 {ALLOCATIONS.fetch_add(1,Ordering::Relaxed);unsafe{System.alloc(layout)}}
+    unsafe fn dealloc(&self,pointer:*mut u8,layout:Layout){unsafe{System.dealloc(pointer,layout)}}
+    unsafe fn realloc(&self,pointer:*mut u8,layout:Layout,length:usize)->*mut u8 {
+        ALLOCATIONS.fetch_add(1,Ordering::Relaxed);unsafe{System.realloc(pointer,layout,length)}
+    }
+}
+#[global_allocator]static ALLOCATOR:Counting=Counting;
+fn main(){
+    static LITERAL:NativeTextLiteral=NativeTextLiteral::new("abcdefabcdef");
+    let owner=NativeText::from("abcdef".repeat(200));
+    let before=ALLOCATIONS.load(Ordering::Relaxed);
+    for index in 0..10000{
+        let alias=std::hint::black_box(owner.clone());
+        std::hint::black_box(native_text_get(&alias,index%1200).unwrap());
+        std::hint::black_box(native_text_codepoint(&alias,index%1200).unwrap());
+        let literal=std::hint::black_box(NativeText::literal(&LITERAL));
+        std::hint::black_box(native_text_get(&literal,index%12).unwrap());
+        std::hint::black_box(literal.byte_len());
+    }
+    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed),before);
+    // Unique heap text returns its original builder allocation.
+    let text=owner.into_string();
+    assert_eq!(text.len(),1200);
+    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed),before);
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='pytors-ascii-storage-')as directory:
+            path=Path(directory,'main.rs');path.write_text(_text_kernel('ascii')+'\n'+_ASCII_HELPERS+probe)
+            binary=path.with_suffix('')
+            built=subprocess.run(['rustc','--edition=2021','-O',str(path),'-o',str(binary)],capture_output=True,text=True,timeout=90)
+            self.assertEqual(built.returncode,0,built.stderr)
+            run=subprocess.run([str(binary)],capture_output=True,text=True,timeout=5)
+            self.assertEqual(run.returncode,0,run.stderr)
+
     def test_shared_snapshots_and_warmed_literal_reads_do_not_allocate(self):
         kernel=files('py2fastrust').joinpath('runtime','native_text.rs').read_text()
         probe=r'''

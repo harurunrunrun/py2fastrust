@@ -60,6 +60,10 @@ pytors main.py -o main.rs --string-mode unicode
 The API setting is `TranspileOptions(string_mode="unicode")`; the browser
 provides the same selection. ASCII mode assumes that strings contain ASCII.
 It does not automatically switch models when non-ASCII input is encountered.
+The ASCII profile also selects ASCII numeric-text parsing and omits Unicode
+property tables and code-point indexing caches. Buffered text input rejects
+non-ASCII bytes; binary streams remain byte streams. Unicode mode enables
+non-ASCII digits, whitespace, and code-point operations where supported.
 
 ## Options in source comments
 

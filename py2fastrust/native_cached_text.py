@@ -39,6 +39,26 @@ fn native_text_get(value:&NativeText,index:i128)->Result<NativeText,String> {
 }
 '''
 
+_ASCII_HELPERS=r'''
+#[inline]
+fn native_text_index_size(length:usize)->usize {
+    assert!(length<=isize::MAX as usize,"native text length exceeds the allocation index range");
+    length
+}
+fn native_text_codepoint(value:&NativeText,index:i128)->Result<u32,String> {
+    let index=if index<0{index.saturating_add(value.byte_len()as i128)}else{index};
+    let index=usize::try_from(index).ok().filter(|index|*index<value.byte_len())
+        .ok_or_else(||"IndexError: string index out of range".to_string())?;
+    Ok(value.as_bytes()[index]as u32)
+}
+impl From<&NativeText> for NativeText {
+    fn from(value:&NativeText)->Self {value.clone()}
+}
+fn native_text_get(value:&NativeText,index:i128)->Result<NativeText,String> {
+    native_text_codepoint(value,index).map(|byte|NativeText::from(byte as u8 as char))
+}
+'''
+
 _REPLACEMENTS={
 'native_string_item':r'''
 fn native_string_item(value:&NativeText,index:NativeInt)->Result<NativeText,String> {
@@ -126,6 +146,52 @@ fn class_split_text(value:&str)->ClassList<NativeText> {
 }
 
 
+_ASCII_REPLACEMENTS={
+'class_string_get':r'''
+fn class_string_get(value:&NativeText,index:&NativeInt)->Result<NativeText,String> {
+    let index=class_index(index,value.byte_len()).map_err(|_|"IndexError: string index out of range".to_string())?;
+    native_text_get(value,index as i128)
+}
+''',
+'native_text_window':r'''fn native_text_window(text:&NativeText,start:Option<i128>,stop:Option<i128>)->Result<Option<&str>,String> {
+    let length=text.byte_len()as i128;
+    let bound=|value:i128|if value<0{value.saturating_add(length).max(0)}else{value};
+    let start=start.map(bound).unwrap_or(0);let stop=stop.map(bound).unwrap_or(length).min(length);
+    if start>length||start>stop{return Ok(None);}
+    Ok(text.as_str().get(start as usize..stop as usize))
+}
+''',
+'native_text_count':r'''fn native_text_count(text:&NativeText,pattern:&str,start:Option<i128>,stop:Option<i128>)->Result<usize,String> {
+    if pattern.is_empty(){
+        let length=text.byte_len()as i128;
+        let bound=|value:i128|if value<0{value.saturating_add(length).max(0)}else{value};
+        let start=start.map(bound).unwrap_or(0);let stop=stop.map(bound).unwrap_or(length).min(length);
+        return Ok(if start>length||start>stop{0}else{(stop-start)as usize+1});
+    }
+    Ok(native_text_window(text,start,stop)?.map_or(0,|part|part.matches(pattern).count()))
+}
+''',
+'native_text_slice':r'''fn native_text_slice(text:&NativeText,indices:NativeSlice,_ascii:bool)->Result<NativeText,String> {
+    let mut result=String::new();
+    result.try_reserve(indices.len()).map_err(|_|"MemoryError: string is too large".to_string())?;
+    for index in indices{result.push(text.as_bytes()[index]as char);}
+    Ok(NativeText::from(result))
+}
+''',
+}
+
+
+def _text_kernel(string_mode):
+    resources=files('py2fastrust').joinpath('runtime')
+    unicode_kernel=resources.joinpath('native_text.rs').read_text(encoding='utf-8')
+    if string_mode=='unicode':return unicode_kernel
+    # Display, ordering, hashing and borrowed comparisons have one implementation
+    # for both storage profiles. Only the owning representation differs.
+    marker='impl From<NativeText> for String {'
+    _prefix,separator,traits=unicode_kernel.partition(marker)
+    if not separator:raise RuntimeError('the shared NativeText traits are missing')
+    return resources.joinpath('native_text_ascii.rs').read_text(encoding='utf-8')+'\n'+separator+traits
+
 def apply_cached_text(source,string_mode):
     """Override complete internal helper items; never rewrite source literals."""
     tokens,_comments,pairs=_lex(source)
@@ -135,7 +201,7 @@ def apply_cached_text(source,string_mode):
     for index,token in enumerate(tokens[:-1]):
         if token.text!='fn':continue
         name=tokens[index+1].text
-        replacement=_REPLACEMENTS.get(name)
+        replacement=(_ASCII_REPLACEMENTS.get(name)if string_mode=='ascii'else None)or _REPLACEMENTS.get(name)
         if replacement is None:continue
         cursor=index+2
         while cursor<len(tokens)and tokens[cursor].text!='{':
@@ -143,8 +209,8 @@ def apply_cached_text(source,string_mode):
         if cursor==len(tokens):raise ValueError('missing cached text helper body: '+name)
         edits.append((token.start,tokens[pairs[cursor]].end,replacement.strip()))
     for start,end,replacement in reversed(edits):source=source[:start]+replacement+source[end:]
-    kernel=files('py2fastrust').joinpath('runtime','native_text.rs').read_text(encoding='utf-8')
-    helpers=HELPERS
+    kernel=_text_kernel(string_mode)
+    helpers=_ASCII_HELPERS if string_mode=='ascii'else HELPERS
     if "native_big_text_codepoint"in identifiers:
         helpers+=r'''fn native_big_text_codepoint(value:&NativeText,index:&Int)->Result<u32,String> {
     let index=index.to_i128().ok_or_else(||"IndexError: string index out of range".to_string())?;
@@ -153,7 +219,8 @@ def apply_cached_text(source,string_mode):
 '''
     if "ClassDisplay"in identifiers:
         helpers+='\nimpl ClassDisplay for NativeText {fn class_str(&self)->String{self.as_str().to_string()} fn class_repr(&self)->String{text_repr_str(self.as_str())}}\n'
-    prefix='\nconst NATIVE_TEXT_UNICODE:bool='+str(string_mode=='unicode').lower()+';\n'+kernel+'\n'+helpers+'\n'
+    policy='const NATIVE_TEXT_UNICODE:bool=true;\n'if string_mode=='unicode'else''
+    prefix='\n'+policy+kernel+'\n'+helpers+'\n'
     position=0
     for index,token in enumerate(tokens[:-2]):
         if token.text=='#'and tokens[index+1].text=='!'and tokens[index+2].text=='[':

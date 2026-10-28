@@ -96,7 +96,9 @@ class NativeStringModeTests(unittest.TestCase):
                         if not any(body in result.rust_source for body in candidates):
                             # Canonical cached text getters delegate to the same
                             # mode-selected byte consumer instead of returning String.
-                            self.assertIn("const NATIVE_TEXT_UNICODE:bool=false;",result.rust_source)
+                            self.assertNotIn("NATIVE_TEXT_UNICODE",result.rust_source)
+                            self.assertNotIn("OnceCell",result.rust_source)
+                            self.assertNotIn("OnceLock",result.rust_source)
                             self.assertIn("native_text_get(value,",result.rust_source)
                             self.assertRegex(result.rust_source,rf"fn {helper}\(value:&NativeText")
                     if expected.returncode:

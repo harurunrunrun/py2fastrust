@@ -59,6 +59,10 @@ lengths, indices, slices, and `count` bounds use bytes without per-access ASCII
 detection. `--string-mode unicode` selects Python code-point semantics. The
 source-comment directive overrides CLI/API settings. Non-ASCII strings require
 Unicode mode; ASCII mode does not detect and switch automatically.
+ASCII selection also applies to numeric-text parsing and buffered text input.
+Text input rejects non-ASCII bytes, while binary streams retain arbitrary bytes.
+Unicode mode is required for non-ASCII digits and whitespace. ASCII output
+omits Unicode property tables and code-point cache implementations.
 
 Uniquely owned flat lists of supported immutable values share direct
 `index`, `count`, and `pop` lowering. Search bounds use Python slice-style
@@ -78,11 +82,13 @@ String methods include `strip`/`lstrip`/`rstrip` with an optional
 character set, `count` with bounds in the selected string model, and `join` over a proved
 string iterable. Joining exhausts generator inputs before constructing its
 result. Unicode whitespace includes Python's additional U+001C–U+001F range.
-All integer modes use the same immutable `NativeText` storage in scalar
-bindings, function signatures, classes, and containers. Cloning a string shares
+All integer modes use the immutable `NativeText` interface in scalar
+bindings, function signatures, classes, and containers, with storage selected
+for the configured string model. Cloning a string shares
 its storage, and literal sites retain static storage. Unicode lengths are
 cached; indexed reads lazily build and reuse code-point offsets. ASCII reads
-retain byte-based borrowed views. Mutable formatting and output builders remain
+retain byte-based borrowed views and carry no Unicode cache fields.
+Mutable formatting and output builders remain
 ordinary Rust `String` values. String identity and the remaining general object
 protocols still need direct implementation.
 
