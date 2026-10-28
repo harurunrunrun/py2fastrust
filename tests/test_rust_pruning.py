@@ -89,6 +89,61 @@ fn main(){}
             with self.subTest(source=source):
                 result=prune_rust_source_with_report(source)
                 self.assertTrue(result.retained,result.reason);self.assertEqual(result.source,source)
+
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_structural_impl_targets_keep_implicit_trait_dependencies(self):
+        source='''#![allow(dead_code)]
+fn unit_text()->&'static str{"unit"}
+fn dead()->usize{999}
+trait Describe {fn describe(&self)->String;}
+impl Describe for () {fn describe(&self)->String{unit_text().into()}}
+impl<T:std::fmt::Display> Describe for (T,) {
+ fn describe(&self)->String{format!("tuple {}",self.0)}
+}
+impl<T> Describe for [T] {fn describe(&self)->String{format!("slice {}",self.len())}}
+impl<T,const N:usize> Describe for [T;N] {fn describe(&self)->String{format!("array {}",N)}}
+impl<T> Describe for &T {fn describe(&self)->String{"reference".into()}}
+impl Describe for *const u8 {fn describe(&self)->String{"pointer".into()}}
+fn main(){
+ println!("{}|{}|{}|{}|{}|{}",().describe(),(7,).describe(),
+          [1,2].as_slice().describe(),[1,2,3].describe(),(&9).describe(),
+          std::ptr::null::<u8>().describe());
+}
+'''
+        result=prune_rust_source_with_report(source)
+        self.assertIsNone(result.reason)
+        self.assertFalse(result.retained)
+        self.assertNotIn('fn dead(',result.source)
+        self.assertIn('fn unit_text(',result.source)
+        with tempfile.TemporaryDirectory(prefix='pytors-prune-structural-')as directory:
+            path=Path(directory)/'main.rs';path.write_text(result.source);binary=path.with_suffix('')
+            built=subprocess.run(['rustc','--edition=2021',str(path),'-o',str(binary)],capture_output=True,text=True,timeout=30)
+            self.assertEqual(built.returncode,0,built.stderr)
+            actual=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10)
+            self.assertEqual(actual.returncode,0,actual.stderr)
+            self.assertEqual(actual.stdout,'unit|tuple 7|slice 2|array 3|reference|pointer\n')
+
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_blanket_parameter_does_not_anchor_to_an_unrelated_concrete_type(self):
+        source='''#![allow(dead_code)]
+struct T;
+trait Answer {fn answer(&self)->usize;}
+impl<T> Answer for T {fn answer(&self)->usize{value()}}
+fn value()->usize{7}
+fn dead()->usize{99}
+fn main(){println!("{}",42_u32.answer());}
+'''
+        result=prune_rust_source_with_report(source)
+        self.assertIsNone(result.reason)
+        self.assertIn('impl<T> Answer for T',result.source)
+        self.assertIn('fn value()',result.source)
+        self.assertNotIn('fn dead()',result.source)
+        with tempfile.TemporaryDirectory(prefix='pytors-prune-shadow-')as directory:
+            path=Path(directory)/'main.rs';path.write_text(result.source);binary=path.with_suffix('')
+            built=subprocess.run(['rustc','--edition=2021',str(path),'-o',str(binary)],capture_output=True,text=True,timeout=30)
+            self.assertEqual(built.returncode,0,built.stderr)
+            actual=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10)
+            self.assertEqual(actual.returncode,0,actual.stderr);self.assertEqual(actual.stdout,'7\n')
     @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
     def test_trait_defaults_aliases_blankets_drop_and_inherent_function_pointers(self):
         source='''#![allow(dead_code)]
@@ -134,6 +189,42 @@ fn main(){
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class GeneratedRustPruningTests(unittest.TestCase):
+    def test_generated_classes_with_unit_trait_prune_in_all_modes_and_profiles(self):
+        source='''class Text:
+ def __init__(self,text):
+  self.text=text
+  self.values=[2,5]
+ def add(self,value):
+  self.values.append(value)
+ def show(self):
+  return self.text[-1],len(self.text),self.values
+item=Text(input())
+old=item.values
+item.add(8)
+print(item.show(),old,item.values is old)
+'''
+        environment={**os.environ,'PATH':'/pytors-no-runtime-dependencies'}
+        with tempfile.TemporaryDirectory(prefix='pytors-prune-class-profiles-')as directory:
+            for policy,data in [('ascii','words\n'),('unicode','あ🙂é\n')]:
+                expected=subprocess.run([sys.executable,'-I','-c',source],input=data,capture_output=True,text=True,timeout=15)
+                for integer in ['i64','i128','bigint']:
+                    original=transpile(source,TranspileOptions(integer=integer,string_mode=policy,optimize=False))
+                    self.assertTrue(original.success,original.diagnostics)
+                    result=prune_rust_source_with_report(original.rust_source)
+                    self.assertIsNone(result.reason)
+                    self.assertFalse(result.retained)
+                    self.assertLess(result.after_bytes,result.before_bytes)
+                    self.assertNotIn('fn native_pow(',result.source)
+                    self.assertEqual(prune_rust_source(result.source),result.source)
+                    for optimized in [False,True]:
+                        with self.subTest(integer=integer,policy=policy,optimized=optimized):
+                            path=Path(directory)/(f'{integer}_{policy}_{optimized}.rs');path.write_text(result.source,encoding='utf-8');binary=path.with_suffix('')
+                            built=subprocess.run(['rustc','--edition=2021',str(path),'-o',str(binary)]+(['-O']if optimized else[]),capture_output=True,text=True,timeout=180)
+                            self.assertEqual(built.returncode,0,built.stderr)
+                            actual=subprocess.run([str(binary)],input=data,capture_output=True,text=True,timeout=15,env=environment)
+                            self.assertEqual(actual.returncode,expected.returncode,actual.stderr)
+                            self.assertEqual(actual.stdout,expected.stdout)
+
     def test_generated_native_samples_keep_semantics_and_remove_helpers(self):
         cases=[('print(1+2)\n',''),('n=int(input())\nprint(n*n)\n','12\n'),('x={1:2}\nprint(x[1])\n','')]
         with tempfile.TemporaryDirectory(prefix='pytors-prune-samples-')as directory:

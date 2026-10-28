@@ -39,6 +39,7 @@ class _Item:
     references: set[str]
     owner: str | None = None
     trait: bool = False
+    owner_nominal: bool = True
     body_start: int | None = None
     body_end: int | None = None
     children: list["_Item"] = field(default_factory=list)
@@ -162,18 +163,98 @@ def _references(tokens):
     return result
 
 
-def _owner(header, trait):
-    start = next((i + 1 for i, token in enumerate(header) if token.text == "for"), None) if trait else 1
-    if start is None:
-        return None
-    if not trait and start < len(header) and header[start].text == "<":
-        depth = 1
-        start += 1
-        while start < len(header) and depth:
-            depth += (header[start].text == "<") - (header[start].text == ">" and header[start-1].text != "-")
-            start += 1
-    names = [token.text for token in header[start:] if token.kind == "identifier"]
-    return next((name for name in names if name not in {"mut", "const", "dyn"}), None)
+def _group_end(tokens,start):
+    """Skip one balanced type group, including nested generic arguments."""
+    opening=tokens[start].text
+    closing={"(":")","[":"]","{":"}","<":">"}[opening]
+    cursor=start+1
+    while cursor<len(tokens):
+        text=tokens[cursor].text
+        if text==closing and not (closing==">"and tokens[cursor-1].text=="-"):
+            return cursor+1
+        if text in {"(","[","{","<"}:
+            cursor=_group_end(tokens,cursor)
+        else:cursor+=1
+    raise _Unsupported("unbalanced impl type")
+
+
+def _type_end(tokens,start):
+    """Recognize emitted Rust type heads without guessing a nominal owner.
+
+    Structural types can carry blanket implementations. Their implementation
+    and dependencies must be retained independently of any element name.
+    """
+    if start>=len(tokens):raise _Unsupported("missing impl type")
+    cursor=start
+    text=tokens[cursor].text
+    if text in {"&","*"}:
+        cursor+=1
+        if text=="&"and cursor<len(tokens)and tokens[cursor].kind=="lifetime":cursor+=1
+        if cursor<len(tokens)and tokens[cursor].text in {"mut","const"}:cursor+=1
+        end,_root=_type_end(tokens,cursor)
+        return end,None
+    if text=="(":
+        end=_group_end(tokens,cursor)
+        cursor+=1
+        while cursor<end-1:
+            cursor,_root=_type_end(tokens,cursor)
+            if cursor<end-1:
+                if tokens[cursor].text!=",":raise _Unsupported("unknown tuple impl type")
+                cursor+=1
+        return end,None
+    if text=="[":
+        end=_group_end(tokens,cursor)
+        cursor,_root=_type_end(tokens,cursor+1)
+        if cursor<end-1:
+            if tokens[cursor].text!=";"or cursor+1==end-1:raise _Unsupported("unknown array impl type")
+            # Const expressions are already tokenized and group-balanced. They
+            # contribute dependencies but never establish a nominal type owner.
+        return end,None
+    if text=="!":return cursor+1,None
+    if tokens[cursor].kind!="identifier"or text in {"dyn","impl","fn","unsafe","extern"}:
+        raise _Unsupported("unknown impl type")
+    root=text
+    cursor+=1
+    if cursor<len(tokens)and tokens[cursor].text=="<":cursor=_group_end(tokens,cursor)
+    qualified=False
+    while cursor+1<len(tokens)and tokens[cursor].text==tokens[cursor+1].text==":":
+        qualified=True
+        cursor+=2
+        if cursor>=len(tokens)or tokens[cursor].kind!="identifier":raise _Unsupported("unknown impl type path")
+        cursor+=1
+        if cursor<len(tokens)and tokens[cursor].text=="<":cursor=_group_end(tokens,cursor)
+    return cursor,None if qualified else root
+
+
+def _impl_target(header,trait):
+    start=1
+    generics=set()
+    if start<len(header)and header[start].text=="<":
+        end=_group_end(header,start)
+        cursor=start+1
+        while cursor<end-1:
+            if header[cursor].text=="const":cursor+=1
+            if header[cursor].kind=="identifier":generics.add(header[cursor].text)
+            while cursor<end-1 and header[cursor].text!=",":
+                cursor=_group_end(header,cursor)if header[cursor].text in {"(","[","{","<"}else cursor+1
+            cursor+=1
+        start=end
+    if trait:
+        cursor=start
+        while cursor<len(header)and header[cursor].text!="for":
+            cursor=_group_end(header,cursor)if header[cursor].text in {"(","[","{","<"}else cursor+1
+        if cursor==len(header):raise _Unsupported("missing impl target")
+        start=cursor+1
+    end,root=_type_end(header,start)
+    if end<len(header)and header[end].text!="where":raise _Unsupported("unknown impl target suffix")
+    nominal=root is not None and root not in generics
+    label=root if nominal else "".join(token.text for token in header[start:end])
+    return label,nominal
+
+
+def _owner(header,trait):
+    """Compatibility helper for the parser's concrete/structural owner label."""
+    return _impl_target(header,trait)[0]
 
 
 def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None):
@@ -255,9 +336,7 @@ def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None):
             if any(token.text=="for" and index+1<len(header) and header[index+1].text=="<" for index,token in enumerate(header)):
                 raise _Unsupported("higher-ranked impl bound")
             item.trait = any(token.text == "for" for token in header)
-            item.owner = _owner(header, item.trait)
-            if item.owner is None:
-                raise _Unsupported("unknown impl target")
+            item.owner,item.owner_nominal = _impl_target(header,item.trait)
             item.references = _references(tokens[first:body])
             item.body_start, item.body_end = tokens[body].end, tokens[pairs[body]].start
             if item.trait:
@@ -334,9 +413,9 @@ def prune_rust_source_with_report(source: str, *, roots=("main",)) -> RustPruneR
         # Blanket/external/alias impls can apply to a concrete type without its
         # target spelling appearing at a call site. Retain those entire impls.
         for item in traits:
-            if item.owner not in concrete_types:item.protected=True
+            if not item.owner_nominal or item.owner not in concrete_types:item.protected=True
         for item in inherent:
-            if item.owner not in concrete_types:
+            if not item.owner_nominal or item.owner not in concrete_types:
                 for child in item.children:child.protected=True
         if not all(name in globals_by_name for name in roots):
             raise _Unsupported("entry root missing")
