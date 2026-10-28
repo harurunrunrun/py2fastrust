@@ -360,10 +360,16 @@ Definition-time defaults on the typed frame path run once in their original
 execution scope, including mutable defaults and calls with effects. Optional
 typed module cells distinguish an unset name from `None`, preserve shared list
 identity and let functions read the latest assigned global value. Local and
-parameter bindings keep their own representations. Rebinding or deleting a
-function-valued alias still requires typed callable cells; dynamic argument
-expansion, emitted variadic functions and general dynamic namespaces remain
-unfinished.
+parameter bindings keep their own representations. Finite source-function
+values use typed references in module/local bindings, arguments, results,
+conditionals, supported containers and object fields. Rebinding or deleting a
+module function name updates its optional cell; saved references retain their
+original identity and defaults. Calls capture the current callee before their
+arguments and dispatch directly to the selected compiled Rust function. Valid
+call-only aliases retain their ordinary static path. Captured builtins,
+repeated definition instances, bound methods, callable objects, function
+metadata, dynamic argument expansion, emitted variadic functions and general
+dynamic namespaces still require implementation.
 
 Class values, method signatures, fields, and list elements use the shared
 scalar, `TupleType`, `ListType`, `MaybeType`, `NullableType`, and `UnionType`

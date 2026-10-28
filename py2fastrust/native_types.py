@@ -74,6 +74,12 @@ def union_type(*kinds):
     for kind in kinds:
         values.update(alternatives(kind))
     values={kind for kind in values if not isinstance(kind,EmptyType)}
+    functions=[kind for kind in values if getattr(kind,"_native_function_reference",False)]
+    if functions:
+        merged=functions[0]
+        for kind in functions[1:]:merged=merged.join(kind)
+        values.difference_update(functions)
+        values.add(merged)
     if not values:return EMPTY if kinds else None
     if "int_bool" in values or {"int","bool"} <= values:
         values.difference_update({"int","bool"})
@@ -198,6 +204,7 @@ def immutable(kind):
 def reference_cloneable(kind):
     """Cloning copies only immutable values or stable mutable object handles."""
     if immutable(kind):return True
+    if getattr(kind,"_native_reference_cloneable",False):return True
     if isinstance(kind,SharedListType):return True
     if isinstance(kind,(NullableType,)):
         return reference_cloneable(kind.value)

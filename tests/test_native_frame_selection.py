@@ -61,9 +61,8 @@ class FrameSelectionProofTests(unittest.TestCase):
         self.assertEqual(result.diagnostics[0].code,'E006')
         self.assertGreater(result.diagnostics[0].line,0)
 
-    def test_escaping_or_ambiguous_function_objects_have_explicit_diagnostics(self):
-        sources=['def rec(n):\n if n==0:return 0\n return rec(n-1)\nalias=rec\nprint(alias,rec(2))\n',
-                 'def rec(n):\n if n==0:return 0\n return dispatch(n-1)\ndef other(n):return rec(n)\nif input():dispatch=rec\nelse:dispatch=other\nprint(rec(2))\n']
+    def test_function_object_display_has_an_explicit_protocol_diagnostic(self):
+        sources=['def rec(n):\n if n==0:return 0\n return rec(n-1)\nalias=rec\nprint(alias,rec(2))\n']
         for source in sources:
             for mode in('i64','i128','bigint'):
                 with self.subTest(source=source,mode=mode):
@@ -71,6 +70,8 @@ class FrameSelectionProofTests(unittest.TestCase):
                     self.assertFalse(result.success)
                     self.assertEqual(result.diagnostics[0].code,'E006')
                     self.assertGreater(result.diagnostics[0].line,0)
+                    self.assertIn('function-object display protocol',result.diagnostics[0].message)
+                    self.assertIn('value=function',result.diagnostics[0].message)
 
     def test_cross_scope_callable_writes_do_not_reuse_stale_module_call_facts(self):
         source='''def first(n):
@@ -87,9 +88,8 @@ print(alias(2),first(3))
         for mode in('i64','i128','bigint'):
             with self.subTest(mode=mode):
                 result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,'E006')
-                self.assertIn('callable binding versions',result.diagnostics[0].message)
+                self.assertTrue(result.success,result.diagnostics)
+                self.assertTrue(self.select(source).required)
 
     def test_callable_binding_deletion_is_not_erased_as_an_unused_value(self):
         source='''def first(n):
@@ -102,14 +102,16 @@ print(first(2))
 '''
         for mode in('i64','i128','bigint'):
             result=transpile(source,TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
-            self.assertIn('binding existence and lifetime',result.diagnostics[0].message)
+            self.assertTrue(result.success,result.diagnostics)
+            self.assertTrue(self.select(source).required)
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class FrameSelectionExecutionTests(unittest.TestCase):
     def compare(self,*args,**kwargs):return _heap.HeapExecutionTests.compare(self,*args,**kwargs)
+
+    def test_finite_conditional_recursive_function_references(self):
+        self.compare('def rec(n):\n if n==0:return 0\n return dispatch(n-1)\ndef other(n):return rec(n)\nif input():dispatch=rec\nelse:dispatch=other\nprint(rec(2))\n',('\n','selected\n'))
 
     def test_ordinary_scalar_recursion_has_no_class_declaration(self):
         self.compare(FACTORIAL,tuple(str(n)+'\n'for n in(-3,0,1,2,7,12)))

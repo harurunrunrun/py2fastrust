@@ -6,12 +6,12 @@ and clones element handles; it never copies the referenced inner containers.
 import ast
 
 from .native import _Expression
-from .native_types import ListType,TupleType,NullableType,UnionType,immutable
+from .native_types import ListType,TupleType,NullableType,UnionType,immutable,reference_cloneable
 
 
 def shared_element(kind):
     """Kinds whose Clone implementation preserves Python element identity."""
-    if immutable(kind):return True
+    if reference_cloneable(kind):return True
     if isinstance(kind,ListType):return shared_element(kind.element)
     if isinstance(kind,TupleType):return all(shared_element(field)for field in kind.fields)
     if isinstance(kind,NullableType):return shared_element(kind.value)

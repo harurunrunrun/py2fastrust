@@ -60,6 +60,8 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
         return "unresolved container element"
     if name == "InstanceType":
         return kind.name
+    if getattr(kind,"_native_function_reference",False):
+        return "function"
     # The class planner still has readonly Cell views alongside canonical kinds.
     # Follow parent pointers without changing its union-find state.
     if name == "Cell":

@@ -98,5 +98,8 @@ def select_frames(unit):
     recursive=_cyclic_nodes(edges)
     from .native_frame_references import prove
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
-    references=prove(unit,analysis,targets)if reasons else None
+    references=prove(unit,analysis,targets)
+    from .native_aot_callables import requires_cells
+    if requires_cells(unit,analysis,references):reasons+=("first-class AOT function references",)
+    if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

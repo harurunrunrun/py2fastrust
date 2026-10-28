@@ -120,12 +120,12 @@ class NativeDiagnosticTests(unittest.TestCase):
             source='def f(xs):\n '+statement+'\n return 0\nxs=[1]\nprint(f(xs))\n'
             self.positive(source)
 
-    def test_class_path_names_first_class_function_value_capture_boundary(self):
+    def test_class_path_names_user_sort_key_invocation_boundary(self):
         diagnostic=self.reject('class Item:pass\ndef score(x):return x\nxs=[2,1]\nxs.sort(key=score)\n')
-        self.assertEqual((diagnostic.line,diagnostic.column),(4,13))
-        self.assertIn("name 'score'",diagnostic.message)
-        self.assertIn('first-class value',diagnostic.message)
-        self.assertIn('callable/class-object identity',diagnostic.message)
+        self.assertEqual((diagnostic.line,diagnostic.column),(4,1))
+        self.assertIn("call 'xs.sort'",diagnostic.message)
+        self.assertIn('user key callable once per element',diagnostic.message)
+        self.assertIn('key callable capture and ordered once-per-element',diagnostic.message)
 
     def test_type_context_is_bounded_without_resolving_or_mutating_types(self):
         self.assertEqual(kind_name(TupleType(('int',)*30)),'tuple[int, int, int, int, int, int, ...]')

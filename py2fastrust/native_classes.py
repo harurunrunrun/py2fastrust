@@ -18,6 +18,7 @@ from .references import CORE_BUILTINS, BuiltinIdentity, UnknownReference, resolv
 from .native_types import (TupleType, ListType, MaybeType, NullableType, UnionType,
                            alternatives, union_type, join_types, immutable, render_type,
                            tuple_code, union_declaration)
+from .native_types import reference_cloneable
 from .native_unions import construct, project, union_kind
 from .native_constraints import Solver, SemanticGraph, Variable, value as constraint_value
 
@@ -45,6 +46,7 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,"_native_function_reference",False):return "function"
     if isinstance(kind, InstanceType):return "object"
     if isinstance(kind, TupleType):return "tuple"
     if isinstance(kind, ListType):return "list"
@@ -86,6 +88,9 @@ def shape(cell):
     if cell.tag == "list":return ListType(shape(cell.args[0]))
     if cell.tag == "tuple":return TupleType(tuple(shape(value)for value in cell.args))
     if cell.tag == "object":return InstanceType(cell.args[0])
+    if cell.tag=="function":
+        from .native_aot_callables import AotFunctionType
+        return AotFunctionType(tuple(cell.args))
     if cell.tag in {"enumerate","map_int"}:return StreamType(cell.tag,tuple(shape(value)for value in cell.args))
     if cell.tag == "union":return union_type(*(shape(value)for value in cell.args))
     return cell.tag
@@ -108,13 +113,17 @@ def merge(left, right, node):
     if right.tag is None:
         right.parent = left
         return left
+    if left.tag==right.tag=="function":
+        left.args=tuple(sorted(set(left.args)|set(right.args)))
+        right.parent=left
+        return left
     if {left.tag, right.tag} <= {"int", "bool", "int_bool"}:
         tag = join_types(left.tag,right.tag)
         right.parent = left
         left.tag = tag
         return left
     if left.tag != right.tag or left.tag=="union"or(left.tag=="tuple"and len(left.args)!=len(right.args)):
-        if not immutable_cell(left)or not immutable_cell(right):raise ClassUnsupported(node)
+        if not reference_cloneable(shape(left))or not reference_cloneable(shape(right)):raise ClassUnsupported(node)
         # Keep constructor payloads separate from the outer joined ABI. Mutable
         # allocation shapes are never widened into a union by this solver.
         candidates=[]
@@ -198,7 +207,7 @@ class Environment(dict):
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "sum", "min", "max", "abs", "id"}
-    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "list", "tuple", "range"}
+    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "range"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -239,6 +248,8 @@ class Model:
         from .native_class_globals import Namespace
         self.namespace=Namespace(self)
         self.discover()
+        from .native_aot_callables import CallableCells
+        self.callable_cells=CallableCells(self)
 
     def resolved_name(self, plan, node):
         if self.unit is not None:return self.unit.name_for(node)
@@ -278,6 +289,7 @@ class Model:
 
     @staticmethod
     def cell_for_kind(kind):
+        if getattr(kind,"_native_function_reference",False):return Cell("function",kind.definitions)
         if isinstance(kind,NullableType):
             return Cell("union",(Cell("none"),Model.cell_for_kind(kind.value)))
         if isinstance(kind,UnionType):
@@ -418,11 +430,11 @@ class Model:
         for value in ast.walk(self.tree):
             if isinstance(value, ast.Name) and isinstance(value.ctx, (ast.Store, ast.Del)) and value.id in names:
                 site=self.unit.ordinal(value)if self.unit is not None else id(value)
+                if value.id in self.functions:continue
                 if self.unit is not None and binding_owners.get(site)!=0:continue
                 if site not in self.comprehension_targets:raise ClassUnsupported(value)
             if isinstance(value, ast.arg) and value.arg in names:
-                if self.unit is None or binding_owners.get(self.unit.ordinal(value))==0:
-                    raise ClassUnsupported(value)
+                if self.unit is None or binding_owners.get(self.unit.ordinal(value))==0:raise ClassUnsupported(value)
 
     def canonical_local(self, plan, name, value):
         values = plan.locals.setdefault(name, [])
@@ -524,6 +536,9 @@ class Model:
             return self.cell(plan, node, literal.kind)
         if isinstance(node, ast.Name):
             name = self.resolved_name(plan,node)
+            provider=getattr(self,"callable_cells",None)
+            function=provider.value(plan,node,environment)if provider is not None else None
+            if function is not None:return self.remember(plan,node,function)
             shared=self.namespace.read(plan,node,environment)
             if shared is not None:return self.remember(plan,node,shared)
             if name in environment:
@@ -734,6 +749,8 @@ class Model:
         return self.remember(caller, node, callee.result)
 
     def call(self, plan, node, environment):
+        value=self.callable_cells.analyze(plan,node,environment)
+        if value is not None:return value
         from .native_frame_references import call_target
         callee=call_target(self,plan,node)
         if callee is not None:
@@ -1115,6 +1132,7 @@ class Emitter:
 
     def rust_type(self, kind):
         def leaf(value, recurse):
+            if getattr(value,"_native_function_reference",False):return "ClassFunctionRef"
             if isinstance(value,InstanceType):return f"ClassHandle_{self.model.classes[value.name].index}"
             if isinstance(value,ListType):return f"ClassList<{recurse(value.element)}>"
             if value=="range":return "ClassRange"
@@ -1151,6 +1169,9 @@ class Emitter:
 
     def coerce(self, value, kind, node):
         if value.kind == kind:return value.code
+        if getattr(value.kind,"_native_function_reference",False)and getattr(kind,"_native_function_reference",False):
+            if set(value.kind.definitions)<=set(kind.definitions):return value.code
+            raise ClassUnsupported(node,"this function reference has targets outside the solved receiving family",types=(("value",value.kind),("destination",kind)),proof="finite callable family inclusion")
         if union_kind(value.kind):
             return project(value.kind,value.code,
                 lambda source,code:self.coerce(Expression(f"({code}).clone()",source),kind,node))
@@ -1158,6 +1179,7 @@ class Emitter:
             choices=alternatives(kind)
             chosen=value.kind if value.kind in choices else next((option for option in choices
                 if option=="int_bool"and value.kind in {"int","bool"}
+                or getattr(option,"_native_function_reference",False)and getattr(value.kind,"_native_function_reference",False)and set(value.kind.definitions)<=set(option.definitions)
                 or isinstance(option,TupleType)and isinstance(value.kind,TupleType)
                     and len(option.fields)==len(value.kind.fields)),None)
             if chosen is None:raise ClassUnsupported(node)
@@ -1210,6 +1232,7 @@ class Emitter:
         tag = domain(value.kind)
         if tag in {"int","bool","int_bool"}:
             return self.numeric.truth(self.scalar(value))
+        if tag=="function":return "true"
         if tag in {"str","bytes"}:
             return f"!({value.code}).is_empty()"
         if tag == "float":
@@ -1242,6 +1265,8 @@ class Emitter:
             fields = [self.show(Expression(f"{value.code}.{i}.clone()",kind),node,True)
                       for i,kind in enumerate(value.kind.fields)]
             return "class_tuple_text(&[" + ",".join(fields) + "])"
+        if tag=="function":
+            raise ClassUnsupported(node,"this stored source function needs Python's function-object repr/name/address protocol; typed callable capture and direct dispatch are supported, but function-object display metadata is not implemented",types=(("value",value.kind),),proof="function-object display protocol")
         if tag in {"int","bool","int_bool","str","bytes","none","object","list","float"}:
             return f"ClassDisplay::class_{'repr' if representation else 'str'}(&({value.code}))"
         raise ClassUnsupported(node)
@@ -1407,7 +1432,8 @@ class Emitter:
             lambda kind,code:self.comparison(operator,left,Expression(f"({code}).clone()",kind),node))
         a,b = domain(left.kind),domain(right.kind)
         if isinstance(operator,(ast.Is,ast.IsNot)):
-            if a==b and a in {"object","list"}:
+            if a==b=="function":code=f"{left.code}=={right.code}"
+            elif a==b and a in {"object","list"}:
                 code = (f"Rc::ptr_eq(&{left.code},&{right.code})"if left.kind==right.kind else"false")
             elif a==b=="none":
                 code = "true"
@@ -1424,6 +1450,8 @@ class Emitter:
         from .native_class_storage import comparison as shared_comparison
         shared_result=shared_comparison(self,operator,left,right,node)
         if shared_result is not None:return shared_result
+        if a==b=="function"and isinstance(operator,(ast.Eq,ast.NotEq)):
+            return f"{left.code}{'!='if isinstance(operator,ast.NotEq)else'=='}{right.code}"
         if not isinstance(operator,(ast.In,ast.NotIn))and(isinstance(left.kind,TupleType)or isinstance(right.kind,TupleType)):
             from .native_tuples import tuple_compare,_scalar
             if not _scalar(left.kind)or not _scalar(right.kind):raise ClassUnsupported(node)
@@ -1550,6 +1578,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_aot_callables import emit_call
+        dispatched=emit_call(self,node)
+        if dispatched is not None:return dispatched
         from .native_frame_references import call_target
         callee=call_target(self.model,self.plan,node)
         if callee is not None:return self.call_user(node,callee)
@@ -2114,7 +2145,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         for owner in model.classes.values():
             if owner.used:
                 for value in owner.fields.values():add_kind(shape(value.cell))
-        layouts="\n".join(union_declaration(kind,emitters[0].rust_type)for kind in unions)+"\n"+layouts
+        layouts=model.callable_cells.runtime()+"\n"+"\n".join(union_declaration(kind,emitters[0].rust_type)for kind in unions)+"\n"+layouts
     except (SyntaxError,_Unsupported,RecursionError)as error:
         if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
         return None

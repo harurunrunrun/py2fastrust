@@ -141,7 +141,9 @@ class Namespace:
     def eligible(self,name):
         from .references import CORE_BUILTINS
         model=self.model
-        return (name not in model.functions and name not in model.classes
+        provider=getattr(model,"callable_cells",None)
+        function_binding=provider is not None and name in provider.function_bindings
+        return ((name not in model.functions or function_binding)and name not in model.classes
                 and name not in model.global_symbols and name not in {"__name__","__builtins__"}|self.implicit_names
                 and (name not in self.builtin_names or name in model.global_written_names))
 
@@ -173,6 +175,7 @@ class Namespace:
     def representation(self,kind,sources,node):
         from .native_classes import Cell,InstanceType,shape
         sources=self.flattened(sources)
+        if getattr(kind,"_native_function_reference",False):return Cell("function",kind.definitions)
         if isinstance(kind,NullableType):
             return Cell("union",(Cell("none"),self.representation(kind.value,sources,node)))
         if isinstance(kind,UnionType):
@@ -225,10 +228,22 @@ class Namespace:
         return True
 
     def delete(self,plan,node,environment):
-        from .native_classes import ClassUnsupported
-        if not isinstance(node,ast.Name)or not self.owns(plan,node):
-            raise ClassUnsupported(node,"this delete needs local/attribute/item binding deletion; only canonical module-owned binding deletion is implemented here",proof="module-frame binding ownership")
+        from .native_classes import Cell,ClassUnsupported,shape
+        if not isinstance(node,ast.Name):
+            raise ClassUnsupported(node,"this delete needs attribute/item binding deletion; only canonical lexical name deletion is implemented here",proof="lexical binding ownership")
         name=self.model.resolved_name(plan,node)
+        if not self.owns(plan,node):
+            if plan is self.model.module or name not in plan.declared:
+                raise ClassUnsupported(node,"this delete needs a nonlocal/free binding cell; lexical closure deletion is not implemented",proof="local/module binding ownership")
+            schema=self.local_schemas.setdefault((plan.index,name),Cell())
+            values=[environment[name]]if name in environment else plan.locals.get(name,[])
+            for value in values:self.contribute(schema,value,node,force=True)
+            if self.model.final and shape(schema)is None:schema.tag="none"
+            self.model.canonical_local(plan,name,schema)
+            self.model.remember(plan,node,schema)
+            environment[name]=schema
+            environment.definite.discard(name)
+            return
         self.active.add(name)
         self.model.remember(plan,node,self.refresh(name,node))
         environment[name]=self.cells[name]
@@ -306,6 +321,8 @@ def define(emitter,node):
             index=fields.index((plan.index,name))
             from .native_classes import shape
             code.append(before+f'class_scope.globals.borrow_mut().default_{index}=Some({emitter.coerce(value,shape(plan.default_cells[name]),expression)});')
+    provider=getattr(emitter.model,"callable_cells",None)
+    if provider is not None:code.append(provider.definition_emission(emitter,node))
     return "".join(code)
 
 
@@ -333,6 +350,10 @@ def local_read(emitter,node,wanted):
     loaded=emitter.at(f"{slot}.clone().ok_or_else(||{_string(error+': '+message)}.to_owned())",node)
     def narrow(kind,code):
         if kind==wanted:return code
+        if getattr(kind,"_native_function_reference",False)and getattr(wanted,"_native_function_reference",False):
+            if set(kind.definitions)<=set(wanted.definitions):return code
+            cases="|".join(f"ClassFunctionRef::F{definition}"for definition in wanted.definitions)
+            return f'match {code}{{value@({cases})=>value,_=>unreachable!("local callable contradicts solved control flow")}}'
         if union_kind(kind):
             return project(kind,code,lambda branch,value:narrow(branch,f"({value}).clone()"))
         if kind in alternatives(wanted)or wanted=="int_bool"and kind in {"int","bool"}:
@@ -365,6 +386,12 @@ def delete(emitter,node):
     from .native import _string
     namespace=emitter.model.namespace
     name=emitter.model.resolved_name(emitter.plan,node)
+    if not namespace.owns(emitter.plan,node):
+        stored=namespace.local_kind(emitter.plan,name)
+        slot=emitter.slot(name,stored)
+        message=_string(f"UnboundLocalError: cannot access local variable '{name}' where it is not associated with a value")
+        code=f'if {slot}.take().is_none(){{Err({message}.to_owned())}}else{{Ok(())}}'
+        return emitter.at(code,node)+";"
     index=namespace.index(name)
     message=_string(f"NameError: name '{name}' is not defined")
     code=f'if class_scope.globals.borrow_mut().value_{index}.take().is_none(){{Err({message}.to_owned())}}else{{Ok(())}}'
