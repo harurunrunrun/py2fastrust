@@ -255,6 +255,10 @@ class Namespace:
             if cell.tag is None:cell.tag="int"
 
     def defined_plans(self,caller,node):
+        lexical=getattr(self.model,"lexical",None)
+        if lexical is not None and isinstance(node,ast.FunctionDef):
+            target=lexical.plans.get(self.model.unit.ordinal(node))
+            if target is not None and lexical.parents[lexical.scope(target)]!=0:return(target,)
         if caller.class_body is not None:
             return (caller.class_body.methods[self.model.resolved_name(caller,node)],)
         return (self.model.functions[node.name],)
@@ -299,6 +303,8 @@ class Namespace:
 
 
 def default_read(emitter,plan,name):
+    lexical=emitter.model.lexical.default_read(emitter,plan,name)
+    if lexical is not None:return lexical
     from .native_classes import Expression,shape
     index=sorted(emitter.model.namespace.defaults).index((plan.index,name))
     code=f'class_default_get_{index}(&class_scope)'

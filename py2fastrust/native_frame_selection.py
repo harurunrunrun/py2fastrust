@@ -97,8 +97,10 @@ def select_frames(unit):
         if caller is not None:edges.setdefault(caller,set()).update(definitions)
     recursive=_cyclic_nodes(edges)
     from .native_frame_references import prove
+    from .native_lexical_cells import requires_environments
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
     references=prove(unit,analysis,targets)
+    if requires_environments(unit,analysis,targets):reasons+=('lexical closure environments',)
     from .native_aot_callables import requires_cells
     if requires_cells(unit,analysis,references):reasons+=("first-class AOT function references",)
     if not reasons:references=None

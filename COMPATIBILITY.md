@@ -11,8 +11,8 @@ keeps the same direct generation path.
 Proved integer/boolean, string, and f64 scalars, BigInt scalar arithmetic and
 functions, integer containers, compatible branches/loops, scalar functions and
 selected competitive-programming input/BFS patterns are implemented. This is
-an incomplete subset of the required Python language. Recursion outside the
-class path, closures, exceptions, general object models, user-defined generators,
+an incomplete subset of the required Python language. Remaining closure lifetime
+cases, exception handlers, general object models, user-defined generators,
 dynamic execution, general imports
 and many mixed-type/alias cases still require direct lowering. An `E006`
 diagnostic makes that gap explicit; it does not satisfy the missing feature.
@@ -156,7 +156,7 @@ Non-escaping lambdas support immediate calls and `sort`/`sorted` key callbacks.
 Definition-time immutable defaults run once, parameters retain their own lexical
 scope, and free bindings are read at invocation. Keys are computed once per item
 before stable sorting, including with `reverse=True`. Mutable arguments/defaults,
-variadic packing, escaping closures and callbacks observing the list currently
+variadic packing, escaping lambdas and callbacks observing the list currently
 being sorted remain unfinished and produce a specific diagnostic.
 
 Proved finite value alternatives share canonical types across ordinary binding
@@ -370,6 +370,19 @@ call-only aliases retain their ordinary static path. Captured builtins,
 repeated definition instances, bound methods, callable objects, function
 metadata, dynamic argument expansion, emitted variadic functions and general
 dynamic namespaces still require implementation.
+
+Named nested functions have canonical lexical definition identities and typed
+per-invocation environments. Returned and sibling functions preserve captured
+list aliases, late writes, `nonlocal` updates/deletion and per-instance mutable
+defaults. Nested recursive calls share their enclosing environment while each
+factory invocation creates a distinct one. Unset captured names retain their
+Python `UnboundLocalError` or free-variable `NameError`, including source frames;
+binding errors retain nested qualified function names. Unentered lexical scopes
+do not force frame selection or evaluate dormant defaults. Reexecuting a nested
+definition in one enclosing invocation, non-definition writes to that callable
+binding, and closure/object graphs requiring cycle collection remain required
+work and produce specific diagnostics. Escaping lambdas are not covered by this
+named-function implementation.
 
 Class values, method signatures, fields, and list elements use the shared
 scalar, `TupleType`, `ListType`, `MaybeType`, `NullableType`, and `UnionType`

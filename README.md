@@ -173,6 +173,12 @@ defaults, positional and keyword binding, and calls between those functions.
 Statically known function aliases retain their original definitions across
 rebinding, with separate specializations for the actual argument kinds and
 callable globals. Integer-list slices and `sorted` create independent lists.
+Recursive functions use typed compiled frames. Finite source-function values
+retain the selected definition across arguments, results, containers and
+rebinding. Named nested functions capture typed environments belonging to each
+enclosing invocation, including shared mutable values, `nonlocal` writes and
+definition-time defaults. Escaping lambdas, repeated nested definition instances
+and cyclic closure ownership still require implementation.
 Python names can change type through distinct typed Rust slots. Compatible
 branches and loops merge proved kinds; finite boolean/integer unions use a
 small stack enum. ASCII string indexing accesses bytes directly. Opt-in Unicode
@@ -220,8 +226,8 @@ mutable alternatives and unproved container protocols are not yet implemented.
 
 If the implementation cannot establish a supported direct representation, it
 reports the missing construct or type combination. This currently includes
-many mutable aliases and mixed-type joins, recursion outside the class path,
-closures, exceptions, user-defined generators, general object models,
+many mutable aliases and mixed-type joins, remaining closure lifetime cases,
+exception handlers, user-defined generators, general object models,
 dynamic execution, and most standard-module calls.
 These are implementation gaps that must be restored through direct generation;
 they are not removed from the project's goals and do not require users to add

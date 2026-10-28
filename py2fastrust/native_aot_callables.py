@@ -82,7 +82,7 @@ class CallableCells:
     def __init__(self,model):
         from .native_classes import Cell
         self.model=model
-        self.plans={self.definition(plan):plan for plan in model.functions.values()}
+        self.plans=dict(model.lexical.plans)
         self.definition_cells={name:Cell("function",(self.definition(plan),))for name,plan in model.functions.items()}
         self.used=set()
         self.sites={}
@@ -114,6 +114,11 @@ class CallableCells:
         return self.model.namespace.refresh(name,node)
 
     def value(self,plan,node,environment):
+        if isinstance(node,ast.Name):
+            lexical=self.model.lexical.function_value(plan,node,environment)
+            if lexical is not None:
+                self.used.update(lexical.root().args)
+                return lexical
         if not(isinstance(node,ast.Name)and self.owns_function(plan,node)):return None
         name=self.model.resolved_name(plan,node)
         if name in self.model.namespace.builtin_names and(name in self.mutable_names or name not in(plan.visible_definitions or())):
@@ -201,13 +206,23 @@ class CallableCells:
     def runtime(self):
         if not self.used:return ""
         definitions=sorted(self.used)
-        return "#[derive(Clone,Copy,PartialEq,Eq)]\nenum ClassFunctionRef{"+",".join(f"F{value}"for value in definitions)+"}\n"
+        if not any(self.model.lexical.parent_scope(self.plans[value])for value in definitions):
+            return "#[derive(Clone,Copy,PartialEq,Eq)]\nenum ClassFunctionRef{"+",".join(f"F{value}"for value in definitions)+"}\n"
+        variants=[];matches=[]
+        for value in definitions:
+            parent=self.model.lexical.parent_scope(self.plans[value])
+            if parent:
+                variants.append(f"F{value}(std::rc::Rc<{self.model.lexical.environment_type(parent)}>)")
+                matches.append(f"(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(left,right)")
+            else:
+                variants.append(f"F{value}");matches.append(f"(Self::F{value},Self::F{value})=>true")
+        return "#[derive(Clone)]\nenum ClassFunctionRef{"+",".join(variants)+"}\nimpl PartialEq for ClassFunctionRef{fn eq(&self,other:&Self)->bool{match(self,other){"+",".join(matches)+",_=>false}}}\nimpl Eq for ClassFunctionRef{}\n"
 
 
 def binding_error(target,arguments,error):
     """Format the selected fixed signature's ordinary Python binding error."""
     signature=target.signature
-    name=target.node.name+"()"
+    name=getattr(target,"qualified_name",target.node.name)+"()"
     count=len(arguments.positional)
     maximum=len(signature.positional)
     defaults={slot.name for slot in signature.defaults}
@@ -284,13 +299,17 @@ def emit_call(emitter,node):
                 if definition in site.errors:result=error(site.errors[definition])
                 else:
                     default_emitter=Emitter(emitter.model,target)
+                    parent=emitter.model.lexical.parent_scope(target)
+                    if parent:default_emitter.lexical_environment_override="class_selected_environment"
                     try:bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target))
                     except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
                     values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
-                    invocation=emitter.function_name(target)+"(class_scope.clone()"+(","+",".join(values)if values else"")+")"
+                    invocation=emitter.function_name(target)+"(class_scope.clone()"+(",class_selected_environment.clone()"if parent else"")+(","+",".join(values)if values else"")+")"
                     from .native_class_calls import call
                     result=emitter.coerce(_Expression(call(emitter,invocation,target,node),shape(target.result)),wanted,node)
-                arms.append(f"ClassFunctionRef::F{definition}=>{result}")
+                pattern=f"ClassFunctionRef::F{definition}"
+                if emitter.model.lexical.parent_scope(target):pattern+="(class_selected_environment)"
+                arms.append(pattern+"=>"+result)
             if set(kind.definitions)!=provider.used:
                 arms.append('_=>unreachable!("callable binding contradicts finite target proof")')
             return "match "+code+"{"+",".join(arms)+"}"

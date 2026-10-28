@@ -248,6 +248,8 @@ class Model:
         from .native_class_globals import Namespace
         self.namespace=Namespace(self)
         self.discover()
+        from .native_lexical_cells import LexicalCells
+        self.lexical=LexicalCells(self)
         from .native_aot_callables import CallableCells
         self.callable_cells=CallableCells(self)
 
@@ -258,6 +260,9 @@ class Model:
 
     def builtin_identity(self,plan,node,environment):
         name=self.resolved_name(plan,node)
+        lexical=getattr(self,"lexical",None)
+        if lexical is not None and isinstance(node,ast.Name)and(lexical.field_for(node)is not None or lexical.function_for(node)is not None):
+            return UnknownReference(name,"name denotes a lexical closure binding")
         if name in self.classes or name in self.functions:
             return UnknownReference(name,"name denotes a source definition")
         return resolve_static_callable(node,environment,local_names=plan.declared,
@@ -377,9 +382,9 @@ class Model:
             plan.default_literals[name]=captured
         if owner:
             merge(plan.arguments[plan.parameters[0]], Cell("object", (owner.node.name,)), node)
-        if not any(isinstance(value, ast.Return) and value.value is not None
-                   and not (isinstance(value.value, ast.Constant) and value.value.value is None)
-                   for value in ast.walk(node)):
+        from .native_lexical_cells import own_return_values
+        if not any(value is not None and not(isinstance(value,ast.Constant)and value.value is None)
+                   for value in own_return_values(self.unit,node)):
             merge(plan.result, Cell("none"), node)
         self.plans.append(plan)
         return plan
@@ -444,7 +449,7 @@ class Model:
     def snapshot(self):
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
-                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),
+                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())))
 
@@ -458,6 +463,7 @@ class Model:
                     continue
                 environment = {name:value for name,value in self.global_symbols.items() if name not in plan.declared}
                 environment.update(plan.arguments)
+                self.lexical.seed_arguments(plan)
                 for name, value in plan.arguments.items():
                     self.canonical_local(plan, name, value)
                 remaining = self.block(plan, plan.node.body, environment)
@@ -470,6 +476,7 @@ class Model:
     def run(self):
         self.infer_until_stable()
         self.namespace.default_uninhabited()
+        self.lexical.default_uninhabited()
         for owner in self.classes.values():
             for value in owner.fields.values():
                 if value.cell.root().tag is None and not value.written:
@@ -498,6 +505,7 @@ class Model:
         self.block(self.module, self.tree.body, dict(self.global_symbols))
         for plan in self.plans[1:]:
             if plan.reachable:
+                self.lexical.seed_arguments(plan)
                 global_names={name:value for name,value in self.global_symbols.items() if name not in plan.declared}
                 self.block(plan, plan.node.body, {**global_names, **plan.arguments})
         from .native_class_storage import validate_instance_graph
@@ -515,6 +523,7 @@ class Model:
                     self.storage(value, plan.node)
         for name in self.namespace.active:self.storage(self.namespace.cells[name],self.tree)
         for (index,name),value in self.namespace.defaults.items():self.storage(value,self.plans[index].defaults[name])
+        self.lexical.validate()
         return self
 
     def storage(self, cell, node, field_value=False):
@@ -539,6 +548,8 @@ class Model:
             provider=getattr(self,"callable_cells",None)
             function=provider.value(plan,node,environment)if provider is not None else None
             if function is not None:return self.remember(plan,node,function)
+            lexical=self.lexical.read(plan,node,environment)
+            if lexical is not None:return self.remember(plan,node,lexical)
             shared=self.namespace.read(plan,node,environment)
             if shared is not None:return self.remember(plan,node,shared)
             if name in environment:
@@ -925,6 +936,7 @@ class Model:
 
     def target(self, plan, node, value, environment):
         if isinstance(node,ast.Name):
+            if self.lexical.store(plan,node,value,environment):return
             if self.namespace.assign(plan,node,value,environment):return
             self.namespace.prepare_local(plan,node,environment)
             value=self.namespace.local_value(plan,node,value)
@@ -995,6 +1007,9 @@ class Model:
             if environment is None:
                 break
             if isinstance(node,(ast.ClassDef,ast.FunctionDef)):
+                if self.lexical.define(plan,node,environment):
+                    self.namespace.define(plan,node,environment)
+                    continue
                 if plan is not self.module and (plan.class_body is None or not isinstance(node,ast.FunctionDef)):
                     raise ClassUnsupported(node)
                 expected=(plan.class_body.methods.get(self.resolved_name(plan,node))if plan.class_body is not None else
@@ -1008,7 +1023,7 @@ class Model:
                 if plan is not self.module:
                     raise ClassUnsupported(node)
                 continue
-            if isinstance(node,(ast.Pass,ast.Global)):
+            if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal)):
                 continue
             if isinstance(node,ast.Expr):
                 self.expression(plan,node.value,environment)
@@ -1035,7 +1050,8 @@ class Model:
                 value = self.binary(plan,node,node.op,left,right)
                 self.target(plan,node.target,value,environment)
             elif isinstance(node,ast.Delete):
-                for target in node.targets:self.namespace.delete(plan,target,environment)
+                for target in node.targets:
+                    if not self.lexical.delete(plan,target,environment):self.namespace.delete(plan,target,environment)
             elif isinstance(node,ast.If):
                 self.condition(plan,node.test,environment)
                 environment = self.join(self.block(plan,node.body,environment),self.block(plan,node.orelse,environment),node)
@@ -1294,6 +1310,9 @@ class Emitter:
         if isinstance(node,ast.Constant):
             return self.literal_value(node.value,wanted,node)
         if isinstance(node,ast.Name):
+            lexical=self.model.lexical.emit_function(self,node,wanted)
+            if lexical is None:lexical=self.model.lexical.emit_read(self,node,wanted)
+            if lexical is not None:return lexical
             from .native_class_comprehensions import read_binding
             binding=read_binding(self,node,wanted)
             if binding is not None:return binding
@@ -1791,6 +1810,8 @@ class Emitter:
 
     def assign(self, target, value):
         if isinstance(target,ast.Name):
+            lexical=self.model.lexical.emit_store(self,target,value)
+            if lexical is not None:return lexical
             from .native_class_globals import assign
             shared=assign(self,target,value)
             if shared is not None:return shared
@@ -1842,6 +1863,8 @@ class Emitter:
         if reference[0]=="name":
             target=reference[1]
             kind=kind or self.kind(target)
+            lexical=self.model.lexical.emit_read(self,target,kind)
+            if lexical is not None:return lexical
             from .native_class_globals import read
             shared=read(self,target,kind)
             if shared is not None:return shared
@@ -1874,9 +1897,11 @@ class Emitter:
 
     def statement(self, node):
         if isinstance(node,(ast.ClassDef,ast.FunctionDef)):
+            lexical=self.model.lexical.emit_define(self,node)
+            if lexical is not None:return lexical
             from .native_class_globals import define
             return define(self,node)
-        if isinstance(node,(ast.Import,ast.Pass,ast.Global)):
+        if isinstance(node,(ast.Import,ast.Pass,ast.Global,ast.Nonlocal)):
             return ""
         if isinstance(node,ast.Expr):
             if isinstance(node.value,ast.Constant)and type(node.value.value)is str:
@@ -1896,7 +1921,7 @@ class Emitter:
             return setup+"".join(self.assign(target,Expression(value.code+".clone()",value.kind,value.constant))for target in node.targets)
         if isinstance(node,ast.Delete):
             from .native_class_globals import delete
-            return "".join(delete(self,target)for target in node.targets)
+            return "".join(self.model.lexical.emit_delete(self,target)if self.model.lexical.field_for(target)is not None else delete(self,target)for target in node.targets)
         if isinstance(node,ast.AugAssign):
             setup,reference=self.reference(node.target)
             old_kind=shape(self.model.augmented[(self.plan.index,id(node))])
@@ -2001,6 +2026,8 @@ class Emitter:
         for i,name in enumerate(self.plan.parameters+self.plan.keyword_only):
             kind=shape(self.plan.arguments[name]);argument=f"class_argument_{i}"
             parameters.append(f"{argument}:{self.rust_type(kind)}")
+            captured=self.model.lexical.environments.get(self.model.lexical.scope(self.plan))
+            if captured is not None and name in captured.fields:continue
             stored=self.model.namespace.local_kind(self.plan,name)or kind
             initial.append(f"{self.slot(name,stored)}=Some({self.coerce(Expression(argument,kind),stored,self.plan.node)});")
         result=self.rust_type(shape(self.plan.result))
@@ -2008,13 +2035,14 @@ class Emitter:
             tail="Ok("+self.coerce(Expression("()","none"),shape(self.plan.result),self.plan.node)+")"
         else:
             tail=f"Err(NativeError{{message:\"RuntimeError: invalid compiled return\".into(),line:{getattr(self.plan.node,'lineno',1)},function:{_string(self.plan.scope)},frames:Vec::new()}})"
-        signature="class_scope:ClassScope"+(" ,"+",".join(parameters)if parameters else"")
+        lexical_initial=self.model.lexical.initialize(self)
+        signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+(" ,"+",".join(parameters)if parameters else"")
         from .native_class_calls import synchronous
         if synchronous(self.model,self.plan):
             return (f"fn {self.function_name(self.plan)}({signature})->ClassResult<{result}>{{\n"
-                    "use std::fmt::Write as _;\n"+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n}")
+                    "use std::fmt::Write as _;\n"+(lexical_initial+"\n"if lexical_initial else"")+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n}")
         return (f"fn {self.function_name(self.plan)}({signature})->ClassFuture<{result}>{{Box::pin(async move{{\n"
-                "use std::fmt::Write as _;\n"+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n})}")
+                "use std::fmt::Write as _;\n"+(lexical_initial+"\n"if lexical_initial else"")+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n})}")
 
 
 def _named_helpers(source,wanted):
@@ -2145,7 +2173,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         for owner in model.classes.values():
             if owner.used:
                 for value in owner.fields.values():add_kind(shape(value.cell))
-        layouts=model.callable_cells.runtime()+"\n"+"\n".join(union_declaration(kind,emitters[0].rust_type)for kind in unions)+"\n"+layouts
+        lexical_layouts=model.lexical.runtime(emitters[0])
+        layouts=(lexical_layouts+"\n"if lexical_layouts else"")+model.callable_cells.runtime()+"\n"+"\n".join(union_declaration(kind,emitters[0].rust_type)for kind in unions)+"\n"+layouts
     except (SyntaxError,_Unsupported,RecursionError)as error:
         if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
         return None
