@@ -231,19 +231,6 @@ def try_expression(generator,node,environment):
             result=f"match {checked}{{{arms}{',' if arms else ''}_=>unreachable!()}}"
             generator.register_type(kind)
         return _Expression("{"+setup+result+"}",kind)
-    if isinstance(node,ast.Compare):
-        expressions=[generator.expression(value,environment) for value in [node.left,*node.comparators]]
-        from .native_unions import union_kind
-        if any(union_kind(value.kind) or value.kind=="none" for value in expressions):return None
-        if not any(isinstance(value.kind,TupleType) for value in expressions):return None
-        if any(type(operator) not in {ast.Eq,ast.NotEq,ast.Lt,ast.LtE,ast.Gt,ast.GtE} for operator in node.ops):
-            raise _Unsupported
-        names=[generator.temporary() for _ in expressions];tail="true"
-        for index in reversed(range(len(node.ops))):
-            a,b=expressions[index:index+2]
-            comparison=tuple_compare(generator,_Expression(names[index],a.kind),_Expression(names[index+1],b.kind),node.ops[index],node)
-            tail=f"{{let {names[index+1]}=&({b.code}); ({comparison})&&({tail})}}"
-        return _Expression(f"{{let {names[0]}=&({expressions[0].code});{tail}}}","bool")
     return None
 
 
@@ -320,3 +307,13 @@ def try_statement(generator,node,environment):
     setup.append(f"native_output.push_str({_string(end)});")
     if flush:setup.append(generator.at("native_flush_output(&mut native_output)",node)+";")
     return "\n".join(setup),environment
+
+def comparison(generator,node,expressions):
+    if any(type(operator) not in {ast.Eq,ast.NotEq,ast.Lt,ast.LtE,ast.Gt,ast.GtE} for operator in node.ops):
+        raise _Unsupported
+    names=[generator.temporary() for _ in expressions];tail="true"
+    for index in reversed(range(len(node.ops))):
+        a,b=expressions[index:index+2]
+        comparison=tuple_compare(generator,_Expression(names[index],a.kind),_Expression(names[index+1],b.kind),node.ops[index],node)
+        tail=f"{{let {names[index+1]}=&({b.code}); ({comparison})&&({tail})}}"
+    return _Expression(f"{{let {names[0]}=&({expressions[0].code});{tail}}}","bool")

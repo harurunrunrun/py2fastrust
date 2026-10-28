@@ -190,7 +190,7 @@ class NativeIteratorForTests(NativeIteratorReductionTests):
                     break
                 print(x)
             print(int(input()))
-        ''', ("１２ -3 5\n1 2 3 invalid\n91\n", "\n4 invalid\n92\n"))
+        ''', ("１２ -3 5\n1 2 3 invalid\n91\n", "\n4 invalid\n92\n"), string_mode="unicode")
 
     def test_deque_mutation_expressions_do_not_leave_stale_cardinality(self):
         self.differential('''

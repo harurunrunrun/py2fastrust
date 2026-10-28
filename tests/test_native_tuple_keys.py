@@ -22,11 +22,11 @@ class NativeTupleKeyTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def differential(self,source,inputs=("",),modes=("i64","i128","bigint"),profiles=(False,True),wrapping=False):
+    def differential(self,source,inputs=("",),modes=("i64","i128","bigint"),profiles=(False,True),wrapping=False,strings="ascii"):
         references=[subprocess.run([sys.executable,"-I","-c",source],input=data,capture_output=True,text=True,timeout=5) for data in inputs]
         for mode in modes:
             expected=[execute(source,mode,data) for data in inputs] if wrapping else references
-            result=transpile(source,TranspileOptions(integer=mode,filename="keys.py"))
+            result=transpile(source,TranspileOptions(integer=mode,filename="keys.py",string_mode=strings))
             self.assertTrue(result.success,result.diagnostics)
             self.assertEqual(result.backend,"native")
             self.assertLess(len(result.rust_source.encode()),512*1024)
@@ -94,7 +94,7 @@ for key,value in D.items():
 S={('猫',7),('é',8)}
 print(('猫',7) in S,('海',7) in S)
 '''
-        self.differential(source)
+        self.differential(source,strings="unicode")
 
     def test_copies_clear_and_proved_empty_container_retyping(self):
         source='''S={(1,2)}
@@ -154,11 +154,18 @@ for key,value in D.items():
             source=f"S={{{key}}}\nD={{{key}:7}}\nT=S.copy()\nE=D.copy()\nprint(len(S),len(T),{key} in T,D[{key}],E[{key}])\n"
             self.differential(source,profiles=(True,))
 
-    def test_integer_tuple_no_optimize_retains_unicode_data_notice(self):
-        result=transpile("value=(1,2)\nprint(value)\n",TranspileOptions(integer="i64",optimize=False))
+    def test_integer_tuple_no_optimize_retains_unicode_data_notice_when_selected(self):
+        result=transpile("value=(1,2)\nprint(value)\n",TranspileOptions(integer="i64",optimize=False,string_mode="unicode"))
         self.assertTrue(result.success,result.diagnostics)
         self.assertIn("const NATIVE_TUPLE_PRINTABLE",result.rust_source)
         self.assertIn("UNICODE LICENSE V3",result.rust_source)
+
+    def test_integer_tuple_no_optimize_omits_unicode_data_in_default_ascii_mode(self):
+        result=transpile("value=(1,2)\nprint(value)\n",TranspileOptions(integer="i64",optimize=False))
+        self.assertTrue(result.success,result.diagnostics)
+        self.assertNotIn("const NATIVE_TUPLE_PRINTABLE",result.rust_source)
+        self.assertNotIn("UNICODE LICENSE V3",result.rust_source)
+        self.assertIn("fn native_tuple_printable(c:char)->bool {(32..127)",result.rust_source)
 
     def test_seeded_dictionary_counts_and_set_membership(self):
         source='''n=int(input())

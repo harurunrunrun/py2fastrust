@@ -318,6 +318,7 @@ struct NativeDict {
     index: std::collections::HashMap<NativeInt, usize>,
 }
 impl NativeDict {
+    fn clear(&mut self) { self.entries.clear(); self.index.clear(); }
     fn new() -> Self {
         Self { entries: Vec::new(), index: std::collections::HashMap::new() }
     }
@@ -838,6 +839,12 @@ class _Generator:
 
     @result_shapes
     def expression(self, node, environment):
+        if isinstance(node,(ast.Compare,ast.BoolOp,ast.IfExp)):
+            from .native_expression_flow import lower
+            return lower(self,node,environment)
+        from .native_clear import try_expression as clear_expression
+        cleared=clear_expression(self,node,environment)
+        if cleared is not None:return cleared
         from .native_characters import read_local
         character=read_local(self,node,environment)
         if character is not None:return character
@@ -1030,49 +1037,6 @@ class _Generator:
             left = self.expression(node.left, environment)
             right = self.expression(node.right, environment)
             return self.binary(node.op, left, right, node)
-        if isinstance(node, ast.BoolOp):
-            values = [self.expression(value, environment) for value in node.values]
-            kind = self.scalar_kind(values)
-            code = self.coerce(values[-1], kind)
-            for value in reversed(values[:-1]):
-                name = self.temporary()
-                check = self.truth(_Expression(name, kind))
-                yes, no = (code, name) if isinstance(node.op, ast.And) else (name, code)
-                code = f"{{ let {name} = {self.coerce(value, kind)}; if {check} {{ {yes} }} else {{ {no} }} }}"
-            return _Expression(code, kind)
-        if isinstance(node, ast.Compare):
-            values = [self.expression(value, environment) for value in [node.left, *node.comparators]]
-            from .native_unions import compare
-            finite=compare(self,node,values)
-            if finite is not None:return finite
-            if len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn)):
-                if values[1].kind not in {"dict_int", "set_int"}:
-                    raise _Unsupported
-                if values[1].kind == "set_int" and values[0].kind != "int":
-                    raise _Unsupported
-                key, dictionary = self.temporary(), self.temporary()
-                binding = values[1].code if values[1].owned else f"&({values[1].code})"
-                argument = f"&{key}" if values[1].kind == "set_int" else key
-                check = f"{dictionary}.contains({argument})"
-                if isinstance(node.ops[0], ast.NotIn):
-                    check = f"!{check}"
-                return _Expression(f"{{ let {key} = {self.number(values[0])}; let {dictionary} = {binding}; {check} }}", "bool")
-            operators = {ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
-            if any(type(op) not in operators for op in node.ops):
-                raise _Unsupported
-            names = [self.temporary() for _ in values]
-            tail = "true"
-            for index in reversed(range(len(node.ops))):
-                compare = f"{names[index]} {operators[type(node.ops[index])]} {names[index + 1]}"
-                tail = f"{{ let {names[index + 1]} = {self.number(values[index + 1])}; {compare} && ({tail}) }}"
-            code = f"{{ let {names[0]} = {self.number(values[0])}; {tail} }}"
-            return _Expression(code, "bool")
-        if isinstance(node, ast.IfExp):
-            test = self.expression(node.test, environment)
-            yes = self.expression(node.body, environment)
-            no = self.expression(node.orelse, environment)
-            kind = self.scalar_kind([yes, no])
-            return _Expression(f"(if {self.truth(test)} {{ {self.coerce(yes, kind)} }} else {{ {self.coerce(no, kind)} }})", kind)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
             if name == "dict" and not node.args:

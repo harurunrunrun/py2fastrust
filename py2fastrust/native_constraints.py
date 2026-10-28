@@ -450,7 +450,12 @@ class Solver:
             if self.kind(receiver)=="str":result=value("str")
             elif self.kind(receiver)=="bytes":result=value("bytes")
         elif op=="compare":
-            for child in args:evaluate(child)
+            for child in args[:2]:evaluate(child)
+            for child in args[2:]:
+                possible=state.copy()
+                self.expression(child,possible,globals,locals,context)
+                joined=merge([state,possible])
+                state.clear();state.update(joined)
             result=value("bool")
         elif op=="unary":
             operand=evaluate(args[0]);result=value("bool") if term.data=="Not" else self.compute("unary:"+term.data,(operand,))
@@ -463,8 +468,21 @@ class Solver:
             else:result=self.compute("binary:"+term.data,(first,second))
         elif op in {"join","conditional"}:
             result=BOTTOM
-            if op=="conditional":evaluate(args[0])
-            for child in args[1:] if op=="conditional" else args:result=result.join(evaluate(child))
+            if op=="conditional":
+                evaluate(args[0]);branches=[]
+                for child in args[1:]:
+                    possible=state.copy()
+                    result=result.join(self.expression(child,possible,globals,locals,context))
+                    branches.append(possible)
+                joined=merge(branches)
+                state.clear();state.update(joined)
+            elif args:
+                result=evaluate(args[0])
+                for child in args[1:]:
+                    possible=state.copy()
+                    result=result.join(self.expression(child,possible,globals,locals,context))
+                    joined=merge([state,possible])
+                    state.clear();state.update(joined)
         elif op=="comprehension":
             inside=state.copy()
             for target,source,filters in args[0]:

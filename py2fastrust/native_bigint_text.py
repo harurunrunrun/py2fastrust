@@ -100,10 +100,6 @@ class BigIntText:
                 helper="native_big_text_codepoint" if self.string_mode=="unicode" else "native_big_ascii_codepoint"
                 direct=prefix+self.at(f"{helper}({owner},&{offset})",node)+"}"
                 return _Expression(code,"str",char_code=char_projection(self,node,code,direct))
-        if isinstance(node, ast.Compare):
-            values = [self.read_expression(value, environment) for value in [node.left,*node.comparators]]
-            if any(value.kind == "str" for value in values):
-                return self.text_compare(node, values)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             name = node.func.id
             if name == "input" and not node.args:

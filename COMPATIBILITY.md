@@ -147,6 +147,19 @@ also share exact integer/float ordering and partial binary64 ordering, including
 NaN. BigInt/float interoperation, float tuple identity, mutable alternatives,
 and general custom comparison protocols remain unfinished.
 
+Ordinary comparison frontends consume one common set of captured operand
+values before dispatching to finite, tuple, bytes, numeric, or keyed membership
+operations. Nullable bytes equality therefore compares the actual payload, and
+mutating operands cannot be emitted again while selecting another frontend.
+The first two comparison operands always run; each later operand runs only when
+the previous relation succeeds. Boolean operators and conditional expressions
+also join mutation facts across paths that may be skipped. Pure allocation
+analysis forks and joins those same conditional effects, including clear epochs;
+accepted builtin list/deque/set/dict clear expressions return `None` without
+leaving stale container cardinality proofs. Mutable equality, non-`None` object
+identity, general operations on nullable values, and remaining class integration
+are still unfinished.
+
 Proved immutable tuple keys use structurally typed Rust sets and dictionaries
 in every integer mode. Numeric keys preserve Python's bool/int equality while
 retaining the original key, and dictionaries retain insertion order. BigInt

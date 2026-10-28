@@ -256,27 +256,6 @@ def try_expression(generator,node,environment):
                    if not generator.bits else f"({offset}) as i128")
             call=generator.at(f"native_bytes_get(&{owner},{index})",node)
             return _Expression(f"{{let {owner}={value.code}; let {offset}={number}; {call}}}","int")
-    if isinstance(node,ast.Compare):
-        values=[generator.expression(value,environment) for value in [node.left,*node.comparators]]
-        if not any(value.kind == "bytes" for value in values):
-            return None
-        from .native_comparisons import ORDERING
-        from .native_unions import union_kind
-        if (any(type(operator) in ORDERING for operator in node.ops)
-                and any(union_kind(value.kind) or value.kind=="none" for value in values)):
-            # The common finite comparison captures and dispatches these
-            # alternatives, including chains and incompatible runtime pairs.
-            return None
-        if len(node.ops)!=1 or type(node.ops[0]) not in {ast.Eq,ast.NotEq,ast.Lt,ast.LtE,ast.Gt,ast.GtE}:
-            raise _Unsupported
-        left,right=values
-        if left.kind != right.kind:
-            if not isinstance(node.ops[0],(ast.Eq,ast.NotEq)):
-                raise _Unsupported
-            first,second=generator.temporary(),generator.temporary()
-            return _Expression(f"{{let {first}=&({left.code}); let {second}=&({right.code}); {str(isinstance(node.ops[0],ast.NotEq)).lower()}}}","bool")
-        op={ast.Eq:"==",ast.NotEq:"!=",ast.Lt:"<",ast.LtE:"<=",ast.Gt:">",ast.GtE:">="}[type(node.ops[0])]
-        return _Expression(f"({left.code}) {op} ({right.code})","bool")
     return None
 
 
@@ -366,3 +345,15 @@ def try_statement(generator,node,environment):
         if flush:lines.append(generator.at("native_flush_output(&mut native_output)",node)+";")
         return "\n".join(lines),environment
     return None
+
+def comparison(generator,node,values):
+    if len(node.ops)!=1 or type(node.ops[0]) not in {ast.Eq,ast.NotEq,ast.Lt,ast.LtE,ast.Gt,ast.GtE}:
+        raise _Unsupported
+    left,right=values
+    if left.kind != right.kind:
+        if not isinstance(node.ops[0],(ast.Eq,ast.NotEq)):
+            raise _Unsupported
+        first,second=generator.temporary(),generator.temporary()
+        return _Expression(f"{{let {first}=&({left.code}); let {second}=&({right.code}); {str(isinstance(node.ops[0],ast.NotEq)).lower()}}}","bool")
+    op={ast.Eq:"==",ast.NotEq:"!=",ast.Lt:"<",ast.LtE:"<=",ast.Gt:">",ast.GtE:">="}[type(node.ops[0])]
+    return _Expression(f"({left.code}) {op} ({right.code})","bool")

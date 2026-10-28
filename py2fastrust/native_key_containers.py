@@ -199,15 +199,6 @@ def try_expression(generator,node,environment):
         found=f"None::<{rust_type(owner.kind.value)}>" if isinstance(owner.kind.key,EmptyType) else f'{receiver}.get(&({canonical(generator,keyvalue)})).cloned()'
         lookup=f'{found}.ok_or_else(||format!("KeyError: {{}}",{error}))'
         return _Expression("{"+start+generator.at(lookup,node)+"}",owner.kind.value)
-    if isinstance(node,ast.Compare) and len(node.ops)==1 and isinstance(node.ops[0],(ast.In,ast.NotIn)):
-        key=generator.expression(node.left,environment);owner=generator.expression(node.comparators[0],environment)
-        if not isinstance(owner.kind,(SetType,DictType)):return None
-        receiver,keyname=generator.temporary(),generator.temporary()
-        start=f"let {keyname}={_lookup_key(generator,key,owner.kind.key)};let {receiver}={owner.code if owner.owned else '&('+owner.code+')'};"
-        from .native_types import EmptyType
-        check="false" if isinstance(owner.kind.key,EmptyType) else f"{receiver}.contains(&({canonical(generator,_Expression(keyname,key.kind))}))"
-        if isinstance(node.ops[0],ast.NotIn):check="!"+check
-        return _Expression("{"+start+check+"}","bool")
     return None
 
 
@@ -348,3 +339,13 @@ def stream_value(generator,source,value,planner,allow_set=False,*,mode="keys",en
     else:fields=((value.kind.key,"@.0",False),)
     owners={source.id} if isinstance(source,ast.Name) else set()
     return planner.leaf(setup,begin,cursor,fields,owners,tupled=mode=="items",length=value.length,nonempty=value.nonempty)
+
+def comparison(generator,node,values):
+    key,owner=values
+    if not isinstance(owner.kind,(SetType,DictType)):return None
+    receiver,keyname=generator.temporary(),generator.temporary()
+    start=f"let {keyname}={_lookup_key(generator,key,owner.kind.key)};let {receiver}={owner.code if owner.owned else '&('+owner.code+')'};"
+    from .native_types import EmptyType
+    check="false" if isinstance(owner.kind.key,EmptyType) else f"{receiver}.contains(&({canonical(generator,_Expression(keyname,key.kind))}))"
+    if isinstance(node.ops[0],ast.NotIn):check="!"+check
+    return _Expression("{"+start+check+"}","bool")

@@ -187,6 +187,12 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @result_shapes
     def expression(self, node, environment):
+        if isinstance(node,(ast.Compare,ast.BoolOp,ast.IfExp)):
+            from .native_expression_flow import lower
+            return lower(self,node,environment)
+        from .native_clear import try_expression as clear_expression
+        cleared=clear_expression(self,node,environment)
+        if cleared is not None:return cleared
         from .native_characters import read_local
         character=read_local(self,node,environment)
         if character is not None:return character
@@ -267,8 +273,6 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             raise _Unsupported
         if isinstance(node, ast.BinOp):
             return self.binary(node.op,self.expression(node.left,environment),self.expression(node.right,environment),node)
-        if isinstance(node, (ast.BoolOp, ast.Compare, ast.IfExp)):
-            return super().expression(node,environment)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             function = environment.get(node.func.id)
             if isinstance(function, _Function):

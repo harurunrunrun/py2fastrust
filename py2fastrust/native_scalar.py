@@ -357,6 +357,12 @@ class ScalarGenerator(_Generator):
 
     @result_shapes
     def expression(self, node, environment):
+        if isinstance(node,(ast.Compare,ast.BoolOp,ast.IfExp)):
+            from .native_expression_flow import lower
+            return lower(self,node,environment)
+        from .native_clear import try_expression as clear_expression
+        cleared=clear_expression(self,node,environment)
+        if cleared is not None:return cleared
         from .native_characters import read_local
         character=read_local(self,node,environment)
         if character is not None:return character
@@ -406,13 +412,6 @@ class ScalarGenerator(_Generator):
                 if isinstance(node.op, (ast.UAdd, ast.USub)):
                     return _Expression(value.code if isinstance(node.op, ast.UAdd) else f"(-({value.code}))", "float")
                 raise _Unsupported
-        if isinstance(node, ast.Compare):
-            values = [self.read_expression(n, environment) for n in [node.left, *node.comparators]]
-            from .native_unions import compare
-            finite=compare(self,node,values)
-            if finite is not None:return finite
-            if any(value.kind in {"str", "float"} for value in values):
-                return self.compare(node, values)
         if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Slice):
             value=(self.read_expression(node.value,environment)if self.string_mode=="unicode"else self.expression(node.value,environment))
             if value.kind == "str":
