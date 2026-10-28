@@ -212,6 +212,7 @@ class Model:
         self.member_allocations = {}
         self.constructors = {}
         self.sequence_calls = {}
+        self.condition_calls = set()
         self.comprehensions = {}
         from .native_class_comprehensions import target_ordinals
         self.comprehension_targets = target_ordinals(tree,unit)
@@ -562,9 +563,10 @@ class Model:
             right = self.expression(plan, node.right, environment)
             return self.binary(plan, node, node.op, left, right)
         if isinstance(node, ast.UnaryOp):
-            value = self.expression(plan, node.operand, environment).root()
             if isinstance(node.op, ast.Not):
+                self.condition(plan,node.operand,environment)
                 return self.cell(plan, node, "bool")
+            value = self.expression(plan, node.operand, environment).root()
             if value.tag in {"int","bool","int_bool","float"}:
                 if value.tag == "float" and not isinstance(node.op,(ast.UAdd,ast.USub)):
                     raise ClassUnsupported(node)
@@ -583,7 +585,7 @@ class Model:
                 self.contribute(result, self.expression(plan, value, environment), node)
             return result
         if isinstance(node, ast.IfExp):
-            self.expression(plan, node.test, environment)
+            self.condition(plan, node.test, environment)
             result = self.cell(plan, node)
             self.contribute(result, self.expression(plan, node.body, environment), node)
             self.contribute(result, self.expression(plan, node.orelse, environment), node)
@@ -591,6 +593,34 @@ class Model:
         if isinstance(node, ast.Call):
             return self.call(plan, node, environment)
         raise ClassUnsupported(node)
+
+    def _condition_join(self,environment,left,right,node):
+        # Local point facts fork at conditional effects. Shared namespace and
+        # allocation schemas remain conservative summaries of every path.
+        joined=self.join(left,right,node)
+        environment.clear();environment.update(joined)
+        environment.definite=set(joined.definite)
+
+    def condition(self,plan,node,environment):
+        """Infer consumed truth without a mutable value-result union cell."""
+        if isinstance(node,ast.BoolOp):
+            self.condition(plan,node.values[0],environment)
+            for child in node.values[1:]:
+                before=Environment(environment);after=Environment(environment)
+                self.condition(plan,child,after)
+                self._condition_join(environment,before,after,node)
+            return self.cell(plan,node,"bool")
+        if isinstance(node,ast.IfExp):
+            self.condition(plan,node.test,environment)
+            yes=Environment(environment);no=Environment(environment)
+            self.condition(plan,node.body,yes)
+            self.condition(plan,node.orelse,no)
+            self._condition_join(environment,yes,no,node)
+            return self.cell(plan,node,"bool")
+        if isinstance(node,ast.UnaryOp)and isinstance(node.op,ast.Not):
+            self.condition(plan,node.operand,environment)
+            return self.cell(plan,node,"bool")
+        return self.expression(plan,node,environment)
 
     def binary(self, plan, node, operator, left, right):
         a, b = left.root(), right.root()
@@ -662,6 +692,12 @@ class Model:
                 and function.id not in self.classes and function.id not in self.functions
                 and not isinstance(self.builtin_identity(plan,function,environment),BuiltinIdentity)):
             raise ClassUnsupported(function)
+        self.condition_calls.discard((plan.index,id(node)))
+        if (isinstance(function,ast.Name)and self.builtin_identity(plan,function,environment)==BuiltinIdentity("bool")
+                and len(node.args)<=1 and not node.keywords):
+            for value in node.args:self.condition(plan,value,environment)
+            self.condition_calls.add((plan.index,id(node)))
+            return self.cell(plan,node,"bool")
         if (isinstance(function,ast.Name) and self.builtin_identity(plan,function,environment)==BuiltinIdentity("map")
                 and len(node.args) == 2 and not node.keywords and isinstance(node.args[0],ast.Name)
                 and self.builtin_identity(plan,node.args[0],environment)==BuiltinIdentity("int")):
@@ -901,7 +937,7 @@ class Model:
                 value = self.binary(plan,node,node.op,left,right)
                 self.target(plan,node.target,value,environment)
             elif isinstance(node,ast.If):
-                self.expression(plan,node.test,environment)
+                self.condition(plan,node.test,environment)
                 environment = self.join(self.block(plan,node.body,environment),self.block(plan,node.orelse,environment),node)
             elif isinstance(node,(ast.For,ast.While)):
                 if node.orelse:
@@ -911,7 +947,7 @@ class Model:
                     value = self.expression(plan,node.iter,environment)
                     self.target(plan,node.target,self.item(value,node.iter),environment)
                 else:
-                    self.expression(plan,node.test,environment)
+                    self.condition(plan,node.test,environment)
                 self.loop_depth += 1
                 self.loop_edges.append([])
                 body = self.block(plan,node.body,environment)
@@ -1053,6 +1089,22 @@ class Emitter:
     def literal(self, value):
         return self.numeric.literal(value)
 
+    def condition(self,node,environment=None):
+        from .native_conditions import lower
+        result=lower(self,node)
+        return Expression(result.code,"bool",result.constant)
+
+    def condition_leaf(self,node):
+        value=self.expression(node)
+        owner,result=self.fresh(),self.fresh()
+        captured=Expression(owner,value.kind,value.constant)
+        truth=self.truth(captured)
+        # Truth-only use supplies no result-type context for an empty generic
+        # container. Retain its solved physical type and end borrow guards
+        # before the captured Rc owner leaves this block.
+        setup=f"let {owner}:{self.rust_type(value.kind)}={value.code};"
+        return Expression("{"+setup+f"let {result}={truth};{result}"+"}","bool")
+
     def truth(self, value):
         if union_kind(value.kind):return project(value.kind,value.code,
             lambda kind,code:self.truth(Expression(code,kind)))
@@ -1170,10 +1222,9 @@ class Emitter:
             result = self.binary(node.op,left,right,node,wanted)
             return Expression(f"{{{setup}{more}{result.code}}}",wanted,result.constant)
         if isinstance(node,ast.UnaryOp):
+            if isinstance(node.op,ast.Not):return self.condition(node)
             setup,value = self.capture(self.expression(node.operand))
-            if isinstance(node.op,ast.Not):
-                raw = Expression(f"!({self.truth(value)})",'bool')
-            elif value.kind == 'float':
+            if value.kind == 'float':
                 raw = Expression(("-"if isinstance(node.op,ast.USub)else"")+value.code,'float')
             else:
                 number = self.number(value)
@@ -1190,7 +1241,7 @@ class Emitter:
                 raw = Expression(code,'int',constant)
             return Expression(f"{{{setup}{self.coerce(raw,wanted,node)}}}",wanted,raw.constant)
         if isinstance(node,ast.IfExp):
-            setup,test = self.capture(self.expression(node.test))
+            setup,test = self.capture(self.condition(node.test))
             yes = self.coerce(self.expression(node.body),wanted,node.body)
             no = self.coerce(self.expression(node.orelse),wanted,node.orelse)
             return Expression("{"+setup+"if "+self.truth(test)+"{"+yes+"}else{"+no+"}}",wanted)
@@ -1394,6 +1445,8 @@ class Emitter:
             return self.call_user(node,owner.methods.get("__init__"),constructor=owner)
         if isinstance(function,ast.Name) and function.id in self.model.functions:
             return self.call_user(node,self.model.functions[function.id])
+        if (self.plan.index,id(node))in self.model.condition_calls:
+            return self.condition(node.args[0])if node.args else Expression("false","bool",False)
         if isinstance(function,ast.Attribute):
             receiver = self.expression(function.value)
             if domain(receiver.kind) == "object":
@@ -1700,14 +1753,14 @@ class Emitter:
             value=Expression("()",'none')if node.value is None else self.expression(node.value)
             return f"return Ok({self.coerce(value,shape(self.plan.result),node)});"
         if isinstance(node,ast.If):
-            setup,test=self.capture(self.expression(node.test))
+            setup,test=self.capture(self.condition(node.test))
             return setup+f"if {self.truth(test)}{{\n{self.statements(node.body)}\n}}else{{\n{self.statements(node.orelse)}\n}}"
         if isinstance(node,ast.While):
             label=self.fresh()
             self.loops.append(label)
             from .native_class_loop_fields import scope
             with scope(self,node)as cache:
-                setup,test=self.capture(self.expression(node.test))
+                setup,test=self.capture(self.condition(node.test))
                 body=self.statements(node.body)
             self.loops.pop()
             return "{"+cache+f"'{label}:loop{{{setup}if !({self.truth(test)}){{break;}}{body}}}"+"}"

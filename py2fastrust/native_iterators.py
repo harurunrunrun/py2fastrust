@@ -382,14 +382,14 @@ class Planner:
             guard_depth = len(g.iterating_lists)
             g.iterating_lists.extend(first.owners)
             try:
-                filters = [g.expression(test, inside) for test in node.generators[0].ifs]
+                filters = [g.condition(test, inside) for test in node.generators[0].ifs]
                 clauses.append((first, filters))
                 for clause in node.generators[1:]:
                     stream = self.stream(clause.iter, inside)
                     inside = self.bind_target(clause.target, stream, inside)
                     owners.update(stream.owners)
                     g.iterating_lists.extend(stream.owners)
-                    filters = [g.expression(test, inside) for test in clause.ifs]
+                    filters = [g.condition(test, inside) for test in clause.ifs]
                     clauses.append((stream, filters))
                 elements = node.elt.elts if isinstance(node.elt, ast.Tuple) else [node.elt]
                 values = [g.expression(element, inside) for element in elements]

@@ -139,6 +139,15 @@ than inferred from later target counts. Indexing, iteration, printing, supported
 comparisons and immutable keys share the same element types as fixed tuples.
 Mutable tuple elements and unproved comparison protocols still require lowering.
 
+Truth-only expressions in `if`, `while`, `not`, `bool`, conditional tests and
+supported comprehension filters use short-circuit Rust boolean operations.
+Lists and other supported containers can participate without constructing a
+mutable list/scalar value union. Receiver effects and skipped operands retain
+their source order, and loop-exit facts remain conservative after mutations.
+Value-returning mutable `and`/`or` and conditional expressions require their
+separate result-carrier implementation; custom class truth protocols remain
+unfinished.
+
 Non-escaping lambdas support immediate calls and `sort`/`sorted` key callbacks.
 Definition-time immutable defaults run once, parameters retain their own lexical
 scope, and free bindings are read at invocation. Keys are computed once per item

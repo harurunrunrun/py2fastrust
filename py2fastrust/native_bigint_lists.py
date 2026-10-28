@@ -72,7 +72,7 @@ class BigIntLists:
             item, result = self.temporary(), self.temporary()
             inside = environment.copy()
             inside[target] = _Binding(item, "int")
-            filters = [self.expression(condition, inside) for condition in generator.ifs]
+            filters = [self.condition(condition, inside) for condition in generator.ifs]
             element = self.expression(node.elt, inside)
             if element.kind != "int":
                 raise _Unsupported

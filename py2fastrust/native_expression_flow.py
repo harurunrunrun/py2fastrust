@@ -30,9 +30,9 @@ def _conditional_join(g,before,after,node):
     _widen(g,after,affected)
 
 
-def capture(g,children,environment,*,unconditional=1,read=False,node=None):
+def capture(g,children,environment,*,unconditional=1,read=False,node=None,evaluate=None):
     """Lower descriptors once, joining facts for conditional later operands."""
-    evaluate=getattr(g,"read_expression",g.expression) if read else g.expression
+    if evaluate is None:evaluate=getattr(g,"read_expression",g.expression) if read else g.expression
     checkpoint=len(g.expression_mutations)
     values=[]
     for index,child in enumerate(children):
@@ -43,6 +43,24 @@ def capture(g,children,environment,*,unconditional=1,read=False,node=None):
     # An enclosing BoolOp/IfExp can skip this entire expression, and nested
     # generators can report mutations from copied local environments. Never
     # retain a cardinality proof for any storage these operands may mutate.
+    _widen(g,environment,{binding.slot for binding in g.expression_mutations[checkpoint:]})
+    return values
+
+
+def branches(g,children,environment,*,node,evaluate):
+    """Lower alternative branches from one state and join only effect metadata."""
+    before=environment.copy();checkpoint=len(g.expression_mutations)
+    environments=[];values=[]
+    for child in children:
+        inside=before.copy()
+        values.append(evaluate(child,inside))
+        _conditional_join(g,before,inside,node)
+        environments.append(inside)
+    merged=before.copy()
+    for name in before:
+        for inside in environments:
+            if inside[name]!=before[name]:merged[name]=inside[name]
+    environment.clear();environment.update(merged)
     _widen(g,environment,{binding.slot for binding in g.expression_mutations[checkpoint:]})
     return values
 
@@ -65,19 +83,7 @@ def lower(g,node,environment):
             code=f"{{let {name}={g.coerce(value,kind)};if {check}{{{yes}}}else{{{no}}}}}"
         return _Expression(code,kind)
     assert isinstance(node,ast.IfExp)
-    test=g.expression(node.test,environment)
-    before=environment.copy()
-    yes_environment=before.copy();no_environment=before.copy()
-    checkpoint=len(g.expression_mutations)
-    yes=g.expression(node.body,yes_environment)
-    no=g.expression(node.orelse,no_environment)
-    _conditional_join(g,before,yes_environment,node)
-    _conditional_join(g,before,no_environment,node)
-    merged=before.copy()
-    for name in before:
-        if yes_environment[name]!=before[name]:merged[name]=yes_environment[name]
-        if no_environment[name]!=before[name]:merged[name]=no_environment[name]
-    environment.clear();environment.update(merged)
-    _widen(g,environment,{binding.slot for binding in g.expression_mutations[checkpoint:]})
+    test=g.condition(node.test,environment)
+    yes,no=branches(g,(node.body,node.orelse),environment,node=node,evaluate=g.expression)
     kind=g.scalar_kind([yes,no])
     return _Expression(f"(if {g.truth(test)}{{{g.coerce(yes,kind)}}}else{{{g.coerce(no,kind)}}})",kind)

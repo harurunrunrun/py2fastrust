@@ -180,6 +180,9 @@ def converted_result(g,node,result):
 def result_shapes(method):
     @wraps(method)
     def lower(self,node,environment):
+        from .native_conditions import try_expression as condition_expression
+        condition=condition_expression(self,node,environment)
+        if condition is not None:return converted_result(self,node,condition)
         from .native_nested_lists import try_expression as shared_expression
         shared=shared_expression(self,node,environment)
         if shared is not None:return converted_result(self,node,shared)

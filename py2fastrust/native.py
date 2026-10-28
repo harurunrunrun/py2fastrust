@@ -635,6 +635,10 @@ class _Generator:
             raise _Unsupported
         return expression.code if expression.kind == "bool" else f"(({expression.code}) != 0)"
 
+    def condition(self,node,environment):
+        from .native_conditions import lower
+        return lower(self,node,environment)
+
     @staticmethod
     def binding(expression):
         if getattr(expression.kind,"_key_container",False):
@@ -979,7 +983,7 @@ class _Generator:
             local = self.temporary()
             inside = environment.copy()
             inside[target] = _Binding(local, "int")
-            filters = [self.expression(condition, inside) for condition in comprehension.ifs]
+            filters = [self.condition(condition, inside) for condition in comprehension.ifs]
             element = self.expression(node.elt, inside)
             if element.kind == "int":
                 kind, rust_type = "list_int", "NativeInt"
@@ -1506,7 +1510,7 @@ class _Generator:
         if isinstance(node, ast.If):
             if self.function is None and self.functions and "__name__" not in environment and _main_guard(node):
                 return self.statements(node.body, environment)
-            test = self.expression(node.test, environment)
+            test = self.condition(node.test, environment)
             yes, yes_environment = self.statements(node.body, environment)
             no, no_environment = self.statements(node.orelse, environment)
             joined, moves = self.join([yes_environment, no_environment])
@@ -1523,7 +1527,7 @@ class _Generator:
             if isinstance(node, ast.While):
                 # Subsequent iterations may see containers resized or replaced
                 # by the body. Their entry cardinality is not a loop invariant.
-                test = self.expression(node.test, widened)
+                test = self.condition(node.test, widened)
                 self.loops.append(context)
                 body, remaining = self.statements(node.body, widened)
                 self.loops.pop()

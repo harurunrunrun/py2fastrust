@@ -119,7 +119,7 @@ def analyze(model, plan, node, environment):
             value=model.expression(plan,source.node,inside)
         sources.append(source)
         _bind(model,plan,clause.target,model.item(value,source.node),inside,record)
-        for condition in clause.filters:model.expression(plan,condition,inside)
+        for condition in clause.filters:model.condition(plan,condition,inside)
     record.sources=tuple(sources)
     result=model.cell(plan,node,"list",(Cell(),))
     model.contribute(result.root().args[0],model.expression(plan,semantic.element,inside),semantic.element)
@@ -252,7 +252,7 @@ def emit(emitter, node):
             current=emitter.fresh()
             body=_assign(emitter,clause.target,Expression(current,source.kind),bindings)
             for condition in clause.filters:
-                before,value=emitter.capture(emitter.expression(condition))
+                before,value=emitter.capture(emitter.condition(condition))
                 body+=before+f"if !({emitter.truth(value)}){{continue;}}"
             if index+1<len(record.sources):body+=loop(index+1)
             else:
