@@ -15,6 +15,52 @@ from types import SimpleNamespace
 from .native import _Expression, _Unsupported, _direct_diagnostic, _string
 from .call_semantics import FunctionSignature, CallBindingError, normalize_call
 from .references import CORE_BUILTINS, BuiltinIdentity, UnknownReference, resolve_static_callable
+from .native_types import (TupleType, ListType, MaybeType, NullableType, UnionType,
+                           alternatives, union_type, join_types, immutable, render_type,
+                           tuple_code, union_declaration)
+from .native_unions import construct, project, union_kind
+from .native_constraints import Solver, SemanticGraph, Variable, value as constraint_value
+
+
+
+@dataclass(frozen=True)
+class InstanceType:
+    """A class-specific leaf; structural/value kinds use the shared descriptors."""
+    name: str
+
+    @property
+    def _native_kind_tag(self):
+        return "instance_"+self.name
+
+
+@dataclass(frozen=True)
+class StreamType:
+    name: str
+    fields: tuple = ()
+
+    @property
+    def _native_kind_tag(self):
+        from .native_types import kind_tag
+        return self.name+"_"+"_".join(kind_tag(value)for value in self.fields)
+
+
+def domain(kind):
+    if isinstance(kind, InstanceType):return "object"
+    if isinstance(kind, TupleType):return "tuple"
+    if isinstance(kind, ListType):return "list"
+    if isinstance(kind, StreamType):return kind.name
+    if union_kind(kind):return "union"
+    return kind
+
+
+def has_float_payload(kind):
+    """Float container equality needs Python object identity, beyond f64 values."""
+    if kind=="float":return True
+    if isinstance(kind,(NullableType,MaybeType)):return has_float_payload(kind.value)
+    if isinstance(kind,UnionType):return any(has_float_payload(value)for value in kind.alternatives)
+    if isinstance(kind,TupleType):return any(has_float_payload(value)for value in kind.fields)
+    if isinstance(kind,ListType):return has_float_payload(kind.element)
+    return False
 
 
 class ClassUnsupported(_Unsupported):
@@ -37,9 +83,16 @@ class Cell:
 
 def shape(cell):
     cell = cell.root()
-    if cell.tag in {"list", "tuple", "enumerate", "map_int"}:
-        return (cell.tag, *(shape(value) for value in cell.args))
-    return (cell.tag, *cell.args)
+    if cell.tag == "list":return ListType(shape(cell.args[0]))
+    if cell.tag == "tuple":return TupleType(tuple(shape(value)for value in cell.args))
+    if cell.tag == "object":return InstanceType(cell.args[0])
+    if cell.tag in {"enumerate","map_int"}:return StreamType(cell.tag,tuple(shape(value)for value in cell.args))
+    if cell.tag == "union":return union_type(*(shape(value)for value in cell.args))
+    return cell.tag
+
+
+def immutable_cell(cell):
+    return immutable(shape(cell))
 
 
 def merge(left, right, node):
@@ -52,13 +105,23 @@ def merge(left, right, node):
     if right.tag is None:
         right.parent = left
         return left
-    if {left.tag, right.tag} <= {"int", "bool", "scalar"}:
-        tag = left.tag if left.tag == right.tag else "scalar"
+    if {left.tag, right.tag} <= {"int", "bool", "int_bool"}:
+        tag = join_types(left.tag,right.tag)
         right.parent = left
         left.tag = tag
         return left
-    if left.tag != right.tag:
-        raise ClassUnsupported(node)
+    if left.tag != right.tag or left.tag=="union"or(left.tag=="tuple"and len(left.args)!=len(right.args)):
+        if not immutable_cell(left)or not immutable_cell(right):raise ClassUnsupported(node)
+        # Keep constructor payloads separate from the outer joined ABI. Mutable
+        # allocation shapes are never widened into a union by this solver.
+        candidates=[]
+        for value in (left,right):
+            choices=value.args if value.tag=="union"else(Cell(value.tag,value.args),)
+            for choice in choices:
+                if not any(shape(choice)==shape(old)for old in candidates):candidates.append(choice)
+        left.tag,left.args="union",tuple(candidates)
+        right.parent=left
+        return left
     if left.tag in {"list", "tuple", "enumerate", "map_int"}:
         if len(left.args) != len(right.args):
             raise ClassUnsupported(node)
@@ -128,7 +191,7 @@ class Environment(dict):
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "sum", "min", "max", "abs", "id"}
-    DATA = {"int", "bool", "scalar", "str", "bytes", "float", "none", "object", "list", "tuple", "range"}
+    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "list", "tuple", "range"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -139,6 +202,11 @@ class Model:
         self.classes, self.functions = {}, {}
         self.plans = []
         self.node_cells = {}
+        # Storage members receive directional value constraints. Their incoming
+        # immutable values retain independent types, just as in ordinary scopes.
+        self.value_constraints = Solver(SemanticGraph(unit) if unit is not None else SimpleNamespace())
+        self.member_allocations = {}
+        self.constructors = {}
         self.records = {}
         self.augmented = {}
         self.module = FunctionPlan(tree, 0, reachable=True, visible_definitions=set(),global_names=set())
@@ -173,9 +241,52 @@ class Model:
         key = (plan.index, id(node))
         result = self.node_cells.setdefault(key, Cell())
         if tag is not None:
+            self.constructors.setdefault(key,Cell(tag,tuple(args)))
             merge(result, Cell(tag, tuple(args)), node)
         self.records[key] = result
+        if tag == "list":
+            site=self.unit.ordinal(node) if self.unit is not None else id(node)
+            allocation=self.value_constraints.allocation(site,"list",("class",plan.index))
+            self.member_allocations[id(result.root().args[0])]=allocation
         return result
+
+    @staticmethod
+    def flow_copy(cell):
+        """Copy value shapes while preserving shared mutable allocation leaves."""
+        cell=cell.root()
+        if cell.tag in {"list","object"}:return cell
+        if cell.tag in {"tuple","union","enumerate","map_int"}:
+            return Cell(cell.tag,tuple(Model.flow_copy(child)for child in cell.args))
+        return Cell(cell.tag,cell.args)
+
+    @staticmethod
+    def cell_for_kind(kind):
+        if isinstance(kind,NullableType):
+            return Cell("union",(Cell("none"),Model.cell_for_kind(kind.value)))
+        if isinstance(kind,UnionType):
+            return Cell("union",tuple(Model.cell_for_kind(choice)for choice in kind.alternatives))
+        if isinstance(kind,TupleType):
+            return Cell("tuple",tuple(Model.cell_for_kind(child)for child in kind.fields))
+        return Cell(kind)
+
+    def contribute(self,destination,source,node):
+        """A value flowing into storage never changes the source's value type."""
+        source=source.root()
+        if source.tag is None:return destination
+        kind=shape(source)
+        if immutable(kind):
+            allocation=self.member_allocations.get(id(destination))
+            variable=(Variable(allocation.site,"element") if allocation is not None else
+                      Variable(("class_value",id(destination)),"value"))
+            previous=shape(destination)
+            if previous is not None and immutable(previous):
+                self.value_constraints.constrain(variable,constraint_value(previous))
+            if allocation is not None:
+                self.value_constraints.insert(constraint_value(allocation),"element",constraint_value(kind))
+            else:self.value_constraints.constrain(variable,constraint_value(kind))
+            resolved=self.value_constraints.kind(constraint_value(variable))
+            return merge(destination,self.cell_for_kind(resolved),node)
+        return merge(destination,self.flow_copy(source),node)
 
     def remember(self, plan, node, result):
         self.records[(plan.index, id(node))] = result
@@ -286,7 +397,7 @@ class Model:
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
                 tuple(sorted((key, shape(value)) for key, value in self.records.items())))
 
-    def run(self):
+    def infer_until_stable(self):
         for _ in range(96):
             before = self.snapshot()
             self.module.visible_definitions = set()
@@ -305,6 +416,8 @@ class Model:
                 break
         else:
             raise ClassUnsupported(self.tree)
+    def run(self):
+        self.infer_until_stable()
         for owner in self.classes.values():
             for value in owner.fields.values():
                 if value.cell.root().tag is None and not value.written:
@@ -318,6 +431,9 @@ class Model:
                 # Any append, store, argument or return flow has already added
                 # its element constraints before this default is selected.
                 merge(value.args[0],Cell("int"),self.tree)
+        # Defaulting previously uninhabited storage adds type facts. Directional
+        # consumers must reach a new fixed point before result validation.
+        self.infer_until_stable()
         for plan in self.plans[1:]:
             if plan.reachable and plan.result.root().tag is None:
                 if all(isinstance(value.value, ast.Call) for value in ast.walk(plan.node)
@@ -334,6 +450,8 @@ class Model:
                 self.block(plan, plan.node.body, {**global_names, **plan.arguments})
         for owner in self.classes.values():
             if owner.used:
+                initializer=owner.methods.get("__init__")
+                if initializer is not None and shape(initializer.result)!="none":raise ClassUnsupported(initializer.node)
                 for value in owner.fields.values():
                     self.storage(value.cell, owner.node, field_value=True)
         for plan in self.plans:
@@ -353,9 +471,10 @@ class Model:
             raise ClassUnsupported(node)
         if cell.tag == "list":
             item = cell.args[0].root()
-            if item.tag not in {"int", "bool", "scalar", "str", "bytes", "float", "none"}:
-                raise ClassUnsupported(node)
+            if not immutable_cell(item):raise ClassUnsupported(node)
             self.storage(item, node)
+        if cell.tag == "union":
+            for value in cell.args:self.storage(value,node,field_value=field_value)
         if cell.tag == "tuple":
             for value in cell.args:
                 self.storage(value, node, field_value=field_value)
@@ -391,7 +510,7 @@ class Model:
         if isinstance(node, ast.List):
             result = self.cell(plan, node, "list", (Cell(),))
             for value in node.elts:
-                merge(result.root().args[0], self.expression(plan, value, environment), value)
+                self.contribute(result.root().args[0], self.expression(plan, value, environment), value)
             return result
         if isinstance(node, ast.Tuple):
             return self.cell(plan, node, "tuple", tuple(self.expression(plan, value, environment) for value in node.elts))
@@ -414,7 +533,7 @@ class Model:
                 raise ClassUnsupported(node)
             owner = self.expression(plan, node.value, environment).root()
             index = self.expression(plan, node.slice, environment).root()
-            if index.tag not in {None,"int","bool","scalar"}:
+            if index.tag not in {None,"int","bool","int_bool"}:
                 raise ClassUnsupported(node.slice)
             if owner.tag == "list":
                 return self.remember(plan, node, owner.args[0])
@@ -435,7 +554,7 @@ class Model:
             value = self.expression(plan, node.operand, environment).root()
             if isinstance(node.op, ast.Not):
                 return self.cell(plan, node, "bool")
-            if value.tag in {"int","bool","scalar","float"}:
+            if value.tag in {"int","bool","int_bool","float"}:
                 if value.tag == "float" and not isinstance(node.op,(ast.UAdd,ast.USub)):
                     raise ClassUnsupported(node)
                 return self.cell(plan, node, "float" if value.tag == "float" else "int")
@@ -450,13 +569,13 @@ class Model:
         if isinstance(node, ast.BoolOp):
             result = self.cell(plan, node)
             for value in node.values:
-                merge(result, self.expression(plan, value, environment), node)
+                self.contribute(result, self.expression(plan, value, environment), node)
             return result
         if isinstance(node, ast.IfExp):
             self.expression(plan, node.test, environment)
             result = self.cell(plan, node)
-            merge(result, self.expression(plan, node.body, environment), node)
-            merge(result, self.expression(plan, node.orelse, environment), node)
+            self.contribute(result, self.expression(plan, node.body, environment), node)
+            self.contribute(result, self.expression(plan, node.orelse, environment), node)
             return result
         if isinstance(node, ast.Call):
             return self.call(plan, node, environment)
@@ -473,25 +592,25 @@ class Model:
             return self.cell(plan, node, "list", (a.args[0],))
         if isinstance(operator, ast.Mult) and (a.tag == "list" or b.tag == "list"):
             values, count = (a,b) if a.tag == "list" else (b,a)
-            if count.tag not in {"int","bool","scalar"}:
+            if count.tag not in {"int","bool","int_bool"}:
                 raise ClassUnsupported(node)
             return self.cell(plan, node, "list", (values.args[0],))
         if a.tag == b.tag == "str" and isinstance(operator,ast.Add):
             return self.cell(plan, node, "str")
         if isinstance(operator,ast.Mult) and "str" in {a.tag,b.tag}:
             other = b if a.tag == "str" else a
-            if other.tag not in {"int","bool","scalar"}:
+            if other.tag not in {"int","bool","int_bool"}:
                 raise ClassUnsupported(node)
             return self.cell(plan,node,"str")
-        numeric = {"int","bool","scalar","float"}
+        numeric = {"int","bool","int_bool","float"}
         if a.tag not in numeric or b.tag not in numeric:
             raise ClassUnsupported(node)
         if "float" in {a.tag,b.tag} or isinstance(operator,ast.Div):
             if self.integer == "bigint" or not isinstance(operator,(ast.Add,ast.Sub,ast.Mult,ast.Div,ast.FloorDiv,ast.Mod)):
                 raise ClassUnsupported(node)
             return self.cell(plan,node,"float")
-        if isinstance(operator,(ast.BitAnd,ast.BitOr,ast.BitXor)) and {a.tag,b.tag} <= {"bool","scalar"}:
-            return self.cell(plan,node,"bool" if a.tag == b.tag == "bool" else "scalar")
+        if isinstance(operator,(ast.BitAnd,ast.BitOr,ast.BitXor)) and {a.tag,b.tag} <= {"bool","int_bool"}:
+            return self.cell(plan,node,"bool" if a.tag == b.tag == "bool" else "int_bool")
         if not isinstance(operator,(ast.Add,ast.Sub,ast.Mult,ast.FloorDiv,ast.Mod,ast.Pow,ast.LShift,ast.RShift,ast.BitAnd,ast.BitOr,ast.BitXor)):
             raise ClassUnsupported(node)
         return self.cell(plan,node,"int")
@@ -514,7 +633,7 @@ class Model:
         except CallBindingError:
             raise ClassUnsupported(node)from None
         for name, value in bound.items():
-            merge(callee.arguments[name], value, node)
+            self.contribute(callee.arguments[name], value, node)
         return self.remember(caller, node, callee.result)
 
     def call(self, plan, node, environment):
@@ -592,7 +711,7 @@ class Model:
                 return result
             if name == "sum" and 1 <= len(arguments) <= 2 and not keywords:
                 item = self.item(arguments[0],node).root()
-                if item.tag not in {None,"int","bool","scalar"}:
+                if item.tag not in {None,"int","bool","int_bool"}:
                     raise ClassUnsupported(node)
                 return self.cell(plan,node,"int")
             if name in {"min","max"} and arguments and not keywords:
@@ -617,7 +736,7 @@ class Model:
                 if keywords:
                     raise ClassUnsupported(node)
                 if function.attr == "append" and len(arguments) == 1:
-                    merge(item,arguments[0],node)
+                    self.contribute(item,arguments[0],node)
                 elif function.attr == "extend" and len(arguments) == 1:
                     merge(item,self.item(arguments[0],node),node)
                 elif function.attr == "copy" and not arguments:
@@ -634,7 +753,7 @@ class Model:
             if receiver.tag == "str" and function.attr == "join" and len(arguments) == 1 and not keywords:
                 merge(self.item(arguments[0],node),Cell("str"),node)
                 return self.cell(plan,node,"str")
-            if receiver.tag in {"int","bool","scalar"} and function.attr in {"bit_length","bit_count"} and not arguments and not keywords:
+            if receiver.tag in {"int","bool","int_bool"} and function.attr in {"bit_length","bit_count"} and not arguments and not keywords:
                 return self.cell(plan,node,"int")
             if receiver.tag == "sys" and function.attr in {"setrecursionlimit","getrecursionlimit"} and not keywords:
                 if len(arguments) != (1 if function.attr == "setrecursionlimit" else 0):
@@ -655,7 +774,7 @@ class Model:
         if value.tag == "tuple":
             result = Cell()
             for item in value.args:
-                merge(result,item,node)
+                self.contribute(result,item,node)
             return result
         if value.tag == "range":
             return Cell("int")
@@ -696,7 +815,7 @@ class Model:
             owner = self.expression(plan,node.value,environment).root()
             if owner.tag == "object":
                 field_ = self.field(self.classes[owner.args[0]],self.resolved_name(plan,node),node,writing=True)
-                merge(field_,value,node)
+                self.contribute(field_,value,node)
                 self.remember(plan,node,field_)
                 return
             if owner.tag is None and not self.final:
@@ -705,7 +824,7 @@ class Model:
             owner = self.expression(plan,node.value,environment).root()
             self.expression(plan,node.slice,environment)
             if owner.tag == "list":
-                merge(owner.args[0],value,node)
+                self.contribute(owner.args[0],value,node)
                 self.remember(plan,node,owner.args[0])
                 return
             if owner.tag is None and not self.final:
@@ -792,7 +911,7 @@ class Model:
                 if plan is self.module:
                     raise ClassUnsupported(node)
                 value = Cell("none") if node.value is None else self.expression(plan,node.value,environment)
-                merge(plan.result,value,node)
+                self.contribute(plan.result,value,node)
                 environment = None
             elif isinstance(node,(ast.Break,ast.Continue)):
                 if not self.loop_depth:
@@ -804,11 +923,8 @@ class Model:
         return environment
 
 
-@dataclass
-class Expression:
-    code: str
-    kind: tuple
-    constant: object = None
+# Function and method emitters consume the same immutable typed expression.
+Expression = _Expression
 
 
 
@@ -826,11 +942,12 @@ class Emitter:
             from .native_scalar import ScalarGenerator
             self.numeric = ScalarGenerator(64 if model.integer == "i64" else 128,
                                            function=SimpleNamespace(node=SimpleNamespace(name=plan.scope)))
+        self.numeric.string_mode=model.string_mode
         for name, values in plan.locals.items():
             for value in values:
                 kind = shape(value)
-                if kind[0] in model.DATA:self.slot(name,kind)
-                elif kind[0] in model.INTRINSICS:self.reference_slot(name,kind)
+                if domain(kind) in model.DATA:self.slot(name,kind)
+                elif domain(kind) in model.INTRINSICS:self.reference_slot(name,kind)
 
     def fresh(self):
         self.counter += 1
@@ -841,19 +958,19 @@ class Emitter:
             result = shape(self.model.records[(self.plan.index,id(node))])
         except KeyError:
             raise ClassUnsupported(node) from None
-        if result[0] is None:
+        if domain(result) is None:
             raise ClassUnsupported(node)
         return result
 
     def rust_type(self, kind):
-        from .native_types import rust_type,tuple_code
-        if kind[0]in self.model.DATA-{"object","list","tuple","range"}:
-            return rust_type("int_bool"if kind[0]=="scalar"else kind[0])
-        if kind[0]=="range":return "ClassRange"
-        if kind[0] == "object":return f"ClassHandle_{self.model.classes[kind[1]].index}"
-        if kind[0] == "list":return f"ClassList<{self.rust_type(kind[1])}>"
-        if kind[0] == "tuple":return tuple_code(self.rust_type(value)for value in kind[1:])
-        raise ClassUnsupported(self.plan.node)
+        def leaf(value, recurse):
+            if isinstance(value,InstanceType):return f"ClassHandle_{self.model.classes[value.name].index}"
+            if isinstance(value,ListType):return f"ClassList<{recurse(value.element)}>"
+            if value=="range":return "ClassRange"
+            if isinstance(value,StreamType)or isinstance(value,str)and value in self.model.INTRINSICS:
+                raise ClassUnsupported(self.plan.node)
+            return None
+        return render_type(kind,leaf)
 
     def slot(self, name, kind):
         key = name,kind
@@ -882,17 +999,26 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def coerce(self, value, kind, node):
-        if value.kind == kind:
-            return value.code
-        if kind == ("scalar",) and value.kind[0] in {"int","bool"}:
-            return f"NativeScalar::{'Int' if value.kind[0] == 'int' else 'Bool'}({value.code})"
-        if kind == ("int",) and value.kind[0] in {"bool","scalar"}:
-            return self.number(value)
-        if kind[0] == value.kind[0] == "tuple" and len(kind) == len(value.kind):
-            temporary = self.fresh()
-            values = [self.coerce(Expression(f"{temporary}.{i}.clone()", old), new, node)
-                      for i,(old,new) in enumerate(zip(value.kind[1:],kind[1:]))]
-            return f"{{let {temporary}={value.code};(" + ",".join(values) + ("," if values else "") + ")}"
+        if value.kind == kind:return value.code
+        if union_kind(value.kind):
+            return project(value.kind,value.code,
+                lambda source,code:self.coerce(Expression(f"({code}).clone()",source),kind,node))
+        if union_kind(kind):
+            choices=alternatives(kind)
+            chosen=value.kind if value.kind in choices else next((option for option in choices
+                if option=="int_bool"and value.kind in {"int","bool"}
+                or isinstance(option,TupleType)and isinstance(value.kind,TupleType)
+                    and len(option.fields)==len(value.kind.fields)),None)
+            if chosen is None:raise ClassUnsupported(node)
+            return construct(kind,chosen,self.coerce(value,chosen,node))
+        if kind == "int_bool"and value.kind in {"int","bool"}:
+            return f"NativeScalar::{'Int' if value.kind == 'int' else 'Bool'}({value.code})"
+        if kind == "int"and value.kind in {"bool","int_bool"}:return self.number(value)
+        if isinstance(kind,TupleType)and isinstance(value.kind,TupleType)and len(kind.fields)==len(value.kind.fields):
+            temporary=self.fresh()
+            values=[self.coerce(Expression(f"{temporary}.{i}.clone()",old),new,node)
+                    for i,(old,new)in enumerate(zip(value.kind.fields,kind.fields))]
+            return f"{{let {temporary}={value.code};"+tuple_code(values)+"}"
         raise ClassUnsupported(node)
 
     def encoded(self, code, raw_kind, wanted, node, constant=None):
@@ -903,7 +1029,7 @@ class Emitter:
         return f"let {name}={value.code};",Expression(name,value.kind,value.constant)
 
     def scalar(self, value):
-        return _Expression(value.code,{"scalar":"int_bool"}.get(value.kind[0],value.kind[0]),value.constant)
+        return value
 
     def number(self, value):
         return self.numeric.number(self.scalar(value))
@@ -912,8 +1038,10 @@ class Emitter:
         return self.numeric.literal(value)
 
     def truth(self, value):
-        tag = value.kind[0]
-        if tag in {"int","bool","scalar"}:
+        if union_kind(value.kind):return project(value.kind,value.code,
+            lambda kind,code:self.truth(Expression(code,kind)))
+        tag = domain(value.kind)
+        if tag in {"int","bool","int_bool"}:
             return self.numeric.truth(self.scalar(value))
         if tag in {"str","bytes"}:
             return f"!({value.code}).is_empty()"
@@ -926,16 +1054,22 @@ class Emitter:
         if tag == "object":
             return "true"
         if tag == "tuple":
-            return str(len(value.kind)>1).lower()
+            return str(bool(value.kind.fields)).lower()
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
-        tag = value.kind[0]
+        if union_kind(value.kind):return project(value.kind,value.code,
+            lambda kind,code:self.show(Expression(code,kind),node,representation))
+        if isinstance(value.kind,ListType):
+            item=self.fresh()
+            rendered=self.show(Expression(f"(*{item}).clone()",value.kind.element),node,True)
+            return f'format!("[{{}}]",({value.code}).borrow().iter().map(|{item}|{rendered}).collect::<Vec<_>>().join(", "))'
+        tag = domain(value.kind)
         if tag == "tuple":
             fields = [self.show(Expression(f"{value.code}.{i}.clone()",kind),node,True)
-                      for i,kind in enumerate(value.kind[1:])]
+                      for i,kind in enumerate(value.kind.fields)]
             return "class_tuple_text(&[" + ",".join(fields) + "])"
-        if tag in {"int","bool","scalar","str","bytes","none","object","list","float"}:
+        if tag in {"int","bool","int_bool","str","bytes","none","object","list","float"}:
             return f"ClassDisplay::class_{'repr' if representation else 'str'}(&({value.code}))"
         raise ClassUnsupported(node)
 
@@ -945,7 +1079,7 @@ class Emitter:
         if literal is None:raise ClassUnsupported(node)
         constant=(self.numeric.normalize(value)if literal.kind=="int"else value if literal.kind=="bool"else None)
         code=literal.rust_atom(self.literal,_string)
-        return self.encoded(code,(literal.kind,),wanted,node,constant)
+        return self.encoded(code,literal.kind,wanted,node,constant)
 
     def captured_defaults(self,callee):
         return {name:self.literal_value(value,shape(callee.default_cells[name]),callee.defaults[name])
@@ -957,10 +1091,10 @@ class Emitter:
             return self.literal_value(node.value,wanted,node)
         if isinstance(node,ast.Name):
             name = self.model.resolved_name(self.plan,node)
-            if wanted[0] in self.model.INTRINSICS:
+            if domain(wanted) in self.model.INTRINSICS:
                 return self.reference_read(name,wanted,node)
             if node.id == "__name__" and name not in self.plan.locals:
-                return Expression('NativeText::from("__main__")',("str",))
+                return Expression('NativeText::from("__main__")','str')
             slot = self.slot(name,wanted)
             kind = "NameError" if self.plan is self.model.module else "UnboundLocalError"
             message = (f"name '{name}' is not defined" if kind == "NameError" else
@@ -968,29 +1102,30 @@ class Emitter:
             result = f"{slot}.clone().ok_or_else(||{_string(kind+': '+message)}.to_owned())"
             return Expression(self.at(result,node),wanted)
         if isinstance(node,ast.Tuple):
-            values = [self.expression(value).code for value in node.elts]
-            return Expression("("+",".join(values)+(","if values else"")+")",wanted)
+            raw=shape(self.model.constructors[(self.plan.index,id(node))])
+            values=[self.coerce(self.expression(value),kind,value)for value,kind in zip(node.elts,raw.fields)]
+            return self.encoded(tuple_code(values),raw,wanted,node)
         if isinstance(node,ast.List):
-            values = [self.coerce(self.expression(value),wanted[1],value) for value in node.elts]
+            values = [self.coerce(self.expression(value),wanted.element,value) for value in node.elts]
             return Expression("class_list(vec!["+",".join(values)+"])",wanted)
         if isinstance(node,ast.Attribute):
-            if wanted[0] in self.model.INTRINSICS:
+            if domain(wanted) in self.model.INTRINSICS:
                 receiver=self.expression(node.value)
                 return Expression("{let _="+receiver.code+";()}",wanted)
             receiver = self.expression(node.value)
-            if receiver.kind[0] != "object":
+            if domain(receiver.kind) != "object":
                 raise ClassUnsupported(node)
-            owner = self.model.classes[receiver.kind[1]]
+            owner = self.model.classes[receiver.kind.name]
             index = list(owner.fields).index(self.model.resolved_name(self.plan,node))
             return Expression(self.at(f"class_get_{owner.index}_{index}(&({receiver.code}))",node),wanted)
         if isinstance(node,ast.Subscript):
             setup,owner = self.capture(self.expression(node.value))
             index_setup,index = self.capture(self.expression(node.slice))
-            tag = owner.kind[0]
+            tag = domain(owner.kind)
             if tag == "list":
                 code = self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node)
             elif tag == "tuple":
-                position = node.slice.value % (len(owner.kind)-1)
+                position = node.slice.value % (len(owner.kind.fields))
                 code = f"{owner.code}.{position}.clone()"
             elif tag == "str":
                 code = self.at(f"class_string_get(&{owner.code},&({self.number(index)}))",node)
@@ -1008,9 +1143,9 @@ class Emitter:
         if isinstance(node,ast.UnaryOp):
             setup,value = self.capture(self.expression(node.operand))
             if isinstance(node.op,ast.Not):
-                raw = Expression(f"!({self.truth(value)})",("bool",))
-            elif value.kind == ("float",):
-                raw = Expression(("-"if isinstance(node.op,ast.USub)else"")+value.code,("float",))
+                raw = Expression(f"!({self.truth(value)})",'bool')
+            elif value.kind == 'float':
+                raw = Expression(("-"if isinstance(node.op,ast.USub)else"")+value.code,'float')
             else:
                 number = self.number(value)
                 if isinstance(node.op,ast.UAdd):
@@ -1023,7 +1158,7 @@ class Emitter:
                 if value.constant is not None:
                     constant = self.numeric.normalize(-int(value.constant) if isinstance(node.op,ast.USub) else
                                                       ~int(value.constant) if isinstance(node.op,ast.Invert) else int(value.constant))
-                raw = Expression(code,("int",),constant)
+                raw = Expression(code,'int',constant)
             return Expression(f"{{{setup}{self.coerce(raw,wanted,node)}}}",wanted,raw.constant)
         if isinstance(node,ast.IfExp):
             setup,test = self.capture(self.expression(node.test))
@@ -1056,7 +1191,7 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def binary(self, operator, left, right, node, wanted):
-        a,b = left.kind[0],right.kind[0]
+        a,b = domain(left.kind),domain(right.kind)
         if a==b=="list" and isinstance(operator,ast.Add):
             return Expression(f"class_list_concat(&{left.code},&{right.code})",wanted)
         if "list" in {a,b} and isinstance(operator,ast.Mult):
@@ -1068,11 +1203,15 @@ class Emitter:
             value,count = (left,right)if a=="str"else(right,left)
             return Expression("NativeText::from("+self.at(f"class_string_repeat(&{value.code},&({self.number(count)}))",node)+")",wanted)
         result = self.numeric.binary(operator,self.scalar(left),self.scalar(right),node)
-        raw = {"int_bool":"scalar"}.get(result.kind,result.kind)
-        return self.encoded(result.code,(raw,),wanted,node,result.constant)
+        raw = result.kind
+        return self.encoded(result.code,raw,wanted,node,result.constant)
 
     def comparison(self, operator, left, right, node):
-        a,b = left.kind[0],right.kind[0]
+        if union_kind(left.kind):return project(left.kind,left.code,
+            lambda kind,code:self.comparison(operator,Expression(f"({code}).clone()",kind),right,node))
+        if union_kind(right.kind):return project(right.kind,right.code,
+            lambda kind,code:self.comparison(operator,left,Expression(f"({code}).clone()",kind),node))
+        a,b = domain(left.kind),domain(right.kind)
         if isinstance(operator,(ast.Is,ast.IsNot)):
             if a==b and a in {"object","list"}:
                 code = (f"Rc::ptr_eq(&{left.code},&{right.code})"if left.kind==right.kind else"false")
@@ -1080,14 +1219,18 @@ class Emitter:
                 code = "true"
             elif a==b=="bool":
                 code = f"{left.code}=={right.code}"
-            elif "none" in {a,b} or a!=b and not {a,b}<={"int","bool","scalar"}:
+            elif "none" in {a,b} or a!=b and not {a,b}<={"int","bool","int_bool"}:
                 code = "false"
-            elif {a,b}=={"scalar","bool"}:
-                scalar,boolean = (left,right)if a=="scalar"else(right,left)
+            elif {a,b}=={"int_bool","bool"}:
+                scalar,boolean = (left,right)if a=="int_bool"else(right,left)
                 code = f"matches!(&{scalar.code},NativeScalar::Bool(value)if *value=={boolean.code})"
             else:
                 raise ClassUnsupported(node)
             return f"!({code})"if isinstance(operator,ast.IsNot)else code
+        if not isinstance(operator,(ast.In,ast.NotIn))and(isinstance(left.kind,TupleType)or isinstance(right.kind,TupleType)):
+            from .native_tuples import tuple_compare,_scalar
+            if not _scalar(left.kind)or not _scalar(right.kind):raise ClassUnsupported(node)
+            return tuple_compare(self,left,right,operator,node)
         if isinstance(operator,(ast.Eq,ast.NotEq)) and (a=="none"or b=="none"):
             code = str(a==b).lower()
             return f"!({code})"if isinstance(operator,ast.NotEq)else code
@@ -1095,29 +1238,33 @@ class Emitter:
             code = f"Rc::ptr_eq(&{left.code},&{right.code})"if left.kind==right.kind else"false"
             return f"!({code})"if isinstance(operator,ast.NotEq)else code
         if a==b=="list"and isinstance(operator,(ast.Eq,ast.NotEq)):
-            if "float"in str(left.kind)or"float"in str(right.kind):
+            if has_float_payload(left.kind)or has_float_payload(right.kind):
                 raise ClassUnsupported(node)
             if left.kind==right.kind:
-                code=f"*{left.code}.borrow()==*{right.code}.borrow()"
+                a_item,b_item=self.fresh(),self.fresh()
+                test=self.comparison(ast.Eq(),Expression(f"{a_item}.clone()",left.kind.element),
+                                     Expression(f"{b_item}.clone()",right.kind.element),node)
+                code=(f"({left.code}).borrow().len()==({right.code}).borrow().len()&&"
+                      f"({left.code}).borrow().iter().zip(({right.code}).borrow().iter()).all(|({a_item},{b_item})|{test})")
                 return f"!({code})"if isinstance(operator,ast.NotEq)else code
             raise ClassUnsupported(node)
         if isinstance(operator,(ast.In,ast.NotIn))and b=="list":
-            if right.kind[1]==("float",):
+            if has_float_payload(right.kind.element):
                 raise ClassUnsupported(node)
-            item = Expression("class_item.clone()",right.kind[1])
+            item = Expression("class_item.clone()",right.kind.element)
             test = self.comparison(ast.Eq(),left,item,node)
             code = f"{right.code}.borrow().iter().any(|class_item|{test})"
             return f"!({code})"if isinstance(operator,ast.NotIn)else code
         if a==b=="str"and isinstance(operator,(ast.In,ast.NotIn)):
             code=f"{right.code}.contains(&{left.code})"
             return f"!({code})"if isinstance(operator,ast.NotIn)else code
-        numeric={"int","bool","scalar"}
+        numeric={"int","bool","int_bool"}
         symbols={ast.Eq:"==",ast.NotEq:"!=",ast.Lt:"<",ast.LtE:"<=",ast.Gt:">",ast.GtE:">="}
         if a in numeric and b in numeric and type(operator)in symbols:
             return f"({self.number(left)}){symbols[type(operator)]}({self.number(right)})"
         if a==b and a in {"str","bytes"}and type(operator)in symbols:
             return f"{left.code}{symbols[type(operator)]}{right.code}"
-        if self.model.integer!="bigint"and a in numeric|{"str","float"}and b in numeric|{"str","float"}:
+        if self.model.integer!="bigint"and a in numeric|{"float"}and b in numeric|{"float"}:
             temporary=SimpleNamespace(ops=[operator])
             return self.numeric.compare(temporary,[self.scalar(left),self.scalar(right)]).code
         if isinstance(operator,(ast.Eq,ast.NotEq))and a!=b:
@@ -1158,12 +1305,12 @@ class Emitter:
     def parse_words(self, node, count=None):
         words = self.expression(node.args[1])
         before,words = self.capture(words)
-        if words.kind[0] != "list":
+        if domain(words.kind) != "list":
             raise ClassUnsupported(node)
-        item = words.kind[1]
-        if item == ("str",):
+        item = words.kind.element
+        if item == 'str':
             parser = "|value:&NativeText|native_parse_integer(value)"
-        elif item == ("bytes",):
+        elif item == 'bytes':
             parser = "|value:&Vec<u8>|class_parse_bytes(value)"
         else:
             raise ClassUnsupported(node)
@@ -1181,8 +1328,8 @@ class Emitter:
             return self.call_user(node,self.model.functions[function.id])
         if isinstance(function,ast.Attribute):
             receiver = self.expression(function.value)
-            if receiver.kind[0] == "object":
-                owner = self.model.classes[receiver.kind[1]]
+            if domain(receiver.kind) == "object":
+                owner = self.model.classes[receiver.kind.name]
                 method = owner.methods[self.model.resolved_name(self.plan,function)]
                 return self.call_user(node,method,receiver)
         else:
@@ -1190,11 +1337,11 @@ class Emitter:
         if isinstance(function,ast.Name) and function.id == "map":
             raise ClassUnsupported(node)
         if (isinstance(function,ast.Name) and function.id == "list" and len(node.args)==1
-                and self.kind(node.args[0])[0] == "map_int"):
+                and domain(self.kind(node.args[0])) == "map_int"):
             values = self.parse_words(node.args[0])
-            if wanted[1] == ("scalar",):
+            if wanted.element == 'int_bool':
                 values = f"({values}).into_iter().map(NativeScalar::Int).collect::<Vec<_>>()"
-            elif wanted[1] != ("int",):
+            elif wanted.element != 'int':
                 raise ClassUnsupported(node)
             return Expression(f"class_list({values})",wanted)
         setup,arguments = [],[]
@@ -1219,20 +1366,20 @@ class Emitter:
         if alias_kind is not None and alias_kind.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
             name = alias_kind.root().tag
         code = None
-        raw_kind = wanted
+        raw_kind=shape(self.model.constructors[(self.plan.index,id(node))])if(self.plan.index,id(node))in self.model.constructors else wanted
         if name in {"input","reader_text","reader_bytes","read_text","read_bytes"}:
             if name in {"reader_bytes","read_bytes"}:
                 code = self.at(f"class_read_bytes(&class_scope,{str(name=='reader_bytes').lower()})",node)
             else:
                 code = self.at(f"class_read_text(&class_scope,{str(name!='read_text').lower()},{str(name=='input').lower()})",node)
         elif name == "print":
-            sep = keywords.get("sep",Expression('" ".to_owned()',("str",)))
-            end = keywords.get("end",Expression('"\\n".to_owned()',("str",)))
-            if sep.kind == ("none",):
-                sep = Expression('" ".to_owned()',("str",))
-            if end.kind == ("none",):
-                end = Expression('"\\n".to_owned()',("str",))
-            if sep.kind != ("str",) or end.kind != ("str",):
+            sep = keywords.get("sep",Expression('" ".to_owned()','str'))
+            end = keywords.get("end",Expression('"\\n".to_owned()','str'))
+            if sep.kind == 'none':
+                sep = Expression('" ".to_owned()','str')
+            if end.kind == 'none':
+                end = Expression('"\\n".to_owned()','str')
+            if sep.kind != 'str' or end.kind != 'str':
                 raise ClassUnsupported(node)
             pieces=[]
             for i,value in enumerate(arguments):
@@ -1247,66 +1394,66 @@ class Emitter:
             code = "{"+"".join(pieces)+"()}"
         elif name == "len":
             value=arguments[0]
-            if value.kind[0]=="list":length=f"{value.code}.borrow().len()"
-            elif value.kind[0]=="str":
+            if domain(value.kind)=="list":length=f"{value.code}.borrow().len()"
+            elif domain(value.kind)=="str":
                 length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"codepoint_len()")
-            elif value.kind[0]=="bytes":length=f"{value.code}.len()"
-            elif value.kind[0]=="tuple":length=str(len(value.kind)-1)
+            elif domain(value.kind)=="bytes":length=f"{value.code}.len()"
+            elif domain(value.kind)=="tuple":length=str(len(value.kind.fields))
             else:raise ClassUnsupported(node)
             code=f"class_from_usize({length})"
-            raw_kind=("int",)
+            raw_kind='int'
         elif name == "int":
-            raw_kind=("int",)
+            raw_kind='int'
             if not arguments:code=self.literal(0)
-            elif arguments[0].kind[0] in {"int","bool","scalar"}:code=self.number(arguments[0])
-            elif arguments[0].kind==("str",):code=self.at(f"native_parse_integer(&{arguments[0].code})",node)
-            elif arguments[0].kind==("bytes",):code=self.at(f"class_parse_bytes(&{arguments[0].code})",node)
-            elif arguments[0].kind==("float",):code=self.at(f"native_float_integer({arguments[0].code})",node)
+            elif domain(arguments[0].kind) in {"int","bool","int_bool"}:code=self.number(arguments[0])
+            elif arguments[0].kind=='str':code=self.at(f"native_parse_integer(&{arguments[0].code})",node)
+            elif arguments[0].kind=='bytes':code=self.at(f"class_parse_bytes(&{arguments[0].code})",node)
+            elif arguments[0].kind=='float':code=self.at(f"native_float_integer({arguments[0].code})",node)
             else:raise ClassUnsupported(node)
         elif name == "str":
             code=('NativeText::new()'if not arguments else arguments[0].code+'.clone()'
-                  if arguments[0].kind==("str",)else self.show(arguments[0],node))
+                  if arguments[0].kind=="str"else self.show(arguments[0],node))
         elif name == "bool":
             code='false'if not arguments else self.truth(arguments[0])
-            raw_kind=("bool",)
+            raw_kind='bool'
         elif name == "float":
             if not arguments:code="0.0_f64"
-            elif arguments[0].kind[0]in{"int","bool","scalar"}:code=f"({self.number(arguments[0])}) as f64"
-            elif arguments[0].kind==("float",):code=arguments[0].code
-            elif arguments[0].kind==("str",):code=self.at(f"native_scalar_float(&{arguments[0].code})",node)
+            elif domain(arguments[0].kind)in{"int","bool","int_bool"}:code=f"({self.number(arguments[0])}) as f64"
+            elif arguments[0].kind=='float':code=arguments[0].code
+            elif arguments[0].kind=='str':code=self.at(f"native_scalar_float(&{arguments[0].code})",node)
             else:raise ClassUnsupported(node)
         elif name == "abs":
             value=arguments[0]
-            if value.kind[0]in{"int","bool","scalar"}:
+            if domain(value.kind)in{"int","bool","int_bool"}:
                 number=self.number(value)
                 code=f"({number}).abs()"if self.model.integer=="bigint"else f"({number}).wrapping_abs()"
-                raw_kind=("int",)
+                raw_kind='int'
             else:raise ClassUnsupported(node)
         elif name == "id":
-            if arguments[0].kind[0]not in{"object","list"}:raise ClassUnsupported(node)
+            if domain(arguments[0].kind)not in{"object","list"}:raise ClassUnsupported(node)
             code=f"class_from_usize(Rc::as_ptr(&{arguments[0].code}) as usize)"
-            raw_kind=("int",)
+            raw_kind='int'
         elif name == "range":
             values=[self.number(value)for value in arguments]
             if len(values)==1:values.insert(0,self.literal(0))
             if len(values)==2:values.append(self.literal(1))
             code=self.at("class_range("+",".join(values)+")",node)
         elif name == "list":
-            if not arguments:code=f"class_list(Vec::<{self.rust_type(wanted[1])}>::new())"
-            elif arguments[0].kind[0]=="list":code=f"class_list({arguments[0].code}.borrow().clone())"
-            elif arguments[0].kind[0]=="range":
+            if not arguments:code=f"class_list(Vec::<{self.rust_type(wanted.element)}>::new())"
+            elif domain(arguments[0].kind)=="list":code=f"class_list({arguments[0].code}.borrow().clone())"
+            elif domain(arguments[0].kind)=="range":
                 values=f"{arguments[0].code}.iter()"
-                if wanted[1]==("scalar",):values+=".map(NativeScalar::Int)"
+                if wanted.element=='int_bool':values+=".map(NativeScalar::Int)"
                 code=f"class_list(({values}).collect::<Vec<_>>())"
-            elif arguments[0].kind[0]=="tuple":
+            elif domain(arguments[0].kind)=="tuple":
                 value=arguments[0]
-                elements=[self.coerce(Expression(f"{value.code}.{i}.clone()",kind),wanted[1],node)for i,kind in enumerate(value.kind[1:])]
+                elements=[self.coerce(Expression(f"{value.code}.{i}.clone()",kind),wanted.element,node)for i,kind in enumerate(value.kind.fields)]
                 code="class_list(vec!["+",".join(elements)+"])"
             else:raise ClassUnsupported(node)
         elif name in {"min","max","sum"}:
             accumulator=self.fresh();member=self.fresh()
             if name=="sum":
-                start=arguments[1]if len(arguments)==2 else Expression(self.literal(0),("int",),0)
+                start=arguments[1]if len(arguments)==2 else Expression(self.literal(0),'int',0)
                 code=f"{{let mut {accumulator}={self.number(start)};"
                 stream=arguments[0]
             elif len(arguments)>1:
@@ -1321,13 +1468,13 @@ class Emitter:
                 code=f"{{let mut {accumulator}:Option<{self.rust_type(wanted)}>=None;"
                 stream=arguments[0]
             if stream is not None:
-                if stream.kind[0]=="list":
-                    iterator=f"{stream.code}.borrow().iter().cloned()";kind=stream.kind[1]
-                elif stream.kind[0]=="range":
-                    iterator=f"{stream.code}.iter()";kind=("int",)
-                elif stream.kind[0]=="tuple" and len(stream.kind)>1:
-                    kind=wanted if name!="sum"else("int",)
-                    values=[self.coerce(Expression(f"{stream.code}.{i}.clone()",old),kind,node)for i,old in enumerate(stream.kind[1:])]
+                if domain(stream.kind)=="list":
+                    iterator=f"{stream.code}.borrow().iter().cloned()";kind=stream.kind.element
+                elif domain(stream.kind)=="range":
+                    iterator=f"{stream.code}.iter()";kind='int'
+                elif domain(stream.kind)=="tuple" and bool(stream.kind.fields):
+                    kind=wanted if name!="sum"else'int'
+                    values=[self.coerce(Expression(f"{stream.code}.{i}.clone()",old),kind,node)for i,old in enumerate(stream.kind.fields)]
                     iterator="["+",".join(values)+"].into_iter()"
                 else:raise ClassUnsupported(node)
                 if name=="sum":
@@ -1342,12 +1489,12 @@ class Emitter:
                     ending=self.at(f'{accumulator}.ok_or_else(||"ValueError: {name}() arg is an empty sequence".to_owned())',node)
                 code+=f"for {member} in {iterator}{{{action}}}{ending}}}"
         elif receiver is not None:
-            tag,method=receiver.kind[0],function.attr
+            tag,method=domain(receiver.kind),function.attr
             if tag=="list":
                 if method=="append":
-                    value=self.coerce(arguments[0],receiver.kind[1],node)
+                    value=self.coerce(arguments[0],receiver.kind.element,node)
                     code=f"{{{receiver.code}.borrow_mut().push({value});()}}"
-                elif method=="extend"and arguments[0].kind[0]=="list":
+                elif method=="extend"and domain(arguments[0].kind)=="list":
                     code=f"class_list_extend(&{receiver.code},&{arguments[0].code})"
                 elif method=="clear":code=f"{receiver.code}.borrow_mut().clear()"
                 elif method=="reverse":code=f"{receiver.code}.borrow_mut().reverse()"
@@ -1361,15 +1508,15 @@ class Emitter:
             elif tag=="str"and method=="strip":code=f"{receiver.code}.trim_matches(native_space).to_owned()"
             elif tag=="bytes"and method=="strip":code=f"class_strip_bytes(&{receiver.code})"
             elif tag=="str"and method=="join":
-                if arguments[0].kind!=("list",("str",)):raise ClassUnsupported(node)
+                if arguments[0].kind!=ListType("str"):raise ClassUnsupported(node)
                 code=f"{arguments[0].code}.borrow().join(&{receiver.code})"
-            elif tag in{"int","bool","scalar"}and method in{"bit_length","bit_count"}:
+            elif tag in{"int","bool","int_bool"}and method in{"bit_length","bit_count"}:
                 value=self.number(receiver)
                 if self.model.integer=="bigint":code=f"class_from_usize(({value}).{method}())"
                 else:
                     count=f"NativeInt::BITS-({value}).unsigned_abs().leading_zeros()"if method=="bit_length"else f"({value}).unsigned_abs().count_ones()"
                     code=f"class_from_usize(({count})as usize)"
-                raw_kind=("int",)
+                raw_kind='int'
             elif tag=="sys"and method=="setrecursionlimit":
                 limit=self.at(f"class_recursion_limit(&({self.number(arguments[0])}))",node)
                 temporary=self.fresh()
@@ -1382,7 +1529,7 @@ class Emitter:
             else:raise ClassUnsupported(node)
         if code is None:
             raise ClassUnsupported(node)
-        if raw_kind==("str",):code=f"NativeText::from({code})"
+        if raw_kind=="str":code=f"NativeText::from({code})"
         result=self.encoded(code,raw_kind,wanted,node)
         return Expression("{"+"\n".join(setup)+"let class_value="+result.code+";class_value}",wanted,result.constant)
 
@@ -1394,19 +1541,19 @@ class Emitter:
                              if other_name==name and other_kind!=kind)
             clearing+="".join(f"{other}=false;"for(other_name,other_kind),other in self.reference_slots.items()
                               if other_name==name and other_kind!=kind)
-            if kind[0]in self.model.INTRINSICS:
+            if domain(kind)in self.model.INTRINSICS:
                 return clearing+f"{self.reference_slot(name,kind)}=true;"
             slot=self.slot(name,kind)
             return clearing+f"{slot}=Some({self.coerce(value,kind,target)});"
         if isinstance(target,(ast.Tuple,ast.List)):
             setup,source = self.capture(value)
-            if source.kind[0]=="tuple":
+            if domain(source.kind)=="tuple":
                 pieces = [self.assign(node,Expression(f"{source.code}.{i}.clone()",kind))
-                          for i,(node,kind)in enumerate(zip(target.elts,source.kind[1:]))]
-            elif source.kind[0]=="list":
+                          for i,(node,kind)in enumerate(zip(target.elts,source.kind.fields))]
+            elif domain(source.kind)=="list":
                 unpack = self.fresh()
                 setup += f"let {unpack}={self.at(f'class_unpack(&{source.code},{len(target.elts)})',target)};"
-                pieces = [self.assign(node,Expression(f"{unpack}[{i}].clone()",source.kind[1]))for i,node in enumerate(target.elts)]
+                pieces = [self.assign(node,Expression(f"{unpack}[{i}].clone()",source.kind.element))for i,node in enumerate(target.elts)]
             else:
                 raise ClassUnsupported(target)
             return setup+"".join(pieces)
@@ -1418,15 +1565,15 @@ class Emitter:
             return "",("name",target)
         if isinstance(target,ast.Attribute):
             setup,owner = self.capture(self.expression(target.value))
-            if owner.kind[0]!="object":raise ClassUnsupported(target)
-            plan=self.model.classes[owner.kind[1]]
+            if domain(owner.kind)!="object":raise ClassUnsupported(target)
+            plan=self.model.classes[owner.kind.name]
             name=self.model.resolved_name(self.plan,target)
             return setup,("field",owner,plan,list(plan.fields).index(name),shape(plan.fields[name].cell))
         if isinstance(target,ast.Subscript):
             setup,owner=self.capture(self.expression(target.value))
             more,index=self.capture(self.expression(target.slice))
-            if owner.kind[0]!="list":raise ClassUnsupported(target)
-            return setup+more,("index",owner,index,owner.kind[1])
+            if domain(owner.kind)!="list":raise ClassUnsupported(target)
+            return setup+more,("index",owner,index,owner.kind.element)
         raise ClassUnsupported(target)
 
     def load_reference(self, reference, node, kind=None):
@@ -1465,12 +1612,12 @@ class Emitter:
                 return ""
             return self.expression(node.value).code+";"
         if isinstance(node,ast.Assign):
-            if self.kind(node.value)[0]=="map_int":
+            if domain(self.kind(node.value))=="map_int":
                 if len(node.targets)!=1 or not isinstance(node.targets[0],(ast.Tuple,ast.List)):
                     raise ClassUnsupported(node)
                 target=node.targets[0];temporary=self.fresh()
                 setup=f"let {temporary}={self.parse_words(node.value,len(target.elts))};"
-                return setup+"".join(self.assign(value,Expression(f"{temporary}[{i}].clone()",("int",)))
+                return setup+"".join(self.assign(value,Expression(f"{temporary}[{i}].clone()",'int'))
                                      for i,value in enumerate(target.elts))
             setup,value=self.capture(self.expression(node.value))
             return setup+"".join(self.assign(target,Expression(value.code+".clone()",value.kind,value.constant))for target in node.targets)
@@ -1480,7 +1627,7 @@ class Emitter:
             before,old=self.capture(self.load_reference(reference,node.target,old_kind))
             more,right=self.capture(self.expression(node.value))
             wanted=self.kind(node.target)
-            if old.kind[0]=="list"and isinstance(node.op,ast.Add)and right.kind[0]=="list":
+            if domain(old.kind)=="list"and isinstance(node.op,ast.Add)and domain(right.kind)=="list":
                 operation=f"class_list_extend(&{old.code},&{right.code});"
                 result=Expression(old.code,old.kind)
             else:
@@ -1489,7 +1636,7 @@ class Emitter:
             result_setup,result=self.capture(result)
             return setup+before+more+operation+result_setup+self.store_reference(reference,result,node.target)
         if isinstance(node,ast.Return):
-            value=Expression("()",("none",))if node.value is None else self.expression(node.value)
+            value=Expression("()",'none')if node.value is None else self.expression(node.value)
             return f"return Ok({self.coerce(value,shape(self.plan.result),node)});"
         if isinstance(node,ast.If):
             setup,test=self.capture(self.expression(node.test))
@@ -1512,37 +1659,37 @@ class Emitter:
     def for_statement(self, node):
         iterable=node.iter
         enumerated=(isinstance(iterable,ast.Call)and isinstance(iterable.func,ast.Name)
-                    and iterable.func.id=="enumerate"and self.kind(iterable)[0]=="enumerate")
+                    and iterable.func.id=="enumerate"and domain(self.kind(iterable))=="enumerate")
         source_node=iterable.args[0]if enumerated else iterable
         setup,source=self.capture(self.expression(source_node))
         counter=None
         if enumerated:
-            start=self.expression(iterable.args[1])if len(iterable.args)==2 else Expression(self.literal(0),("int",),0)
+            start=self.expression(iterable.args[1])if len(iterable.args)==2 else Expression(self.literal(0),'int',0)
             counter=self.fresh()
             setup+=f"let mut {counter}={self.number(start)};"
         label=self.fresh();self.loops.append(label)
         body=self.statements(node.body)
         self.loops.pop()
         current=self.fresh()
-        if source.kind[0]=="list":
+        if domain(source.kind)=="list":
             index=self.fresh()
             setup+=f"let mut {index}=0_usize;"
             advance=self.at(f"{index}.checked_add(1).ok_or_else(||\"OverflowError: list iterator index overflow\".to_owned())",node)
             prefix=f"'{label}:loop{{let {current}={{{source.code}.borrow().get({index}).cloned()}};let Some({current})={current} else{{break;}};{index}={advance};"
-            item=Expression(current,source.kind[1])
-        elif source.kind[0]=="range":
+            item=Expression(current,source.kind.element)
+        elif domain(source.kind)=="range":
             iterator=self.fresh();setup+=f"let mut {iterator}={source.code}.iter();"
             prefix=f"'{label}:while let Some({current})={iterator}.next(){{"
-            item=Expression(current,("int",))
-        elif source.kind[0]=="tuple":
+            item=Expression(current,'int')
+        elif domain(source.kind)=="tuple":
             kind=None
-            for candidate in source.kind[1:]:
+            for candidate in source.kind.fields:
                 if kind is None:kind=candidate
                 elif kind!=candidate:
-                    if {kind[0],candidate[0]}<={"int","bool","scalar"}:kind=("scalar",)
+                    if {domain(kind),domain(candidate)}<={"int","bool","int_bool"}:kind='int_bool'
                     else:raise ClassUnsupported(node)
-            kind=kind or("int",)
-            values=[self.coerce(Expression(f"{source.code}.{i}.clone()",old),kind,node)for i,old in enumerate(source.kind[1:])]
+            kind=kind or'int'
+            values=[self.coerce(Expression(f"{source.code}.{i}.clone()",old),kind,node)for i,old in enumerate(source.kind.fields)]
             prefix=f"'{label}:for {current} in ["+",".join(values)+"].into_iter(){"
             item=Expression(current,kind)
         else:
@@ -1552,12 +1699,12 @@ class Emitter:
             saved=self.fresh();before=f"let {saved}={counter}.clone();"
             increment=self.numeric.binary(ast.Add(),_Expression(counter+".clone()","int"),_Expression(self.literal(1),"int",1),node).code
             before+=f"{counter}={increment};"
-            item=Expression(f"({saved},{item.code})",("tuple",("int",),item.kind))
+            item=Expression(f"({saved},{item.code})",TupleType(("int",item.kind)))
         binding=self.assign(node.target,item)
         return setup+prefix+before+binding+body+"}"
 
     def declaration(self):
-        data=[f"let mut {slot}:Option<{self.rust_type(kind)}>=None;"for(_,kind),slot in self.slots.items()]
+        data=[f"let mut {slot}:{self.rust_type(MaybeType(kind))}=None;"for(_,kind),slot in self.slots.items()]
         references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
         return "\n".join(data+references)
 
@@ -1569,7 +1716,8 @@ class Emitter:
             parameters.append(f"{argument}:{self.rust_type(kind)}")
             initial.append(f"{self.slot(name,kind)}=Some({argument});")
         result=self.rust_type(shape(self.plan.result))
-        if shape(self.plan.result)==("none",):tail="Ok(())"
+        if "none"in alternatives(shape(self.plan.result)):
+            tail="Ok("+self.coerce(Expression("()","none"),shape(self.plan.result),self.plan.node)+")"
         else:
             tail=f"Err(NativeError{{message:\"RuntimeError: invalid compiled return\".into(),line:{getattr(self.plan.node,'lineno',1)},function:{_string(self.plan.scope)},frames:Vec::new()}})"
         signature="class_scope:ClassScope"+(" ,"+",".join(parameters)if parameters else"")
@@ -1627,7 +1775,7 @@ def _class_layouts(model,emitter):
     for owner in model.classes.values():
         if not owner.used:continue
         fields=list(owner.fields.values())
-        members=",".join(f"field_{i}:Option<{emitter.rust_type(shape(value.cell))}>"for i,value in enumerate(fields))
+        members=",".join(f"field_{i}:{emitter.rust_type(MaybeType(shape(value.cell)))}"for i,value in enumerate(fields))
         result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<RefCell<ClassData_{owner.index}>>;")
         for i,value in enumerate(fields):
             message=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{value.name}'")
@@ -1676,6 +1824,24 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         emitters=[Emitter(model,plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
+        unions={}
+        def add_kind(kind):
+            if isinstance(kind,UnionType):
+                unions[kind]=None
+                for alternative in kind.alternatives:add_kind(alternative)
+            elif isinstance(kind,(NullableType,MaybeType)):add_kind(kind.value)
+            elif isinstance(kind,TupleType):
+                for field in kind.fields:add_kind(field)
+            elif isinstance(kind,ListType):add_kind(kind.element)
+        for value in model.records.values():add_kind(shape(value))
+        for plan in model.plans:
+            if plan.reachable:
+                add_kind(shape(plan.result))
+                for value in plan.arguments.values():add_kind(shape(value))
+        for owner in model.classes.values():
+            if owner.used:
+                for value in owner.fields.values():add_kind(shape(value.cell))
+        layouts="\n".join(union_declaration(kind,emitters[0].rust_type)for kind in unions)+"\n"+layouts
     except (SyntaxError,_Unsupported,RecursionError)as error:
         if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
         return None

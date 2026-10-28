@@ -196,6 +196,15 @@ name error before performing input or copying another alias.
 Dynamic argument expansion, emitted variadic functions, effectful/mutable
 defaults, and versioned mutable global namespaces remain unfinished.
 
+Class values, method signatures, fields, and list elements use the shared
+scalar, `TupleType`, `ListType`, `MaybeType`, `NullableType`, and `UnionType`
+descriptors. A storage renderer preserves shared instance/list handles. Immutable
+values entering allocation members use the common directional value constraints;
+a container join does not widen the value inserted into it. The class scope and
+control-flow planner still needs migration to the shared semantic graph. Nullable
+mutable handles and identity-sensitive floating-point container comparisons remain
+outside this direct proof.
+
 Ordinary class lowering currently supports concrete typed instance fields,
 constructors, fixed method lookup, tuple results, instance/list aliases, and
 recursive methods. Missing fields use typed optional storage. Compiled Rust
