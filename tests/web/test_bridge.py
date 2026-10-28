@@ -5,6 +5,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -13,6 +16,14 @@ from py2fastrust.settings import LICENSES
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SUPPORTED_NATIVE_PROGRAMS=(
+    ('class Item:pass\nn=3\nvalues=[[] for i in range(n)]\n',{}),
+    ('from collections import deque\nvalues=deque([1])\n',{'integer':'bigint'}),
+    ('values=[1]\nalias=values\n',{}),
+    ('class Item:pass\nn=3\nvalues=[[] for i in range(n)]\nvalues[0].append(7)\nprint(values)\n',{}),
+    ('from collections import deque\nvalues=deque([1])\nvalues.append(2)\nprint(values.popleft(),values)\n',{'integer':'bigint'}),
+    ('values=[1]\nalias=values\nalias.append(2)\nprint(values,alias,values is alias)\n',{}),
+)
 spec = importlib.util.spec_from_file_location("pytors_test_bridge", ROOT / "web" / "bridge.py")
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
@@ -135,10 +146,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_missing_native_feature_reasons_and_source_details_survive_transport(self):
         cases=(
-            ('class Item:pass\nn=3\nvalues=[[] for i in range(n)]\n',{},('list comprehension','class-aware','list[list[unresolved element]]')),
-            ('from collections import deque\nvalues=deque([1])\n',{'integer':'bigint'},('collections.deque','BigInt','element storage')),
             ('def f(*items):return len(items)\nprint(f(1))\n',{},('signature','items','packing')),
-            ('values=[1]\nalias=values\n',{},('mutable container','alias identity','value=list[int]')),
             ('s=input()\nprint(s.replace("<img src=x>","x"))\n',{},("call 's.replace'",'receiver=str','<img src=x>')),
         )
         for source,options,tokens in cases:
@@ -149,6 +157,36 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual((diagnostic['filename'],diagnostic['code']),('main.py','E006'))
                 self.assertIn('Source:',diagnostic['message'])
                 for token in tokens:self.assertIn(token,diagnostic['message'])
+
+    def test_supported_native_programs_preserve_bridge_api_parity(self):
+        for source,options in SUPPORTED_NATIVE_PROGRAMS:
+            for mode in ('i64','i128','bigint'):
+                with self.subTest(source=source,integer=mode):
+                    result=self.assert_api_parity(source,**{**options,'integer':mode})
+                    self.assertIsNotNone(result['rust_source'])
+                    self.assertEqual(result['diagnostics'],[])
+                    self.assertLess(len(result['rust_source'].encode()),512*1024)
+
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_supported_native_programs_execute_without_python(self):
+        with tempfile.TemporaryDirectory(prefix='pytors-bridge-native-')as directory:
+            for index,(source,options)in enumerate(SUPPORTED_NATIVE_PROGRAMS):
+                expected=subprocess.run([sys.executable,'-I','-S','-c',source],text=True,capture_output=True,timeout=10)
+                self.assertEqual(expected.returncode,0,expected.stderr)
+                for mode in ('i64','i128','bigint'):
+                    result=self.assert_api_parity(source,**{**options,'integer':mode})
+                    self.assertEqual(result['diagnostics'],[])
+                    path=Path(directory)/f'case{index}_{mode}.rs';path.write_text(result['rust_source'])
+                    self.assertNotIn('enum Instruction',result['rust_source'])
+                    self.assertNotIn('enum Value {',result['rust_source'])
+                    for release in(False,True):
+                        with self.subTest(source=source,integer=mode,release=release):
+                            binary=path.with_name(path.stem+str(release))
+                            built=subprocess.run(['rustc','--crate-name','bridge','--edition=2021',*(['-O']if release else[]),str(path),'-o',str(binary)],text=True,capture_output=True,timeout=120)
+                            self.assertEqual(built.returncode,0,built.stderr)
+                            actual=subprocess.run([str(binary)],text=True,capture_output=True,timeout=10,
+                                env={**os.environ,'PATH':'/no-python-runtime','PYTHONPATH':'/unavailable'})
+                            self.assertEqual((actual.returncode,actual.stdout,actual.stderr),(expected.returncode,expected.stdout,expected.stderr))
 
     def test_transport_values_are_validated(self):
         for value in ({"source": None}, {"source": "print(1)", "options": []},
