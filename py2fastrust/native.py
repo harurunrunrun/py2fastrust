@@ -77,6 +77,7 @@ class _Expression:
     stable_borrow: bool = False
     char_code: str | None = None
     text_view: str | None = None
+    sequence_view: object | None = None
 
 
 
@@ -969,7 +970,8 @@ class _Generator:
                 # A row borrow cannot escape or outlive its unique parent.
                 if not isinstance(node.value, ast.Name):
                     raise _Unsupported
-                return _Expression(self.at(f"native_row(&{values.code}, {self.number(index)})", node), "list_int", owned=False)
+                from .native_sequence_storage import row_expression
+                return row_expression(self,node,values,index,environment)
             if values.kind == "deque_int":
                 offset = self.temporary()
                 receiver = self.temporary() if values.owned else values.code
@@ -1670,23 +1672,6 @@ class _Generator:
             if isinstance(call, ast.Constant) and type(call.value) is str:
                 return ";", environment
             if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
-                    and isinstance(call.func.value, ast.Subscript)):
-                # Resolve the row before its arguments, including failing
-                # index checks. Its integer elements have no alias identity.
-                setup, row = self.row_target(call.func.value, environment)
-                method = call.func.attr
-                if call.keywords:
-                    raise _Unsupported
-                if method == "append" and len(call.args) == 1:
-                    argument = self.expression(call.args[0], environment)
-                    if argument.kind != "int":
-                        raise _Unsupported
-                    item = self.temporary()
-                    return f"{setup}\nlet {item} = {argument.code};\n{row}.push({item});", environment
-                if method == "clear" and not call.args:
-                    return f"{setup}\n{row}.clear();", environment
-                raise _Unsupported
-            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
                     and isinstance(call.func.value, ast.Name)):
                 target = call.func.value
                 values = self.expression(target, environment)
@@ -1748,42 +1733,7 @@ class _Generator:
                 if values.kind == "dict_int":
                     expression = self.expression(call, environment)
                     return f"let _ = {expression.code};", environment
-                if target.id in self.iterating_lists:
-                    raise _Unsupported
-                if values.kind != "list_int":
-                    raise _Unsupported
-                method = call.func.attr
-                if method == "append" and len(call.args) == 1 and not call.keywords:
-                    argument = self.expression(call.args[0], environment)
-                    if argument.kind != "int":
-                        raise _Unsupported
-                    item = self.temporary()
-                    self.update_info(environment, target.id, _ListInfo(None if values.length is None else values.length + 1))
-                    return f"let {item} = {argument.code};\n{values.code}.push({item});", environment
-                if method == "extend" and len(call.args) == 1 and not call.keywords:
-                    argument = self.expression(call.args[0], environment)
-                    if argument.kind != "list_int":
-                        raise _Unsupported
-                    item = self.temporary()
-                    # Own a snapshot before the mutable receiver borrow, even
-                    # for a.extend(a), preserving Python's self-extension.
-                    length = None if values.length is None or argument.length is None else values.length + argument.length
-                    self.update_info(environment, target.id, _ListInfo(length))
-                    return f"let {item} = {self.consume_list(argument)};\n{values.code}.extend({item});", environment
-                if method == "reverse" and not call.args and not call.keywords:
-                    return f"{values.code}.reverse();", environment
-                if method == "sort" and not call.args:
-                    reverse = False
-                    if call.keywords:
-                        if (len(call.keywords) != 1 or call.keywords[0].arg != "reverse"
-                                or not isinstance(call.keywords[0].value, ast.Constant)
-                                or type(call.keywords[0].value.value) is not bool):
-                            raise _Unsupported
-                        reverse = call.keywords[0].value.value
-                    lines = f"{values.code}.sort_unstable();"
-                    if reverse:
-                        lines += f"\n{values.code}.reverse();"
-                    return lines, environment
+                raise _Unsupported
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "print":
                 separator, end = " ", "\n"
                 flush = False

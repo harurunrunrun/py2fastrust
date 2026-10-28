@@ -15,7 +15,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             empty.append("first")
             empty.append("last")
             print(empty[0],empty[-1],len(empty))
-        ''',modes=("i64","i128","bigint"))
+        ''',modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_string_comprehension_reads_and_readonly_iteration(self):
         self.differential('''
@@ -24,7 +24,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             for i,line in enumerate(lines):
                 print(i,line)
             print(len(lines))
-        ''',("0\n","3\nblue\n\n海猫\n"),modes=("i64","i128","bigint"))
+        ''',("0\n","3\nblue\n\n海猫\n"),modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_split_copy_and_unicode_slices(self):
         self.differential('''
@@ -37,7 +37,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
                 print(word)
             words.append("new")
             print(len(words),len(copied),len(other))
-        ''',("\n"," A\u3000猫\tB \n"),modes=("i64","i128","bigint"))
+        ''',("\n"," A\u3000猫\tB \n"),modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_next_generator_is_lazy_and_evaluates_default(self):
         self.differential('''
@@ -83,7 +83,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
                 for j in range(2):
                     nested.append(str(i+j))
             print(nested)
-        ''',("0\n","2\n猫\nblue\n"),modes=("i64","i128","bigint"))
+        ''',("0\n","2\n猫\nblue\n"),modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_nested_filtered_comprehensions_scope_and_exception_order(self):
         self.differential('''
@@ -103,7 +103,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             print(text.split(mark(","),mark(1)))
             print("a,,b,".split(","),"猫猫海猫".split("猫",2))
             print("  a b  ".split(None,0),"  a b  ".split(None,1))
-        ''',(" A\u3000猫\tB \n",",a,,b,\n","\n"),modes=("i64","i128","bigint"))
+        ''',(" A\u3000猫\tB \n",",a,,b,\n","\n"),modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_string_split_errors_and_slices_evaluate_bounds(self):
         self.differential('''
@@ -124,7 +124,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             copied.append("new")
             print(first(words),first(copied),first(other))
             print(words,copied,other)
-        ''',modes=("i64","i128","bigint"))
+        ''',modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_tuple_elements_named_and_destructured_streams(self):
         self.differential('''
@@ -138,7 +138,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             print(list(zip([1,2],["a","b"])))
             for pair in zip([1,2],["a","b"]):
                 print(pair)
-        ''',modes=("i64","i128","bigint"))
+        ''',modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_next_tuple_values_enumerate_nested_zip_and_defaults(self):
         self.differential('''
@@ -164,7 +164,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             pair=(3,"cat")
             print(words,*words,pair,sep="|",end="!\\n")
             print(pair,words)
-        ''',modes=("i64","i128","bigint"))
+        ''',modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_string_list_unpack_and_index_errors(self):
         self.differential('''
@@ -189,7 +189,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             print(next(filter(nonempty,words),"none"))
             print(next(map(score,zip([1,2],["a","bb"])),77))
             print(next(filter(score,zip([0,1],["","cat"])),(9,"none")))
-        ''',modes=("i64","i128","bigint"))
+        ''',modes=("i64","i128","bigint"),string_mode="unicode")
 
     def test_nested_tuple_defaults_comparison_and_repr(self):
         self.differential('''

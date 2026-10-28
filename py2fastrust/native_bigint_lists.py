@@ -102,10 +102,6 @@ class BigIntLists:
             # Functions can only borrow lists read-only, so no list rebinding
             # can escape from index evaluation in the accepted subset.
             return _Expression(f"{{{setup} let {offset}={self.number(index)}; {lookup}}}", "int")
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "copy" and not node.args and not node.keywords):
-            value = self.expression(node.func.value, environment)
-            return _Expression(self.list_copy(value, node), "list_int", length=value.length)
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords):
             return None
         name = node.func.id
@@ -244,46 +240,4 @@ class BigIntLists:
         if isinstance(node, ast.For):
             if not (isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name) and node.iter.func.id == "range"):
                 return self.list_for(node, environment)
-        if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-                and isinstance(node.value.func, ast.Attribute) and isinstance(node.value.func.value, ast.Name)):
-            return None
-        call = node.value
-        target = call.func.value
-        values = self.expression(target, environment)
-        if values.kind != "list_int":
-            return None
-        if target.id in self.iterating_lists:
-            raise _Unsupported
-        method = call.func.attr
-        if method in {"clear", "reverse"} and not call.args and not call.keywords:
-            if method == "clear":
-                self.update_info(environment,target.id,_ListInfo(0))
-            return f"{values.code}.{method}();", environment
-        if method in {"append", "extend"} and len(call.args) == 1 and not call.keywords:
-            argument = self.expression(call.args[0], environment)
-            item = self.temporary()
-            if method == "append" and argument.kind == "int":
-                code = argument.code
-                length = None if values.length is None else values.length + 1
-                action = f"native_big_list_push(&mut {values.code},{item})"
-            elif method == "extend" and argument.kind == "list_int":
-                code = self.list_copy(argument, node)
-                length = None if values.length is None or argument.length is None else values.length + argument.length
-                action = f"native_big_list_extend(&mut {values.code},{item})"
-            else:
-                raise _Unsupported
-            self.update_info(environment,target.id,_ListInfo(length))
-            return f"let {item}={code}; {self.at(action,node)};", environment
-        if method == "sort" and not call.args:
-            reverse = False
-            for keyword in call.keywords:
-                if keyword.arg == "key" and isinstance(keyword.value,ast.Constant) and keyword.value.value is None:
-                    continue
-                if keyword.arg != "reverse" or not isinstance(keyword.value,ast.Constant) or type(keyword.value.value) is not bool:
-                    raise _Unsupported
-                reverse = keyword.value.value
-            code = f"{values.code}.sort_unstable();"
-            if reverse:
-                code += f"{values.code}.reverse();"
-            return code, environment
         return None

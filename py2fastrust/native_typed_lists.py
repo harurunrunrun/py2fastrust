@@ -32,6 +32,8 @@ from .native_list_operations import HELPERS as _LIST_OPERATION_HELPERS
 HELPERS += _LIST_OPERATION_HELPERS
 from .native_list_methods import HELPERS as _LIST_SEARCH_HELPERS
 HELPERS += _LIST_SEARCH_HELPERS
+from .native_sequence_methods import HELPERS as _SEQUENCE_METHOD_HELPERS
+HELPERS += _SEQUENCE_METHOD_HELPERS
 
 def _enable(g):
     g.has_typed_lists = True
@@ -260,15 +262,17 @@ def try_expression(g, node, environment):
         value = g.expression(node.args[0],environment)
         if isinstance(value.kind,ListType):
             return _Expression(_length(g,f"({value.code}).len()"),"int",value.length)
-    if isinstance(node.func,ast.Attribute) and node.func.attr == "copy" and not node.args and not node.keywords:
-        value = g.expression(node.func.value,environment)
-        if isinstance(value.kind,ListType):
-            _enable(g)
-            return _Expression(g.at(f"native_typed_copy(&({value.code}))",node),value.kind,length=value.length)
     return None
 
 
 def try_statement(g,node,environment):
+    from .native_constraint_lowering import reset_statement
+    reset=reset_statement(g,node,environment)
+    if reset is not None:return reset
+    if isinstance(node,ast.Expr)and isinstance(node.value,ast.Call):
+        from .native_list_methods import try_expression as sequence_method
+        method=sequence_method(g,node.value,environment)
+        if method is not None:return method.code+";",environment
     printed = _print(g,node,environment)
     if printed is not None:
         return printed
@@ -290,51 +294,6 @@ def try_statement(g,node,environment):
         checked = _index(g,offset,f"{binding.slot}.len()",target,assignment=True)
         return (f"let {item}={_clone(g,value,binding.kind.element)};\nlet {offset}={g.number(index)};\n"
                 f"let {position}={checked};\n{binding.slot}[{position}]={item};"),environment
-    if not (isinstance(node,ast.Expr) and isinstance(node.value,ast.Call)
-            and isinstance(node.value.func,ast.Attribute) and isinstance(node.value.func.value,ast.Name)):
-        return None
-    call = node.value
-    target = call.func.value
-    binding = environment.get(target.id)
-    if not isinstance(binding,_Binding):
-        return None
-    empty = isinstance(binding.info,_ListInfo) and binding.info.length == 0
-    if not isinstance(binding.info,TypedListInfo) and not empty:
-        return None
-    if call.func.attr not in {"append","clear","reverse","sort"} or call.keywords and call.func.attr != "sort":
-        return None
-    if target.id in g.iterating_lists:
-        raise _Unsupported
-    if call.func.attr == "append" and len(call.args) == 1:
-        value = g.expression(call.args[0],environment)
-        if empty and value.kind != "int":
-            if not immutable(value.kind):
-                raise _Unsupported
-            kind = ListType(value.kind)
-            slot = g.bind(target.id,_Expression("",kind,length=0),environment)
-            initialization = f"{slot}=Vec::new();\n"
-            length = 0
-        elif isinstance(binding.info,TypedListInfo):
-            kind,slot = binding.kind,binding.slot
-            initialization = ""
-            length = binding.info.length
-        else:
-            return None
-        item = g.temporary()
-        _enable(g)
-        g.update_info(environment,target.id,TypedListInfo(kind,None if length is None else length+1))
-        call = g.at(f"native_typed_push(&mut {slot},{item})",node)
-        return f"{initialization}let {item}={_clone(g,value,kind.element)};\n{call};",environment
-    if not isinstance(binding.info,TypedListInfo):
-        return None
-    if call.func.attr == "sort" and not call.args:
-        options,reverse,key = _sort_options(g,call,environment,{target.id})
-        code = _sort_code(g,binding.slot,binding.kind.element,node,environment,reverse,key)
-        return "\n".join(options+[code]),environment
-    if call.func.attr in {"clear","reverse"} and not call.args:
-        if call.func.attr == "clear":
-            g.update_info(environment,target.id,TypedListInfo(binding.kind,0))
-        return f"{binding.slot}.{call.func.attr}();",environment
     return None
 
 
@@ -383,13 +342,14 @@ def _representation(g,value,*,quoted=False):
     raise _Unsupported
 
 
-def _print(g,node,environment):
+def _print(g,node,environment,*,values=None):
     if not (isinstance(node,ast.Expr) and isinstance(node.value,ast.Call)
             and isinstance(node.value.func,ast.Name) and node.value.func.id == "print"):
         return None
     call = node.value
-    values = [(isinstance(argument,ast.Starred),g.expression(argument.value if isinstance(argument,ast.Starred) else argument,environment))
-              for argument in call.args]
+    if values is None:
+        values = [(isinstance(argument,ast.Starred),g.expression(argument.value if isinstance(argument,ast.Starred) else argument,environment))
+                  for argument in call.args]
     from .native_unions import union_kind
     from .native_types import EmptyType
     if not any(isinstance(value.kind,(ListType,TupleType,EmptyType)) or union_kind(value.kind) or value.kind=="none" or not star and value.kind == "list_int" for star,value in values):

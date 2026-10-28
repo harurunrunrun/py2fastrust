@@ -207,6 +207,7 @@ class Model:
         self.value_constraints = Solver(SemanticGraph(unit) if unit is not None else SimpleNamespace())
         self.member_allocations = {}
         self.constructors = {}
+        self.sequence_calls = {}
         self.records = {}
         self.augmented = {}
         self.module = FunctionPlan(tree, 0, reachable=True, visible_definitions=set(),global_names=set())
@@ -731,21 +732,24 @@ class Model:
                 if method is None:
                     raise ClassUnsupported(function)
                 return self.bind_call(plan,node,method,[receiver]+arguments,keywords,environment)
-            if receiver.tag == "list" and function.attr in {"append","extend","clear","copy","pop","reverse"}:
-                item = receiver.args[0]
-                if keywords:
-                    raise ClassUnsupported(node)
-                if function.attr == "append" and len(arguments) == 1:
-                    self.contribute(item,arguments[0],node)
-                elif function.attr == "extend" and len(arguments) == 1:
-                    merge(item,self.item(arguments[0],node),node)
-                elif function.attr == "copy" and not arguments:
-                    return self.cell(plan,node,"list",(item,))
-                elif function.attr == "pop" and len(arguments) <= 1:
-                    return self.remember(plan,node,item)
-                elif function.attr not in {"clear","reverse"} or arguments:
-                    raise ClassUnsupported(node)
-                return self.cell(plan,node,"none")
+            if receiver.tag == "list":
+                from .native_sequence_plans import sequence_method
+                method=sequence_method(shape(receiver),function.attr)
+                if method is not None:
+                    try:
+                        defaults={name:Cell("none"if value is None else"bool"if type(value)is bool else"int")
+                                  for name,value in method.defaults}
+                        bound=method.signature.bind([receiver]+arguments,keywords,defaults).by_name
+                    except CallBindingError:raise ClassUnsupported(node)from None
+                    self.sequence_calls[(plan.index,id(node))]=method
+                    item=receiver.args[0]
+                    if method.name=="append":self.contribute(item,bound["value"],node)
+                    elif method.name=="extend":self.contribute(item,self.item(bound["iterable"],node),node)
+                    elif method.name=="sort"and bound["key"].root().tag not in {None,"none"}:
+                        raise ClassUnsupported(node)
+                    if method.result=="copy":return self.cell(plan,node,"list",(item,))
+                    if method.result=="element":return self.remember(plan,node,item)
+                    return self.cell(plan,node,method.result)
             if receiver.tag in {"str","bytes"} and function.attr == "split" and not arguments and not keywords:
                 return self.cell(plan,node,"list",(Cell(receiver.tag),))
             if receiver.tag in {"str","bytes"} and function.attr == "strip" and not arguments and not keywords:
@@ -1052,6 +1056,9 @@ class Emitter:
         if tag == "none":
             return "false"
         if tag == "object":
+            owner=self.model.classes[value.kind.name]
+            if owner.node.bases or any(name in owner.methods for name in {"__bool__","__len__"}):
+                raise ClassUnsupported(owner.node)
             return "true"
         if tag == "tuple":
             return str(bool(value.kind.fields)).lower()
@@ -1318,7 +1325,35 @@ class Emitter:
         call = self.at(f"class_parse_words(&{words.code},{limit},{parser})",node)
         return f"{{{before}{call}}}"
 
+    def sequence_call(self,node,method):
+        from .native_sequence_storage import capture_shared
+        from .native_sequence_methods import lower
+        emitter=self
+        class Adapter:
+            bits=emitter.numeric.bits
+            temporary=emitter.fresh
+            number=emitter.number
+            truth=emitter.truth
+            at=emitter.at
+            def coerce(self,value,kind):return emitter.coerce(value,kind,node)
+        adapter=Adapter()
+        storage=capture_shared(adapter,self.expression(node.func.value))
+        lines=list(storage.setup)
+        bound={}
+        try:call=method.signature.plan(normalize_call(node),implicit_count=1)
+        except CallBindingError:raise ClassUnsupported(node)from None
+        for argument,name in zip(call.arguments.evaluation_order,call.argument_parameters):
+            before,value=self.capture(self.expression(argument.expression))
+            lines.append(before)
+            bound[name]=value
+        if method.name=="sort"and "key"in bound and bound["key"].kind!="none":raise ClassUnsupported(node)
+        result=lower(adapter,storage,method,bound,node,{},sort_key=None)
+        temporary=self.fresh()
+        return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)
+
     def call(self, node):
+        method=self.model.sequence_calls.get((self.plan.index,id(node)))
+        if method is not None:return self.sequence_call(node,method)
         function = node.func
         wanted = self.kind(node)
         if isinstance(function,ast.Name) and function.id in self.model.classes:
@@ -1490,20 +1525,7 @@ class Emitter:
                 code+=f"for {member} in {iterator}{{{action}}}{ending}}}"
         elif receiver is not None:
             tag,method=domain(receiver.kind),function.attr
-            if tag=="list":
-                if method=="append":
-                    value=self.coerce(arguments[0],receiver.kind.element,node)
-                    code=f"{{{receiver.code}.borrow_mut().push({value});()}}"
-                elif method=="extend"and domain(arguments[0].kind)=="list":
-                    code=f"class_list_extend(&{receiver.code},&{arguments[0].code})"
-                elif method=="clear":code=f"{receiver.code}.borrow_mut().clear()"
-                elif method=="reverse":code=f"{receiver.code}.borrow_mut().reverse()"
-                elif method=="copy":code=f"class_list({receiver.code}.borrow().clone())"
-                elif method=="pop":
-                    index=self.number(arguments[0])if arguments else self.literal(-1)
-                    code=self.at(f"class_list_pop(&{receiver.code},&({index}))",node)
-                else:raise ClassUnsupported(node)
-            elif tag in {"str","bytes"}and method=="split":
+            if tag in {"str","bytes"}and method=="split":
                 code=f"class_split_{'text'if tag=='str'else'bytes'}(&{receiver.code})"
             elif tag=="str"and method=="strip":code=f"{receiver.code}.trim_matches(native_space).to_owned()"
             elif tag=="bytes"and method=="strip":code=f"class_strip_bytes(&{receiver.code})"
@@ -1862,6 +1884,9 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         from .native_integer_parsing import render_helpers as parsing_helpers
         pieces.extend([_HELPERS,_named_helpers(_INPUT_HELPERS,{"native_space"}),parsing_helpers(string_mode),_SCALAR_UNION_HELPERS,SCALAR_HELPERS,
                        "impl ClassDisplay for f64 {fn class_str(&self)->String{native_float_text(*self)}}"])
+    if model.sequence_calls:
+        from .native_typed_lists import HELPERS as sequence_helpers
+        pieces.append(sequence_helpers)
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),runtime.joinpath("native_classes.rs").read_text(encoding="utf-8"),layouts,*bodies])
     pieces.append("fn main(){use std::io::Write as _;let scope=ClassScope::new();let result=class_execute(scope.clone(),class_function_0(scope.clone()));\n"

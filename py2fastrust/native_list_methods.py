@@ -36,74 +36,63 @@ def _supported(kind):
 def try_expression(g,node,environment):
     from .native_stream_plans import context
     from .call_semantics import CallBindingError
+    from .native_sequence_plans import sequence_method
+    from .native_sequence_storage import capture_owned
+    from .native_sequence_methods import lower
     try:plan=context(g,environment).method(node)
     except CallBindingError as error:raise _Unsupported from error
-    if plan is None or plan.identity.name not in {"index","count","pop"}:return None
+    if plan is None:return None
     receiver=plan.receiver.captured
-    if not list_type(receiver.kind):return None
-    element="int" if receiver.kind=="list_int" else receiver.kind.element
-    if not _supported(element):raise _Unsupported
+    method=sequence_method(receiver.kind,plan.identity.name)
+    if method is None:return None
     g.has_lists=g.has_typed_lists=True
     g.register_type(receiver.kind)
-    lines=[]
-    owner=g.temporary()
-    binding_name=None
-    mutable=None
-    if receiver.owned:
-        lines.append(f"let mut {owner}={receiver.code};")
-        sequence=f"&{owner}"
-        mutable=f"&mut {owner}"
-    else:
-        # A named receiver is resolved before arguments, but its contents are
-        # borrowed only after their effects (for example a.index(a.pop())).
-        if g.type_analysis is None or g.source_unit is None:raise _Unsupported
-        term=g.type_analysis.graph.expressions[g.source_unit.ordinal(plan.receiver.expression)]
-        if term.operation!="name":raise _Unsupported
-        lines.append(f"let _=&({receiver.code});")
-        sequence=f"&({receiver.code})[..]"
-        binding_name=term.data
-        if plan.identity.name=="pop":
-            binding=environment.get(binding_name)
-            if (not isinstance(binding,_Binding) or binding_name in g.iterating_lists
-                    or binding.slot in g.borrowed_slots):raise _Unsupported
-            mutable=(f'{binding.slot}.as_mut().expect("validated list receiver")' if is_maybe(binding.kind)
-                     else f"&mut {binding.slot}")
+    storage=capture_owned(g,receiver,plan.receiver.expression,environment,mutates=method.mutates)
+    lines=list(storage.setup)
     bound={}
-    for operand in plan.invocation.explicit_order:
-        value=g.expression(operand.expression,environment)
-        if operand.parameter=="value":
-            if not _supported(value.kind):raise _Unsupported
-            name=g.temporary()
-            lines.append(f"let {name}={value.code};")
-            bound["value"]=_Expression(name,value.kind,owned=False)
-        else:
-            if value.kind not in {"int","bool","int_bool"}:raise _Unsupported
-            name=g.temporary()
-            lines.append(f"let {name}={g.number(value)};")
-            bound[operand.parameter]=(f"{name} as i128" if g.bits else
-                f"{name}.to_i128().unwrap_or_else(||if {name}.is_negative(){{i128::MIN}}else{{i128::MAX}})")
-    if plan.identity.name=="pop":
-        if binding_name is not None:
-            binding=environment[binding_name]
-            g.expression_mutations.append(binding)
-            if not is_maybe(binding.kind):
-                length=getattr(binding.info,"length",None)
-                length=max(0,length-1) if length is not None else None
-                g.update_info(environment,binding_name,g.binding(_Expression("",receiver.kind,length=length)))
-        call=g.at(f"native_sequence_pop({mutable},{bound.get('index','-1_i128')})",node)
-        return _Expression("{"+" ".join(lines)+call+"}",element)
-    needle=bound["value"]
-    item=g.temporary()
-    if isinstance(element,EmptyType):equal=f"match *{item} {{}}"
-    elif isinstance(needle.kind,EmptyType):equal=f"match {needle.code} {{}}"
-    else:
-        from .native_tuples import _equal
-        equal=_equal(g,_Expression(f"(*{item})",element,owned=False),needle)
-    if plan.identity.name=="count":
-        call=f"native_sequence_count({sequence},|{item}|{equal})"
-    else:
-        start=bound.get("start","0_i128")
-        stop=f"Some({bound['stop']})" if "stop" in bound else "None"
-        call=g.at(f"native_sequence_index({sequence},{start},{stop},|{item}|{equal})",node)
-    result=f"({call}) as NativeInt" if g.bits else f"Int::from_i128(({call}) as i128)"
-    return _Expression("{"+" ".join(lines)+result+"}","int")
+    sort_key=None
+    depth=len(g.iterating_lists)
+    g.iterating_lists.extend(storage.forbidden_owners)
+    try:
+        for operand in plan.invocation.explicit_order:
+            if method.name=="sort"and operand.parameter=="key":
+                from .references import BuiltinIdentity,callable_reference
+                import ast
+                if isinstance(operand.expression,ast.Name):
+                    reference=callable_reference(g,operand.expression,environment)
+                    if getattr(reference,"_native_reference",False):
+                        sort_key=operand.expression
+                        continue
+                value=g.expression(operand.expression,environment)
+                if value.kind!="none":raise _Unsupported
+            else:value=g.expression(operand.expression,environment)
+            if method.name=="sort"and operand.parameter=="reverse":
+                from .native_sequence_storage import deferred_truth
+                deferred=deferred_truth(g,value,operand.expression,environment)
+                if deferred is not None:
+                    setup,truth_value,owners=deferred
+                    lines.extend(setup)
+                    bound[operand.parameter]=truth_value
+                    g.iterating_lists.extend(owners)
+                    continue
+            temporary=g.temporary()
+            code=f"({value.code}).clone()"if not value.owned else value.code
+            lines.append(f"let {temporary}={code};")
+            bound[operand.parameter]=_Expression(temporary,value.kind)
+    finally:
+        del g.iterating_lists[depth:]
+    if method.mutates and storage.mutation_binding is not None:
+        g.expression_mutations.append(storage.mutation_binding)
+    if method.mutates and storage.binding_name is not None:
+        name=storage.binding_name
+        binding=environment[name]
+        g.expression_mutations.append(binding)
+        if not is_maybe(binding.kind):
+            length=getattr(binding.info,"length",None)
+            if method.name=="clear":length=0
+            elif method.name=="append":length=None if length is None else length+1
+            elif method.name=="pop":length=None if length is None else max(0,length-1)
+            elif method.name=="extend":length=None
+            g.update_info(environment,name,g.binding(_Expression("",receiver.kind,length=length)))
+    result=lower(g,storage,method,bound,node,environment,sort_key=sort_key)
+    return _Expression("{"+" ".join(lines)+result.code+"}",result.kind)

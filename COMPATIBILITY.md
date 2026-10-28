@@ -249,6 +249,16 @@ control-flow planner still needs migration to the shared semantic graph. Nullabl
 mutable handles and identity-sensitive floating-point container comparisons remain
 outside this direct proof.
 
+Exact builtin list methods share typed signatures and operation lowering across
+owned vectors and shared class-scope handles: `append`, list-to-list `extend`,
+`clear`, `reverse`, `copy`, `sort`, `index`, `count`, and `pop`. Receiver names,
+fields, and checked row indices are captured before explicit arguments; contents
+are borrowed afterward. A callback replacing a class field therefore does not
+change the already selected list. Owned row projections retain conservative
+parent mutation checks. Class sorting currently requires `key=None`; ordinary
+sorting retains its proved callable-key path. General iterables for `extend`,
+class key callbacks, and identity-sensitive float search remain required work.
+
 Ordinary class lowering currently supports concrete typed instance fields,
 constructors, fixed method lookup, tuple results, instance/list aliases, and
 recursive methods. Missing fields use typed optional storage. Compiled Rust

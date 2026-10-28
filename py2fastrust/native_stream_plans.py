@@ -12,6 +12,7 @@ from enum import Enum
 
 from .call_semantics import CallArguments, CallBinding, CallBindingError, FunctionSignature, normalize_call
 from .references import BuiltinIdentity, callable_reference
+from .native_sequence_plans import METHODS as SEQUENCE_METHODS,sequence_method
 
 
 class ProducerKind(Enum):
@@ -191,7 +192,7 @@ class Normalizer:
         self._methods[key]=None
         from .native_text_predicates import STR_PREDICATES,supports
         if not (isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
-                and node.func.attr in {"split","join","index","count","pop"}|STR_PREDICATES):
+                and node.func.attr in {"split","join"}|SEQUENCE_METHODS.keys()|STR_PREDICATES):
             return None
         predicate=node.func.attr in STR_PREDICATES
         evaluate=getattr(self.generator,"read_expression" if predicate else "expression",None)
@@ -199,11 +200,11 @@ class Normalizer:
             return None
         receiver=evaluate(node.func.value,self.environment)
         from .native_types import list_type
-        sequence_search=node.func.attr in {"index","count","pop"}
+        sequence=sequence_method(receiver.kind,node.func.attr)
         if predicate:
             if not supports(receiver.kind,node.func.attr):return None
-        elif sequence_search:
-            if not list_type(receiver.kind):return None
+        elif node.func.attr in SEQUENCE_METHODS:
+            if sequence is None:return None
         elif receiver.kind not in {"str","bytes"} or receiver.kind=="bytes" and node.func.attr=="join":
             return None
         identity=BuiltinMethodIdentity(receiver.kind,node.func.attr)
@@ -218,16 +219,8 @@ class Normalizer:
         elif identity.name=="join":
             signature=_signature(("self","iterable"),positional_only=("self","iterable"))
             defaults=()
-        elif identity.name=="index":
-            signature=_signature(("self","value","start","stop"),
-                                 positional_only=("self","value","start","stop"),defaults=("start","stop"))
-            defaults=(("start",0),("stop",None))
-        elif identity.name=="pop":
-            signature=_signature(("self","index"),positional_only=("self","index"),defaults=("index",))
-            defaults=(("index",-1),)
         else:
-            signature=_signature(("self","value"),positional_only=("self","value"))
-            defaults=()
+            signature,defaults=sequence.signature,sequence.defaults
         default_values={name:Operand(None,name,DefaultValue(name,value))for name,value in defaults}
         implicit=Operand(node.func.value,"self",captured=receiver)
         explicit=[]

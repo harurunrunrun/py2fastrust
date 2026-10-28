@@ -333,7 +333,12 @@ def try_statement(generator,node,environment):
         if not any(value.kind == "bytes" for value in values):
             return None
         if any(value.kind not in {"int","bool","int_bool","str","bytes","float"} for value in values):
-            raise _Unsupported
+            # Structural values use the common typed printer, which also
+            # renders bytes. Reuse the already lowered ordered arguments.
+            from .native_typed_lists import _print
+            printed=_print(generator,node,environment,values=tuple((False,value)for value in values))
+            if printed is None:raise _Unsupported
+            return printed
         separator,end,flush=" ","\n",False
         seen=set()
         for keyword in call.keywords:
