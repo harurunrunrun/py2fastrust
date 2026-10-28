@@ -29,6 +29,8 @@ def _text_read(g,node,environment):
 def _length(g,value,node):
     """Return usize from a captured value; never visit its source AST again."""
     kind=value.kind
+    from .native_types import SharedListType
+    if isinstance(kind,SharedListType):return f"native_shared_len(&({value.code}))"
     if isinstance(kind,TupleType):return f"{len(kind.fields)}_usize"
     if isinstance(kind,(ListType,TupleSequenceType,DictType,SetType))or kind in _CONTAINERS:
         return f"({value.code}).len()"

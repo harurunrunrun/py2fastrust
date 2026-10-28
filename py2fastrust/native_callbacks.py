@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from .call_semantics import CallBindingError, FunctionSignature, normalize_call
 from .native import _Binding, _Expression, _Unsupported
-from .native_types import immutable, rust_type
+from .native_types import immutable, rust_type,SharedListType
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ def prepare(g, node, environment):
     lines, defaults = [], []
     for slot in signature.defaults:
         value = g.expression(slot.expression, environment)
-        if not immutable(value.kind):
+        if not immutable(value.kind)and not isinstance(value.kind,SharedListType):
             raise _Unsupported(
                 f"lambda default {slot.name!r} needs one shared mutable object across "
                 "callback invocations; that default-cell storage is not implemented",
@@ -50,7 +50,7 @@ def _observed_owners(g, callback, call_node, forbidden):
     unit = getattr(g, "source_unit", None)
     if unit is not None and isinstance(call_node, ast.Call) and isinstance(call_node.func, ast.Attribute):
         by_node = {binding.node: binding for binding in unit.bindings}
-        owners = set()
+        owners = {owner for owner in forbidden if isinstance(owner,tuple)}
         for node in ast.walk(call_node.func.value):
             if isinstance(node, ast.Name) and node.id in forbidden:
                 binding = by_node.get(unit.ordinal(node))
@@ -89,7 +89,7 @@ def invoke(g, callback, arguments, environment, call_node, *, forbidden_owners=(
                 proof="Python sorting-list visibility and restoration")
     lines, inside = [], environment.copy()
     for parameter, value in zip(bound.parameters, bound.values):
-        if not immutable(value.kind):
+        if not immutable(value.kind)and not isinstance(value.kind,SharedListType):
             raise _Unsupported(
                 "a mutable callback argument needs shared identity-preserving "
                 "argument storage; this inline native callback only accepts "
@@ -118,7 +118,7 @@ def invoke(g, callback, arguments, environment, call_node, *, forbidden_owners=(
     from .native_expression_flow import _widen
     _widen(g, environment, {binding.slot for binding in g.expression_mutations[checkpoint:]})
     if not value.owned:
-        if not immutable(value.kind):
+        if not immutable(value.kind)and not isinstance(value.kind,SharedListType):
             raise _Unsupported(
                 "returning a borrowed mutable object from this lambda requires "
                 "an alias-preserving native callback result carrier; that result "
@@ -144,7 +144,7 @@ def try_expression(g, node, environment):
         plan = callback.signature.plan(normalize_call(node))
         def argument(expression, parameter):
             value = g.expression(expression, environment)
-            if not immutable(value.kind):
+            if not immutable(value.kind)and not isinstance(value.kind,SharedListType):
                 raise _Unsupported(
                     "an immediate lambda's mutable argument needs a shared "
                     "alias-preserving callback frame; that argument adapter "

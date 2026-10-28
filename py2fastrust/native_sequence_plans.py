@@ -26,7 +26,7 @@ def _method(name, positional=(), *, defaults=(), keywords=(), mutates=False, res
         keyword_only=keywords,default_names=tuple(key for key,_ in defaults)),defaults,mutates,result)
 
 
-METHODS=MappingProxyType({method.name:method for method in (
+LIST_METHODS=MappingProxyType({method.name:method for method in (
     _method("append",("value",),mutates=True),
     _method("extend",("iterable",),mutates=True),
     _method("clear",mutates=True),
@@ -39,9 +39,28 @@ METHODS=MappingProxyType({method.name:method for method in (
 )})
 
 
+DEQUE_METHODS=MappingProxyType({method.name:method for method in (
+    _method("append",("value",),mutates=True),
+    _method("appendleft",("value",),mutates=True),
+    _method("extend",("iterable",),mutates=True),
+    _method("extendleft",("iterable",),mutates=True),
+    _method("pop",mutates=True,result="element"),
+    _method("popleft",mutates=True,result="element"),
+    _method("clear",mutates=True),
+    _method("reverse",mutates=True),
+    _method("rotate",("n",),defaults=(("n",1),),mutates=True),
+    _method("copy",result="copy"),
+    _method("count",("value",),result="int"),
+    _method("index",("value","start","stop"),defaults=(("start",0),("stop",None)),result="int"),
+    _method("insert",("index","value"),mutates=True),
+    _method("remove",("value",),mutates=True),
+)})
+METHODS=MappingProxyType({**LIST_METHODS,**DEQUE_METHODS})
+
+
 def sequence_method(kind,name):
-    return METHODS.get(name) if list_type(kind) else None
+    return DEQUE_METHODS.get(name)if kind=="deque_int"else LIST_METHODS.get(name)if list_type(kind)else None
 
 
 def element_type(kind):
-    return "int" if kind=="list_int" else kind.element
+    return "int" if kind in {"list_int","deque_int"} else kind.element

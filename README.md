@@ -95,6 +95,9 @@ even when those options appear in the source.
 The direct path recognizes proved `collections.deque` imports using the
 compiler's actual module resolution. A user module with the same name is not
 silently replaced by that specialization.
+Resolved `heapq` min/max heap operations and `bisect` searches/insertions use
+typed list helpers. Their current payload and callable-key boundaries are
+listed in [COMPATIBILITY.md](COMPATIBILITY.md).
 It also recognizes trusted `sys.stdin` and `sys.stdin.buffer` readers, including
 captured `read`/`readline` aliases and local imports inside ordinary functions.
 Text and byte reads retain their different newline, EOF, whitespace, and
@@ -132,7 +135,10 @@ loaded.
 A shared semantic graph solves allocation field constraints and loop-header
 binding shapes before ordinary Rust lowering, including empty collections and
 possibly unbound names. It contains compile-time facts and typed control-flow
-edges; the generated program executes its Rust statements directly.
+edges; the generated program executes its Rust statements directly. Nested lists
+with proved immutable payloads retain typed shared row identities across aliases,
+ordinary function calls, parent replacement/clearing, and live iteration in all
+integer modes. Flat uniquely owned arrays keep their existing vector storage.
 
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather
@@ -154,7 +160,7 @@ The converter uses Python's official `ast` and `symtable` APIs. Supported
 bindings, operators and control flow become Rust values, expressions, loops
 and functions. The current implementation covers proved integer and boolean
 operations, shared immutable strings and `f64` scalars, owned BigInt scalar operations, integer
-lists and independent rows, dictionaries, sets and unbounded deques. It supports
+lists and shared nested rows, dictionaries, sets and integer deques, including bounded queues. It supports
 ordinary scalar functions with proved argument and return kinds, constant
 defaults, positional and keyword binding, and calls between those functions.
 Statically known function aliases retain their original definitions across

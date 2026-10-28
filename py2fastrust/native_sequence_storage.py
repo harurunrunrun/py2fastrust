@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import ast
 
 from .native import _Binding,_Unsupported
-from .native_types import is_maybe,immutable
+from .native_types import is_maybe,immutable,unmaybe
 from .native_sequence_plans import element_type
 
 
@@ -22,12 +22,14 @@ class SequenceStorage:
     binding_name: str | None=None
     forbidden_owners: tuple[str,...]=()
     mutation_binding: object=None
+    shared_factory: str="class_list"
+    callback_owners: tuple[str,...]=()
 
     @property
     def element(self):return element_type(self.kind)
 
     def own(self,code):
-        return f"class_list({code})" if self.shared else code
+        return f"{self.shared_factory}({code})" if self.shared else code
 
 
 def binding_name(g,node):
@@ -51,8 +53,36 @@ def binding_name(g,node):
 
 
 def capture_owned(g,receiver,node,environment,*,mutates):
+    from .native_types import SharedListType
+    if isinstance(receiver.kind,SharedListType):
+        from dataclasses import replace
+        name=binding_name(g,node)
+        binding=environment.get(name)
+        # sort callbacks must not observe their receiver through any shared
+        # alias or parent. Other methods hold no borrow while operands run.
+        owners=[]
+        unit=getattr(g,"source_unit",None)
+        if unit is not None:
+            by_ordinal={unit.ordinal(item):item for item in ast.walk(unit.tree)}
+            try:scope=unit.nodes[unit.ordinal(node)].scope
+            except KeyError:scope=0
+            ancestors=set()
+            while scope is not None:
+                ancestors.add(scope);scope=unit.scopes[scope].parent
+            aliases={key for key,item in environment.items()if isinstance(item,_Binding)and isinstance(unmaybe(item.kind),SharedListType)}
+            for item in unit.bindings:
+                source=by_ordinal.get(item.node)
+                try:key=unit.name_for(source)
+                except KeyError:continue
+                if item.scope in ancestors and key in aliases:owners.append((item.name,item.owner))
+        owners=tuple(set(owners))
+        return replace(capture_shared(g,receiver),binding_name=name,
+                       mutation_binding=binding if isinstance(binding,_Binding)else None,
+                       callback_owners=owners)
     if receiver.sequence_view is not None:
         storage=receiver.sequence_view
+        if mutates and storage.mutation_binding is not None and storage.mutation_binding.slot in g.borrowed_slots:
+            raise _Unsupported("this sequence view is rooted in a read-only borrowed argument; mutating its row would change the caller's storage, and a mutable shared argument representation is not implemented",node=node,types=(("receiver",receiver.kind),),proof="mutable sequence access without violating a borrowed argument")
         if mutates and any(name in g.iterating_lists for name in storage.forbidden_owners):
             raise _Unsupported("this mutation would change a sequence whose owner is held by an active native iteration borrow; shared identity-preserving mutation during iteration is not implemented for this storage",node=node,types=(("receiver",receiver.kind),),proof="sequence mutation without invalidating an active owner/iteration borrow")
         return storage
@@ -100,7 +130,8 @@ def row_expression(g,node,owner,index,environment):
 def capture_shared(g,receiver):
     owner=g.temporary()
     return SequenceStorage((f"let {owner}={receiver.code};",),
-        f"&({owner}.borrow())[..]",f"&mut *{owner}.borrow_mut()",receiver.kind,shared=True)
+        f"&({owner}.borrow())[..]",f"&mut *{owner}.borrow_mut()",receiver.kind,shared=True,
+        shared_factory="native_shared_list"if receiver.kind.__class__.__name__=="SharedListType"else"class_list")
 
 
 def deferred_truth(g,value,node,environment):

@@ -361,17 +361,7 @@ fn native_set_remove(values: &mut NativeSet, key: NativeInt) -> Result<(), Strin
 '''
 
 
-_DEQUE_HELPERS = r'''
-#[inline]
-fn native_deque_get(values: &std::collections::VecDeque<NativeInt>, index: NativeInt) -> Result<NativeInt, String> {
-    native_index(index, values.len()).map(|index| values[index])
-        .map_err(|_| "IndexError: deque index out of range".to_string())
-}
-#[inline]
-fn native_deque_popleft(values: &mut std::collections::VecDeque<NativeInt>) -> Result<NativeInt, String> {
-    values.pop_front().ok_or_else(|| "IndexError: pop from an empty deque".to_string())
-}
-'''
+
 
 
 _SCALAR_UNION_HELPERS = r'''
@@ -599,6 +589,9 @@ class _Generator:
                 item=_Expression("native_optional.clone()",unmaybe(expression.kind))
                 return f"({expression.code}).as_ref().map(|native_optional|{_Generator.coerce(item,unmaybe(kind))})"
             return f"Some({_Generator.coerce(expression,unmaybe(kind))})"
+        from .native_nested_lists import coerce as shared_coerce
+        shared=shared_coerce(expression,kind)
+        if shared is not None:return shared
         from .native_constraints import canonical_kind
         source_shape=canonical_kind(expression.kind);target_shape=canonical_kind(kind)
         if isinstance(source_shape,ListType) and isinstance(target_shape,ListType):
@@ -630,6 +623,8 @@ class _Generator:
         if isinstance(expression.kind,TupleSequenceType):return f"!({expression.code}).is_empty()"
         if isinstance(expression.kind,TupleType):
             return f"{{let _=&({expression.code}); {str(bool(expression.kind.fields)).lower()}}}"
+        from .native_types import SharedListType
+        if isinstance(expression.kind,SharedListType):return f"native_shared_len(&({expression.code}))!=0"
         if isinstance(expression.kind,ListType):return f"!({expression.code}).is_empty()"
         if expression.kind in {"list_int", "dict_int", "set_int", "matrix_int", "deque_int", "bytes"}:
             return f"!({expression.code}).is_empty()"
@@ -644,6 +639,8 @@ class _Generator:
         if getattr(expression.kind,"_key_container",False):
             from .native_key_types import KeyInfo
             return KeyInfo(expression.kind,expression.length,expression.nonempty)
+        from .native_types import SharedListType
+        if isinstance(expression.kind,SharedListType):return TypedListInfo(expression.kind,None)
         if isinstance(expression.kind,ListType):return TypedListInfo(expression.kind,expression.length)
         if expression.kind == "list_int":
             return _ListInfo(expression.length)
@@ -749,9 +746,10 @@ class _Generator:
         except CallBindingError:
             raise _Unsupported from None
         arguments, kinds = [], []
+        from .native_types import SharedListType
         for parameter,value in zip(bound.parameters,bound.values):
             kinds.append(value.kind)
-            arguments.append(f"&({value.code})" if list_type(value.kind) else value.code)
+            arguments.append(f"&({value.code})" if list_type(value.kind)and not isinstance(value.kind,SharedListType) else value.code)
         namespace=getattr(self,"inline_callback_globals",None)
         if namespace is not None:globals_at_call,names=namespace
         else:
@@ -780,38 +778,8 @@ class _Generator:
         return _Expression("{ " + " ".join(lines) + f" {call} }}", variant.return_kind)
 
     def deque_constructor(self, node, environment):
-        # Bounded queues and subclass/protocol iterables need direct lowering. An
-        # unbounded constructor accepts the documented iterable keyword too.
-        if len(node.args) > 1 or any(isinstance(value, ast.Starred) for value in node.args):
-            raise _Unsupported
-        source = node.args[0] if node.args else None
-        seen = set()
-        for keyword in node.keywords:
-            if keyword.arg in seen:
-                raise _Unsupported
-            seen.add(keyword.arg)
-            if keyword.arg == "iterable" and source is None:
-                source = keyword.value
-            elif keyword.arg == "maxlen" and isinstance(keyword.value, ast.Constant) and keyword.value.value is None:
-                pass
-            else:
-                raise _Unsupported
-        if self.function is not None:
-            self.function.imports.add(node.func.id)
-        self.has_deques = self.has_lists = True
-        if source is None:
-            return _Expression("std::collections::VecDeque::<NativeInt>::new()", "deque_int")
-        if (isinstance(source, ast.Call) and isinstance(source.func, ast.Name)
-                and source.func.id == "range"):
-            setup, iterator, _ = self.range_iterator(source, environment)
-            return _Expression(f"{{ {setup} ({iterator}).collect::<std::collections::VecDeque<NativeInt>>() }}", "deque_int")
-        if isinstance(source, ast.Tuple):
-            source = ast.copy_location(ast.List(elts=source.elts, ctx=ast.Load()), source)
-        value = self.expression(source, environment)
-        if value.kind not in {"list_int", "deque_int"}:
-            raise _Unsupported
-        iterator = f"({value.code}).into_iter()" if value.owned else f"({value.code}).iter().copied()"
-        return _Expression(f"({iterator}).collect::<std::collections::VecDeque<NativeInt>>()", "deque_int")
+        from .native_deques import constructor
+        return constructor(self,node,environment)
 
     def row_target(self, node, environment, assignment=False):
         """Evaluate a direct row receiver before evaluating method arguments.
@@ -850,6 +818,9 @@ class _Generator:
         if isinstance(node,(ast.Compare,ast.BoolOp,ast.IfExp)):
             from .native_expression_flow import lower
             return lower(self,node,environment)
+        from .native_deques import try_expression as deque_expression
+        deque=deque_expression(self,node,environment)
+        if deque is not None:return deque
         from .native_clear import try_expression as clear_expression
         cleared=clear_expression(self,node,environment)
         if cleared is not None:return cleared
@@ -1244,7 +1215,9 @@ class _Generator:
                     types = types.join(TypeSet.from_kind(canonical_kind(current)))
                 elif value is not None:
                     types = types.join(TypeSet(unknown=True))
-            kind = types.native_kind
+            from .native_types import SharedListType
+            physical=[unmaybe(value.kind) for value in values if isinstance(value,_Binding)]
+            kind = physical[0] if physical and isinstance(physical[0],SharedListType) and all(item==physical[0] for item in physical) else types.native_kind
             if kind is not None:
                 from .native_constraints import native_kind
                 kind=native_kind(kind,self.bits)
@@ -1368,6 +1341,12 @@ class _Generator:
         return finish_loop(self,node,entry,header,context,body,remaining,nonempty,may_repeat,zero)
 
     def statement(self, node, environment):
+        from .native_nested_lists import try_statement as shared_statement
+        shared=shared_statement(self,node,environment)
+        if shared is not None:return shared
+        from .native_deques import import_statement as deque_import
+        imported=deque_import(self,node,environment)
+        if imported is not None:return imported
         from .native_constraint_lowering import reset_statement
         reset=reset_statement(self,node,environment)
         if reset is not None:return reset
@@ -1988,11 +1967,16 @@ class _Specializations:
                        if name not in function.local_names}
         initializers, signature = [], []
         parameters = function.positional + function.kwonly
-        arrays = {name for name, kind in zip(parameters, kinds) if list_type(kind)}
+        from .native_types import SharedListType
+        arrays = {name for name, kind in zip(parameters, kinds) if list_type(kind)and not isinstance(kind,SharedListType)}
         self.readonly_arrays(function.node, arrays)
         for index, (name, kind) in enumerate(zip(parameters, kinds)):
             argument = f"native_argument_{index}"
-            if list_type(kind):
+            if isinstance(kind,SharedListType):
+                signature.append(f"{argument}: {rust_type(kind)}")
+                environment[name]=_Binding(argument,TypedListInfo(kind,None))
+                local.register_type(kind)
+            elif list_type(kind):
                 element="int" if kind=="list_int" else kind.element
                 signature.append(f"{argument}: &[{rust_type(element)}]")
                 environment[name]=_Binding(argument,_ListInfo(None) if kind=="list_int" else TypedListInfo(kind,None))
@@ -2192,12 +2176,13 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_sets:
         result.append(_SET_HELPERS)
     if generator.has_deques:
-        result.append(_DEQUE_HELPERS)
+        from .native_deques import HELPERS as DEQUE_HELPERS
+        result.append(DEQUE_HELPERS)
     if generator.has_scalar_union:
         result.append(_SCALAR_UNION_HELPERS)
     if generator.has_native_modules:
-        from .native_module_calls import HELPERS as MODULE_HELPERS
-        result.append(MODULE_HELPERS)
+        from .native_module_calls import helpers as module_helpers
+        result.append(module_helpers(generator))
     if generator.has_empty_type:
         from .native_constraint_lowering import EMPTY_HELPERS
         result.append(EMPTY_HELPERS)

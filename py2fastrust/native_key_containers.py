@@ -357,3 +357,18 @@ def comparison(generator,node,values):
     check="false" if isinstance(owner.kind.key,EmptyType) else f"{receiver}.contains(&({canonical(generator,_Expression(keyname,key.kind))}))"
     if isinstance(node.ops[0],ast.NotIn):check="!"+check
     return _Expression("{"+start+check+"}","bool")
+
+
+def representation(g,value,leaf):
+    """Render an already captured builtin mapping in insertion order."""
+    if value.kind!="dict_int"and not isinstance(value.kind,DictType):return None
+    key_kind,value_kind=(("int","int")if value.kind=="dict_int"else(value.kind.key,value.kind.value))
+    owner,result,index,key,item=(g.temporary()for _ in range(5))
+    first=leaf(g,_Expression(f"(*{key})",key_kind,owned=False),quoted=True)
+    second=leaf(g,_Expression(f"(*{item})",value_kind,owned=False),quoted=True)
+    lines=[f"let {owner}=&({value.code});",f"let mut {result}=String::from({_string('{')});",
+           f"for({index},({key},{item}))in {owner}.entries.iter().enumerate(){{",
+           f'if {index}>0{{{result}.push_str(", ");}}',
+           f'{result}.push_str(&({first}));{result}.push_str(": ");{result}.push_str(&({second}));}}',
+           f"{result}.push('}}');{result}"]
+    return "{"+"".join(lines)+"}"

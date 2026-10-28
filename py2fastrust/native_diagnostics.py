@@ -38,7 +38,7 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
             parts.append("...")
         return separator.join(parts)
     name = type(kind).__name__
-    if name == "ListType":
+    if name in {"ListType","SharedListType"}:
         return "list[" + nested(kind.element) + "]"
     if name == "TupleSequenceType":
         return "tuple[" + nested(kind.element) + ", ...]"

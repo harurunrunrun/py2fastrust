@@ -219,7 +219,8 @@ class Planner:
         if plan.kind is ProducerKind.SEQUENCE:
             values = [g.expression(value, environment) for value in plan.elements]
             from .native_types import EMPTY
-            kind = ("list_int" if values and all(value.kind == "list_int" and value.owned for value in values)
+            from .native_types import SharedListType
+            kind = (values[0].kind if values and isinstance(values[0].kind,SharedListType)and all(value.kind==values[0].kind for value in values)else "list_int" if values and all(value.kind == "list_int" and value.owned for value in values)
                     else g.scalar_kind(values) if values else EMPTY)
             if not values:g.register_type(kind)
             owner, cursor = g.temporary(), g.temporary()
@@ -718,7 +719,8 @@ def try_for_loop(generator, node, environment):
         environment = environment.copy()
         for target, value in pairs:
             if target.id not in environment:
-                if not immutable(value.kind):
+                from .native_types import SharedListType
+                if not immutable(value.kind)and not isinstance(value.kind,SharedListType):
                     raise _Unsupported
                 slot = g.slot(maybe_type(value.kind))
                 owner = g.function.node.name if g.function else g.entry_scope

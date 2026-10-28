@@ -65,6 +65,7 @@ def _member(owner,name):
     from .native_module_calls import ModuleRef,MEMBERS
     from .native_stdio import _IOReference,SYS,TEXT,BINARY,READERS
     if isinstance(owner,ModuleRef):
+        if owner.name=="collections"and name=="deque":return DequeConstructor(name)
         if owner.name=="builtins":return _BUILTINS.get(name)
         if owner.name=="sys" and name=="stdin":return TEXT
         return MEMBERS.get(owner.name,{}).get(name)

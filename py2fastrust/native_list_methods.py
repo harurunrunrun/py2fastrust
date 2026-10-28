@@ -45,7 +45,11 @@ def try_expression(g,node,environment):
     receiver=plan.receiver.captured
     method=sequence_method(receiver.kind,plan.identity.name)
     if method is None:return None
-    g.has_lists=g.has_typed_lists=True
+    if receiver.kind=="deque_int"and method.name in {"extend","extendleft"}:
+        from .native_deques import extend
+        return extend(g,node,environment,plan=plan)
+    if receiver.kind=="deque_int":g.has_deques=True
+    else:g.has_lists=g.has_typed_lists=True
     g.register_type(receiver.kind)
     storage=capture_owned(g,receiver,plan.receiver.expression,environment,mutates=method.mutates)
     lines=list(storage.setup)
@@ -102,4 +106,5 @@ def try_expression(g,node,environment):
             elif method.name=="extend":length=None
             g.update_info(environment,name,g.binding(_Expression("",receiver.kind,length=length)))
     result=lower(g,storage,method,bound,node,environment,sort_key=sort_key)
-    return _Expression("{"+" ".join(lines)+result.code+"}",result.kind)
+    captured=g.temporary()
+    return _Expression("{"+" ".join(lines)+f"let {captured}={result.code};{captured}"+"}",result.kind)

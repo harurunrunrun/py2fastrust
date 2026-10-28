@@ -104,7 +104,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             slot = f"native_var_{len(self.bindings)}"
             self.bindings[slot] = kind
             return slot
-        if unmaybe(kind) not in {"int", "bool", "int_bool", "list_int", "str", "bytes", "none"}:
+        if unmaybe(kind) not in {"int", "bool", "int_bool", "list_int", "deque_int", "str", "bytes", "none"}:
             raise _Unsupported
         return super().slot(kind)
 
@@ -136,6 +136,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 item=_Expression("native_optional.clone()",unmaybe(expression.kind))
                 return f"({expression.code}).as_ref().map(|native_optional|{BigIntGenerator.coerce(item,unmaybe(kind))})"
             return f"Some({BigIntGenerator.coerce(expression,unmaybe(kind))})"
+        from .native_nested_lists import coerce as shared_coerce
+        shared=shared_coerce(expression,kind)
+        if shared is not None:return shared
         from .native_constraints import canonical_kind
         source_shape=canonical_kind(expression.kind);target_shape=canonical_kind(kind)
         if isinstance(source_shape,ListType) and isinstance(target_shape,ListType):
@@ -163,7 +166,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         if isinstance(expression.kind,(TupleType,TupleSequenceType,ListType)) or getattr(expression.kind,"_key_container",False):return _Generator.truth(expression)
         if expression.kind in {"str","bytes"}:
             return f"!({expression.code}).is_empty()"
-        if expression.kind == "list_int":
+        if expression.kind in {"list_int","deque_int"}:
             return f"!({expression.code}).is_empty()"
         if expression.kind == "int":
             return f"!({expression.code}).is_zero()"
@@ -190,6 +193,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         if isinstance(node,(ast.Compare,ast.BoolOp,ast.IfExp)):
             from .native_expression_flow import lower
             return lower(self,node,environment)
+        from .native_deques import try_expression as deque_expression
+        deque=deque_expression(self,node,environment)
+        if deque is not None:return deque
         from .native_clear import try_expression as clear_expression
         cleared=clear_expression(self,node,environment)
         if cleared is not None:return cleared
@@ -248,6 +254,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and isinstance(binding.info, _ListInfo):
                 return _Expression(binding.slot,"list_int",owned=False,length=binding.info.length)
+            if isinstance(binding,_Binding)and binding.kind=="deque_int":
+                return super().expression(node,environment)
             if isinstance(binding, _Binding) and (is_maybe(binding.kind) or isinstance(binding.kind,EmptyType)):
                 return super().expression(node, environment)
             if not isinstance(binding, _Binding) or binding.kind not in {"int", "bool", "int_bool"}:
@@ -363,6 +371,12 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return super().finish_loop(node,entry,header,context,body,remaining,nonempty,may_repeat,zero)
 
     def statement(self, node, environment):
+        from .native_nested_lists import try_statement as shared_statement
+        shared=shared_statement(self,node,environment)
+        if shared is not None:return shared
+        from .native_deques import import_statement as deque_import
+        imported=deque_import(self,node,environment)
+        if imported is not None:return imported
         from .native_constraint_lowering import reset_statement
         reset=reset_statement(self,node,environment)
         if reset is not None:return reset
@@ -412,8 +426,6 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         if isinstance(node,ast.For):
             if not isinstance(node.iter,ast.Call) or not isinstance(node.iter.func,ast.Name) or node.iter.func.id != "range":
                 raise _Unsupported
-        if isinstance(node,ast.ImportFrom)and node.module=="collections"and any(alias.name=="deque"for alias in node.names):
-            raise _Unsupported("collections.deque has fixed-width storage adapters, but its arbitrary-precision element storage and deque operations are not implemented on the BigInt path",node=node,operation="import 'collections.deque' in BigInt mode",proof="BigInt deque storage and operations")
         if isinstance(node,(ast.Pass,ast.FunctionDef,ast.Return,ast.AugAssign,ast.If,ast.For,ast.While,ast.Break,ast.Continue,ast.Expr)):
             return super().statement(node,environment)
         raise _Unsupported
@@ -463,6 +475,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         for local in specializations.generators:
             generator.union_types.update(local.union_types)
             generator.text_predicates.update(local.text_predicates)
+        generator.has_deques |= any(local.has_deques for local in specializations.generators)
         generator.has_scalar_union |= any(local.has_scalar_union for local in specializations.generators)
         generator.has_empty_type |= any(local.has_empty_type for local in specializations.generators)
         generator.has_input |= function_input or any(local.has_input for local in specializations.generators)
@@ -489,6 +502,9 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
               "\n".join("// "+line for line in unicode_license.splitlines())+"\n",
               runtime.joinpath("integer.rs").read_text(encoding="utf-8"),
               _HELPERS,LIST_HELPERS,_OUTPUT_HELPERS]
+    if generator.has_deques:
+        from .native_deques import HELPERS as DEQUE_HELPERS
+        result.append(DEQUE_HELPERS)
     if generator.has_slices:
         from .native_slices import SLICE_HELPERS
         result.append(SLICE_HELPERS)
@@ -515,8 +531,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         from .native_stdio import render_helpers
         result.append(render_helpers(0,input_runtime=generator.has_input))
     if generator.has_native_modules:
-        from .native_module_calls import HELPERS as MODULE_HELPERS
-        result.append(MODULE_HELPERS)
+        from .native_module_calls import helpers as module_helpers
+        result.append(module_helpers(generator))
     if generator.has_empty_type:
         from .native_constraint_lowering import EMPTY_HELPERS
         result.append(EMPTY_HELPERS)

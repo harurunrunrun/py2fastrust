@@ -6,8 +6,12 @@ from .native_sequence_plans import element_type
 
 def lower(g,storage,method,bound,node,environment,*,sort_key=None):
     """Consume already captured explicit values; borrow contents at the operation."""
+    if storage.kind=="deque_int":
+        from .native_deques import lower as deque_lower
+        return deque_lower(g,storage,method,bound,node,environment)
     element=storage.element
-    shared_kind=getattr(g,"shared_element",lambda kind:False)
+    from .native_nested_lists import shared_element
+    shared_kind=getattr(g,"shared_element",shared_element)
     if not immutable(element)and not(storage.shared and shared_kind(element)):
         raise _Unsupported("this sequence operation has mutable element values, but its element ownership/alias-preserving storage adapter is not implemented",node=node,types=(("receiver",storage.kind),("element",element)),proof="mutable element identity across sequence operations")
     name=method.name
@@ -30,7 +34,8 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
                 converted=g.coerce(_Expression(item,source),element)
                 code=g.at(f"native_typed_extend_mapped({storage.mutable},{value.code},|{item}|{converted})",node)
         else:
-            sequence=f"&({value.code}.borrow())[..]" if storage.shared else f"&({value.code})[..]"
+            from .native_types import SharedListType
+            sequence=f"&({value.code}.borrow())[..]" if isinstance(value.kind,SharedListType) or storage.shared and not isinstance(storage.kind,SharedListType) else f"&({value.code})[..]"
             # Shared contents are snapshotted before taking a mutable borrow,
             # including x.extend(x). Captured owned vectors need no second copy.
             if source==element:copied=g.at(f"native_typed_copy({sequence})",node)
@@ -52,6 +57,10 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
         from .native_list_methods import _supported
         needle=bound["value"]
         custom_equal=getattr(g,"sequence_equal",None)if storage.shared else None
+        from .native_types import SharedListType
+        if isinstance(storage.kind,SharedListType):
+            from .native_nested_lists import equality
+            custom_equal=lambda left,right,node:equality(g,left,right,node)
         if custom_equal is None and (not _supported(element)or not _supported(needle.kind)):
             raise _Unsupported(f"list.{name} needs Python equality for this element/needle pair, including their identity or special-method behavior; that equality adapter is not implemented",node=node,types=(("element",element),("needle",needle.kind)),proof="Python sequence-search equality and identity behavior")
         item=g.temporary()
@@ -78,7 +87,7 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
         setup=f"let {direction}={reverse};"
         code=("{"+setup+"()}" if isinstance(element,EmptyType) else
               "{"+setup+_sort_code(g,f"({storage.mutable})",element,node,environment,direction,sort_key,
-                                   forbidden_owners=storage.forbidden_owners+((storage.binding_name,)if storage.binding_name else()))+"}")
+                                   forbidden_owners=storage.forbidden_owners+storage.callback_owners+((storage.binding_name,)if storage.binding_name else()))+"}")
     else:raise _Unsupported(f"the shared sequence operation {name!r} has no native method implementation",node=node,types=(("receiver",storage.kind),))
     kind=(storage.kind if method.result=="copy" else element if method.result=="element"else method.result)
     return _Expression(code,kind)

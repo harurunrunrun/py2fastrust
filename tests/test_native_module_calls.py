@@ -94,7 +94,6 @@ print(lower(a,2),lower([],5))
             result=transpile("import math\nprint(math.isqrt(9))\n",TranspileOptions(module_paths=(root,)))
             self.assertFalse(result.success)
         for source in ["import math\nmath.gcd=lambda a,b:7\nprint(math.gcd(1,2))\n",
-                       "import bisect\ndef insert(a):bisect.insort(a,3)\na=[1,4]\ninsert(a)\nprint(*a)\n",
                        "import math\nprint(math.factorial(n=4))\n"]:
             for mode in ("i64","i128","bigint"):
                 result=transpile(source,TranspileOptions(integer=mode))

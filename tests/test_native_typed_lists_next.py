@@ -248,7 +248,7 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
             print(sorted((item(x) for x in range(3)),reverse=flag(False)))
         ''',modes=("i64","i128","bigint"))
 
-    def test_owned_list_function_returns_and_aliases_stay_rejected(self):
+    def test_owned_list_function_returns_and_shared_aliases(self):
         self.differential('''
             def make(n):
                 words=[]
@@ -265,10 +265,10 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
         for source in (
             'a=["x"];b=a;b.append("y");print(a)',
             'def identity(a):\n return a\na=["x"];b=identity(a);print(a,b)',
-            'a=["x"]\nfor x in a:a.append(x)',
         ):
-            for mode in ("i64","i128","bigint"):
-                self.assertIsNone(try_generate_native(source,"case.py",mode))
+            self.differential(source,modes=("i64","i128","bigint"))
+        for mode in ("i64","i128","bigint"):
+            self.assertIsNone(try_generate_native('a=["x"]\nfor x in a:a.append(x)',"case.py",mode))
 
     def test_nested_default_string_helpers_and_debug_bytes_repr(self):
         self.differential('''

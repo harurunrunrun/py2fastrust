@@ -63,8 +63,20 @@ read, including zero-iteration and filtered-generator paths.
 All integer modes support uniquely owned flat integer lists, indexed reads and
 updates, copied lists, ordinary list operations, `sorted` with supported immutable key results,
 and slicing with positive or negative steps. Slices make independent lists.
-Shared mutable list aliases and shallow slices of nested mutable rows are not
-yet implemented on this path. In all integer modes, strings default to ASCII:
+Nested lists with proved integer/boolean, text/bytes, None, or recursively
+immutable tuple payloads use typed shared handles in every integer mode. Named
+row aliases, shallow `copy`, repetition/concatenation, item mutation, ordinary
+function parameters/results, live list iteration, and printing retain object
+identity. Captured row handles survive replacement or clearing of the parent.
+Subscript receivers and indices execute once; assignment evaluates its RHS first,
+and numeric item augmented assignment reads the old item before its RHS and checks
+the stored index again after a length-changing RHS. Shared-list `+=` and `*=` retain that same list object, including self-extension,
+zero/negative repetition and shallow nested row handles. Both name and indexed
+list targets capture their original reference before evaluating the RHS. Standalone flat arrays retain owned-vector storage when their unique ownership
+is proved. Shared name aliases, returned argument references and caller-owned
+list mutation through ordinary functions select the same typed handle storage. Shared nested-list slicing, element-layout changes
+through `clear`, float/custom element identity, and recursive object graphs remain
+explicit unsupported operations. In all integer modes, strings default to ASCII:
 lengths, indices, slices, and `count` bounds use bytes without per-access ASCII
 detection. `--string-mode unicode` selects Python code-point semantics. The
 source-comment directive overrides CLI/API settings. Non-ASCII strings require
@@ -169,6 +181,27 @@ leaving stale container cardinality proofs. Mutable equality, non-`None` object
 identity, general operations on nullable values, and remaining class integration
 are still unfinished.
 
+Integer `collections.deque` values use one native `VecDeque<NativeInt>` storage
+adapter in i64, i128, and BigInt modes. Trusted imports, module members, aliases,
+and function-local imports resolve through the same callable identities. The
+constructor accepts integer iterable producers and optional `maxlen`, including
+proved nullable bounds. Append/pop operations at both ends, extend/extendleft,
+clear, copy, count, index, insert, remove, reverse, rotate, readonly maxlen,
+integer item reads/writes/deletion, content comparisons, membership, printing,
+and existing stream consumers share typed native lowering. Bounded queues evict
+from the opposite end; a zero bound still consumes source iterator effects.
+Exact self-extension snapshots the original contents, while copy produces an
+independent deque with the same bound. Plain print arguments retain mutable
+identity until later arguments finish; starred arguments capture their expanded
+values at their own evaluation point.
+
+This adapter currently requires a proved unique deque owner and integer elements.
+General mutable aliases, mutation during active iteration, deque function
+arguments, non-integer element storage, floating/custom search protocols, deque
+subclasses, arithmetic operators, and the remaining general object protocols are
+still required work. Unsupported cases remain positioned diagnostics; no VM or
+implicit Python execution supplies these operations.
+
 Proved immutable tuple keys use structurally typed Rust sets and dictionaries
 in every integer mode. Numeric keys preserve Python's bool/int equality while
 retaining the original key, and dictionaries retain insertion order. BigInt
@@ -192,11 +225,17 @@ and the class allocation/field adapter still require implementation and produce
 
 Symbolic container fields preserve their allocation provenance through nested
 indexing, tuple projections, iteration, and ordinary function parameters.
-Mutating a selected row therefore constrains that row's elements. In fixed-width
-modes this restores adjacency-list construction from initially empty rows,
-including `examples/bfs.py`, without assigning an arbitrary integer type to
-unconstrained rows. BigInt matrix/deque execution and general mutable aliases
-still require direct implementation.
+Mutating a selected row therefore constrains that row's elements. All three
+integer modes support adjacency-list construction from initially empty rows,
+including the unchanged `examples/bfs.py`. Semantic shape constraints are separate
+from allocation identities: they select physical shared storage without inventing
+objects or assigning an arbitrary integer payload to unconstrained rows. Shared
+sequence cardinality remains unknown so mutation through aliases cannot leave a
+stale empty/nonempty proof. Sorting callbacks that observe the shared target via
+an alias or parent remain rejected until temporary-empty sorting visibility is
+implemented. This guard conservatively rejects observing another shared-list
+binding in the enclosing scope as well; scalar parameters with the same spelling
+keep their lexical owner.
 
 Stable, definitely bound string owners can be borrowed once at a loop or
 generator entry. Indexed characters carry a code-point projection for direct
@@ -241,11 +280,25 @@ retained data carries its Unicode notice. BigInt conversions keep exact parsing.
 
 
 Static module and callable references support integer `math.gcd`, `lcm`,
-`isqrt`, `factorial`, `comb`, and `perm`, plus the `bisect`/`insort` aliases on
-integer lists with `key=None`. Argument expressions retain source evaluation
-order; search bounds use checked structural integers. Internal combinatorial
-arithmetic is exact, and the returned result follows the selected integer mode.
-Other sequence/key forms and remaining standard-library APIs are unfinished.
+`isqrt`, `factorial`, `comb`, and `perm`. Internal combinatorial arithmetic is
+exact, and the returned result follows the selected integer mode.
+
+The ten `heapq` operations `heapify`, `heappush`, `heappop`, `heappushpop`,
+`heapreplace`, and their `_max` counterparts operate directly on the original
+typed list. Supported payloads include immutable integer/bool, text/bytes and
+tuple values. Bare fixed-width floats use Python's strict `<` comparison,
+including NaNs. Shared list handles preserve caller/row aliases and capture
+the receiver before later arguments run. Floating tuple identity, custom or
+fallible comparisons, `merge`, `nlargest`, and `nsmallest` remain unfinished.
+
+The six `bisect`/`insort` names use the same list storage adapter, including
+read-only function parameters, shared rows, empty lists, and immutable scalar
+or tuple comparisons. Explicit argument expressions run before checked `lo`/`hi`
+conversion and before borrowing the captured list. `key=None` is supported;
+callable keys, arbitrary sequence protocols, and custom/fallible comparisons
+remain unfinished. Module/member aliases and local imports retain their
+resolved identities. These adapters support all integer modes; BigInt/float
+comparison is still a separate unfinished requirement.
 
 Module members and standard-input references share a lexical identity resolver.
 Function specializations preserve the presence of global names even when their

@@ -11,8 +11,8 @@ from types import MappingProxyType
 
 from .call_semantics import FunctionSignature,normalize_call,CallBindingError
 from .literal_semantics import Literal
-from .native_types import (TupleType,TupleSequenceType,ListType,EmptyType,EMPTY,NullableType,UnionType,
-                          join_types,alternatives,unmaybe,is_maybe,kind_tag)
+from .native_types import (TupleType,TupleSequenceType,ListType,SharedListType,EmptyType,EMPTY,NullableType,UnionType,
+                          join_types,alternatives,unmaybe,is_maybe,kind_tag,shared_payload)
 from .native_key_types import SetType,DictType
 from .references import BuiltinIdentity,DequeConstructor,CORE_BUILTINS
 
@@ -40,6 +40,12 @@ def value(kind):return Value(frozenset({kind}))
 class Variable:
     allocation: tuple
     field: str
+
+
+@dataclass(frozen=True)
+class ShapeConstraint:
+    """A lower-bound layout fact, never a runtime object identity."""
+    kind: object
 
 
 @dataclass(frozen=True)
@@ -264,6 +270,8 @@ class ScopeFacts:
     resets: object=field(default_factory=dict)
     calls: object=field(default_factory=dict)
     values: object=field(default_factory=dict)
+    storage: object=field(default_factory=dict)
+    header_storage: object=field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -279,6 +287,8 @@ class Analysis:
 
 def canonical_kind(kind):
     kind=unmaybe(kind)
+    if isinstance(kind,SharedListType):return ListType(canonical_kind(kind.element))
+    if isinstance(kind,ListType):return ListType(canonical_kind(kind.element))
     if kind=="list_int":return ListType("int")
     if kind=="set_int":return SetType("int")
     if kind=="dict_int":return DictType("int","int")
@@ -287,6 +297,7 @@ def canonical_kind(kind):
 
 
 def native_kind(kind,bits):
+    if isinstance(kind,SharedListType):return kind
     if isinstance(kind,ListType) and kind.element=="int":return "list_int"
     if isinstance(kind,ListType) and kind.element==ListType("int"):return "matrix_int"
     if bits and isinstance(kind,SetType) and kind.key=="int":return "set_int"
@@ -307,6 +318,7 @@ class Solver:
         self.constructors=set()
         self.resets={}
         self.calls={}
+        self.shared_references=set()
 
     def constrain(self,variable,item):
         self.variables[variable]=self.variables.get(variable,BOTTOM).join(item)
@@ -329,6 +341,7 @@ class Solver:
         """
         result=Value(unbound=item.unbound,unknown=item.unknown)
         for part in item.alternatives:
+            if isinstance(part,ShapeConstraint):continue
             if isinstance(part,(Variable,Projection)):
                 if part in active:continue
                 if isinstance(part,Variable):
@@ -378,7 +391,24 @@ class Solver:
         for part in self.provenance(receiver).alternatives:
             if isinstance(part,Allocation):self.constrain(Variable(part.site,role),item)
 
-    def store_index(self,receiver,index,item):
+    def augmented(self,first,second,operator):
+        # Builtin list in-place operators retain the receiver allocation.
+        # Constrain inserted payloads, not a fresh list or a copied shape.
+        if isinstance(self.kind(first),ListType)and operator in {"Add","Mult"}:
+            if operator=="Add"and self.kind(second)not in {"int","bool","int_bool","float","none"}:
+                self.insert(first,"element",self.provenance(self.field_values(second,"iteration")))
+            return first
+        return self.compute("binary:"+operator,(first,second))
+
+    def record_mutation(self,receiver,context):
+        """Preserve caller-owned list identity across a proved mutable call."""
+        if context is None or context[0]is None:return
+        for part in self.provenance(receiver).alternatives:
+            if isinstance(part,Allocation)and part.category=="list"and part.site[0]!=context:
+                self.shared_references.add(part)
+
+    def store_index(self,receiver,index,item,context=None):
+        self.record_mutation(receiver,context)
         receiver=self.provenance(receiver)
         categories={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
         if "dict" in categories:
@@ -386,7 +416,12 @@ class Solver:
         if "list" in categories:self.insert(receiver,"element",item)
 
     def assign(self,target,item,state):
-        if target[0]=="name":state[target[1]]=item
+        if target[0]=="name":
+            incoming={part for part in self.provenance(item).alternatives if isinstance(part,Allocation)and part.category=="list"}
+            if incoming:
+                for name,other in state.items():
+                    if name!=target[1]:self.shared_references.update(incoming&self.provenance(other).alternatives)
+            state[target[1]]=item
         elif target[0]=="unpack":
             fields=None
             if len(item.alternatives)==1:
@@ -430,6 +465,7 @@ class Solver:
                 member=_member(owner,term.data)
                 if member is not None:members=members.join(value(member))
             if members.alternatives:result=members
+            elif term.data=="maxlen"and self.kind(receiver)=="deque_int":result=value(NullableType("int"))
         elif op=="call":
             callee=evaluate(args[0]);positional=tuple(evaluate(child) for child in args[1]);keywords=tuple((name,evaluate(child)) for name,child in args[2])
             self.calls[(context,term.site)]=CallFact(callee,positional,keywords)
@@ -503,6 +539,8 @@ class Solver:
         if isinstance(identity,DequeConstructor):return value("deque_int")
         if isinstance(identity,MethodValue):
             receiver=self.provenance(identity.receiver);name=identity.name
+            if name in {"append","extend","clear","reverse","sort","pop","insert","remove"}:
+                self.record_mutation(receiver,context)
             category={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
             kinds={part for part in receiver.alternatives if isinstance(part,(str,ListType,DictType,SetType))}
             if name in {"append","add"} and args and (category&{"list","set"}):
@@ -537,6 +575,7 @@ class Solver:
                 result=value(self.allocation(term.site,"list",context));self.insert(result,"element",value("bytes" if "bytes" in kinds else "str"));return result
             if name in {"strip","lstrip","rstrip","join"} and kinds&{"str","bytes"}:return value("bytes" if "bytes" in kinds else "str")
             if name in {"pop","popleft"} and "deque_int" in kinds:return value("int")
+            if name=="copy"and "deque_int"in kinds:return value("deque_int")
             if name=="pop" and ("list" in category or any(isinstance(kind,ListType) for kind in kinds)):
                 return self.field_values(receiver,"iteration")
             if name in {"append","appendleft","extend","extendleft","clear","reverse","rotate"} and "deque_int" in kinds:return value("none")
@@ -550,7 +589,23 @@ class Solver:
             # Stream and standard-module identity records are shared with the
             # ordinary call resolver. Their result facts need no source spelling.
             if getattr(identity,"name",None)=="reader" and hasattr(identity,"binary"):return value("bytes" if identity.binary else "str")
-            if getattr(identity,"module",None) in {"math","bisect"}:return value("none" if identity.module=="bisect" and identity.name.startswith("insort") else "int")
+            if getattr(identity,"module",None)=="heapq":
+                name=identity.name.removesuffix("_max")
+                if name in {"heapify","heappush","heappop","heappushpop","heapreplace"}and args:
+                    receiver=args[0]
+                    self.record_mutation(receiver,context)
+                    if name in {"heappush","heappushpop","heapreplace"}and len(args)>1:self.insert(receiver,"element",args[1])
+                    if name in {"heapify","heappush"}:return value("none")
+                    result=self.field_values(receiver,"iteration")
+                    return result.join(args[1])if name=="heappushpop"and len(args)>1 else result
+            if getattr(identity,"module",None)=="bisect":
+                if identity.name.startswith("insort"):
+                    by_name=dict(keywords);receiver=args[0]if args else by_name.get("a",UNKNOWN)
+                    item=args[1]if len(args)>1 else by_name.get("x",UNKNOWN)
+                    self.record_mutation(receiver,context);self.insert(receiver,"element",item)
+                    return value("none")
+                return value("int")
+            if getattr(identity,"module",None)=="math":return value("int")
             return UNKNOWN
         name=identity.name
         if name in {"int","float","str","bool","bytes"}:return value(name)
@@ -603,13 +658,21 @@ class Solver:
         except CallBindingError:return UNKNOWN
         kinds=tuple(self.kind(item) for item in bound.values)
         global_key=tuple(sorted((name,tuple(sorted((part.definition for part in item.alternatives if isinstance(part,FunctionValue))))) for name,item in globals.items() if any(isinstance(part,FunctionValue) for part in item.alternatives)))
-        context=(definition.site,kinds,global_key)
+        # Semantic kinds select generated function signatures. Analysis also
+        # needs object provenance: same-typed calls may read/write distinct
+        # allocations and may return a reference to their particular argument.
+        identities=tuple(self.provenance(item)for item in bound.values)
+        context=(definition.site,kinds,global_key,identities)
         if context in self.cache:return self.cache[context]
         if definition.site in self.active or len(self.active)>=128:return UNKNOWN
         self.active.add(definition.site);self.contexts[context]=(definition.site,kinds)
         state=dict(zip(bound.parameters,bound.values))
         flow=self.block(definition.body,state,globals,definition.signature.local_names,context)
         result=flow.returns.join(value("none")) if flow.normal is not None else flow.returns
+        # A returned caller reference outlives this function frame. New local
+        # allocations can still move out as uniquely owned vectors.
+        self.shared_references.update(part for part in self.provenance(result).alternatives
+            if isinstance(part,Allocation)and part.category=="list"and part.site[0]!=context)
         self.active.remove(definition.site);self.cache[context]=result
         return result
 
@@ -625,7 +688,7 @@ class Solver:
                 for target in operation.data:
                     if target[0]=="index":
                         receiver=evaluate(target[1]);index=evaluate(target[2])
-                        self.store_index(receiver,index,item)
+                        self.store_index(receiver,index,item,context)
                     else:self.assign(target,item,state)
             elif op=="augment":
                 target,operator=operation.data
@@ -636,10 +699,12 @@ class Solver:
                             and -(1<<63)<=literal.value<(1<<63)else None)
                     first=self.field_values(receiver,"value",offset)
                     second=evaluate(args[1])
-                    self.store_index(receiver,index,self.compute("binary:"+operator,(first,second)))
+                    self.record_mutation(first,context)
+                    self.store_index(receiver,index,self.augmented(first,second,operator),context)
                 else:
                     first,second=(evaluate(term) for term in args)
-                    self.assign(target,self.compute("binary:"+operator,(first,second)),state)
+                    self.record_mutation(first,context)
+                    self.assign(target,self.augmented(first,second,operator),state)
             elif op=="expression":evaluate(args[0])
             elif op=="branch":
                 evaluate(args[0]);yes=self.block(operation.blocks[0],state,globals,locals,context);no=self.block(operation.blocks[1],state,globals,locals,context)
@@ -717,6 +782,7 @@ class Solver:
                     elif isinstance(shape,EmptyType):item=EMPTY
                     else:return None
                     current=join_types(current,item)
+            elif isinstance(part,ShapeConstraint):current=part.kind
             elif isinstance(part,(str,TupleType,TupleSequenceType,ListType,SetType,DictType,UnionType,NullableType,EmptyType)):current=part
             elif getattr(part,"_native_kind_tag",None) is not None:current=part
             else:return None
@@ -754,8 +820,8 @@ class Solver:
                 elif part.category=="dict" and isinstance(expected,DictType):fields=(("key",expected.key),("value",expected.value))
                 else:continue
                 for name,kind in fields:
-                    if not isinstance(kind,EmptyType):self.constrain(Variable(part.site,name),value(kind))
-            elif isinstance(part,Variable):self.constrain(part,value(expected))
+                    if not isinstance(kind,EmptyType):self.constrain(Variable(part.site,name),value(ShapeConstraint(kind) if isinstance(kind,(ListType,SetType,DictType,TupleType,TupleSequenceType)) else kind))
+            elif isinstance(part,Variable):self.constrain(part,value(ShapeConstraint(expected) if isinstance(expected,(ListType,SetType,DictType,TupleType,TupleSequenceType)) else expected))
             elif isinstance(part,TupleValue) and isinstance(expected,TupleType) and len(part.fields)==len(expected.fields):
                 for field,kind in zip(part.fields,expected.fields):self.equalize(field,kind)
 
@@ -773,13 +839,45 @@ class Solver:
             self.propagate()
             if self.variables==before:break
         else:raise ConstraintFailure(self.graph.unit.tree.body[0] if self.graph.unit.tree.body else self.graph.unit.tree)
-        allocations={};headers={};expressions={};values={}
+        # Nested mutable list fields carry allocation identities. Select shared
+        # physical storage from these solved edges, never from source spelling.
+        def shared_lists(kind):
+            return shared_payload(kind)or isinstance(kind,ListType)and shared_lists(kind.element)
+        shared={part for part in self.shared_references if shared_lists(self.kind(value(part)))}
+        for allocation in self.allocations.values():
+            if allocation.category!="list" or not shared_lists(self.kind(value(allocation))):continue
+            children=self.provenance(self.field(allocation,"element"))
+            nested={part for part in children.alternatives if isinstance(part,Allocation) and part.category=="list"}
+            if nested:shared.add(allocation);shared.update(nested)
+        # A same-shape binding merge must retain one physical reference
+        # representation on every incoming path once any alternative is shared.
+        groups=[self.provenance(item).alternatives for item in self.records.values()]
+        groups.extend(self.provenance(item).alternatives for state in self.headers.values()for item in state.values())
+        while True:
+            before=len(shared)
+            for group in groups:
+                lists={part for part in group if isinstance(part,Allocation)and part.category=="list"and shared_lists(self.kind(value(part)))}
+                if lists&shared:shared.update(lists)
+            if len(shared)==before:break
+        def physical(item,active=frozenset()):
+            resolved=self.provenance(item)
+            members=resolved.alternatives
+            if members and all(isinstance(part,Allocation) and part in shared for part in members):
+                element=BOTTOM
+                for part in members:element=element.join(self.field(part,"element"))
+                if any(part in active for part in members):return None
+                child=physical(element,active|members)
+                return None if child is None else SharedListType(child)
+            return self.kind(item)
+        allocations={};headers={};expressions={};values={};storage={};header_storage={}
         def key(context):return self.contexts.get(context,root)
         for (context,site),item in self.records.items():
             abstract=values.setdefault(key(context),{})
             abstract[site]=abstract[site].join(item) if site in abstract else item
             target=expressions.setdefault(key(context),{})
             kind=self.kind(item)
+            layout=physical(item)
+            if layout!=kind:storage.setdefault(key(context),{})[site]=layout
             if site not in target:target[site]=kind
             elif target[site] is not None:target[site]=None if kind is None else join_types(target[site],kind)
             if any(isinstance(part,Allocation) and part.site==(context,site) for part in item.alternatives):
@@ -787,6 +885,8 @@ class Solver:
         for (context,site),state in self.headers.items():
             target=headers.setdefault(key(context),{}).setdefault(site,{})
             for name,item in state.items():
+                layout=physical(item)
+                if layout!=self.kind(item):header_storage.setdefault(key(context),{}).setdefault(site,{})[name]=layout
                 fact=BindingFact(self.kind(item),item.unbound)
                 if name in target:
                     old=target[name];fact=BindingFact(None if old.kind is None or fact.kind is None else join_types(old.kind,fact.kind),old.maybe_unbound or fact.maybe_unbound)
@@ -802,7 +902,7 @@ class Solver:
             target=calls.setdefault(key(context),{})
             target[site]=target[site].join(fact) if site in target else fact
         keys=set(allocations)|set(headers)|set(expressions)|set(resets)|set(calls)
-        scopes={scope:ScopeFacts(MappingProxyType(allocations.get(scope,{})),MappingProxyType({site:MappingProxyType(state) for site,state in headers.get(scope,{}).items()}),MappingProxyType(expressions.get(scope,{})),frozenset(site for context,site in self.constructors if key(context)==scope),MappingProxyType(resets.get(scope,{})),MappingProxyType(calls.get(scope,{})),MappingProxyType(values.get(scope,{}))) for scope in keys}
+        scopes={scope:ScopeFacts(MappingProxyType(allocations.get(scope,{})),MappingProxyType({site:MappingProxyType(state) for site,state in headers.get(scope,{}).items()}),MappingProxyType(expressions.get(scope,{})),frozenset(site for context,site in self.constructors if key(context)==scope),MappingProxyType(resets.get(scope,{})),MappingProxyType(calls.get(scope,{})),MappingProxyType(values.get(scope,{})),MappingProxyType(storage.get(scope,{})),MappingProxyType({site:MappingProxyType(state)for site,state in header_storage.get(scope,{}).items()})) for scope in keys}
         return Analysis(self.graph,MappingProxyType(scopes),iteration+1)
 
 

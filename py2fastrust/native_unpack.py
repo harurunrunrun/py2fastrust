@@ -56,7 +56,8 @@ def try_statement(g,node,environment):
     if captured is not None and isinstance(captured.kind,TupleType):
         value=captured
         owner=g.temporary()
-        lines=[f"let {owner}={g.coerce(value,value.kind)};"]
+        captured=value.code if value.owned else g.coerce(value,value.kind)
+        lines=[f"let {owner}={captured};"]
         fields=[_Expression(f"{owner}.{index}",kind,owned=False)for index,kind in enumerate(value.kind.fields)]
         lines+=_assign(g,plan,fields,environment)
         return "\n".join(lines),environment

@@ -6,6 +6,13 @@ from .native_types import TupleType
 
 def compare_values(g,node,values):
     from .native import _Expression,_Unsupported
+    from .native_nested_lists import comparison as shared_comparison
+    shared=shared_comparison(g,node,values)
+    if shared is not None:return shared
+    from .native_deques import comparison as deque_comparison
+    if any(value.kind=="deque_int" for value in values):
+        deque=deque_comparison(g,node,values)
+        if deque is not None:return deque
     if len(node.ops)==1 and isinstance(node.ops[0],(ast.In,ast.NotIn)):
         from .native_key_containers import comparison as keyed_comparison
         keyed=keyed_comparison(g,node,values)

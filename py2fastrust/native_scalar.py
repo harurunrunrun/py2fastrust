@@ -360,6 +360,9 @@ class ScalarGenerator(_Generator):
         if isinstance(node,(ast.Compare,ast.BoolOp,ast.IfExp)):
             from .native_expression_flow import lower
             return lower(self,node,environment)
+        from .native_deques import try_expression as deque_expression
+        deque=deque_expression(self,node,environment)
+        if deque is not None:return deque
         from .native_clear import try_expression as clear_expression
         cleared=clear_expression(self,node,environment)
         if cleared is not None:return cleared
@@ -552,6 +555,9 @@ class ScalarGenerator(_Generator):
         return _Expression(f"{{ {self.read_binding(names[0], values[0])} {tail} }}", "bool")
 
     def statement(self, node, environment):
+        from .native_deques import import_statement as deque_import
+        imported=deque_import(self,node,environment)
+        if imported is not None:return imported
         from .native_module_calls import try_statement as module_statement
         module=module_statement(self,node,environment)
         if module is not None:return module

@@ -1,7 +1,7 @@
 """Consume solved semantic facts at native allocations and CFG headers."""
 from functools import wraps
 
-from .native_types import (ListType,TupleType,EmptyType,EMPTY,immutable,rust_type,
+from .native_types import (ListType,SharedListType,TupleType,EmptyType,EMPTY,immutable,rust_type,
                           is_maybe,maybe_type,join_types,unmaybe)
 from .native_key_types import SetType,DictType
 from .native_constraints import native_kind,canonical_kind
@@ -45,7 +45,7 @@ def allocation_expression(g,node,environment):
     if facts is None or site not in facts.allocations:return None
     term=g.type_analysis.graph.expressions[site]
     if term.operation not in {"list","set","dict","call"}:return None
-    kind=facts.allocations[site]
+    kind=facts.storage.get(site,facts.allocations[site])
     if kind is None:
         raise _Unsupported("the allocation's element/key/value kinds remain unresolved after type analysis; a finite typed storage representation has not been established",node=node,types=(("allocation",None),),proof="finite allocation-field types")
     if term.operation=="call":
@@ -67,6 +67,9 @@ def allocation_expression(g,node,environment):
         # Nonempty iterable materializations retain their typed stream lowering.
         if site not in facts.constructors:return None
     kind=native_kind(kind,g.bits)
+    if isinstance(kind,SharedListType):
+        from .native_nested_lists import allocation
+        return allocation(g,node,environment,kind,term)
     if isinstance(kind,ListType) and not immutable(kind.element):return None
     if isinstance(kind,(SetType,DictType)):
         from .native_key_containers import _construct,key_kind
@@ -127,6 +130,15 @@ def reset_statement(g,node,environment):
         raise _Unsupported(f"clearing {name!r} changes its element representation while an iterator or borrow still observes its storage; this shared storage transition is not implemented",node=node,types=((name,binding.kind),),proof="no live borrows during storage transition")
     if any(other!=name and isinstance(value,_Binding) and value.slot==binding.slot for other,value in environment.items()):
         raise _Unsupported(f"clearing {name!r} would replace storage that is also referenced by another name; an alias-preserving shared representation transition is not implemented",node=node,types=((name,binding.kind),),proof="shared mutable identity through clear()")
+    if isinstance(binding.kind,SharedListType):
+        # clear changes contents, never the captured list object's identity.
+        # A later incompatible element layout still needs a shared union carrier.
+        def fits(old,new):
+            return isinstance(new,EmptyType) or old==new or isinstance(old,ListType)and isinstance(new,ListType)and fits(old.element,new.element)
+        reset=facts.resets[site]
+        if reset is not None and not fits(canonical_kind(binding.kind),canonical_kind(reset)):
+            raise _Unsupported("clear followed by a different shared-list element layout needs an alias-preserving union storage adapter",node=node,types=(("old",binding.kind),("new",reset)),proof="shared allocation element-layout transition")
+        return None
     kind=facts.resets[site]
     if kind is None:raise _Unsupported
     kind=native_kind(kind,g.bits);g.register_type(kind)
@@ -147,10 +159,13 @@ def converted_result(g,node,result):
     from .native import _Expression,_Unsupported
     facts,site=facts_for(g,node)
     if facts is None or site not in facts.allocations:return result
-    expected=facts.allocations[site]
+    expected=facts.storage.get(site,facts.allocations[site])
     if expected is None:raise _Unsupported
     expected=native_kind(expected,g.bits)
     if result.kind==expected:return result
+    if isinstance(expected,SharedListType):
+        from .native_nested_lists import wrap_result
+        return wrap_result(g,result,expected,node)
     source=canonical_kind(result.kind)
     if not isinstance(source,ListType) or not isinstance(canonical_kind(expected),ListType):return result
     target=canonical_kind(expected)
@@ -165,6 +180,9 @@ def converted_result(g,node,result):
 def result_shapes(method):
     @wraps(method)
     def lower(self,node,environment):
+        from .native_nested_lists import try_expression as shared_expression
+        shared=shared_expression(self,node,environment)
+        if shared is not None:return converted_result(self,node,shared)
         from .native_lengths import try_expression as length_expression
         length=length_expression(self,node,environment)
         if length is not None:return converted_result(self,node,length)
@@ -211,7 +229,7 @@ def loop_header(g,node,environment):
         if old is not None and not isinstance(old,_Binding):continue
         if fact.kind is None:
             raise _Unsupported(f"the compiler has not resolved a finite merged type for loop variable {name!r}, so its loop-carried native storage cannot be selected",node=node,types=((name,None),),proof="type fixed point across loop backedges")
-        kind=native_kind(fact.kind,g.bits)
+        kind=native_kind(facts.header_storage.get(site,{}).get(name,fact.kind),g.bits)
         optional=fact.maybe_unbound or isinstance(old,_Binding) and is_maybe(old.kind)
         wanted=maybe_type(kind) if optional else kind
         if isinstance(old,_Binding) and old.kind==wanted:continue
@@ -255,7 +273,7 @@ def finish_loop(g,node,entry,header,context,body,remaining,nonempty,may_repeat,z
             # A distinct mutable exit carrier must not consume storage needed
             # by the first iteration. A shared carrier is selected above when
             # the header and exit have the same shape.
-            if not immutable(unmaybe(old.kind)) and any(isinstance(value,_Binding) and value.slot==old.slot for value in header.values()):
+            if not immutable(unmaybe(old.kind)) and not isinstance(unmaybe(old.kind),SharedListType) and any(isinstance(value,_Binding) and value.slot==old.slot for value in header.values()):
                 raise _Unsupported
             default=g.coerce(_Expression(old.slot,old.kind),binding.kind)
         else:
@@ -297,7 +315,7 @@ def finish_loop(g,node,entry,header,context,body,remaining,nonempty,may_repeat,z
         moved=set()
         for transfer in destinations.values():
             source=transfer.source
-            if source is not None and not immutable(unmaybe(source.kind)):
+            if source is not None and not immutable(unmaybe(source.kind)) and not isinstance(unmaybe(source.kind),SharedListType):
                 if source.slot in retained or source.slot in moved:
                     raise _Unsupported("this loop transfer would both retain and move, or move twice, the same mutable value; alias-preserving shared loop carriers are not implemented for this merge",node=node,operation="loop state transfer",types=(("value",source.kind),),proof="single transfer of mutable identity")
                 moved.add(source.slot)

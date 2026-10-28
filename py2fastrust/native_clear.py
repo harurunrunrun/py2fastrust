@@ -19,7 +19,7 @@ def try_expression(g,node,environment):
         facts,site=facts_for(g,node.func.value)
         kind=None if facts is None else facts.expressions.get(site)
         if kind is not None:kind=native_kind(kind,g.bits)
-    if kind=="list_int"or isinstance(kind,ListType):return None
+    if kind in {"list_int","deque_int"}or isinstance(kind,ListType):return None
     if not(kind in {"matrix_int","deque_int","dict_int","set_int"}
            or isinstance(kind,(SetType,DictType))):return None
     receiver=g.expression(node.func.value,environment)

@@ -1,9 +1,9 @@
-"""Uniquely owned native lists with structural immutable element types."""
+"""Typed list operations with owned vectors and identity-preserving shared rows."""
 
 import ast
 
 from .native import _Binding, _DequeInfo, _Expression, _ListInfo, _Unsupported, _string
-from .native_types import ListType, TupleType, TupleSequenceType, TypedListInfo, immutable, join_types, rust_type, tuple_code
+from .native_types import ListType, SharedListType, TupleType, TupleSequenceType, TypedListInfo, immutable, join_types, rust_type, tuple_code
 from .call_semantics import FunctionSignature
 from .native_stream_plans import ConsumerKind, ConsumerPlan, consumer_plan, context
 
@@ -58,6 +58,9 @@ def _clone(g, value, kind):
 
 
 def _ordering(g,left,right,node):
+    from .native_nested_lists import total_order
+    shared_order=total_order(g,left,right,node)
+    if shared_order is not None:return shared_order
     shared=getattr(g,"sequence_ordering",None)
     if shared is not None:return shared(left,right,node)
     numeric = {"int","bool","int_bool"}
@@ -178,7 +181,7 @@ def _collect(g,source,node,*,constructed=False):
         element = value.kind
     else:
         raise _Unsupported
-    if not immutable(element) and not (element == "list_int" and value.owned):
+    if not immutable(element) and not isinstance(element,SharedListType) and not (element == "list_int" and value.owned):
         raise _Unsupported
     kind = ("list_int" if element == "int" else "matrix_int" if element == "list_int" else ListType(element))
     g.register_type(kind)
@@ -290,6 +293,9 @@ def try_expression(g, node, environment):
 
 
 def try_statement(g,node,environment):
+    from .native_nested_lists import try_statement as shared_statement
+    shared=shared_statement(g,node,environment)
+    if shared is not None:return shared
     from .native_constraint_lowering import reset_statement
     reset=reset_statement(g,node,environment)
     if reset is not None:return reset
@@ -327,6 +333,9 @@ def _representation(g,value,*,quoted=False):
     from .native_unions import representation
     finite=representation(g,value,_representation,quoted)
     if finite is not None:return finite
+    from .native_key_containers import representation as mapping_representation
+    mapping=mapping_representation(g,value,_representation)
+    if mapping is not None:return mapping
     kind,code = value.kind,value.code
     if kind == "str":
         if quoted:
@@ -340,6 +349,9 @@ def _representation(g,value,*,quoted=False):
     if kind == "float":
         g.has_extended_scalars = True
         return f"native_float_text({code})"
+    if kind=="deque_int":
+        g.has_deques=True
+        return f"native_deque_repr(&({code}))"
     if kind == "bytes":
         from .native_stdio import _enable
         _enable(g)
@@ -363,7 +375,7 @@ def _representation(g,value,*,quoted=False):
         element = "int" if kind == "list_int" else kind.element
         owner,result,index,item = (g.temporary() for _ in range(4))
         representation = _representation(g,_Expression(f"(*{item})",element,owned=False),quoted=True)
-        return (f'{{let {owner}=&({code}); let mut {result}=String::from("["); '
+        return (f'{{let {owner}='+(f"({code}).borrow()"if isinstance(kind,SharedListType)else f"&({code})")+f'; let mut {result}=String::from("["); '
                 f'for ({index},{item}) in {owner}.iter().enumerate() {{if {index}>0 {{{result}.push_str(", ");}} '
                 f"{result}.push_str(&({representation}));}} {result}.push(']'); {result}}}")
     raise _Unsupported
@@ -435,7 +447,9 @@ def _print(g,node,environment,*,values=None):
                 lines.append(g.read_binding(temporary,value))
                 arguments.append((star,_Expression(temporary,value.kind,owned=False)))
                 continue
-            if star and not value.owned and (value.kind=="list_int" or isinstance(value.kind,ListType)):
+            if star and isinstance(value.kind,SharedListType):
+                value=_Expression(f"({value.code}).borrow().clone()",ListType(value.kind.element))
+            if star and not value.owned and (value.kind in {"list_int","deque_int"} or isinstance(value.kind,ListType)):
                 code=f"({value.code}).clone()"
             elif not value.owned and immutable(value.kind):
                 code=g.coerce(value,value.kind)
@@ -458,8 +472,8 @@ def _print(g,node,environment,*,values=None):
     for star,value in arguments:
         if not star:
             lines.append(write(value))
-        elif value.kind == "list_int" or isinstance(value.kind,(ListType,TupleSequenceType)):
-            element = "int" if value.kind == "list_int" else value.kind.element
+        elif value.kind in {"list_int","deque_int"} or isinstance(value.kind,(ListType,TupleSequenceType)):
+            element = "int" if value.kind in {"list_int","deque_int"} else value.kind.element
             item = g.temporary()
             lines.append(f"for {item} in {value.code}.iter() {{\n{write(_Expression(f'(*{item})',element,owned=False))}\n}}")
         elif isinstance(value.kind,TupleType):
@@ -477,6 +491,9 @@ def _print(g,node,environment,*,values=None):
 def stream(g,node,environment,planner,*,value=None):
     from .native_iterators import Stream
     value = g.expression(node,environment) if value is None else value
+    from .native_nested_lists import stream as shared_stream
+    shared=shared_stream(g,node,value,planner)
+    if shared is not None:return shared
     if not isinstance(value.kind,ListType):
         return None
     if not immutable(value.kind.element):
@@ -492,3 +509,6 @@ def stream(g,node,environment,planner,*,value=None):
 
 from .native_constraint_lowering import MAP_HELPERS
 HELPERS+=MAP_HELPERS
+
+from .native_nested_lists import HELPERS as SHARED_LIST_HELPERS
+HELPERS+=SHARED_LIST_HELPERS

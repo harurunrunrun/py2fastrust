@@ -22,11 +22,9 @@ class NativeTupleSequenceBoundaryTests(unittest.TestCase):
                     self.assertEqual(result.diagnostics[0].code,'E006')
                     self.assertGreater(result.diagnostics[0].line,0)
 
-    def test_existing_dict_display_boundary_is_retained(self):
-        for mode in ('i64','i128','bigint'):
-            result=transpile("a=tuple(range(2))\nd={a:7}\nprint(d)\n",TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_dict_display_preserves_tuple_sequence_key(self):
+        NativeTupleSequenceTests().compare("a=tuple(range(2))\nd={a:7}\nprint(d)\n")
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')

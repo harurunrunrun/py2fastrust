@@ -73,15 +73,7 @@ print(len({1,2,3}))
 print(len({1:2,3:4}))
 print(len((1,"text",None)))
 '''
-        self.compare(matrix_source,modes=("i64","i128"))
-        # The original fixture still exposes an unfinished BigInt matrix
-        # allocation boundary. Length lowering must not conceal that failure.
-        result=transpile(matrix_source,TranspileOptions(integer="bigint",filename="matrix-length.py"))
-        self.assertFalse(result.success)
-        self.assertIsNone(result.rust_source)
-        self.assertEqual(result.diagnostics[0].code,"E006")
-        self.assertIn("list allocation",result.diagnostics[0].message)
-        self.assertIn("[[1],[2]]",result.diagnostics[0].message)
+        self.compare(matrix_source)
         self.compare('''measure=len
 print(measure([1,2,3]))
 print(len(b"abc"))

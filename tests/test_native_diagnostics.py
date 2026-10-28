@@ -64,27 +64,26 @@ class NativeDiagnosticTests(unittest.TestCase):
         self.assertFalse(syntax.success)
         self.assertEqual(syntax.diagnostics[0].code,'E001')
 
-    def test_named_member_and_bigint_import_causes(self):
+    def test_named_member_cause_and_implemented_bigint_deque(self):
         diagnostic=self.reject('s=input()\nprint(s.replace("a","b"))\n')
         self.assertEqual((diagnostic.line,diagnostic.column),(2,7))
         self.assertIn("call 's.replace'",diagnostic.message)
         self.assertIn('receiver=str',diagnostic.message)
         self.assertIn('adapter',diagnostic.message)
-        imported=self.reject('from collections import deque\nq=deque([1])\nprint(q)\n','bigint')
-        self.assertEqual((imported.line,imported.column),(1,1))
-        self.assertIn('collections.deque',imported.message)
-        self.assertIn('BigInt',imported.message)
-        self.assertIn('element storage',imported.message)
-        self.assertIn('deque operations',imported.message)
+        supported=transpile('from collections import deque\nq=deque([1])\nprint(q)\n',TranspileOptions(integer='bigint'))
+        self.assertTrue(supported.success,supported.diagnostics)
+        self.assertEqual(supported.backend,'native')
 
-    def test_mutable_alias_and_expression_storage_proofs_are_named(self):
+    def positive(self,source):
+        import test_native_union_ordering as helpers
+        class Check(helpers.NativeUnionOrderingTests):pass
+        Check.setUpClass()
+        try:Check().exercise(source,("",))
+        finally:Check.tearDownClass()
+
+    def test_shared_aliases_and_unproved_expression_storage_are_distinct(self):
         source='values=[1]\nalias=values\nalias.append(2)\nprint(values)\n'
-        for mode in ('i64','i128','bigint'):
-            diagnostic=self.reject(source,mode)
-            self.assertEqual((diagnostic.line,diagnostic.column),(2,1))
-            self.assertIn('share one mutable container',diagnostic.message)
-            self.assertIn('value=list[int]',diagnostic.message)
-            self.assertIn('alias identity',diagnostic.message)
+        self.positive(source)
         expression=self.reject('n=int(input())\nx=[1] if n else None\nprint(x)\n')
         self.assertIn('conditional expression',expression.message)
         self.assertIn('mutable branch',expression.message)
@@ -121,10 +120,7 @@ class NativeDiagnosticTests(unittest.TestCase):
                 for token in tokens:self.assertIn(token,diagnostic.message)
         for statement in ('xs[0]=2','xs.append(2)'):
             source='def f(xs):\n '+statement+'\n return 0\nxs=[1]\nprint(f(xs))\n'
-            diagnostic=self.reject(source)
-            self.assertEqual((diagnostic.line,diagnostic.column),(2,2))
-            self.assertIn('caller',diagnostic.message)
-            self.assertIn('mutable function-argument identity',diagnostic.message)
+            self.positive(source)
 
     def test_class_path_names_first_class_function_value_capture_boundary(self):
         diagnostic=self.reject('class Item:pass\ndef score(x):return x\nxs=[2,1]\nxs.sort(key=score)\n')

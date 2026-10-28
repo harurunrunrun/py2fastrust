@@ -172,9 +172,9 @@ print(pow(a,b,c))
         self.differential(source,[f"{a}\n{b}\n{c}\n" for a,b,c in [(10**100+3,12345,10**80+7),(3,-1,10**100),(10,-1,100),(9,0,-7),(3,-3,-11),(0,0,0)]])
 
     def test_input_unicode_lazy_unpack_and_operation_errors(self):
-        self.differential("print(9)\na,b=map(int,input().split())\nprint(a,b)\n",["１２ ٤\n","+1_000 -9\n","1\n","\n","1 2 3 invalid\n","1 2 invalid\n","1 invalid 3\n","1\x1c2\n",""])
+        self.differential("print(9)\na,b=map(int,input().split())\nprint(a,b)\n",["１２ ٤\n","+1_000 -9\n","1\n","\n","1 2 3 invalid\n","1 2 invalid\n","1 invalid 3\n","1\x1c2\n",""],string_mode="unicode")
         for expression,data in [("int(input())",["１２\r\n","-٤\n","1\x1c\n","-\n"]),("int('１２３')",[""]),("int('bad')",[""]),("1//0",[""]),("1<<-1",[""]),("0<<int(input())",[f"{10**100}\n"]),("-9>>int(input())",[f"{10**100}\n"]),("1<<int(input())",[f"{10**100}\n"]),("1//int(input())",["0\n"])]:
-            self.differential(f"print(9)\nprint({expression})\n",data)
+            self.differential(f"print(9)\nprint({expression})\n",data,string_mode="unicode")
 
     def test_unproved_types_effects_and_rebinding_use_general_aot(self):
         sources=["print(2**-1)\n","print(2**int(input()))\n","print(1/2)\n","bool=lambda x:3\nprint(bool(1))\n","max=lambda *x:7\nprint(max(1,2))\n"]

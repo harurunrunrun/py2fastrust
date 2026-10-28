@@ -3,7 +3,7 @@ import ast
 from .call_semantics import FunctionSignature, CallBindingError, normalize_call
 from dataclasses import dataclass
 
-from .native import _Binding, _Expression, _ListInfo, _Unsupported
+from .native import _Expression, _Unsupported
 
 
 @dataclass(frozen=True)
@@ -19,13 +19,16 @@ class BuiltinRef:
     _native_reference = True
 
 
-MODULES = {name: ModuleRef(name) for name in ("math", "bisect")}
+MODULES = {name: ModuleRef(name) for name in ("math", "bisect", "heapq")}
 MEMBERS = {
     "math": {name: BuiltinRef("math",name) for name in
              ("gcd","lcm","isqrt","factorial","comb","perm")},
     "bisect": {name: BuiltinRef("bisect",name) for name in
                ("bisect","bisect_left","bisect_right","insort","insort_left","insort_right")},
 }
+
+from .native_heapq import NAMES as HEAP_NAMES
+MEMBERS["heapq"]={name:BuiltinRef("heapq",name)for name in HEAP_NAMES}
 
 
 HELPERS = r'''
@@ -79,29 +82,15 @@ fn native_math_perm(n:&Int,k:Option<&Int>)->Result<Int,String> {
     let mut result=Int::exact_small(1);
     for i in 0..count {result=result.exact_mul(&n.exact_add(&Int::exact_small(-(i as i128))));}Ok(result)
 }
-fn native_bisect_bound(value:Option<&Int>,default:isize)->Result<isize,String> {
-    match value {
-        None=>Ok(default),Some(value)=>value.to_i128().and_then(|n|isize::try_from(n).ok())
-            .ok_or_else(||"OverflowError: Python int too large to convert to C ssize_t".to_owned()),
-    }
-}
-fn native_bisect<T:Ord>(values:&[T],x:&T,lo:Option<&Int>,hi:Option<&Int>,right:bool)->Result<usize,String> {
-    let mut lo=native_bisect_bound(lo,0)?;
-    let mut hi=native_bisect_bound(hi,-1)?;
-    if lo<0{return Err("ValueError: lo must be non-negative".into());}
-    if hi== -1 {hi=isize::try_from(values.len()).map_err(|_|"OverflowError: sequence is too large".to_owned())?;}
-    while lo<hi {
-        let mid=lo+((hi-lo)/2);
-        let value=values.get(mid as usize).ok_or_else(||"IndexError: list index out of range".to_owned())?;
-        if if right{x>=value}else{value<x}{lo=mid+1;}else{hi=mid;}
-    }Ok(lo as usize)
-}
-fn native_insort<T:Ord>(values:&mut Vec<T>,x:T,lo:Option<&Int>,hi:Option<&Int>,right:bool)->Result<(),String> {
-    let index=native_bisect(values,&x,lo,hi,right)?.min(values.len());
-    values.try_reserve(1).map_err(|_|"MemoryError".to_owned())?;
-    values.insert(index,x);Ok(())
-}
 '''
+
+from .native_heapq import HELPERS as HEAP_HELPERS
+HELPERS += HEAP_HELPERS
+
+
+def helpers(generator):
+    from .native_bisect import helpers as bisection_helpers
+    return HELPERS+bisection_helpers(generator.bits)
 
 
 def reference(node,environment):
@@ -118,9 +107,10 @@ def _read_reference(g,node,environment):
 
 
 def try_statement(g,node,environment):
+    from .native_stdio import SYS
     if isinstance(node,ast.Import):
-        if not all(alias.name in MODULES for alias in node.names):return None
-        values=[(alias.asname or alias.name,MODULES[alias.name]) for alias in node.names]
+        if not all(alias.name in MODULES or alias.name=="sys"for alias in node.names):return None
+        values=[(alias.asname or alias.name,SYS if alias.name=="sys"else MODULES[alias.name])for alias in node.names]
     elif isinstance(node,ast.ImportFrom) and node.module in MODULES and not node.level:
         if not all(alias.name in MEMBERS[node.module] for alias in node.names):raise _Unsupported
         values=[(alias.asname or alias.name,MEMBERS[node.module][alias.name]) for alias in node.names]
@@ -135,7 +125,7 @@ def try_statement(g,node,environment):
         return f"let _={value.code};",environment
     else:return None
     for name,value in values:
-        module=value.name if isinstance(value,ModuleRef) else value.module
+        module="sys"if value is SYS else value.name if isinstance(value,ModuleRef) else value.module
         if module not in g.trusted_imports or name in g.BUILTINS|{"__name__","__builtins__"}:raise _Unsupported
         environment[name]=value
     return "",environment
@@ -178,6 +168,12 @@ def try_expression(g,node,environment):
     function=reference(node.func,environment)
     if not isinstance(function,BuiltinRef):return None
     _read_reference(g,node.func,environment)
+    if function.module=="heapq":
+        from .native_heapq import lower
+        return lower(g,node,environment,function)
+    if function.module=="bisect":
+        from .native_bisect import lower
+        return lower(g,node,environment,function)
     g.has_native_modules=True
     g.needs_integer_runtime=True
     name=function.name
@@ -200,31 +196,4 @@ def try_expression(g,node,environment):
             elif name=="perm":values.append("None"if args["k"]is None else f"Some(&{args['k']})")
             code=g.at(f"native_math_{name}({','.join(values)})",node)
         return _Expression("{ "+" ".join(lines)+f" {_result(g,code)} }}","int")
-    if not 2<=len(node.args)<=4:raise _Unsupported
-    array_node=node.args[0]
-    array=g.expression(array_node,environment)
-    if array.kind!="list_int":raise _Unsupported
-    owner=g.temporary()
-    mutating=name.startswith("insort")
-    if mutating:
-        if (not isinstance(array_node,ast.Name) or array_node.id in g.iterating_lists
-                or array.code in g.borrowed_slots):raise _Unsupported
-        lines=[]
-    else:
-        lines=[f"let {owner}:&[NativeInt]=&({array.code});"]
-    value=g.expression(node.args[1],environment);item=g.temporary()
-    lines.append(f"let {item}={g.number(value)};")
-    bounds_call=ast.copy_location(ast.Call(func=node.func,args=node.args[2:],keywords=node.keywords),node)
-    bound_lines,bounds=_bind(g,bounds_call,environment,("lo","hi"),minimum=0,defaults=("lo","hi"),kwonly=("key",))
-    lines+=bound_lines
-    args=["None"if bounds[name]is None else f"Some(&{bounds[name]})"for name in ("lo","hi")]
-    right=str(not name.endswith("_left")).lower()
-    if mutating:
-        code=g.at(f"native_insort(&mut {array.code},{item},{','.join(args)},{right})",node)
-        g.update_info(environment,array_node.id,_ListInfo(None))
-        kind="none"
-    else:
-        code=g.at(f"native_bisect({owner},&{item},{','.join(args)},{right})",node)
-        code=f"({code})as NativeInt"if g.bits else f"Int::from_i128(({code})as i128)"
-        kind="int"
-    return _Expression("{ "+" ".join(lines)+f" {code} }}",kind)
+    raise _Unsupported('this standard callable has no registered native lowering',node=node)

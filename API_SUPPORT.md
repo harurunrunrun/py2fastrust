@@ -10,16 +10,26 @@ work. The implementations and their acceptance tests are retained; this
 inventory and strict diagnostics do not establish completed compatibility or a
 green full suite. See [COMPATIBILITY.md](COMPATIBILITY.md) for the public boundary.
 
-Current direct module coverage includes proved `collections.deque` imports and
+Current direct module coverage includes proved integer `collections.deque` values
+in all integer modes, with bounded queues and the named methods described in
+[COMPATIBILITY.md](COMPATIBILITY.md), plus
 `sys.stdin`/`sys.stdin.buffer` `read`/`readline`, including statically captured
 reader aliases and local imports. This does not establish direct coverage of
 the other `sys` APIs listed in the retained inventory below.
 
 Resolved integer calls to `math.gcd`, `lcm`, `isqrt`, `factorial`, `comb`, and
-`perm` also have direct helpers. The six `bisect`/`insort` names support integer
-lists, checked `lo`/`hi`, and `key=None`. Module/function aliases use their
-resolved identities. General callable arguments, starred calls, other sequence
-types, and the remaining module APIs still need implementation.
+`perm` also have direct helpers. The following list APIs have direct typed
+lowering with the payload, storage and evaluation-order limits documented in
+[COMPATIBILITY.md](COMPATIBILITY.md):
+
+| Module | Direct APIs | Remaining requirements |
+|---|---|---|
+| `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts | `merge`, `nlargest`, `nsmallest`, custom/fallible comparisons, floating tuple identity |
+| `bisect` | `bisect`, `bisect_left`, `bisect_right`, `insort`, `insort_left`, `insort_right` with checked bounds and `key=None` | Callable keys, arbitrary sequence protocols, custom/fallible comparisons |
+
+Module/function aliases use resolved identities. General starred calls and
+the remaining module APIs still need implementation. The tables below describe
+the retained runtime inventory, not additional direct coverage.
 
 ## math
 

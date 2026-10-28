@@ -46,10 +46,7 @@ class NativeLambdaReplayRegressions(unittest.TestCase):
                 with self.subTest(family=family,size=size):
                     self.exercise(CASES[f"{family}_n{size}"],("",))
 
-    def test_unique_row_views_reject_later_parent_destruction(self):
-        # These remain unfinished object-identity support, not language acceptance.
+    def test_shared_rows_survive_later_parent_destruction(self):
         for name in ("row_print_then_parent_clear_literal_index","row_print_then_parent_clear_dynamic_index"):
-            for mode in ("i64","i128","bigint"):
-                result=transpile(CASES[name],TranspileOptions(integer=mode))
-                self.assertFalse(result.success,(name,mode))
-                self.assertEqual(result.diagnostics[0].code,"E006")
+            with self.subTest(name=name):
+                self.exercise(CASES[name],("",))

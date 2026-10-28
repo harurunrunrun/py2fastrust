@@ -28,6 +28,11 @@ class ListType:
 
 
 @dataclass(frozen=True)
+class SharedListType(ListType):
+    """A concrete reference to one typed mutable list, not a contents copy."""
+
+
+@dataclass(frozen=True)
 class MaybeType:
     value: object
 
@@ -137,6 +142,7 @@ def render_type(kind, leaf_override=None):
     if isinstance(kind,TupleType):
         return tuple_code(recurse(field) for field in kind.fields)
     if isinstance(kind,TupleSequenceType):return "NativeTuple<"+recurse(kind.element)+">"
+    if isinstance(kind,SharedListType):return "NativeSharedList<"+recurse(kind.element)+">"
     if isinstance(kind,ListType):
         return "Vec<"+recurse(kind.element)+">"
     if getattr(kind,"_key_container",False):
@@ -145,7 +151,7 @@ def render_type(kind, leaf_override=None):
     return {"int":"NativeInt","bool":"bool","int_bool":"NativeScalar","str":"NativeText",
             "bytes":"Vec<u8>","float":"f64","none":"()","list_int":"Vec<NativeInt>",
             "matrix_int":"Vec<Vec<NativeInt>>","dict_int":"NativeDict","set_int":"NativeSet",
-            "deque_int":"std::collections::VecDeque<NativeInt>"}[kind]
+            "deque_int":"NativeDeque<NativeInt>"}[kind]
 
 
 def kind_tag(kind):
@@ -158,6 +164,7 @@ def kind_tag(kind):
     if isinstance(kind,TupleType):
         return "tuple"+str(len(kind.fields))+"_"+"_".join(kind_tag(field) for field in kind.fields)+"_end"
     if isinstance(kind,TupleSequenceType):return "tuple_sequence_"+kind_tag(kind.element)+"_end"
+    if isinstance(kind,SharedListType):return "shared_list_"+kind_tag(kind.element)+"_end"
     if isinstance(kind,ListType):
         return "list_"+kind_tag(kind.element)+"_end"
     if getattr(kind,"_key_container",False):
@@ -207,9 +214,20 @@ def default_value(kind,zero):
         return f"{union_variant(kind,value)}({default_value(value,zero)})"
     if isinstance(kind,TupleType):return tuple_code(default_value(field,zero) for field in kind.fields)
     if isinstance(kind,TupleSequenceType):return "NativeTuple::from_vec(Vec::new())"
+    if isinstance(kind,SharedListType):return "native_shared_list(Vec::new())"
     if isinstance(kind,ListType):return "Vec::new()"
     if getattr(kind,"_key_container",False):return "NativeKeySet::new()" if kind._key_container=="set" else "NativeKeyDict::new()"
     return {"none":"()","int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"NativeText::new()",
             "bytes":"Vec::<u8>::new()","float":"0.0_f64","list_int":"Vec::new()",
             "matrix_int":"Vec::new()","set_int":"NativeSet::new()","dict_int":"NativeDict::new()",
-            "deque_int":"std::collections::VecDeque::new()"}[kind]
+            "deque_int":"NativeDeque::new(None)"}[kind]
+
+
+def shared_payload(kind):
+    """Immutable payloads whose builtin equality does not need object identity."""
+    if isinstance(kind,EmptyType):return True
+    if isinstance(kind,TupleType):return all(shared_payload(field)for field in kind.fields)
+    if isinstance(kind,TupleSequenceType):return shared_payload(kind.element)
+    if isinstance(kind,NullableType):return shared_payload(kind.value)
+    if isinstance(kind,UnionType):return all(shared_payload(value)for value in kind.alternatives)
+    return kind in {"int","bool","int_bool","str","bytes","none"}
