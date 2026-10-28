@@ -1679,6 +1679,9 @@ class Emitter:
         if isinstance(node,ast.AugAssign):
             setup,reference=self.reference(node.target)
             old_kind=shape(self.model.augmented[(self.plan.index,id(node))])
+            from .native_class_augassign import emit
+            fused=emit(self,node,setup,reference,old_kind)
+            if fused is not None:return fused
             before,old=self.capture(self.load_reference(reference,node.target,old_kind))
             more,right=self.capture(self.expression(node.value))
             wanted=self.kind(node.target)
