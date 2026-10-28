@@ -31,6 +31,10 @@ impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
     fn clear(&mut self){self.entries.clear();self.index.clear();}
     fn contains(&self,key:&C)->bool {self.index.contains_key(key)}
     fn get(&self,key:&C)->Option<&V> {self.index.get(key).map(|&index|&self.entries[index].1)}
+    fn get_mut(&mut self,key:&C)->Option<&mut V> {
+        let slot=self.index.get(key).copied()?;
+        Some(&mut self.entries[slot].1)
+    }
     fn set(&mut self,key:K,canonical:C,value:V)->Result<(),String> {
         if let Some(&index)=self.index.get(&canonical){self.entries[index].1=value;return Ok(());}
         self.index.try_reserve(1).map_err(|_|"MemoryError".to_string())?;

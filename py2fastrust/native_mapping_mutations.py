@@ -66,6 +66,15 @@ def _mutated(g,value,name,binding,environment):
         g.expression_mutations.append(binding)
 
 
+def _scalar_rhs(g,node):
+    from .native_constraint_lowering import facts_for
+    from .native_scalar_effects import scalar_rhs
+    def kind(value):
+        facts,site=facts_for(g,value)
+        return None if facts is None else unmaybe(facts.expressions.get(site))
+    return scalar_rhs(node,kind)
+
+
 def augmented(g,node,environment):
     target=node.target
     if not isinstance(target,ast.Subscript)or isinstance(target.slice,ast.Slice):return None
@@ -77,11 +86,19 @@ def augmented(g,node,environment):
     from .native_types import immutable,rust_type
     if not immutable(stored):
         raise _Unsupported('augmented dictionary entries need an immutable typed scalar/tuple representation; mutable value in-place protocols are not implemented',node=target,types=(('value',stored),),proof='typed augmented dictionary value and in-place effects')
-    if value.kind=='dict_int':lookup=f'{owner}.item({code})'
+    from .native_scalar_effects import SCALARS
+    fused=code is not None and stored in SCALARS and _scalar_rhs(g,node.value)
+    reference=None
+    if fused:
+        if value.kind=='dict_int':lookup=f'{owner}.item_mut({code})'
+        else:lookup=f'{owner}.get_mut(&{code}).ok_or_else(||format!("KeyError: {{}}",{error}))'
+        reference=g.temporary();lines.append(f'let {reference}={g.at(lookup,target)};')
+        lookup=None
+    elif value.kind=='dict_int':lookup=f'{owner}.item({code})'
     else:
         found=f'{owner}.get(&{code}).cloned()'if code is not None else f'None::<{rust_type(stored)}>'
         lookup=f'{found}.ok_or_else(||format!("KeyError: {{}}",{error}))'
-    old=g.temporary();lines.append(f'let {old}={g.at(lookup,target)};')
+    old=g.temporary();lines.append(f'let {old}='+ (f'(*{reference}).clone();'if fused else f'{g.at(lookup,target)};'))
     if isinstance(stored,EmptyType):return '{'+''.join(lines)+f'match {old}{{}}'+'}',environment
     right=g.expression(node.value,environment)
     if isinstance(binding,_Binding)and environment.get(name)!=binding:
@@ -92,9 +109,11 @@ def augmented(g,node,environment):
     result=g.binary(node.op,_Expression(old,stored),_Expression(rhs,right.kind,right.constant),node)
     from .native_key_containers import _coerce_key,_value
     calculated=g.temporary();lines.append(f'let {calculated}={_value(g,result,stored)};')
-    action=(f'{owner}.set({g.number(key)},{calculated})'if value.kind=='dict_int'else
-            f'{owner}.set({_coerce_key(g,key,value.kind.key)},{code},{calculated})')
-    lines.append(g.at(action,node)+';')
+    if fused:lines.append(f'*{reference}={calculated};')
+    else:
+        action=(f'{owner}.set({g.number(key)},{calculated})'if value.kind=='dict_int'else
+                f'{owner}.set({_coerce_key(g,key,value.kind.key)},{code},{calculated})')
+        lines.append(g.at(action,node)+';')
     _mutated(g,value,name,binding,environment)
     return '{'+''.join(lines)+'}',environment
 

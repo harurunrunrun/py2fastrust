@@ -232,6 +232,12 @@ Deletion/reinsertion preserves Python insertion order and the original key on
 an overwrite. Admitted keys are immutable integer/bool, text and tuple shapes;
 general hash/equality protocols remain unfinished.
 
+Numeric augmented entries reuse one existing hash slot when the right operand
+is proved scalar and cannot call Python code or access container storage. The
+same scalar effect proof serves class-owned list updates. Missing-key checks
+still precede right-operand errors, and a failed calculation does not commit a
+value. Effectful right operands keep the separate lookup/evaluate/store order.
+
 Programs with proved key deletion use hash indices and reusable linked slots:
 lookup, insertion and deletion take expected amortized O(1), traversal is O(n)
 in the live entry count, and slot storage grows with peak live occupancy.
@@ -302,6 +308,11 @@ keeps its distinct EOF and newline behavior. Text input follows the selected
 ASCII profile or opt-in strict UTF-8 Unicode profile. Custom/reconfigured
 streams and surrogate escapes need further
 direct implementation.
+
+Builtin `print` also has its normal `None` result in assignment, nested call,
+tuple and short-circuit expression contexts. These calls share the statement
+printer's argument capture, formatting and explicit flush behavior. Replacing a
+builtin with a function definition still requires callable binding versioning.
 
 Fixed-width decimal `int(text)` and `int(bytes)` conversions use a shared
 selected-width accumulator, including captured builtin aliases, lazy/eager word

@@ -338,6 +338,11 @@ impl NativeDict {
             .ok_or_else(|| format!("KeyError: {}", key))
     }
     #[inline]
+    fn item_mut(&mut self,key:NativeInt)->Result<&mut NativeInt,String> {
+        let slot=self.index.get(&key).copied().ok_or_else(||format!("KeyError: {}",key))?;
+        Ok(&mut self.entries[slot].1)
+    }
+    #[inline]
     fn set(&mut self, key: NativeInt, value: NativeInt) -> Result<(), String> {
         if let Some(&index)=self.index.get(&key){self.entries[index].1=value;return Ok(());}
         self.index.try_reserve(1).map_err(|_|"MemoryError: cannot allocate dictionary index".to_owned())?;

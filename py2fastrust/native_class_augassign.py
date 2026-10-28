@@ -8,31 +8,17 @@ the element is committed, and the borrow ends at this statement's Rust block.
 import ast
 
 
-_SCALARS=frozenset({"int","bool","int_bool","float"})
+from .native_scalar_effects import SCALARS as _SCALARS
 
 
 def scalar_rhs(emitter,node):
     """A closed proof; unknown expressions retain the ordinary get/RHS/set path."""
     from .native_classes import domain
-    if domain(emitter.kind(node))not in _SCALARS:return False
-    if isinstance(node,ast.Constant):
-        return type(node.value)in {int,bool,float}
-    if isinstance(node,ast.Name):
-        return isinstance(node.ctx,ast.Load)
-    if isinstance(node,ast.Attribute):
-        return (isinstance(node.ctx,ast.Load)and isinstance(node.value,ast.Name)
-                and domain(emitter.kind(node.value))=="object")
-    if isinstance(node,ast.UnaryOp):
-        return isinstance(node.op,(ast.UAdd,ast.USub,ast.Invert,ast.Not))and scalar_rhs(emitter,node.operand)
-    if isinstance(node,ast.BinOp):
-        return scalar_rhs(emitter,node.left)and scalar_rhs(emitter,node.right)
-    if isinstance(node,ast.BoolOp):
-        return all(scalar_rhs(emitter,value)for value in node.values)
-    if isinstance(node,ast.Compare):
-        return scalar_rhs(emitter,node.left)and all(scalar_rhs(emitter,value)for value in node.comparators)
-    if isinstance(node,ast.IfExp):
-        return all(scalar_rhs(emitter,value)for value in (node.test,node.body,node.orelse))
-    return False
+    from .native_scalar_effects import scalar_rhs as prove
+    def field(value):
+        return (isinstance(value.ctx,ast.Load)and isinstance(value.value,ast.Name)
+                and domain(emitter.kind(value.value))=="object")
+    return prove(node,lambda value:domain(emitter.kind(value)),field)
 
 
 def emit(emitter,node,setup,reference,old_kind):
