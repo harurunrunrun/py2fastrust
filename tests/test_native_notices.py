@@ -18,7 +18,7 @@ fn main() { let text="const TEXT_PRINTABLE fn native_float_divmod"; }
         result = retain_native_notices(source)
         self.assertNotIn(PSF, result)
         self.assertNotIn(UNICODE, result)
-        self.assertIn("Copyright (c) 2026 py2fastrust contributors", result)
+        self.assertNotIn("Copyright (c) 2026 py2fastrust contributors", result)
         self.assertNotIn("Dictionary copy and merge paths", result)
 
     def test_each_retained_component_keeps_its_license(self):
@@ -44,7 +44,7 @@ fn main() { let text="const TEXT_PRINTABLE fn native_float_divmod"; }
         result = retain_native_notices("\n".join(blocks) + "\nfn main() {}\n")
         self.assertNotIn(PSF, result)
         self.assertNotIn(UNICODE, result)
-        self.assertEqual(result.count("Copyright (c) 2026 py2fastrust contributors"), 1)
+        self.assertNotIn("Copyright (c) 2026 py2fastrust contributors", result)
 
     def test_public_pruned_output_and_no_optimize_keep_required_notices(self):
         cases = (

@@ -22,7 +22,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(result.backend, "native")
         self.assertNotIn("enum Value", result.rust_source)
         self.assertNotIn("struct Runtime", result.rust_source)
-        self.assertIn("// Integer mode: i64; backend: native.",result.rust_source)
+        self.assertIn("// Integer mode: i64.",result.rust_source)
         self.assertNotRegex(rust_mask(result.rust_source),r"\bOp\b|\bInstr\b|\.ops\b|\bfn\s+step\b")
 
     def test_cli_no_optimize_emits_direct_rust_and_reports_native_in_header(self):
@@ -35,7 +35,7 @@ class APITests(unittest.TestCase):
                                    "--no-optimize","-o",str(output)],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             rust=output.read_text()
-            self.assertIn("// Integer mode: i64; backend: native.",rust)
+            self.assertIn("// Integer mode: i64.",rust)
             self.assertNotRegex(rust_mask(rust),r"\bOp\b|\bInstr\b|\.ops\b|\bfn\s+step\b")
             self.assertNotIn("struct Runtime",rust)
 

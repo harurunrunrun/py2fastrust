@@ -6,15 +6,15 @@ has additional upstream sources and must keep its own complete notice policy.
 from importlib.resources import files
 
 from .rust_pruning import _lex
+from .rust_layout import compact_blank_lines
 
 
 def retain_native_notices(source: str) -> str:
     """Replace assembly-time notice bundles after helper reachability pruning."""
     resources = files("py2fastrust")
     runtime_notice = resources.joinpath("runtime", "NOTICE.txt").read_text(encoding="utf-8")
-    # Only this first section licenses the original MIT runtime. Later sections
-    # describe internal-runtime components absent from native generated programs.
-    mit_notice = runtime_notice.split("\nDictionary copy and merge paths", 1)[0].rstrip()
+    # The repository LICENSE grants an output exception for original helpers.
+    # Upstream code and data retain their notices when actually emitted below.
     source = source.replace("/*\n" + runtime_notice + "\n*/\n", "")
     licenses = {}
     for name in ("PYTHON_LICENSE.txt", "UNICODE_LICENSE.txt"):
@@ -28,7 +28,7 @@ def retain_native_notices(source: str) -> str:
                  if token.text == "fn"}
     constants = {tokens[index + 1].text for index, token in enumerate(tokens[:-1])
                  if token.text == "const"}
-    notices = ["/*\n" + mit_notice + "\n*/"]
+    notices = []
     if "native_float_divmod" in functions:
         notices.append(licenses["PYTHON_LICENSE.txt"])
     else:
@@ -49,4 +49,5 @@ def retain_native_notices(source: str) -> str:
     if (constants & {"ZEROES", "RANGES", "TEXT_PRINTABLE", "NATIVE_TUPLE_PRINTABLE"}
             or any(name.startswith("NATIVE_PRED_TABLE_") for name in constants)):
         notices.append(licenses["UNICODE_LICENSE.txt"])
-    return source.rstrip() + "\n\n" + "\n\n".join(notices) + "\n"
+    suffix = "\n\n" + "\n\n".join(notices) if notices else ""
+    return compact_blank_lines(source.rstrip() + suffix + "\n")

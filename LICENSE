@@ -19,3 +19,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Generated output permission
+
+As an additional permission, original runtime support code emitted by
+py2fastrust may be used, copied, modified, and distributed as part of generated
+programs under any terms, without retaining the above copyright and permission
+notices. This permission does not cover third-party code or data, whose license
+notices must be retained when those components are included.

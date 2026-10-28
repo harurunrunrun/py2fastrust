@@ -76,9 +76,7 @@ class SourceOptionsTests(unittest.TestCase):
                 for line in source.splitlines():
                     self.assertIn("// " + line + "\n", before)
                 self.assertNotIn("// import sys\n", generated)
-                runtime_notice = files("py2fastrust").joinpath("runtime", "NOTICE.txt").read_text()
-                mit_notice = runtime_notice.split("\nDictionary copy and merge paths", 1)[0].rstrip()
-                self.assertIn(mit_notice, generated, "the original runtime MIT notice must remain intact")
+                self.assertNotIn("Copyright (c) 2026 py2fastrust contributors", generated)
                 self.assertNotIn("PYTHON SOFTWARE FOUNDATION LICENSE", generated)
         self.assertTrue(transpile('print(1)').rust_source.startswith('// LICENSE: CC0-1.0\n'))
 
@@ -115,7 +113,7 @@ class SourceOptionsTests(unittest.TestCase):
             self.assertEqual(output.read_text(), 'keep')
             rust = (root / "from source.rs").read_text()
             self.assertTrue(rust.startswith('// LICENSE: Unlicense\n'))
-            self.assertIn('// Integer mode: i128;', rust)
+            self.assertIn('// Integer mode: i128.', rust)
             source.write_text('# py2fastrust: --check\nprint(1)\n')
             result = subprocess.run([sys.executable, '-m', 'py2fastrust', str(source), '-o', str(output)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

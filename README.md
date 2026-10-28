@@ -249,7 +249,10 @@ by missing direct features and must be restored through implementation. Its
 
 ## Licenses and generated headers
 
-The transpiler and original runtime code use the [MIT license](LICENSE).
+The transpiler uses the [MIT license](LICENSE). Its generated-output permission
+allows original runtime helpers in generated programs to be distributed without
+the project's copyright or MIT notice. Third-party code and data keep their own
+required notices when included.
 The license recorded for translated program logic defaults to `CC0-1.0`.
 If the original Python source specifies a license, that license takes precedence.
 The selected output license applies when the original source does not specify one.
@@ -270,12 +273,13 @@ pytors main.py -o main.rs --license MIT
 
 License names are case-insensitive; `cc0` is also accepted for `CC0-1.0`.
 A source comment can override this choice, as shown above.
-This selection applies to translated program logic. Bundled runtime and third-party components
-retain their existing license notices.
+This selection applies to translated program logic. Original generated helpers
+do not impose an additional project copyright notice. Third-party components
+retain their required license notices when present.
 
 Each generated Rust file begins with line comments containing the selected `LICENSE`,
 the project URL, the exact statement “Transpilation does not use generative AI.”,
-the integer mode and backend, the original source's SHA-256 hash, and the full selected license text.
+the integer and string modes, the original source's SHA-256 hash, and the full selected license text.
 The original Python input, before import expansion, follows as line comments.
 Transpilation uses the compiler and runtime described above and does not call a generative-AI service.
 

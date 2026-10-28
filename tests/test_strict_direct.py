@@ -159,7 +159,7 @@ class StrictDirectTests(unittest.TestCase):
                                     text=True, capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             rust = output.read_text()
-            self.assertIn("// Integer mode: i128; backend: native.", rust)
+            self.assertIn("// Integer mode: i128.", rust)
             self.assertIn("fn native_pow(", rust)
             self.assertNotIn("struct Runtime", rust)
 

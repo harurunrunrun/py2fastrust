@@ -48,8 +48,10 @@ tables contain Unicode data. Notice selection follows Rust helper pruning;
 `--no-optimize` therefore retains notices for unused components that remain
 in the output. Using the official `ast` and `symtable` APIs in the compiler
 does not by itself embed Python code in a generated program.
-The selected license for translated program logic does not replace notices
-required for bundled components.
+The repository LICENSE grants an output permission for original generated
+runtime helpers; they do not require the project's copyright or MIT notice in
+generated programs. The selected license for translated program logic does not
+replace notices required for included third-party components.
 
 The compiler uses the host Python's official `ast` and `symtable` APIs.
 The Rust PEG engine and tokenizer are independent implementations. Its grammar
