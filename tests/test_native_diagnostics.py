@@ -140,6 +140,9 @@ class NativeDiagnosticTests(unittest.TestCase):
         child=Cell('int');parent=Cell('str');child.parent=parent
         self.assertEqual(kind_name(child),'str')
         self.assertIs(child.parent,parent)
+        instance=Cell('object',('Example',))
+        self.assertEqual(kind_name(instance),'Example')
+        self.assertEqual(kind_name(Cell('list',(instance,))),'list[Example]')
 
     def test_class_truth_override_names_the_missing_special_method_protocol(self):
         for method,body in (('__bool__','False'),('__len__','0')):

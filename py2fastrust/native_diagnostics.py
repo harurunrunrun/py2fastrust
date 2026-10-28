@@ -73,7 +73,9 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
         if tag == "union":
             return fields(args, " | ")
         if tag == "object":
-            return getattr(getattr(args[0], "node", None), "name", getattr(args[0], "name", "class instance"))
+            instance = args[0]
+            return instance if isinstance(instance, str) else getattr(
+                getattr(instance, "node", None), "name", getattr(instance, "name", "class instance"))
         return kind_name(tag, seen, _depth + 1)
     return "unresolved " + name
 
