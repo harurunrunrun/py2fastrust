@@ -158,12 +158,15 @@ print(alias.isupper(),alias.isdigit(),alias.istitle(),alias.isidentifier())
                 path=Path(directory,'main.rs');path.write_text(result.rust_source);binary=path.with_suffix('')
                 build=subprocess.run(['rustc','--edition=2021','-O',str(path),'-o',str(binary)],capture_output=True,text=True,timeout=90)
                 self.assertEqual(build.returncode,0,build.stderr)
-                for data in ('猫\n','é\n'):
+                for data in ('猫\n','é\n',*('a'*length+'é\n'for length in (63,64,8191,8192))):
                     actual=subprocess.run([str(binary)],input=data,capture_output=True,text=True,timeout=5)
                     self.assertEqual(actual.returncode,1,actual.stderr)
                     self.assertEqual(actual.stdout,'')
                     self.assertIn('UnicodeDecodeError:',actual.stderr)
                     self.assertNotIn('panicked',actual.stderr)
+                data='a'*20000+'\n'
+                actual=subprocess.run([str(binary)],input=data,capture_output=True,text=True,timeout=5)
+                self.assertEqual((actual.returncode,actual.stdout),(0,data),actual.stderr)
 
 
 if __name__=='__main__':unittest.main()

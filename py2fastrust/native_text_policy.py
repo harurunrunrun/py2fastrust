@@ -135,7 +135,8 @@ _ASCII_PRIMITIVES = {
     Ok(if negative{value.wrapping_neg()}else{value})
 }''',
     "decode_pending": r'''fn decode_pending(&mut self,_final:bool)->Result<(),StandardInputError> {
-    if let Some(start)=self.pending.iter().position(|byte|!byte.is_ascii()){
+    if !self.pending.is_ascii(){
+        let start=self.pending.iter().position(|byte|!byte.is_ascii()).unwrap();
         return Err(StandardInputError::Decode{object:self.pending.clone(),start,end:start+1,reason:"non-ASCII input in the ASCII profile"});
     }
     self.decoded.push_str(std::str::from_utf8(&self.pending).unwrap());
