@@ -143,14 +143,16 @@ print("a" if True else input())
     def test_native_scalar_rust_types_and_conservative_boundary(self):
         rust = try_generate_native('s="abc"\nf=1.25\nprint(s, f)\n', "types.py", "i64")
         self.assertIsNotNone(rust)
-        self.assertIn('String::from("abc")', rust)
+        self.assertIn("struct NativeText", rust)
+        self.assertIn('NativeTextLiteral::new("abc")', rust)
         self.assertIn("1.25_f64", rust)
         self.assertNotIn("enum Value", rust)
         self.assertNotIn("enum Op", rust)
         self.assertNotIn("NativeScalar", rust)
         self.assertIsNone(try_generate_native('s="abc"\nprint(id(s))\n', "types.py", "i64"))
         self.assertIsNone(try_generate_native('s="abc"\nprint(s is "abc")\n', "types.py", "i64"))
-        self.assertIsNone(try_generate_native('a=1.0\nif input(): a="x"\nprint(a)\n', "types.py", "i64"))
+        self.differential('s="abc"\nf=1.25\nprint(s,f)\n',("",))
+        self.differential('a=1.0\nif input(): a="x"\nprint(a)\n',("\n","x\n"))
 
     def test_native_scalar_function_specializations_and_defaults(self):
         self.differential('''
@@ -216,7 +218,7 @@ print(a / -1, b / 3, a / b)
 print(1288281069789064.25, 0.7 // 0.1, -0.0 % -3.0)
 print(a == float(a), b < -float(a), "海🐈"[-1])
 '''
-            rust = try_generate_native(source, "native_input.py", f"i{bits}")
+            rust = try_generate_native(source, "native_input.py", f"i{bits}",string_mode=self.string_mode)
             self.assertIsNotNone(rust)
             path = Path(self.tmp.name) / f"scalar_debug_{bits}.rs"
             path.write_text(rust)

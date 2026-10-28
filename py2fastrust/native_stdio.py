@@ -237,6 +237,13 @@ def try_expression(generator,node,environment):
         values=[generator.expression(value,environment) for value in [node.left,*node.comparators]]
         if not any(value.kind == "bytes" for value in values):
             return None
+        from .native_comparisons import ORDERING
+        from .native_unions import union_kind
+        if (any(type(operator) in ORDERING for operator in node.ops)
+                and any(union_kind(value.kind) or value.kind=="none" for value in values)):
+            # The common finite comparison captures and dispatches these
+            # alternatives, including chains and incompatible runtime pairs.
+            return None
         if len(node.ops)!=1 or type(node.ops[0]) not in {ast.Eq,ast.NotEq,ast.Lt,ast.LtE,ast.Gt,ast.GtE}:
             raise _Unsupported
         left,right=values

@@ -331,7 +331,10 @@ class ScalarGenerator(_Generator):
             if literal is None:raise _Unsupported
             self.has_extended_scalars = True
             from .native_regions import literal_char
-            return _Expression("&("+literal.rust_atom(self.literal,_string)+")",literal.kind,owned=False,stable_borrow=True,char_code=literal_char(literal.value))
+            # The UTF-8 view is static. Borrowing the temporary NativeText
+            # wrapper inside an indexing block would shorten its lifetime.
+            return _Expression("&("+literal.rust_atom(self.literal,_string)+")",literal.kind,owned=False,stable_borrow=True,
+                               char_code=literal_char(literal.value),text_view=_string(literal.value))
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "str" and len(node.args) == 1 and not node.keywords):
             value = self.read_expression(node.args[0], environment)
@@ -532,6 +535,9 @@ class ScalarGenerator(_Generator):
             if isinstance(op, (ast.In, ast.NotIn)) and a.kind == b.kind == "str":
                 test = f"{y}.contains({x})"
                 if isinstance(op, ast.NotIn): test = f"!{test}"
+            elif isinstance(op,(ast.Lt,ast.LtE,ast.Gt,ast.GtE)):
+                from .native_comparisons import ordering
+                test=ordering(self,_Expression(x,a.kind,owned=False),_Expression(y,b.kind,owned=False),op,node)
             elif type(op) not in symbols:
                 raise _Unsupported
             elif a.kind == b.kind == "str":

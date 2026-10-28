@@ -50,7 +50,10 @@ class BigIntText:
             if literal is None:raise _Unsupported
             self.has_big_text = True
             from .native_regions import literal_char
-            return _Expression("&("+literal.rust_atom(self.literal,_string)+")",literal.kind,owned=False,stable_borrow=True,char_code=literal_char(literal.value))
+            # Keep the canonical text owner for Unicode operations, while
+            # borrowing a literal's static UTF-8 view for ASCII projections.
+            return _Expression("&("+literal.rust_atom(self.literal,_string)+")",literal.kind,owned=False,stable_borrow=True,
+                               char_code=literal_char(literal.value),text_view=_string(literal.value))
         if (self.string_mode == "ascii" and isinstance(node,ast.Subscript)
                 and not isinstance(node.slice,ast.Slice)):
             from .native_regions import owner_view,char_projection

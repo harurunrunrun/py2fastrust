@@ -97,18 +97,9 @@ def _equal(generator,left,right):
 
 
 def _order(generator,left,right,operator,node):
-    from .native_unions import union_kind,project
-    if union_kind(left.kind) or union_kind(right.kind):
-        return project(left.kind,left.code,lambda a,x:project(right.kind,right.code,
-            lambda b,y:_order(generator,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)))
-    if isinstance(left.kind,TupleType) or isinstance(right.kind,TupleType):
-        operation={"<":ast.Lt,">":ast.Gt,"<=":ast.LtE,">=":ast.GtE}[operator]
-        return tuple_compare(generator,left,right,operation(),node)
-    if left.kind in {"int","bool","int_bool"} and right.kind in {"int","bool","int_bool"}:
-        return f"({generator.number(left)}){operator}({generator.number(right)})"
-    if left.kind==right.kind and left.kind in {"str","bytes"}:
-        return f"({left.code}){operator}({right.code})"
-    return generator.at('Err::<bool,String>("TypeError: tuple elements do not support ordering".into())',node)
+    from .native_comparisons import ordering
+    operation={"<":ast.Lt,">":ast.Gt,"<=":ast.LtE,">=":ast.GtE}[operator]
+    return ordering(generator,left,right,operation(),node)
 
 
 def tuple_compare(generator,left,right,operator,node):
@@ -129,12 +120,12 @@ def tuple_compare(generator,left,right,operator,node):
         result=" && ".join(f"({_equal(generator,a,b)})" for a,b in pairs) or "true"
         if len(left.kind.fields)!=len(right.kind.fields):result="false"
         return f"!({result})" if isinstance(operator,ast.NotEq) else f"({result})"
-    forward=isinstance(operator,(ast.Lt,ast.LtE))
+    symbol={ast.Lt:"<",ast.LtE:"<=",ast.Gt:">",ast.GtE:">="}[type(operator)]
     first,second=len(left.kind.fields),len(right.kind.fields)
     result=str(first<second if isinstance(operator,ast.Lt) else first<=second if isinstance(operator,ast.LtE)
                else first>second if isinstance(operator,ast.Gt) else first>=second).lower()
     for a,b in reversed(pairs):
-        result=f"if {_equal(generator,a,b)} {{{result}}}else{{{_order(generator,a,b,'<' if forward else '>',node)}}}"
+        result=f"if {_equal(generator,a,b)} {{{result}}}else{{{_order(generator,a,b,symbol,node)}}}"
     return "{"+result+"}"
 
 

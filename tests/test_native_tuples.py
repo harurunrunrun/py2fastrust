@@ -35,8 +35,8 @@ class NativeTupleTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def compile(self,source,mode,release):
-        result=transpile(source,TranspileOptions(integer=mode,filename="tuple.py"))
+    def compile(self,source,mode,release,string_mode="ascii"):
+        result=transpile(source,TranspileOptions(integer=mode,filename="tuple.py",string_mode=string_mode))
         self.assertTrue(result.success,result.diagnostics)
         self.assertEqual(result.backend,"native")
         self.assertLess(len(result.rust_source.encode()),512*1024)
@@ -49,11 +49,11 @@ class NativeTupleTests(unittest.TestCase):
         self.assertEqual(build.returncode,0,build.stderr+"\n"+source)
         return binary
 
-    def differential(self,source,inputs=("",),modes=("i64","i128","bigint"),profiles=(False,True),trace=False):
+    def differential(self,source,inputs=("",),modes=("i64","i128","bigint"),profiles=(False,True),trace=False,string_mode="ascii"):
         references=[subprocess.run([sys.executable,"-I","-c",source],input=data,capture_output=True,text=True,timeout=5) for data in inputs]
         for mode in modes:
             for release in profiles:
-                binary=self.compile(source,mode,release)
+                binary=self.compile(source,mode,release,string_mode)
                 for data,reference in zip(inputs,references):
                     with self.subTest(mode=mode,release=release,data=data):
                         actual=subprocess.run([str(binary)],input=data,capture_output=True,text=True,timeout=5,
@@ -74,7 +74,7 @@ print(u[0],u[-1],len(u),bool(u),tuple(u),tuple(),())
 print(*u,sep='|',end='!')
 print((1,),(),(False,0,'both\\\'"'))
 '''
-        self.differential(source)
+        self.differential(source,string_mode="unicode")
 
     def test_tuple_function_arguments_returns_defaults_and_type_variants(self):
         source='''def make(x):
@@ -141,7 +141,7 @@ print(value)
     return value
 print(run(int(input())))
 '''
-        self.differential(source,["0\n","1\n","4\n"],trace=True)
+        self.differential(source,["0\n","1\n","4\n"],trace=True,string_mode="unicode")
         self.differential(local,["0\n","1\n","4\n"],trace=True)
 
     def test_tuple_reassignments_across_loop_edges_and_while(self):
@@ -172,7 +172,7 @@ print(a==b,a!=b,a<b,a<=b,a>b,a>=b)
         for _ in range(75):
             a=rng.randrange(-7,8);b=rng.choice([a,rng.randrange(-7,8)])
             cases.append(f"{a}\n{rng.choice(strings)}\n{rng.randrange(2)}\n{b}\n{rng.choice(strings)}\n{rng.randrange(2)}\n")
-        self.differential(source,cases,profiles=(True,))
+        self.differential(source,cases,profiles=(True,),string_mode="unicode")
 
     def test_unproved_mutable_tuple_fields_reject(self):
         for source in ["A=[]\nt=(A,)\nA.append(1)\nprint(t)\n","t=([1],)\nprint(t)\n",

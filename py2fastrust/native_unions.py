@@ -107,12 +107,16 @@ def representation(g,value,leaf,quoted=False):
 
 def compare(g,node,values):
     from .native import _Expression,_Unsupported
+    from .native_comparisons import ORDERING,ordering
     if not any(union_kind(value.kind) or value.kind=="none" for value in values):return None
-    if any(not isinstance(op,(ast.Is,ast.IsNot,ast.Eq,ast.NotEq)) for op in node.ops):raise _Unsupported
+    if any(type(op) not in {ast.Is,ast.IsNot,ast.Eq,ast.NotEq}|ORDERING.keys() for op in node.ops):raise _Unsupported
+    if any(type(op) in ORDERING for op in node.ops) and any(not immutable(value.kind) for value in values):raise _Unsupported
     names=[g.temporary() for _ in values]
     def pair(left,right,operator):
         def both(a,x,b,y):
-            if isinstance(operator,(ast.Is,ast.IsNot)):
+            if type(operator) in ORDERING:
+                return ordering(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)
+            elif isinstance(operator,(ast.Is,ast.IsNot)):
                 if a!="none" and b!="none":raise _Unsupported
                 result=str(a==b=="none").lower()
             elif a=="none" or b=="none":result=str(a==b).lower()

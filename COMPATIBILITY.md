@@ -133,9 +133,19 @@ unbound name remain distinct. Joined return types come from typed return records
 including a reachable implicit `None` return. Truth, Python-style output, equality,
 and identity checks against `None` dispatch over the actual alternatives.
 Uniquely owned mutable alternatives can move across proved branches and returns;
-creating shared mutable aliases still requires implementation. Arithmetic/ordering
-on general finite alternatives and the class adapter to this representation
-remain unfinished.
+creating shared mutable aliases still requires implementation. Arithmetic on
+general finite alternatives, ordering on mutable alternatives, and the class
+adapter to this representation remain unfinished.
+
+Ordering of proved immutable alternatives uses a common comparison lowering in
+all integer modes: integers/bools, `None`, strings, bytes, and supported tuples
+dispatch to native operations or a positioned Python `TypeError` for the actual
+incompatible pair. Operands are captured once; chained comparisons evaluate the
+next operand only if the preceding relation succeeds. Tuple comparisons retain
+lexicographic short-circuiting and the original error operator. Fixed-width modes
+also share exact integer/float ordering and partial binary64 ordering, including
+NaN. BigInt/float interoperation, float tuple identity, mutable alternatives,
+and general custom comparison protocols remain unfinished.
 
 Proved immutable tuple keys use structurally typed Rust sets and dictionaries
 in every integer mode. Numeric keys preserve Python's bool/int equality while
