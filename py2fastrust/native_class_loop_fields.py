@@ -19,6 +19,21 @@ def key(emitter,node):
     return emitter.model.resolved_name(emitter.plan,node.value),plan.index,field
 
 
+def _may_call_source(emitter,node):
+    """Resolve a call's effects through the same proof/carrier as emission."""
+    from .native_frame_references import call_target
+    if call_target(emitter.model,emitter.plan,node)is not None:return True
+    site=emitter.model.callable_cells.sites.get((emitter.plan.index,id(node)))
+    if site is None:return False
+    targets=getattr(site,"targets",None)
+    builtins=getattr(site,"builtins",None)
+    members=getattr(site,"members",None)
+    # An unavailable callee vector is not a purity proof. Standard module
+    # adapters can invoke callbacks; keep them outside invariant field caches.
+    return (targets is None or bool(targets)or builtins is None
+            or members is None or bool(members))
+
+
 def candidates(emitter,node):
     from .native_classes import domain
     roots=[node.test,*node.body]if isinstance(node,ast.While)else[node.target,*node.body]
@@ -27,6 +42,7 @@ def candidates(emitter,node):
     if any(isinstance(child,ast.Attribute)and isinstance(child.ctx,(ast.Store,ast.Del))for child in nodes):return {}
     for child in nodes:
         if not isinstance(child,ast.Call):continue
+        if _may_call_source(emitter,child):return {}
         function=child.func
         if isinstance(function,ast.Name):
             if function.id in emitter.model.functions or function.id in emitter.model.classes:return {}
