@@ -153,7 +153,7 @@ print(input())
                         masked=rust_mask(result.rust_source)
                         self.assertNotIn('struct Int(',masked);self.assertNotIn('Int::parse(',masked)
                         self.assertNotIn('enum IntRepr',masked)
-                        if string_mode=='ascii'or('.buffer.'in source and optimize):
+                        if string_mode=='ascii'or'.buffer.'in source:
                             self.assertNotIn('NATIVE_FIXED_INT_ZEROES',masked)
                             self.assertNotIn('NATIVE_FIXED_INT_SPACE',masked)
                             self.assertNotIn('// UNICODE LICENSE V3',result.rust_source)

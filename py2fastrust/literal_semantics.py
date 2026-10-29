@@ -24,7 +24,13 @@ class IntegerPolicy:
             return "NativeInt::MIN" if value==-(1<<(self.bits-1)) else f"({value}_i128 as NativeInt)"
         if -(1<<127)<value<(1<<127):return f"Int::from_i128({value}_i128)"
         if value==-(1<<127):return "Int::from_i128(i128::MIN)"
-        return f"Int::parse({quote(str(value))},10).unwrap()"
+        negative=value<0
+        magnitude=abs(value)
+        digits=[]
+        while magnitude:
+            digits.append(f"{magnitude&0xffffffff}_u32")
+            magnitude>>=32
+        return f"Int::parts({str(negative).lower()},vec!["+",".join(digits)+"])"
 
 
 _POLICIES={bits:IntegerPolicy(bits)for bits in (0,64,128)}

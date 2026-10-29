@@ -51,9 +51,12 @@ the same bundled PSF license.
 Native generated output includes the PSF license when its retained helpers
 contain the CPython-derived `native_float_divmod` implementation. It includes
 the Unicode license when retained number-parser or string-representation
-tables contain Unicode data. Notice selection follows Rust helper pruning;
-`--no-optimize` therefore retains notices for unused components that remain
-in the output. Using the official `ast` and `symtable` APIs in the compiler
+tables contain Unicode data. Unicode dependencies are selected even with
+`--no-optimize`; selecting Unicode semantics alone does not retain data or its
+license. The full Unicode notice appears immediately before the first retained
+table, and later tables explicitly refer to it. Numeric table entries share
+lines. Other notices follow the components actually present in the output.
+Using the official `ast` and `symtable` APIs in the compiler
 does not by itself embed Python code in a generated program.
 The repository LICENSE grants an output permission for original generated
 runtime helpers; they do not require the project's copyright or MIT notice in

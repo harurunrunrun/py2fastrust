@@ -213,6 +213,7 @@ class Model:
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
         self.tree, self.filename, self.integer = tree, filename, integer
         self.string_mode = string_mode
+        self.string_repr_required = False
         self.unit = unit
         self.trusted_imports = trusted_imports
         self.classes, self.functions = {}, {}
@@ -1293,6 +1294,8 @@ class Emitter:
             rendered=self.show(Expression(f"(*{item}).clone()",value.kind.element),node,True)
             return f'format!("[{{}}]",({value.code}).borrow().iter().map(|{item}|{rendered}).collect::<Vec<_>>().join(", "))'
         tag = domain(value.kind)
+        if tag == "str" and representation:
+            self.model.string_repr_required = True
         if tag == "tuple":
             fields = [self.show(Expression(f"{value.code}.{i}.clone()",kind),node,True)
                       for i,kind in enumerate(value.kind.fields)]
@@ -2210,7 +2213,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     if integer=="bigint":
         from .native_bigint import _HELPERS as bigint_helpers
         pieces.extend([bigint_helpers,_named_helpers(_INPUT_HELPERS,{"native_space"}),
-                       "fn native_parse_integer(value:&str)->Result<Int,String>{Int::parse(value,10)}"])
+                       "fn native_parse_integer(value:&str)->Result<Int,String>{Int::parse(value,10)}",
+                       "fn native_parse_bytes_integer(value:&[u8])->Result<Int,String>{Int::parse_ascii(value,10)}"])
         if any(has_float_payload(shape(value))for value in model.records.values()):
             from .native_scalar import SCALAR_HELPERS
             pieces.extend([_named_helpers(SCALAR_HELPERS,{"native_float_text"}),
@@ -2219,12 +2223,15 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         from .native_scalar import SCALAR_HELPERS
         from .native_integer_parsing import render_helpers as parsing_helpers
         pieces.extend([_HELPERS,_named_helpers(_INPUT_HELPERS,{"native_space"}),parsing_helpers(string_mode),_SCALAR_UNION_HELPERS,SCALAR_HELPERS,
+                       "fn native_parse_bytes_integer(value:&[u8])->Result<NativeInt,String>{native_fixed_parse_ascii(value).ok_or_else(native_fixed_int_invalid)}",
                        "impl ClassDisplay for f64 {fn class_str(&self)->String{native_float_text(*self)}}"])
     if model.sequence_calls:
         from .native_typed_lists import HELPERS as sequence_helpers
         pieces.append(sequence_helpers)
     from .native_class_globals import runtime as global_runtime
     class_runtime=global_runtime(call_runtime(runtime.joinpath("native_classes.rs").read_text(encoding="utf-8"),model),model,emitters[0])
+    if string_mode=="unicode" and not model.string_repr_required:
+        class_runtime=class_runtime.replace("    fn class_repr(&self)->String{text_repr_str(self)}\n", "")
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),class_runtime,layouts,*bodies])
     entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if synchronous(model,model.module)

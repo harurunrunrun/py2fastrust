@@ -85,6 +85,13 @@ ASCII selection also applies to numeric-text parsing and buffered text input.
 Text input rejects non-ASCII bytes, while binary streams retain arbitrary bytes.
 Unicode mode is required for non-ASCII digits and whitespace. ASCII output
 omits Unicode property tables and code-point cache implementations.
+Unicode mode selects semantics, rather than including every Unicode table.
+Only operations that need bundled Unicode data retain it and its notice,
+including with `--no-optimize`. Integer-only classes, recursion and BigInt
+literals do not require those tables. Numeric text conversion can require
+Unicode digit and whitespace data even when the result is an integer.
+Integer conversion from bytes always uses ASCII numeric rules and does not
+require Unicode tables, regardless of the selected string profile.
 
 Uniquely owned flat lists of supported immutable values share direct
 `index`, `count`, and `pop` lowering. Search bounds use Python slice-style

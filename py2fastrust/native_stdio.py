@@ -57,8 +57,7 @@ fn native_bytes_repr(value:&[u8])->String {
 }
 fn native_io_parse_bytes(value:&[u8])->Result<Int,String> {
     let invalid=||format!("ValueError: invalid literal for int() with base 10: {:.200}",native_bytes_repr(value));
-    if value.iter().any(|&byte|byte>=127||(byte<32&&!native_bytes_space(byte))) {return Err(invalid());}
-    Int::parse(std::str::from_utf8(value).unwrap(),10).map_err(|_|invalid())
+    Int::parse_ascii(value,10).map_err(|_|invalid())
 }
 fn native_io_parse_text(value:&str)->Result<Int,String> {
     // C0 separators belong to str.split whitespace, but int() rejects them.

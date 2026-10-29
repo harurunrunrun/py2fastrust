@@ -953,26 +953,34 @@ impl Int {
             }
         })
     }
-    fn parse(text: &str, mut base: u32) -> Result<Self, String> {
+    fn parse(text: &str, base: u32) -> Result<Self, String> {
+        Self::parse_digits(text.trim().chars(), base, Self::decimal_digit)
+    }
+    fn parse_ascii(text: &[u8], base: u32) -> Result<Self, String> {
+        let space = |byte: u8| matches!(byte, 9..=13 | 32);
+        let mut first = 0;
+        let mut last = text.len();
+        while first < last && space(text[first]) { first += 1; }
+        while last > first && space(text[last - 1]) { last -= 1; }
+        Self::parse_digits(text[first..last].iter().map(|&byte| byte as char), base,
+                           |character| character.to_digit(36))
+    }
+    fn parse_digits<I, D>(characters: I, mut base: u32, digit: D) -> Result<Self, String>
+    where I: Iterator<Item = char>, D: Fn(char) -> Option<u32> {
         let invalid = || "ValueError: invalid literal for int()".to_string();
         if base != 0 && !(2..=36).contains(&base) {
             return Err("ValueError: int() base must be >= 2 and <= 36, or 0".into());
         }
-        let mut s = text.trim();
-        let negative = s.starts_with('-');
-        if s.starts_with('-') || s.starts_with('+') {
-            s = &s[1..];
+        let mut characters = characters.peekable();
+        let negative = characters.peek() == Some(&'-');
+        if matches!(characters.peek().copied(), Some('-' | '+')) {
+            characters.next();
         }
-        if s.is_empty() {
-            return Err(invalid());
-        }
+        let first = characters.next().ok_or_else(invalid)?;
         let auto = base == 0;
         let mut prefix = false;
-        let mut prefix_chars = s.chars();
-        let first = prefix_chars.next().unwrap();
-        let second = prefix_chars.next();
-        let detected = if Self::decimal_digit(first) == Some(0) {
-            match second {
+        let detected = if digit(first) == Some(0) {
+            match characters.peek().copied() {
                 Some('x' | 'X') => 16,
                 Some('o' | 'O') => 8,
                 Some('b' | 'B') => 2,
@@ -981,12 +989,14 @@ impl Int {
         } else {
             0
         };
+        let mut initial = Some(first);
         if detected != 0 && (base == 0 || base == detected) {
             base = detected;
-            s = &s[first.len_utf8() + 1..];
+            characters.next();
+            initial = None;
             prefix = true;
-            if s.starts_with('_') {
-                s = &s[1..];
+            if characters.peek() == Some(&'_') {
+                characters.next();
             }
         }
         if base == 0 {
@@ -997,7 +1007,7 @@ impl Int {
         let mut first_zero = false;
         let mut any_nonzero = false;
         let mut count = 0usize;
-        for c in s.chars() {
+        for c in initial.into_iter().chain(characters) {
             if c == '_' {
                 if !previous_digit {
                     return Err(invalid());
@@ -1005,7 +1015,7 @@ impl Int {
                 previous_digit = false;
                 continue;
             }
-            let d = Self::decimal_digit(c)
+            let d = digit(c)
                 .filter(|&n| n < base)
                 .ok_or_else(invalid)?;
             if count == 0 {

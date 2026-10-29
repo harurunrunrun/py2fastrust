@@ -54,7 +54,7 @@ fn main() { let text="const TEXT_PRINTABLE fn native_float_divmod"; }
             ('s=input()\nprint(s[0],len(s))\n', True, False, False),
             ("print(3.5//2.0)\n", True, True, False),
             ('print(int("٤٢"))\n', True, False, True),
-            ('s=input()\nprint(s[0],len(s))\n', False, True, True),
+            ('s=input()\nprint(s[0],len(s))\n', False, True, False),
         )
         for source, optimize, psf, unicode in cases:
             with self.subTest(source=source, optimize=optimize):

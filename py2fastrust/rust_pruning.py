@@ -257,7 +257,8 @@ def _owner(header,trait):
     return _impl_target(header,trait)[0]
 
 
-def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None):
+def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None, reference_names=None):
+    reference_names = _references if reference_names is None else reference_names
     stop = len(tokens) if stop is None else stop
     result = []
     position = start
@@ -278,7 +279,7 @@ def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None):
         if tokens[position].text == "thread_local" and position + 2 < stop and tokens[position + 1].text == "!" and tokens[position + 2].text in {"{", "(", "["}:
             end=pairs[position+2]+1
             if end<stop and tokens[end].text==";":end+=1
-            result.append(_Item(None,"macro",tokens[first].start,tokens[end-1].end,_references(tokens[first:end]),protected=True))
+            result.append(_Item(None,"macro",tokens[first].start,tokens[end-1].end,reference_names(tokens[first:end]),protected=True))
             position=end
             continue
         cursor = position
@@ -301,7 +302,7 @@ def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None):
             if ending>=stop:raise _Unsupported("unterminated extern item")
             ending=pairs[ending]+1 if tokens[ending].text=="{" else ending+1
             if ending<stop and tokens[ending].text==";":ending+=1
-            result.append(_Item(None,"extern",tokens[first].start,tokens[ending-1].end,_references(tokens[first:ending]),protected=True))
+            result.append(_Item(None,"extern",tokens[first].start,tokens[ending-1].end,reference_names(tokens[first:ending]),protected=True))
             position=ending
             continue
         name = tokens[cursor + 1].text if cursor + 1 < stop and kind != "impl" else None
@@ -328,7 +329,7 @@ def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None):
         lower, upper = tokens[first].start, tokens[end - 1].end
         gap_start=tokens[first-1].end if first else 0
         protected = any(gap_start <= a < upper and doc for a, _, doc in comments)
-        item = _Item(name, kind, lower, upper, _references(tokens[first:end]), owner=owner, protected=protected)
+        item = _Item(name, kind, lower, upper, reference_names(tokens[first:end]), owner=owner, protected=protected)
         if kind == "impl":
             if body is None:
                 raise _Unsupported("impl without body")
@@ -337,12 +338,12 @@ def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None):
                 raise _Unsupported("higher-ranked impl bound")
             item.trait = any(token.text == "for" for token in header)
             item.owner,item.owner_nominal = _impl_target(header,item.trait)
-            item.references = _references(tokens[first:body])
+            item.references = reference_names(tokens[first:body])
             item.body_start, item.body_end = tokens[body].end, tokens[pairs[body]].start
             if item.trait:
-                item.references.update(_references(tokens[body + 1:pairs[body]]))
+                item.references.update(reference_names(tokens[body + 1:pairs[body]]))
             else:
-                item.children = _parse(source, tokens, comments, pairs, body + 1, pairs[body], item.owner)
+                item.children = _parse(source, tokens, comments, pairs, body + 1, pairs[body], item.owner, reference_names)
                 # Associated type/const items use the same conservative owner
                 # and member-name rule as methods.
                 for child in item.children:
@@ -367,7 +368,8 @@ def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None):
     return result
 
 
-def prune_rust_source_with_report(source: str, *, roots=("main",)) -> RustPruneResult:
+def prune_rust_source_with_report(source: str, *, roots=("main",),
+                                  reference_names=None, select_unreachable=None, member_name=None) -> RustPruneResult:
     """Remove definitions unreachable from roots in generated standalone Rust.
 
     Unsupported syntax returns the original source. Public/linkage exports,
@@ -398,7 +400,7 @@ def prune_rust_source_with_report(source: str, *, roots=("main",)) -> RustPruneR
         initial = 0
         while initial + 2 < len(tokens) and tokens[initial].text == "#" and tokens[initial + 1].text == "!" and tokens[initial + 2].text == "[":
             initial = pairs[initial + 2] + 1
-        items = _parse(source, tokens, comments, pairs, initial)
+        items = _parse(source, tokens, comments, pairs, initial, reference_names=reference_names)
         globals_by_name, members_by_name = defaultdict(list), defaultdict(list)
         inherent, traits = [], []
         for item in items:
@@ -406,7 +408,7 @@ def prune_rust_source_with_report(source: str, *, roots=("main",)) -> RustPruneR
                 (traits if item.trait else inherent).append(item)
                 if not item.trait:
                     for child in item.children:
-                        members_by_name[child.name].append(child)
+                        members_by_name[child.name if member_name is None else member_name(child)].append(child)
             elif item.name is not None:
                 globals_by_name[item.name].append(item)
         concrete_types={name for name,definitions in globals_by_name.items() if any(item.kind in {"struct","enum"} for item in definitions)}
@@ -447,6 +449,9 @@ def prune_rust_source_with_report(source: str, *, roots=("main",)) -> RustPruneR
             for item in traits:
                 if item.owner in names and id(item) not in live:
                     retain(item);changed = True
+        selected = None if select_unreachable is None else set(select_unreachable(items,frozenset(live)))
+        def discarded(item):
+            return id(item)not in live and(selected is None or id(item)in selected)
         removed_functions, removed_items, edits = [], [], []
         def remove(item):
             preserved = "".join(source[a:b] + ("\n" if not source[a:b].endswith("\n") else "")
@@ -458,11 +463,11 @@ def prune_rust_source_with_report(source: str, *, roots=("main",)) -> RustPruneR
                 removed_functions.extend(item.owner+"::"+child.name for child in item.children if child.kind=="fn")
         for item in items:
             if item.kind == "impl" and not item.trait:
-                if not item.protected and not any(id(child) in live for child in item.children):remove(item)
+                if not item.protected and not any(id(child) in live for child in item.children)and(selected is None or id(item)in selected):remove(item)
                 else:
                     for child in item.children:
-                        if id(child) not in live:remove(child)
-            elif id(item) not in live:remove(item)
+                        if discarded(child):remove(child)
+            elif discarded(item):remove(item)
         output = source
         for start, end, replacement in sorted(edits, reverse=True):output = output[:start] + replacement + output[end:]
         return RustPruneResult(output, before, len(output.encode("utf-8")), tuple(removed_functions), tuple(removed_items))
