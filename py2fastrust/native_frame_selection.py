@@ -147,5 +147,7 @@ def select_frames(unit):
     if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
     from .native_class_divmod import requires_frames as divmod_requires_frames
     if divmod_requires_frames(analysis):reasons+=('captured quotient/remainder builtin',)
+    from .native_class_splits import requires_frames as split_requires_frames
+    if split_requires_frames(unit,analysis):reasons+=('bound text/bytes split protocols',)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

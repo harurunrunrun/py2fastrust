@@ -74,6 +74,13 @@ and byte sources have adapters. Custom iteration protocols and cyclic ownership
 still require implementation; this does not establish complete builtin object
 compatibility.
 
+Frame `str.split`/`rsplit` and `bytes.split`/`rsplit` accept optional `sep` and
+`maxsplit`, including keywords, `None` whitespace splitting and checked signed
+index-size bounds. Borrowed cursors preserve receiver/argument evaluation order
+and materialize one shared typed list. ASCII uses byte whitespace scans; Unicode
+uses character boundaries, while bytes retain their separate whitespace set.
+Custom `__index__` and bytes-buffer objects still require protocol adapters.
+
 Typed frame dictionaries and sets have shared native storage, including
 ordinary mutable aliases, dictionary values and class fields. Direct adapters
 cover literals/comprehensions, `dict`/`set` constructors, dictionary subscripts,

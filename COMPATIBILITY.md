@@ -344,6 +344,24 @@ The separate deque adapter has not yet been connected to this linked frame
 path, so programs combining these factories with canonical `collections.deque`
 currently report a positioned missing-member conversion diagnostic.
 
+On typed frames, builtin text and bytes `split`/`rsplit` bind `sep` and `maxsplit`
+through the shared call signature. Captured receiver, positional arguments and
+keywords retain Python evaluation order, including keyword order and later
+receiver rebinding. `None` separators use Python whitespace rules, with distinct
+bytes whitespace. Zero/negative/boolean limits, empty fields, overlapping
+separators, right splitting and empty-separator errors are supported. Maximum
+limits are checked against the target signed index width after selected integer
+normalization. The original source error location, exception type and full final
+message are retained for supported binding/argument failures.
+
+Word cursors borrow their source and produce the final typed list directly;
+right splitting reverses the collected vector once. ASCII whitespace paths use
+byte cursors without repeated ASCII detection; Unicode whitespace paths scan
+valid character boundaries. Finite text/bytes receiver and optional separator
+alternatives use the same native kernels. Saved builtin bound methods, custom
+`__index__`, bytes-buffer protocols and arbitrary string subclasses still need
+separate adapters.
+
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing
 tuple's identity, and shares the empty tuple. Fixed and runtime tuple query
