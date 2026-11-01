@@ -1074,6 +1074,8 @@ class Model:
 
     def attribute_value(self,plan,node,receiver,environment):
         receiver=receiver.root()
+        default=self.mappings.defaultdicts.attribute(plan,node,receiver,environment)
+        if default is not None:return default
         from .native_annotations import metadata_access
         metadata_access(node,shape(receiver))
         bound=self.callable_cells.bound_methods.value(plan,node,receiver,environment)
@@ -1141,6 +1143,7 @@ class Model:
             return
         if isinstance(node,ast.Attribute):
             owner = self.expression(plan,node.value,environment).root()
+            if self.mappings.defaultdicts.attribute_store(plan,node,owner,value):return
             from .native_annotations import metadata_access
             metadata_access(node,shape(owner))
             if self.attribute_target(plan,node,owner,value,environment):return
@@ -1610,6 +1613,11 @@ class Emitter:
         if isinstance(node,(ast.Dict,ast.Set,ast.DictComp,ast.SetComp)):
             return self.model.mappings.emit_expression(self,node)
         if isinstance(node,ast.Attribute):
+            if node.attr=='default_factory':
+                from .native_class_defaultdicts import is_default
+                if all(is_default(kind)for kind in alternatives(self.kind(node.value))):
+                    before,owner=self.capture(self.expression(node.value))
+                    return Expression('{'+before+self.model.mappings.defaultdicts.emit_attribute(self,node,owner,wanted)+'}',wanted)
             bound=self.model.callable_cells.bound_methods.read(self,node)
             if bound is not None:return bound
             if domain(wanted) in self.model.INTRINSICS:
@@ -2044,6 +2052,9 @@ class Emitter:
             return "",("name",target)
         if isinstance(target,ast.Attribute):
             setup,owner = self.capture(self.expression(target.value))
+            if target.attr=='default_factory':
+                from .native_class_defaultdicts import is_default
+                if all(is_default(kind)for kind in alternatives(owner.kind)):return setup,('default_factory',owner,self.kind(target))
             if domain(owner.kind)!="object":raise ClassUnsupported(target)
             plan=self.model.classes[owner.kind.name]
             name=self.model.resolved_name(self.plan,target)
@@ -2075,6 +2086,8 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=='default_factory':
+            return Expression(self.model.mappings.defaultdicts.emit_attribute(self,node,reference[1],kind or reference[2]),kind or reference[2])
         if reference[0]=="mapping":
             return self.model.mappings.emit_get(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]=="name":
@@ -2100,6 +2113,7 @@ class Emitter:
         return Expression(self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node),kind)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=='default_factory':return self.model.mappings.defaultdicts.emit_attribute_store(self,node,reference[1],value)
         if reference[0]=="mapping":
             return self.model.mappings.emit_store(self,node,reference[1],reference[2],value)
         if reference[0]=="name":

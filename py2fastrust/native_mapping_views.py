@@ -39,15 +39,23 @@ def view_kind(kind):return isinstance(kind,ViewType)
 
 
 CURSORS=r'''
-struct ClassMappingCursor<K,V,C>{source:Rc<RefCell<NativeKeyDict<K,V,C>>>,expected:usize,slot:usize,exhausted:bool,failed:bool}
-impl<K,V,C:Eq+std::hash::Hash> ClassMappingCursor<K,V,C>{
-    fn new(source:Rc<RefCell<NativeKeyDict<K,V,C>>>)->Self{
-        let (expected,slot)={let read=source.borrow();(read.len(),read.entries.head)};
+trait ClassMappingOwner{
+    type Key;type Value;type Canonical:Eq+std::hash::Hash;
+    fn mapping(&self)->&RefCell<NativeKeyDict<Self::Key,Self::Value,Self::Canonical>>;
+}
+impl<K,V,C:Eq+std::hash::Hash> ClassMappingOwner for RefCell<NativeKeyDict<K,V,C>>{
+    type Key=K;type Value=V;type Canonical=C;
+    fn mapping(&self)->&RefCell<NativeKeyDict<K,V,C>>{self}
+}
+struct ClassMappingCursor<O:ClassMappingOwner>{source:Rc<O>,expected:usize,slot:usize,exhausted:bool,failed:bool}
+impl<O:ClassMappingOwner> ClassMappingCursor<O>{
+    fn new(source:Rc<O>)->Self{
+        let (expected,slot)={let read=source.mapping().borrow();(read.len(),read.entries.head)};
         Self{source,expected,slot,exhausted:false,failed:false}
     }
-    fn next<R,F:FnOnce(&K,&V)->R>(&mut self,project:F)->Result<Option<R>,String>{
+    fn next<R,F:FnOnce(&O::Key,&O::Value)->R>(&mut self,project:F)->Result<Option<R>,String>{
         if self.exhausted{return Ok(None);}
-        let read=self.source.borrow();
+        let read=self.source.mapping().borrow();
         if self.failed||read.len()!=self.expected{self.failed=true;return Err("RuntimeError: dictionary changed size during iteration".to_owned());}
         if self.slot==NATIVE_ENTRY_NONE{self.exhausted=true;return Ok(None);}
         let slot=self.slot;self.slot=read.entries.slots[slot].next;
@@ -55,6 +63,7 @@ impl<K,V,C:Eq+std::hash::Hash> ClassMappingCursor<K,V,C>{
     }
 }
 '''
+
 
 
 class Views:
@@ -154,7 +163,8 @@ class Views:
             return 'ClassMappingViewCursor_'+str(kind.index)
         if mapping_kind(kind)and kind.record.category=='dict':
             r=kind.record
-            return 'ClassMappingCursor<'+emitter.rust_type(shape(r.key))+','+emitter.rust_type(shape(r.value))+','+canonical_type(shape(r.key))+'>'
+            owner=self.model.mappings.defaultdicts.owner_type(r)if r.flavor=='defaultdict'else'RefCell<NativeKeyDict<'+emitter.rust_type(shape(r.key))+','+emitter.rust_type(shape(r.value))+','+canonical_type(shape(r.key))+'>>'
+            return 'ClassMappingCursor<'+owner+'>'
         return None
 
     def construct_cursor(self,emitter,kind,code):

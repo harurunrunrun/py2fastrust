@@ -2,7 +2,7 @@
 import ast
 
 LINKED_MODULES=frozenset({'itertools'})
-LINKED_EXPORTS={'collections':frozenset({'Counter'})}
+LINKED_EXPORTS={'collections':frozenset({'Counter','defaultdict'})}
 FRAME_MODULES=frozenset({'heapq','bisect'})
 
 

@@ -18,7 +18,7 @@ class MappingType:
     @property
     def _native_owned_kinds(self):
         from .native_classes import shape
-        return (shape(self.record.key),shape(self.record.value))
+        return (shape(self.record.key),shape(self.record.value),*((shape(self.record.default_factory),)if self.record.default_factory is not None else()))
 
 
 @dataclass
@@ -34,6 +34,7 @@ class MappingRecord:
     source_type:object=None
     emitted:bool=False
     flavor:str='dict'
+    default_factory:object=None
 
     @property
     def kind(self):return MappingType(self.index,self)
@@ -125,7 +126,7 @@ def query_canonical(emitter,value,wanted):
 def unhashable_leaf(kind):
     from .native_types import ListType
     if isinstance(kind,ListType):return 'list'
-    if mapping_kind(kind):return 'Counter'if kind.record.flavor=='Counter'else kind.record.category
+    if mapping_kind(kind):return kind.record.flavor
     if isinstance(kind,TupleType):
         for child in kind.fields:
             result=unhashable_leaf(child)
@@ -135,7 +136,7 @@ def unhashable_leaf(kind):
 
 def query_type_name(emitter,value,node):
     from .native_class_builtins import _type_name
-    if mapping_kind(value.kind)and value.kind.record.flavor=='Counter':return '"collections.Counter"'
+    if mapping_kind(value.kind)and value.kind.record.flavor in {'Counter','defaultdict'}:return '"collections.'+value.kind.record.flavor+'"'
     return _type_name(emitter,value,node)
 
 
@@ -146,6 +147,8 @@ class Mappings:
         self.views=Views(self)
         from .native_class_counters import Counters
         self.counters=Counters(self)
+        from .native_class_defaultdicts import DefaultDicts
+        self.defaultdicts=DefaultDicts(self)
 
     def owns(self,kind):
         return mapping_kind(kind)and 0<=kind.index<len(self.records)and self.records[kind.index]is kind.record
@@ -162,12 +165,13 @@ class Mappings:
 
     def snapshot(self):
         from .native_classes import shape
-        return tuple((r.category,r.flavor,shape(r.key),shape(r.value))for r in self.records),self.views.snapshot()
+        return tuple((r.category,r.flavor,shape(r.key),shape(r.value),shape(r.default_factory)if r.default_factory is not None else None)for r in self.records),self.views.snapshot()
 
     def default_uninhabited(self):
         from .native_classes import Cell,merge
         for record in self.records:
             for value in (record.key,record.value):
+                if value is record.value and record.flavor=='defaultdict'and self.defaultdicts.pending_value(record):continue
                 if value.root().tag is None:merge(value,Cell(EMPTY),record.node)
 
     def validate(self,kind,node,seen):
@@ -179,6 +183,7 @@ class Mappings:
         record=kind.record
         validate(record.key,node,self.model.integer,seen=seen|{marker},model=self.model)
         validate(record.value,node,self.model.integer,seen=seen|{marker},model=self.model)
+        if record.default_factory is not None:validate(record.default_factory,node,self.model.integer,seen=seen|{marker},model=self.model)
         from .native_classes import shape
         if not key_supported(shape(record.key)):
             raise ClassUnsupported(node,'this dictionary/set key family needs a heterogeneous or custom Python hash/equality protocol not implemented by the typed native hash adapter',types=(('key',shape(record.key)),),proof='compatible native hash-key representation')
@@ -234,10 +239,12 @@ class Mappings:
         record=self.record(plan,node,name,'constructor')
         if arguments:
             source=arguments[0];kind=shape(source);record.source=source
-            if mapping_kind(kind):
-                if name=='dict'and kind.record.category!='dict':raise ClassUnsupported(node)
-                self.contribute_key(record,kind.record.key,node)
-                if name=='dict':self.model.contribute(record.value,kind.record.value,node)
+            choices=alternatives(kind)
+            if choices and all(mapping_kind(choice)for choice in choices):
+                for choice in choices:
+                    if name=='dict'and choice.record.category!='dict':raise ClassUnsupported(node)
+                    self.contribute_key(record,choice.record.key,node)
+                    if name=='dict':self.model.contribute(record.value,choice.record.value,node)
             else:
                 record.source_type=self.model.iterators.source(plan,node,source)
                 item=self.model.iterators.demand(plan,node,Cell(record.source_type),environment)
@@ -259,6 +266,7 @@ class Mappings:
         for kind in kinds:
             if not mapping_kind(kind)or kind.record.category!='dict':
                 raise ClassUnsupported(node,'this mixed mapping receiver needs per-alternative subscript dispatch beyond dictionary handles',proof='mapping subscript receiver alternatives')
+            self.defaultdicts.analyze_get(plan,node,kind.record,index,environment)
             self.model.contribute(result,kind.record.value,node)
         return self.model.remember(plan,node,result)
 
@@ -289,6 +297,7 @@ class Mappings:
         if name=='copy'and not arguments:
             if len(kinds)!=1:raise ClassUnsupported(node,'copying these mapping alternatives needs a joined destination key/value ABI',proof='mapping copy result representation')
             old=kinds[0].record;record=self.record(plan,node,old.category,'copy',flavor=old.flavor);record.source=receiver
+            self.defaultdicts.copy_record(record,old,node)
             self.contribute_key(record,old.key,node);self.model.contribute(record.value,old.value,node)
             return self.model.cell(plan,node,record.kind)
         if name in {'get','setdefault'}and 1<=len(arguments)<=2:
@@ -321,7 +330,7 @@ class Mappings:
         retained=emitter.coerce(Expression('('+key.code+').clone()',key.kind),wanted,node)
         stored=emitter.coerce(Expression('('+value.code+').clone()',value.kind),shape(record.value),node)
         key_name,canonical_name=(emitter.fresh()for _ in range(2))
-        return f'let {key_name}={retained};let {canonical_name}={canonical(emitter,Expression(key_name,wanted))};'+emitter.at(f'{owner.code}.borrow_mut().set({key_name},{canonical_name},{stored})',node)+';'
+        return f'let {key_name}:{emitter.rust_type(wanted)}={retained};let {canonical_name}={canonical(emitter,Expression(key_name,wanted))};'+emitter.at(f'{owner.code}.borrow_mut().set({key_name},{canonical_name},{stored})',node)+';'
 
     def emit_expression(self,emitter,node):
         from .native_classes import Expression
@@ -354,11 +363,14 @@ class Mappings:
         record=wanted.record;record.emitted=True;owner=emitter.fresh();code=f'let {owner}={self._new(emitter,record)};'
         if arguments:
             source=arguments[0]
-            if mapping_kind(source.kind):
-                key,value,read=(emitter.fresh()for _ in range(3))
-                old=source.kind.record
-                code+=f'{{let {read}={source.code}.borrow();for ({key},{value})in {read}.entries.iter(){{'
-                code+=self._set(emitter,node,Expression(owner,wanted),Expression(key+'.clone()',shape(old.key)),Expression(value+'.clone()',shape(old.value))if name=='dict'else Expression('()','none'))+'}}'
+            choices=alternatives(source.kind)
+            if choices and all(mapping_kind(choice)for choice in choices):
+                from .native_unions import project,union_kind
+                def copy(kind,text):
+                    stable,key,value,read=(emitter.fresh()for _ in range(4));old=kind.record
+                    body=f'{{let {stable}=({text}).clone();let {read}={stable}.borrow();for ({key},{value})in {read}.entries.iter(){{'
+                    return body+self._set(emitter,node,Expression(owner,wanted),Expression(key+'.clone()',shape(old.key)),Expression(value+'.clone()',shape(old.value))if name=='dict'else Expression('()','none'))+'}}'
+                code+=(project(source.kind,source.code,copy)if union_kind(source.kind)else copy(source.kind,source.code))+';'
             else:
                 setup,iterator=emitter.capture(self.model.iterators.construct(emitter,node,source,kind=record.source_type));code+=setup
                 pulled=self.model.iterators.pull(emitter,node,iterator);item=emitter.fresh()
@@ -384,7 +396,8 @@ class Mappings:
             if leaf is None:raise ClassUnsupported(node,'this dictionary query needs a floating/custom hash and equality adapter that has not been implemented; it cannot be treated as an unhashable value or as a missing key',types=(('key',key.kind),),proof='Python query-key hash/equality protocol')
             return _error(emitter,node,wanted,'format!("TypeError: cannot use \'{}\' as a dict key (unhashable type: \'{}\')",'+query_type_name(emitter,key,node)+','+_string(leaf)+')')
         if default is None:
-            if record.flavor=='Counter':absent=emitter.coerce(Expression(emitter.literal(0),'int',0),wanted,node)
+            if record.flavor=='defaultdict':absent=self.defaultdicts.missing(emitter,node,owner,key,wanted)
+            elif record.flavor=='Counter':absent=emitter.coerce(Expression(emitter.literal(0),'int',0),wanted,node)
             else:
                 error='format!("KeyError: {}",'+emitter.show(key,node,True)+')'
                 absent=emitter.at(f'Err::<{emitter.rust_type(wanted)},String>({error})',node)
@@ -414,8 +427,10 @@ class Mappings:
         if getattr(wanted,'_native_mapping_view',False):code=self.views.emit(emitter,node,owner,wanted)
         elif name=='copy':
             record=wanted.record;record.emitted=True
-            copied=emitter.fresh()
-            code='{let '+copied+'=('+owner.code+'.borrow()).clone();Rc::new(RefCell::new('+copied+'))}'
+            if record.flavor=='defaultdict':code=self.defaultdicts.emit_copy(emitter,node,owner,wanted)
+            else:
+                copied=emitter.fresh()
+                code='{let '+copied+'=('+owner.code+'.borrow()).clone();Rc::new(RefCell::new('+copied+'))}'
         elif name=='add':code='{'+self.emit_store(emitter,node,owner,arguments[0],Expression('()','none'))+'()}'
         else:
             default=arguments[1]if len(arguments)==2 else Expression('()','none')
@@ -457,6 +472,7 @@ class Mappings:
     def show(self,emitter,value,node):
         from .native_classes import Expression,shape,ClassUnsupported
         record=value.kind.record
+        if record.flavor=='defaultdict':return self.defaultdicts.show(emitter,value,node)
         if record.flavor=='Counter':return self.counters.show(emitter,value,node)
         if record.category=='set':
             raise ClassUnsupported(node,'set display would expose traversal order; the typed set adapter currently proves order-insensitive sorted/membership consumers only',proof='set traversal-order observation')
@@ -500,7 +516,9 @@ class Mappings:
         if self.model.integer=='bigint':result.append(BIG_HASH)
         for record in self.records:
             key,value=shape(record.key),shape(record.value)
-            result.append('type ClassMapping_'+str(record.index)+'=Rc<RefCell<NativeKeyDict<'+emitter.rust_type(key)+','+emitter.rust_type(value)+','+canonical_type(key)+'>>>;')
+            payload=self.defaultdicts.owner_type(record)if record.flavor=='defaultdict'else'RefCell<NativeKeyDict<'+emitter.rust_type(key)+','+emitter.rust_type(value)+','+canonical_type(key)+'>>'
+            result.append('type ClassMapping_'+str(record.index)+'=Rc<'+payload+'>;')
+        result.append(self.defaultdicts.runtime(emitter))
         result.append(self.views.runtime(emitter))
         result.append(self.counters.runtime())
         return '\n'.join(result)

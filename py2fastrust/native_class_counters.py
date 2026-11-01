@@ -4,9 +4,9 @@ from .native_types import alternatives,EmptyType
 
 
 class CollectionsAdapter:
-    NAMES=frozenset({'Counter'})
-    TYPES=frozenset({'Counter'})
-    EAGER_ARGUMENTS={'Counter':frozenset({0})}
+    NAMES=frozenset({'Counter','defaultdict'})
+    TYPES=frozenset({'Counter','defaultdict'})
+    EAGER_ARGUMENTS={'Counter':frozenset({0}),'defaultdict':frozenset({1})}
 
     @staticmethod
     def eager_method_arguments(kind,name):
@@ -20,16 +20,18 @@ class CollectionsAdapter:
         from .native_unions import project,union_kind
         if union_kind(value.kind):
             return project(value.kind,value.code,lambda kind,text:CollectionsAdapter.match_type(emitter,node,Expression('('+text+').clone()',kind),name))
-        return str(name=='Counter'and getattr(value.kind,'_native_class_mapping',False)and value.kind.record.flavor=='Counter').lower()
+        return str(name in CollectionsAdapter.TYPES and getattr(value.kind,'_native_class_mapping',False)and value.kind.record.flavor==name).lower()
 
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
         from .native_linked_members import MemberCall
+        if identity.name=='defaultdict':return MemberCall(model.mappings.defaultdicts.construct(plan,node,positional,keywords,environment,factory))
         return MemberCall(model.mappings.counters.construct(plan,node,positional,keywords,environment,factory))
 
     @staticmethod
     def emit(emitter,node,identity,record,positional,keywords):
         from .native_classes import shape
+        if identity.name=='defaultdict':return emitter.model.mappings.defaultdicts.emit_constructor(emitter,node,positional,keywords,shape(record.result))
         return emitter.model.mappings.counters.emit_constructor(emitter,node,positional,keywords,shape(record.result))
 
 

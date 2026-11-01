@@ -310,7 +310,32 @@ a nonpositive limit avoids traversal. Unbounded selection and Counter display
 sort by count. `total` adds in the selected integer mode. Live keys/items/values
 views use the same checked dictionary cursors. Counter `elements`, arithmetic
 and set-like comparison, arbitrary count objects, subclassing/custom protocol
-methods, generator-expression sources and frame `defaultdict` remain unfinished.
+methods remain unfinished. Nonescaping generator-expression sources have direct
+loop sinks for Counter construction, `update` and `subtract`.
+
+`collections.defaultdict` has canonical class identities, constructor aliases,
+`isinstance` support and the dict base class. Factories can be `None`, builtin
+callable identities such as `int`, `list` and `set`, and captured compiled
+functions, lambdas or bound methods with compatible zero-argument calls.
+Missing `d[key]` reads invoke the current factory once, release storage borrows
+before calling it, then insert only if the factory did not already insert the
+key. A reentrant insertion preserves the existing key/value, matching CPython
+3.14. Existing reads, `get`, `setdefault`, membership and views do not call it.
+
+`default_factory` is a mutable shared attribute; assignment need not be callable,
+and a later missing read reports the resulting Python error. Constructors
+accept an optional typed dictionary or iterable of two-element pairs and named
+values; nonescaping generator pairs use direct loops and preserve first-iterable
+evaluation before later arguments. Copies retain the factory and mutable value
+aliases with independent mapping/factory fields. A live cursor owns the whole
+mapping, including its captured factory. Missing factory calls invalidate loop
+field caches through the same semantic callback effect registry as sorting and
+extrema callbacks. Custom callable-object/class factory protocols, explicit
+`__missing__` calls, factory deletion, subclassing and recursive ownership remain
+positioned conversion diagnostics. Typed key-family restrictions still apply.
+The separate deque adapter has not yet been connected to this linked frame
+path, so programs combining these factories with canonical `collections.deque`
+currently report a positioned missing-member conversion diagnostic.
 
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing

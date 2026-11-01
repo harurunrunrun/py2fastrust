@@ -85,8 +85,18 @@ zero reads, `get`, `copy`, `update`, `subtract`, `most_common`, `total`, and liv
 mapping views. `isinstance` recognizes the Counter class and its dict base.
 `most_common(n)` uses a bounded native heap; it does not sort the whole mapping
 for small or nonpositive limits. Counter arithmetic, `elements`, general count
-objects, and `defaultdict` remain unfinished. See
+objects remain unfinished. See
 [COMPATIBILITY.md](COMPATIBILITY.md) for admitted keys and exact boundaries.
+
+Canonical `collections.defaultdict` imports use the same typed mapping storage.
+Factories can be builtin `int`/`list`/`set` identities or captured compiled
+functions, lambdas and bound methods with a proved zero-argument call. Missing
+indexing calls the current `default_factory`; `get` and `setdefault` keep their
+ordinary dictionary behavior. Factory mutation, shallow copies, shared values,
+live views, class fields, and typed initial mappings/pairs are supported.
+Nonescaping generator expressions can supply initial pairs without an
+intermediate list. General callable objects, subclass protocols and ownership
+cycles remain diagnosed.
 
 Module/function aliases use resolved identities. Positional `*` call expansion
 supports compiled source functions and `print`, including nonescaping generator

@@ -41,6 +41,12 @@ impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
         let slot=native_dict_insert(&mut self.entries,(key,value))?;
         self.index.insert(canonical,slot);Ok(())
     }
+    fn set_default(&mut self,key:K,canonical:C,value:V)->Result<V,String> where V:Clone {
+        if let Some(&index)=self.index.get(&canonical){return Ok(self.entries[index].1.clone());}
+        self.index.try_reserve(1).map_err(|_|"MemoryError".to_string())?;
+        let slot=native_dict_insert(&mut self.entries,(key,value))?;
+        self.index.insert(canonical,slot);Ok(self.entries[slot].1.clone())
+    }
     fn delete(&mut self,key:&C)->bool {
         match self.index.remove(key){Some(slot)=>{native_dict_remove(&mut self.entries,&mut self.index,slot);true},None=>false}
     }
