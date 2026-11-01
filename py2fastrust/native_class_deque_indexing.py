@@ -69,7 +69,7 @@ class Indexes:
             elif value is not None:operation=read+'.values['+position+']='+emitter.coerce(value,shape(kind.record.element),node);raw='none'
             else:operation=read+'.values['+position+'].clone()';raw=shape(kind.record.element)
             if deleting:
-                return '{'+before+'let '+result+'='+operation+';drop('+read+');drop('+result+');()}'
+                return '{'+before+'let '+result+'='+operation+';'+read+'.state='+read+'.state.wrapping_add(1);drop('+read+');drop('+result+');()}'
             code=emitter.coerce(Expression(operation,raw),wanted,node)
             return '{'+before+'let '+result+'='+code+';'+result+'}'
         return Expression(project(owner.kind,owner.code,leaf),wanted)

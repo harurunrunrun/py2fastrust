@@ -100,7 +100,7 @@ def _register_sources(model,plan,producer,value=None):
     from .native_unions import union_kind
     if value is None:value=model.records.get((plan.index,id(producer.node)))
     children=[_register_sources(model,plan,source)for source in producer.sources]
-    if value is not None and union_kind(shape(value)):
+    if value is not None and(union_kind(shape(value))or model.iterators.needs_source_cursor(shape(value))):
         return Cell(model.iterators.source(plan,producer.node,value))
     if (value is not None and producer.kind is ProducerKind.ENUMERATE
             and value.root().tag=='enumerate'and children and children[0]is not None):
@@ -149,7 +149,7 @@ def analyze(model, plan, node, environment, *, contribute=None, first_value=None
             except CallBindingError as error:
                 raise ClassUnsupported(clause.source.expression,str(error),proof="typed comprehension iterable")from None
             value=model.expression(plan,source.node,inside)
-        if model.mappings.views.element(shape(value))is not None:
+        if model.iterators.needs_source_cursor(shape(value)):
             value=Cell(model.iterators.source(plan,source.node,value))
         sources.append(source)
         adapted=_register_sources(model,plan,source,value)
@@ -198,7 +198,7 @@ def _prepare(emitter, producer):
             setup+=before
         value=emitter.model.iterators.pull(emitter,node,source)
         return _Iterator(setup,value.kind,value.code)
-    if emitter.model.mappings.views.element(emitter.kind(node))is not None:
+    if emitter.model.iterators.needs_source_cursor(emitter.kind(node)):
         setup,source=emitter.capture(emitter.expression(node))
         before,source=emitter.capture(emitter.model.iterators.construct(emitter,node,source));setup+=before
         value=emitter.model.iterators.pull(emitter,node,source)

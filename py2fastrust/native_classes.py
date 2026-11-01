@@ -1119,6 +1119,8 @@ class Model:
 
     def item(self, value, node):
         value = value.root()
+        deque=self.deques.element(shape(value))
+        if deque is not None:return deque
         mapping=self.mappings.views.element(shape(value))
         if mapping is not None:return mapping
         if getattr(value.tag,"_native_class_iterator",False):return self.iterators.item(value.tag)
@@ -1309,8 +1311,10 @@ class Model:
                 if isinstance(node,ast.For):
                     value = self.expression(plan,node.iter,environment)
                     from .native_class_iterators import tuple_cursor_required
-                    if self.mappings.views.element(shape(value))is not None or tuple_cursor_required(shape(value)):
+                    if self.iterators.needs_source_cursor(shape(value)) or tuple_cursor_required(shape(value)):
                         value=Cell(self.iterators.source(plan,node,value))
+                    elif value.root().tag=='enumerate'and self.iterators.needs_source_cursor(shape(value.root().args[0])):
+                        self.iterators.source(plan,node,value.root().args[0])
                 start=Environment(environment)
                 key=plan.index,id(node)
                 header=self.join(start,self.loop_feedback.get(key),node,"loop_header")
@@ -2271,7 +2275,7 @@ class Emitter:
         source_node=iterable.args[0]if enumerated else iterable
         setup,source=self.capture(self.expression(source_node))
         from .native_class_iterators import tuple_cursor_required
-        if self.model.mappings.views.element(source.kind)is not None or tuple_cursor_required(source.kind):
+        if self.model.iterators.needs_source_cursor(source.kind) or tuple_cursor_required(source.kind):
             before,source=self.capture(self.model.iterators.construct(self,node,source));setup+=before
         counter=None
         if enumerated:

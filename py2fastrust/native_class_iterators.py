@@ -71,6 +71,10 @@ class Iterators:
     def owns(self,kind):
         return iterator_kind(kind)and 0<=kind.index<len(self.records)and self.records[kind.index]is kind.record
 
+    def needs_source_cursor(self,kind):
+        from .native_class_deque_cursors import needs_cursor
+        return needs_cursor(self.model,kind)
+
     def immediate_integer_map(self,plan,node,environment):
         """Retain eager word parsing only for consumers with no saved cursor."""
         from .references import BuiltinIdentity
@@ -116,6 +120,8 @@ class Iterators:
                     # No Python value inhabits the immutable empty tuple.
                     item=Cell(EMPTY)
                 self._contribute(record.element,item,node)
+            elif self.model.deques.element(shape(choice))is not None:
+                self._contribute(record.element,self.model.deques.element(shape(choice)),node)
             elif self.model.mappings.views.element(shape(choice))is not None:
                 self._contribute(record.element,self.model.mappings.views.element(shape(choice)),node)
             elif choice.tag is not None and all(branch in {"int","bool","int_bool","none","float"}or getattr(branch,"_native_function_reference",False)for branch in alternatives(shape(choice))):
@@ -244,7 +250,10 @@ class Iterators:
         if union_kind(source.kind):
             code=project(source.kind,source.code,lambda branch,code:self.construct(emitter,node,Expression(f"({code}).clone()",branch),kind=kind,not_iterable=not_iterable).code)
             return Expression(code,kind)
-        if self.model.mappings.views.element(source.kind)is not None:payload=self.model.mappings.views.construct_cursor(emitter,source.kind,source.code)
+        if getattr(source.kind,'_native_class_deque',False):
+            from .native_class_deque_cursors import construct
+            payload=construct(source.kind,source.code)
+        elif self.model.mappings.views.element(source.kind)is not None:payload=self.model.mappings.views.construct_cursor(emitter,source.kind,source.code)
         elif tag=="range":payload=source.code+".iter()"
         elif tag in {"list","tuple","tuple_sequence","str","bytes"}:payload="Some("+source.code+")"
         else:
@@ -321,6 +330,9 @@ class Iterators:
             return Expression(begin+f"let {old_index}={state}.index;let ({item},{advance})=match &mut {state}.source{{"+
                 ",".join(arms)+f"}};{state}.index+={advance};{item}"+"}",item_kind)
         if tag=="range":return Expression(begin+state+".source.next()}",item_kind)
+        if getattr(shape(record.source),'_native_class_deque',False):
+            from .native_class_deque_cursors import pull
+            return Expression(begin+pull(emitter,node,shape(record.source),state+'.source',item_kind)+'}',item_kind)
         if self.model.mappings.views.element(shape(record.source))is not None:
             return Expression(begin+self.model.mappings.views.pull_cursor(emitter,node,shape(record.source),state+'.source',item_kind)+'}',item_kind)
         if tag=="tuple":
@@ -406,6 +418,9 @@ class Iterators:
         """One concrete source alternative; no source borrow crosses a callback."""
         from .native_classes import domain,Expression
         tag=domain(kind);item=emitter.fresh()
+        if getattr(kind,'_native_class_deque',False):
+            from .native_class_deque_cursors import pull
+            return '('+pull(emitter,node,kind,'(*'+source+')',item_kind)+',0)'
         if self.model.mappings.views.element(kind)is not None:
             current=self.model.mappings.views.pull_cursor(emitter,node,kind,'(*'+source+')',item_kind)
             return '('+current+',0)'
@@ -474,11 +489,14 @@ class Iterators:
                 if union_kind(kind):
                     variants=[]
                     for index,choice in enumerate(alternatives(kind)):
-                        payload=self.model.mappings.views.cursor_payload(emitter,choice)or("NativeRange"if domain(choice)=="range"else"Option<"+emitter.rust_type(choice)+">")
+                        from .native_class_deque_cursors import cursor_payload
+                        payload=cursor_payload(emitter,choice)or self.model.mappings.views.cursor_payload(emitter,choice)or("NativeRange"if domain(choice)=="range"else"Option<"+emitter.rust_type(choice)+">")
                         variants.append(f"V{index}({payload})")
                     result.append(f"enum ClassIteratorSource_{record.index}{{"+",".join(variants)+"}")
                     payload=f"ClassIteratorSource_{record.index}"
-                else:payload=self.model.mappings.views.cursor_payload(emitter,kind)or("NativeRange"if tag=="range"else"Option<"+emitter.rust_type(kind)+">")
+                else:
+                    from .native_class_deque_cursors import cursor_payload
+                    payload=cursor_payload(emitter,kind)or self.model.mappings.views.cursor_payload(emitter,kind)or("NativeRange"if tag=="range"else"Option<"+emitter.rust_type(kind)+">")
                 fields=f"source:{payload},index:usize"
             result.append(f"type ClassIterator_{record.index}=Rc<RefCell<ClassIteratorState_{record.index}>>;struct ClassIteratorState_{record.index}{{{fields}}}")
         return "\n".join(result)

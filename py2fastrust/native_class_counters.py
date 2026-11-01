@@ -10,6 +10,7 @@ class CollectionsAdapter:
 
     @staticmethod
     def eager_method_arguments(kind,name):
+        if getattr(kind,'_native_class_deque',False)and name in {'extend','extendleft'}:return frozenset({0})
         if (getattr(kind,'_native_class_mapping',False)and kind.record.flavor=='Counter'
                 and name in {'update','subtract'}):return frozenset({0})
         return None

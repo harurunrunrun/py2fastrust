@@ -140,6 +140,9 @@ SOURCES={'bfs_queue_function_argument': 'from collections import deque\n'
 
 SOURCES['acyclic_closure_reads_shared_deque']='from collections import deque\ndef reader(queue):\n def read():return len(queue)\n return read\nqueue=deque([1])\nread=reader(queue)\nprint(read())\nqueue.append(2)\nprint(read(),queue)\n'
 
+SOURCES['original_frame_list_negative']='from collections import deque\nclass Q:\n def run(self):return list(deque([1,2]))\nprint(Q().run())\n'
+SOURCES['original_frame_extend_negative']='from collections import deque\nclass Q:\n def run(self):\n  q=deque([1,2])\n  q.extend(q)\nQ().run()\n'
+
 class NativeFrameDequeProofTests(unittest.TestCase):
     def test_shared_deque_cycles_keep_a_positioned_ownership_diagnostic(self):
         for source in('from collections import deque\ndef make():\n queue=deque()\n def read():return len(queue)\n queue.append(read)\n return queue\nprint(len(make()))\n','from collections import deque\nclass Holder:\n def __init__(self):\n  self.queue=deque()\n  self.queue.append(self)\nprint(len(Holder().queue))\n'):
@@ -155,11 +158,8 @@ class NativeFrameDequeProofTests(unittest.TestCase):
             result=transpile('from collections import deque\nq=deque([1,2])\nq.append(3)\nprint(q.popleft(),q)\n')
         self.assertTrue(result.success,result.diagnostics)
 
-    def test_shared_cursor_and_bound_method_gaps_are_positioned(self):
-        for source,detail in(
-            ('from collections import deque\nclass Q:\n def run(self):return list(deque([1,2]))\nprint(Q().run())\n','iteration'),
-            ('from collections import deque\nclass Q:\n def run(self):\n  q=deque([1,2])\n  q.extend(q)\nQ().run()\n','deque.extend'),
-            ('from collections import deque\nclass Q:\n def run(self):\n  q=deque([1])\n  method=q.append\nQ().run()\n','attribute')):
+    def test_bound_builtin_method_alias_gap_is_positioned(self):
+        for source,detail in(('from collections import deque\nclass Q:\n def run(self):\n  q=deque([1])\n  method=q.append\nQ().run()\n', 'attribute'),):
             for mode in('i64','i128','bigint'):
                 result=transpile(source,TranspileOptions(integer=mode))
                 self.assertFalse(result.success)
@@ -176,6 +176,8 @@ class NativeFrameDequeExecutionTests(unittest.TestCase):
     def compare(self,names):
         for name in names:
             with self.subTest(case=name):self.exercise(SOURCES[name],('',))
+    def test_original_shared_collection_and_extension_programs(self):
+        self.compare(('original_frame_list_negative','original_frame_extend_negative'))
     def test_acyclic_closure_keeps_its_deque_owner(self):
         self.compare(('acyclic_closure_reads_shared_deque',))
     def test_bfs_queues_cross_functions_and_fields(self):

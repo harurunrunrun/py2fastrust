@@ -4,7 +4,7 @@ from .call_semantics import FunctionSignature,CallBindingError,normalize_call
 from .native_types import EMPTY,alternatives
 
 CONSTRUCTOR=FunctionSignature.declaration(('iterable','maxlen'),default_names=('iterable','maxlen'))
-METHODS={'append':('value',),'appendleft':('value',),'pop':(),'popleft':(),'clear':(),'copy':()}
+METHODS={'append':('value',),'appendleft':('value',),'pop':(),'popleft':(),'clear':(),'copy':(),'extend':('iterable',),'extendleft':('iterable',)}
 
 @dataclass(frozen=True)
 class DequeType:
@@ -102,9 +102,18 @@ class Deques:
         kinds=alternatives(shape(receiver))
         if not kinds or not all(isinstance(kind,DequeType)for kind in kinds):return None
         name=node.func.attr
-        if name not in METHODS:raise ClassUnsupported(node,'deque.'+name+' needs its shared deque operation/cursor adapter; this typed frame slice implements append, appendleft, pop, popleft, clear and copy',proof='registered deque method protocol')
+        if name not in METHODS:raise ClassUnsupported(node,'deque.'+name+' needs its shared deque operation/cursor adapter; this typed frame slice implements append, appendleft, pop, popleft, clear, copy, extend and extendleft',proof='registered deque method protocol')
         parameters=METHODS[name];binding=self._binding(node,FunctionSignature.declaration(parameters,positional_only=parameters),normalize_call(node))
-        if name in {'append','appendleft'}:
+        site=DequeSite(receiver,name,binding)
+        if name in {'extend','extendleft'}:
+            source=arguments[0]
+            if getattr(shape(source),'_native_class_generator',False):item=self.model.generators.demand(plan,node,source,environment)
+            else:
+                site.source_type=self.model.iterators.source(plan,node,source)
+                item=self.model.iterators.demand(plan,node,Cell(site.source_type),environment)
+            for kind in kinds:self._contribute(kind.record.element,item,node)
+            result=self.model.cell(plan,node,'none')
+        elif name in {'append','appendleft'}:
             for kind in kinds:self._contribute(kind.record.element,arguments[0],node)
             result=self.model.cell(plan,node,'none')
         elif name in {'pop','popleft'}:
@@ -112,11 +121,11 @@ class Deques:
             for kind in kinds:self._contribute(result,kind.record.element,node)
         elif name=='copy':result=self.model.cell(plan,node);self._contribute(result,receiver,node)
         else:result=self.model.cell(plan,node,'none')
-        self.sites[(plan.index,id(node))]=DequeSite(receiver,name,binding)
+        self.sites[(plan.index,id(node))]=site
         return result
     def rust_type(self,emitter,kind):
         from .native_classes import shape
-        return 'Rc<RefCell<NativeDeque<'+emitter.rust_type(shape(kind.record.element))+'>>>'
+        return 'Rc<RefCell<ClassDeque<'+emitter.rust_type(shape(kind.record.element))+'>>>'
     def truth(self,emitter,value):return '!('+value.code+').borrow().is_empty()'
     def show(self,emitter,value,node):
         from .native_classes import Expression,shape
@@ -142,13 +151,23 @@ class Deques:
             size=emitter.at('('+wide+').and_then(|value|isize::try_from(value).ok()).ok_or_else(||"OverflowError: Python int too large to convert to C ssize_t".to_owned())',node)
             return 'Some('+emitter.at('native_deque_maxlen('+size+')',node)+')'
         return project(value.kind,value.code,leaf)
-    def _consume(self,emitter,node,owner,source,site):
+    def _consume(self,emitter,node,owner,source,site,*,left=False,extending=False,check_identity=True):
         from .native_classes import Expression,shape
         def append(current,item):
             value=current.coerce(item,shape(owner.kind.record.element),node)
-            return current.at('('+owner.code+').borrow_mut().push_back('+value+')',node)+';'
+            push=current.at('('+owner.code+').borrow_mut().push_'+('front'if left else'back')+'('+value+')',node)+';'
+            return 'if ('+owner.code+').borrow().maxlen!=Some(0){'+push+'}'if extending else push
         if getattr(source.kind,'_native_class_generator',False):
             return self.model.generators.consume(emitter,node,'eager_member',source,[source],{},'none',append_item=append).code+';'
+        from .native_unions import project,union_kind
+        if extending and union_kind(source.kind):
+            return project(source.kind,source.code,lambda kind,text:'{'+self._consume(emitter,node,owner,Expression('('+text+').clone()',kind),site,left=left,extending=True)+'}')+';'
+        if extending and check_identity and getattr(source.kind,'_native_class_deque',False)and self.rust_type(emitter,source.kind)==self.rust_type(emitter,owner.kind):
+            copy,item=emitter.fresh(),emitter.fresh()
+            copied=emitter.at('native_deque_mapped_copy(&('+source.code+').borrow(),|value|value.clone())',node)
+            snapshot='{let '+copy+'='+copied+';for '+item+' in '+copy+'.values{'+append(emitter,Expression(item,source.kind.element))+'}}'
+            live=self._consume(emitter,node,owner,source,site,left=left,extending=True,check_identity=False)
+            return 'if Rc::ptr_eq(&('+owner.code+'),&('+source.code+'))'+snapshot+'else{'+live+'}'
         from .native_class_iterators import iterator_kind
         if iterator_kind(source.kind):before,iterator='',source
         else:before,iterator=emitter.capture(self.model.iterators.construct(emitter,node,source,kind=site.source_type))
@@ -159,7 +178,7 @@ class Deques:
         site=self.sites[(emitter.plan.index,id(node))];record=wanted.record;record.emitted=True
         values=iter(arguments+[value for _,value in keywords])
         bound=site.binding.capture(lambda expression,parameter:next(values),defaults={'iterable':None,'maxlen':Expression('()','none')}).by_name
-        owner=emitter.fresh();code='let '+owner+'=Rc::new(RefCell::new(NativeDeque::<'+emitter.rust_type(shape(record.element))+'>::new('+self._maxlen(emitter,node,bound['maxlen'])+')));'
+        owner=emitter.fresh();code='let '+owner+'=Rc::new(RefCell::new(ClassDeque::<'+emitter.rust_type(shape(record.element))+'>::new('+self._maxlen(emitter,node,bound['maxlen'])+')));'
         if bound['iterable']is not None:code+=self._consume(emitter,node,Expression(owner,wanted),bound['iterable'],site)
         return Expression('{'+code+owner+'}',wanted)
     def emit_method(self,emitter,node):
@@ -173,23 +192,27 @@ class Deques:
         wanted=emitter.kind(node)
         def leaf(kind,text):
             owner,read=emitter.fresh(),emitter.fresh();prefix='let '+owner+'=('+text+').clone();'
+            if site.name in {'extend','extendleft'}:
+                return '{'+prefix+self._consume(emitter,node,Expression(owner,kind),arguments[0],site,left=site.name=='extendleft',extending=True)+'()}'
             if site.name in {'append','appendleft'}:
                 item=emitter.coerce(arguments[0],shape(kind.record.element),node)
                 code=emitter.at(owner+'.borrow_mut().push_'+('front'if site.name=='appendleft'else'back')+'('+item+')',node);raw='none'
             elif site.name in {'pop','popleft'}:
-                code=emitter.at(owner+'.borrow_mut().values.pop_'+('front'if site.name=='popleft'else'back')+'().ok_or_else(||"IndexError: pop from an empty deque".to_owned())',node);raw=shape(kind.record.element)
+                code=emitter.at(owner+'.borrow_mut().pop_'+('front'if site.name=='popleft'else'back')+'().ok_or_else(||"IndexError: pop from an empty deque".to_owned())',node);raw=shape(kind.record.element)
             elif site.name=='clear':code=owner+'.borrow_mut().clear()';raw='none'
-            else:code='Rc::new(RefCell::new('+emitter.at('native_deque_mapped_copy(&'+owner+'.borrow(),|value|value.clone())',node)+'))';raw=kind
+            else:code='Rc::new(RefCell::new(ClassDeque::from_deque('+emitter.at('native_deque_mapped_copy(&'+owner+'.borrow(),|value|value.clone())',node)+')))';raw=kind
             result=emitter.coerce(Expression(code,raw),wanted,node)
             return '{'+prefix+'let '+read+'='+result+';'+read+'}'
         return Expression('{'+before+project(owner.kind,owner.code,leaf)+'}',wanted)
     def runtime(self):
         if not any(record.emitted for record in self.records):return ''
         from .native_deques import HELPERS
-        return HELPERS
+        from .native_class_deque_cursors import RUNTIME
+        return HELPERS+RUNTIME
 
 
 def requires_frames(unit,analysis):
+    if active_iteration_requires_frames(unit,analysis):return True
     import ast
     from .native_types import DequeType as OrdinaryDeque,immutable
     def deque(kind):return kind=='deque_int'or isinstance(kind,OrdinaryDeque)
@@ -204,4 +227,30 @@ def requires_frames(unit,analysis):
             if len(node.targets)>1:return True
             if isinstance(node.value,ast.Name)and any(isinstance(target,ast.Name)and unit.name_for(target)!=unit.name_for(node.value)for target in node.targets):return True
         if any(isinstance(kind,OrdinaryDeque)and not immutable(kind.element)for kind in kinds.get(unit.ordinal(node),())):return True
+    return False
+
+
+def active_iteration_requires_frames(unit,analysis):
+    """Shared semantic MAY-alias facts select mutation-checked live iteration."""
+    import ast
+    from .native_constraints import Allocation,MethodValue
+    from .references import BuiltinIdentity
+    mutating={'append','appendleft','pop','popleft','clear','extend','extendleft','reverse','rotate','insert','remove'}
+    def owners(value):return {part for part in getattr(value,'alternatives',())if isinstance(part,Allocation)and part.category=='deque'}
+    for facts in analysis.scopes.values():
+        for loop in ast.walk(unit.tree):
+            if not isinstance(loop,ast.For):continue
+            source=owners(facts.values.get(unit.ordinal(loop.iter)))
+            if not source and isinstance(loop.iter,ast.Call):
+                call=facts.calls.get(unit.ordinal(loop.iter))
+                if call is not None and any(isinstance(identity,BuiltinIdentity)and identity.name in {'iter','enumerate','map','filter','zip','reversed'}for identity in call.identity.alternatives):
+                    source={owner for value in(*call.positional,*(value for _,value in call.keywords))for owner in owners(value)}
+            if not source:continue
+            for statement in loop.body:
+                for node in ast.walk(statement):
+                    call=facts.calls.get(unit.ordinal(node))
+                    if call is not None:
+                        for identity in call.identity.alternatives:
+                            if isinstance(identity,MethodValue)and identity.name in mutating and source&owners(identity.receiver):return True
+                    if isinstance(node,ast.Subscript)and isinstance(node.ctx,(ast.Store,ast.Del))and source&owners(facts.values.get(unit.ordinal(node.value))):return True
     return False

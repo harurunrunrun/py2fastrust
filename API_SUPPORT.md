@@ -117,9 +117,13 @@ iterables/bounds, append/appendleft, pop/popleft, clear/copy, len/bool, maxlen,
 identity, integer-indexed reads/writes/deletion and display are supported.
 Augmented indexed assignment captures its owner/index once, loads before the RHS,
 and checks the original index against the current deque when storing. Mutable
-child handles survive shallow copy. Frame cursors, extend/search protocols, saved
-builtin method aliases and custom index conversion still need implementation;
-ordinary unique-owner deque paths remain available.
+child handles survive shallow copy. Live forward cursors support `iter`,
+collection/reduction consumers, `map`/`filter`/`zip`, comprehensions and source
+unions. `extend`/`extendleft` preserve argument effects and snapshot an actual
+self-extension; a saved iterator over the receiver stays live. Structural mutation
+raises `RuntimeError` during iteration; indexed replacement stays visible.
+Reversed cursors, search/ordering, saved builtin method aliases and custom index
+conversion still require adapters. Ordinary unique-owner paths remain available.
 
 Canonical `collections.Counter` imports have a typed frame adapter, including
 saved constructor aliases, integer-count iterable/mapping constructors, missing

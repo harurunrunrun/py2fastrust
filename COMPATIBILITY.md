@@ -278,8 +278,15 @@ the store, including a length change or global rebinding during the RHS. Bounds
 and index conversion errors retain their Python ordering. Shallow copies preserve
 mutable child handles. Later argument effects cannot replace the already captured receiver. Zero maxlen still
 consumes constructor source effects, and invalid bounds are checked before pulling
-the source. Live frame deque iteration and its mutation checks, extend/self-extension,
-custom index conversion, stored builtin method aliases, search/ordering protocols,
+the source. Live forward frame cursors retain their deque owner and check structural version
+stamps, including after exhaustion. Indexed replacement remains visible without
+invalidation. List/tuple/reduction/extrema/sort consumers, map/filter/zip, normal
+loops and comprehensions share this pull protocol, including finite source unions.
+Extend/extendleft snapshot only an actual self-extension, identified by native
+object identity. Iterator/generator arguments remain live, with partial effects
+before a mutation error. At maxlen=0 extension consumes the source without
+changing iterator state, while append still invalidates existing cursors.
+Reversed cursors, custom index conversion, stored builtin method aliases, search/ordering protocols,
 deque subclasses and arithmetic remain separate requirements. Floating/custom
 search protocols and general aliases outside this admitted frame slice still
 need their respective adapters. Shared deque ownership uses the same acyclic
