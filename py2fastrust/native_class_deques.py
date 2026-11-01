@@ -4,7 +4,7 @@ from .call_semantics import FunctionSignature,CallBindingError,normalize_call
 from .native_types import EMPTY,alternatives
 
 CONSTRUCTOR=FunctionSignature.declaration(('iterable','maxlen'),default_names=('iterable','maxlen'))
-METHODS={'append':('value',),'appendleft':('value',),'pop':(),'popleft':(),'clear':(),'copy':(),'extend':('iterable',),'extendleft':('iterable',)}
+METHODS={'append':('value',),'appendleft':('value',),'pop':(),'popleft':(),'clear':(),'copy':(),'extend':('iterable',),'extendleft':('iterable',),'reverse':(),'rotate':('n',)}
 
 @dataclass(frozen=True)
 class DequeType:
@@ -102,8 +102,8 @@ class Deques:
         kinds=alternatives(shape(receiver))
         if not kinds or not all(isinstance(kind,DequeType)for kind in kinds):return None
         name=node.func.attr
-        if name not in METHODS:raise ClassUnsupported(node,'deque.'+name+' needs its shared deque operation/cursor adapter; this typed frame slice implements append, appendleft, pop, popleft, clear, copy, extend and extendleft',proof='registered deque method protocol')
-        parameters=METHODS[name];binding=self._binding(node,FunctionSignature.declaration(parameters,positional_only=parameters),normalize_call(node))
+        if name not in METHODS:raise ClassUnsupported(node,'deque.'+name+' needs its shared deque operation/cursor adapter; this typed frame slice implements append, appendleft, pop, popleft, clear, copy, extend, extendleft, reverse and rotate',proof='registered deque method protocol')
+        parameters=METHODS[name];binding=self._binding(node,FunctionSignature.declaration(parameters,positional_only=parameters,default_names=('n',)if name=='rotate'else()),normalize_call(node))
         site=DequeSite(receiver,name,binding)
         if name in {'extend','extendleft'}:
             source=arguments[0]
@@ -112,6 +112,9 @@ class Deques:
                 site.source_type=self.model.iterators.source(plan,node,source)
                 item=self.model.iterators.demand(plan,node,Cell(site.source_type),environment)
             for kind in kinds:self._contribute(kind.record.element,item,node)
+            result=self.model.cell(plan,node,'none')
+        elif name=='rotate':
+            if arguments:self.indexes._index(node,arguments[0])
             result=self.model.cell(plan,node,'none')
         elif name in {'append','appendleft'}:
             for kind in kinds:self._contribute(kind.record.element,arguments[0],node)
@@ -150,6 +153,18 @@ class Deques:
             wide='('+number+').to_i128()'if self.model.integer=='bigint'else'Some(('+number+')as i128)'
             size=emitter.at('('+wide+').and_then(|value|isize::try_from(value).ok()).ok_or_else(||"OverflowError: Python int too large to convert to C ssize_t".to_owned())',node)
             return 'Some('+emitter.at('native_deque_maxlen('+size+')',node)+')'
+        return project(value.kind,value.code,leaf)
+    def _rotation(self,emitter,node,value):
+        from .native_classes import Expression
+        from .native_unions import project
+        from .native_class_builtins import _type_name
+        def leaf(kind,text):
+            argument=Expression('('+text+').clone()',kind)
+            if kind not in {'int','bool','int_bool'}:
+                return emitter.at('Err::<isize,String>(format!("TypeError: \'{}\' object cannot be interpreted as an integer",'+_type_name(emitter,argument,node)+'))',node)
+            number=emitter.number(argument)
+            wide='('+number+').to_i128()'if self.model.integer=='bigint'else'Some(('+number+')as i128)'
+            return emitter.at('('+wide+').and_then(|value|isize::try_from(value).ok()).ok_or_else(||"OverflowError: Python int too large to convert to C ssize_t".to_owned())',node)
         return project(value.kind,value.code,leaf)
     def _consume(self,emitter,node,owner,source,site,*,left=False,extending=False,check_identity=True):
         from .native_classes import Expression,shape
@@ -200,6 +215,11 @@ class Deques:
             elif site.name in {'pop','popleft'}:
                 code=emitter.at(owner+'.borrow_mut().pop_'+('front'if site.name=='popleft'else'back')+'().ok_or_else(||"IndexError: pop from an empty deque".to_owned())',node);raw=shape(kind.record.element)
             elif site.name=='clear':code=owner+'.borrow_mut().clear()';raw='none'
+            elif site.name=='reverse':code=owner+'.borrow_mut().reverse()';raw='none'
+            elif site.name=='rotate':
+                amount=self._rotation(emitter,node,arguments[0])if arguments else'1_isize'
+                rotation=emitter.fresh();prefix+='let '+rotation+'='+amount+';'
+                code=owner+'.borrow_mut().rotate('+rotation+')';raw='none'
             else:code='Rc::new(RefCell::new(ClassDeque::from_deque('+emitter.at('native_deque_mapped_copy(&'+owner+'.borrow(),|value|value.clone())',node)+')))';raw=kind
             result=emitter.coerce(Expression(code,raw),wanted,node)
             return '{'+prefix+'let '+read+'='+result+';'+read+'}'

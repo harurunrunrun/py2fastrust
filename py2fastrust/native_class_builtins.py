@@ -7,7 +7,7 @@ import ast
 from .references import BuiltinIdentity
 
 SUPPORTED=frozenset({"ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bool","float","len","abs","id","globals","isinstance",
-                     "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","next","any","all","pow","sorted","dict","set"})
+                     "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
 
 
 def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=None,call_arguments=None):
@@ -82,8 +82,8 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name == "zip" and all(key=="strict"for key,_ in keywords):
         result=model.iterators.zip(plan,node,arguments)
         return cell(result.root().tag)
-    if name == "iter" and len(arguments)==1 and not keywords:
-        return cell(model.iterators.source(plan,node,arguments[0]))
+    if name in {"iter","reversed"} and len(arguments)==1 and not keywords:
+        return cell(model.iterators.source(plan,node,arguments[0],operation="reverse"if name=="reversed"else"source"))
     if name == "next" and 1<=len(arguments)<=2 and not keywords:
         from .native_class_iterators import iterator_kind
         from .native_types import alternatives
@@ -339,7 +339,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         return self.model.iterators.emit_map(self,node,arguments[0],arguments[1:],keywords.get("strict",Expression("false","bool",False)),wanted)
     elif name == "zip":
         return self.model.iterators.emit_multiple(self,node,arguments,keywords.get("strict",Expression("false","bool",False)),wanted)
-    elif name == "iter":
+    elif name in {"iter","reversed"}:
         return self.model.iterators.construct(self,node,arguments[0],kind=wanted)
     elif name == "next":
         from .native_class_iterators import iterator_kind

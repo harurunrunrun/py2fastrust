@@ -100,7 +100,7 @@ def _semantic_requirements(unit,analysis,targets):
     return (('module binding writes',)if writes else())+(('definition-time defaults',)if defaults else())+(('module data binding reads',)if reads else())
 
 
-def select_frames(unit):
+def select_frames(unit,*,integer="i64"):
     if any(isinstance(node,ast.ClassDef)for node in ast.walk(unit.tree)):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
     analysis=analyze(unit)
@@ -135,7 +135,7 @@ def select_frames(unit):
     from .native_class_deques import requires_frames as deque_requires_frames
     if deque_requires_frames(unit,analysis):reasons+=("shared deque identity and element storage",)
     from .native_class_iterators import requires_state
-    if requires_state(unit,analysis):reasons+=("stored lazy builtin iterators",)
+    if requires_state(unit,analysis,integer=integer):reasons+=("stored lazy builtin iterators",)
     from .native_starred_calls import requires_expansion
     recorded={site for facts in analysis.scopes.values()for site in facts.expressions}
     if any(site in recorded and isinstance(node,ast.Call)and any(isinstance(value,ast.Starred)for value in node.args)

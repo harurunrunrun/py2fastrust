@@ -99,11 +99,11 @@ class Iterators:
         if not self.model.namespace.contribute(destination,value,node,force=True):
             self.model.contribute(destination,value,node)
 
-    def source(self,plan,node,value,identity=None):
+    def source(self,plan,node,value,identity=None,*,operation="source"):
         from .native_classes import ClassUnsupported,shape
         kind=shape(value)
-        if iterator_kind(kind):return kind
-        record=self._record(plan,node,"source",identity)
+        if iterator_kind(kind)and operation=="source":return kind
+        record=self._record(plan,node,operation,identity)
         self._contribute(record.source,value,node)
         root=record.source.root()
         from .native_classes import Cell
@@ -113,6 +113,17 @@ class Iterators:
             choice=choice.root()
             if choice.tag=="union":
                 choices.extend(choice.args)
+                continue
+            if operation=="reverse":
+                deque_element=self.model.deques.element(shape(choice))
+                if deque_element is not None:self._contribute(record.element,deque_element,node)
+                elif choice.tag in {"list","tuple","tuple_sequence","range","str","bytes"}:
+                    item=self.model.item(choice,node)
+                    if choice.tag=="tuple"and not choice.args:item=Cell(EMPTY)
+                    self._contribute(record.element,item,node)
+                elif choice.tag in {"int","bool","int_bool","none","float"}:self._contribute(record.element,Cell(EMPTY),node)
+                elif choice.tag is not None:
+                    raise ClassUnsupported(node,"reversed() needs a registered reverse cursor for this sequence or its user __reversed__/__len__/__getitem__ protocol; the builtin sequence/deque reverse providers do not implement that user protocol",types=(("source",shape(choice)),),proof="registered reverse iteration protocol")
                 continue
             if choice.tag in {"list","tuple","tuple_sequence","range","str","bytes"}:
                 item=self.model.item(choice,node)
@@ -252,7 +263,10 @@ class Iterators:
             return Expression(code,kind)
         if getattr(source.kind,'_native_class_deque',False):
             from .native_class_deque_cursors import construct
-            payload=construct(source.kind,source.code)
+            payload=construct(source.kind,source.code,reverse=record.operation=="reverse")
+        elif record.operation=="reverse"and tag in {"list","tuple","tuple_sequence","range","str","bytes"}:
+            from .native_class_reverse_iterators import construct as construct_reverse
+            payload=construct_reverse(emitter,node,source)
         elif self.model.mappings.views.element(source.kind)is not None:payload=self.model.mappings.views.construct_cursor(emitter,source.kind,source.code)
         elif tag=="range":payload=source.code+".iter()"
         elif tag in {"list","tuple","tuple_sequence","str","bytes"}:payload="Some("+source.code+")"
@@ -260,6 +274,7 @@ class Iterators:
             from .native_class_builtins import _type_name
             name=_type_name(emitter,source,node)
             error=f'format!("TypeError: \'{{}}\' object is not iterable",{name})'
+            if record.operation=="reverse":error=f'format!("TypeError: \'{{}}\' object is not reversible",{name})'
             if not_iterable is not None:error=not_iterable(source)
             return Expression(emitter.at(f'Err::<ClassIterator_{record.index},String>({error})',node),kind)
         full=shape(record.source)
@@ -329,6 +344,9 @@ class Iterators:
                 arms.append(f"ClassIteratorSource_{record.index}::V{index}({source})=>{body}")
             return Expression(begin+f"let {old_index}={state}.index;let ({item},{advance})=match &mut {state}.source{{"+
                 ",".join(arms)+f"}};{state}.index+={advance};{item}"+"}",item_kind)
+        if record.operation=="reverse"and not getattr(shape(record.source),'_native_class_deque',False):
+            from .native_class_reverse_iterators import pull as pull_reverse
+            return Expression(begin+pull_reverse(emitter,node,shape(record.source),state+'.source',item_kind)+'}',item_kind)
         if tag=="range":return Expression(begin+state+".source.next()}",item_kind)
         if getattr(shape(record.source),'_native_class_deque',False):
             from .native_class_deque_cursors import pull
@@ -421,6 +439,9 @@ class Iterators:
         if getattr(kind,'_native_class_deque',False):
             from .native_class_deque_cursors import pull
             return '('+pull(emitter,node,kind,'(*'+source+')',item_kind)+',0)'
+        if record.operation=="reverse":
+            from .native_class_reverse_iterators import pull as pull_reverse
+            return '('+pull_reverse(emitter,node,kind,'(*'+source+')',item_kind)+',0)'
         if self.model.mappings.views.element(kind)is not None:
             current=self.model.mappings.views.pull_cursor(emitter,node,kind,'(*'+source+')',item_kind)
             return '('+current+',0)'
@@ -490,30 +511,46 @@ class Iterators:
                     variants=[]
                     for index,choice in enumerate(alternatives(kind)):
                         from .native_class_deque_cursors import cursor_payload
-                        payload=cursor_payload(emitter,choice)or self.model.mappings.views.cursor_payload(emitter,choice)or("NativeRange"if domain(choice)=="range"else"Option<"+emitter.rust_type(choice)+">")
+                        from .native_class_reverse_iterators import payload as reverse_payload
+                        payload=cursor_payload(emitter,choice,reverse=record.operation=="reverse")or (reverse_payload(emitter,choice)if record.operation=="reverse"else self.model.mappings.views.cursor_payload(emitter,choice)or("NativeRange"if domain(choice)=="range"else"Option<"+emitter.rust_type(choice)+">"))
                         variants.append(f"V{index}({payload})")
                     result.append(f"enum ClassIteratorSource_{record.index}{{"+",".join(variants)+"}")
                     payload=f"ClassIteratorSource_{record.index}"
                 else:
                     from .native_class_deque_cursors import cursor_payload
-                    payload=cursor_payload(emitter,kind)or self.model.mappings.views.cursor_payload(emitter,kind)or("NativeRange"if tag=="range"else"Option<"+emitter.rust_type(kind)+">")
+                    from .native_class_reverse_iterators import payload as reverse_payload
+                    payload=cursor_payload(emitter,kind,reverse=record.operation=="reverse")or (reverse_payload(emitter,kind)if record.operation=="reverse"else self.model.mappings.views.cursor_payload(emitter,kind)or("NativeRange"if tag=="range"else"Option<"+emitter.rust_type(kind)+">"))
                 fields=f"source:{payload},index:usize"
             result.append(f"type ClassIterator_{record.index}=Rc<RefCell<ClassIteratorState_{record.index}>>;struct ClassIteratorState_{record.index}{{{fields}}}")
+        if any(record.emitted and record.operation=="reverse"for record in self.records):
+            from .native_class_reverse_iterators import runtime as reverse_runtime
+            result.insert(0,reverse_runtime(emitter))
         return "\n".join(result)
 
 
-def requires_state(unit,analysis):
+def requires_state(unit,analysis,*,integer="i64"):
     """Stored lazy values require typed state, not an immediate stream loop."""
     from .references import BuiltinIdentity
     nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
     parents={id(child):parent for parent in ast.walk(unit.tree)for child in ast.iter_child_nodes(parent)}
+    # Direct byte reversal and general range endpoints need the closed typed
+    # provider; other immediate ordinary reverse streams retain their fast path.
+    for facts in analysis.scopes.values():
+        for site,call in facts.calls.items():
+            if call.identity.unknown or call.identity.unbound or call.identity.alternatives!=frozenset({BuiltinIdentity("reversed")}):continue
+            if len(call.positional)!=1 or call.keywords:continue
+            node=nodes.get(site)
+            if not isinstance(node,ast.Call)or len(node.args)!=1:continue
+            from .native_range_capabilities import reverse_range_capability
+            capability=reverse_range_capability(analysis,facts,unit.ordinal(node.args[0]),integer)
+            if "bytes"in call.positional[0].alternatives or(capability.canonical_range and not capability.ordinary):return True
     direct={"list","tuple","sum","min","max","any","all","next","enumerate","zip"}
     from .native_stream_plans import _CONSUMERS
     identities={site:fact.identity for facts in analysis.scopes.values()for site,fact in facts.calls.items()}
     for site,fact in identities.items():
         if fact.unknown or fact.unbound or len(fact.alternatives)!=1:continue
         identity=next(iter(fact.alternatives))
-        if identity not in (BuiltinIdentity("filter"),BuiltinIdentity("iter"),BuiltinIdentity("map"),BuiltinIdentity("zip"),BuiltinIdentity("enumerate")):continue
+        if identity not in (BuiltinIdentity("filter"),BuiltinIdentity("iter"),BuiltinIdentity("reversed"),BuiltinIdentity("map"),BuiltinIdentity("zip"),BuiltinIdentity("enumerate")):continue
         node=nodes.get(site);parent=parents.get(id(node))
         if identity==BuiltinIdentity("enumerate"):
             if (isinstance(parent,(ast.For,ast.comprehension))and parent.iter is node

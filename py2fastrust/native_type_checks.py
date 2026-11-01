@@ -3,7 +3,7 @@ from .references import BuiltinIdentity
 
 
 TYPE_NAMES = frozenset({'int', 'bool', 'float', 'str', 'list', 'range',
-                        'tuple', 'dict', 'set', 'map', 'zip', 'filter', 'enumerate'})
+                        'tuple', 'dict', 'set', 'map', 'zip', 'filter', 'enumerate', 'reversed'})
 
 
 def requires_frames(analysis):
@@ -32,6 +32,9 @@ def emit(emitter, node, arguments):
         if name == 'bool' and tag == 'int_bool':
             return f'matches!(&({value.code}),NativeScalar::Bool(_))'
         if name == 'tuple':return str(tag in {'tuple','tuple_sequence'}).lower()
+        if name=='reversed':
+            from .native_class_reverse_iterators import matches_builtin_reversed
+            return matches_builtin_reversed(emitter,value)
         if name in {'map','zip','filter','enumerate'}:
             return str(tag == 'iterator' and value.kind.record.operation == name).lower()
         return str(tag == name).lower()

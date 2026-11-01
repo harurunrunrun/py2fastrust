@@ -455,13 +455,13 @@ class ModuleLinker:
 
 
 
-def needs_linking(program):
+def needs_linking(program,*,integer="i64"):
     from .module_catalog import VENDORED_MODULES
     from .native_module_capabilities import needs_linked_members
     # Builtin exports are snapshots of the same canonical namespace as its
     # module-object imports; source modules retain their own global shadows.
     builtin_namespace=any(module.name=='builtins'and module.origin=='builtin'for module in program.modules)
-    return needs_linked_members(program)or builtin_namespace or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
+    return needs_linked_members(program,integer=integer)or builtin_namespace or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
                for module in program.modules)
 
 

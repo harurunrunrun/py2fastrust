@@ -2074,7 +2074,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     trusted_imports = unit.native_imports
     from .native_frame_selection import select_frames
     try:
-        frame_selection=select_frames(unit)
+        frame_selection=select_frames(unit,integer=integer)
     except (SyntaxError,_Unsupported,RecursionError,ConstraintFailure)as error:
         if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
         return None

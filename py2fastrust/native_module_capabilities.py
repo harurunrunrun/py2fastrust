@@ -6,7 +6,7 @@ LINKED_EXPORTS={'collections':frozenset({'Counter','defaultdict'})}
 FRAME_MODULES=frozenset({'heapq','bisect'})
 
 
-def needs_linked_members(program):
+def needs_linked_members(program,*,integer="i64"):
     for unit in program.units:
         for imported in unit.imports:
             if imported.origin not in {'builtin','vendored'}:continue
@@ -16,7 +16,7 @@ def needs_linked_members(program):
                 from .native import _Unsupported,_direct_diagnostic
                 from .native_constraints import ConstraintFailure
                 from .diagnostics import CompilationError
-                try:required=select_frames(unit).required
+                try:required=select_frames(unit,integer=integer).required
                 except (SyntaxError,_Unsupported,RecursionError,ConstraintFailure)as error:
                     raise CompilationError(_direct_diagnostic(unit.source,unit.filename,error,unit=unit))from None
                 if required:return True

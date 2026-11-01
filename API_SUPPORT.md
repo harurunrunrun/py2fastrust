@@ -390,3 +390,21 @@ reentrant pulls and transient source exhaustion retain Python ordering. Index
 values use the selected integer policy; stored generator sources still require
 general suspension state. Existing ordinary immediate for/comprehension forms
 retain their direct lowering.
+
+### Shared reverse iteration
+
+`reversed()` uses registered native cursors for shared deques, lists, fixed tuples,
+variadic tuples, strings, bytes, and ranges. Cursors share their position through
+aliases. List cursors retain their original endpoint and observe replacement and
+shrink operations; exhausted cursors stay exhausted. Unicode mode walks backward
+by codepoint, while ASCII mode uses byte positions. Range reversal computes the
+last element directly without materializing values or requiring a machine-sized
+length. Fixed-width endpoint calculations preserve the selected integer policy.
+
+Shared `deque.rotate()` and `deque.reverse()` keep object identity. Rotation of a
+deque with at least two elements invalidates live cursors, including a rotation
+by zero. Reversal changes the values seen by existing cursors without invalidating
+them. A reverse deque cursor checks mutations while active and stays exhausted
+after its last item, matching Python's distinct forward/reverse cursor rules.
+Custom `__reversed__`, sequence fallback methods, and user `__index__` adapters
+remain explicit conversion boundaries.

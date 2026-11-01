@@ -207,7 +207,8 @@ class Planner:
                 result = self.leaf(setup, f"let {cursor} = {owner};", cursor,
                                    (("int", "@", True),), length=length)
                 result.range_capture=range_code.captures
-                result.reversible = g.bits != 0 and arguments[2].constant in {1, -1}
+                from .native_range_capabilities import ordinary_reverse_range_step
+                result.reversible = ordinary_reverse_range_step(g.bits,arguments[2].constant)
                 return result
             if plan.kind is ProducerKind.MAP:
                 return self.map_stream(plan, environment)

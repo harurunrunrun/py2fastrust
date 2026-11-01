@@ -1075,3 +1075,11 @@ registered source cursor used by other containers. Their element families can
 contain captured callables or concrete iterators; `next` dispatches finite
 iterator alternatives while retaining source callback effects. Invalid
 noniterator alternatives raise their runtime `TypeError` at the call site.
+
+Shared deque handles support `rotate`, `reverse`, and registered reverse cursors.
+The same reverse-source registry accepts native list/tuple/string/bytes/range
+values and finite alternatives of those families; it does not use a VM or create
+a temporary list for reversal. Forward and reverse deque cursor exhaustion rules
+are intentionally distinct. Ordinary immediate reverse streams retain their
+existing direct lowering. Custom reverse/index protocols require additional
+native adapters and produce positioned diagnostics.

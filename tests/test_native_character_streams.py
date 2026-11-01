@@ -1,11 +1,17 @@
 """Single-codepoint iterator operands retain text semantics without eager copies."""
 import re
+import sys
+from pathlib import Path
 import shutil
 import subprocess
 import unittest
 
 import test_native_iterator_reductions as helpers
 from py2fastrust.aot import rust_mask
+
+
+CAPTURED_CHARACTER_SOURCE = 's=input()\ntext=str\nsize=len\ntest=bool\nprint(sum(map(test,s)),sum(map(size,map(text,s))))\nprint(any(filter(None,s)),all(c==str(c) for c in map(text,s)))\n'
+REVERSE_CHARACTER_SOURCE = 's=input()\nprint(sum(i*(c=="x") for i,c in enumerate(s,start=3)))\nprint(sum(a==b for a,b in zip(s,reversed(s))))\nprint(all(c for c in reversed(s)))\n'
 
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
@@ -28,7 +34,7 @@ class NativeCharacterStreamTests(unittest.TestCase):
     def no_character_materialization(self, rust):
         self.assertNotIn("char::from_u32", rust)
         self.assertNotRegex(rust, r"native_temp_\d+\.to_string\(\)")
-        self.assertRegex(rust, r"let native_temp_\d+:u32=")
+        # Both u32 and inline text carriers are valid; allocation scaling is checked below.
 
     def test_ascii_predicate_truth_and_length_reductions_do_not_materialize_items(self):
         def shape(rust):
@@ -159,14 +165,52 @@ print(sum(len(c) for c in values),list(c for c in values))
             main=compiled[2][compiled[2].rfind("fn main"):]
             self.assertNotIn("char::from_u32",rust_mask(main))
 
-    def test_ascii_out_of_domain_text_remains_safe_and_whole_io_is_utf8(self):
+    def test_text_input_respects_selected_profile(self):
         source='s=input()\nprint(s)\nprint(list(c for c in s))\n'
         for integer in ("i64", "i128", "bigint"):
             compiled=self.compile(source,integer)
             actual=subprocess.run([str(compiled[1])],input="猫🦀\n",text=True,
                                   capture_output=True,timeout=10)
-            self.assertEqual(actual.returncode,0,actual.stderr)
-            self.assertTrue(actual.stdout.startswith("猫🦀\n"))
+            self.assertEqual(actual.returncode,1)
+            self.assertEqual(actual.stdout,"")
+            self.assertIn('UnicodeDecodeError:',actual.stderr)
+            self.compare(self.compile(source,integer,string_mode='unicode'),"猫🦀\n")
+
+    def test_character_cursor_allocation_count_does_not_grow_per_item(self):
+        allocator=r'''
+use std::alloc::{GlobalAlloc,Layout,System};
+use std::sync::atomic::{AtomicUsize,Ordering};
+struct CharacterAllocator;
+static CHARACTER_ALLOCATIONS:AtomicUsize=AtomicUsize::new(0);
+unsafe impl GlobalAlloc for CharacterAllocator{
+ unsafe fn alloc(&self,layout:Layout)->*mut u8{CHARACTER_ALLOCATIONS.fetch_add(1,Ordering::Relaxed);System.alloc(layout)}
+ unsafe fn dealloc(&self,pointer:*mut u8,layout:Layout){System.dealloc(pointer,layout)}
+ unsafe fn realloc(&self,pointer:*mut u8,layout:Layout,size:usize)->*mut u8{CHARACTER_ALLOCATIONS.fetch_add(1,Ordering::Relaxed);System.realloc(pointer,layout,size)}
+}
+#[global_allocator]static CHARACTER_ALLOCATOR:CharacterAllocator=CharacterAllocator;
+fn main(){character_original_main();eprintln!("allocations={}",CHARACTER_ALLOCATIONS.load(Ordering::Relaxed));}
+'''
+        for source,mode,character in ((REVERSE_CHARACTER_SOURCE,'ascii','x'),
+                                      (CAPTURED_CHARACTER_SOURCE,'unicode','猫')):
+            compiled=self.compile(source,'i64',True,string_mode=mode)
+            rust=compiled[2]
+            self.assertEqual(rust.count('fn main(){'),1)
+            type(self).counter+=1
+            path=Path(self.directory.name,f'allocation_{self.counter}.rs')
+            path.write_text(rust.replace('fn main(){','fn character_original_main(){',1)+allocator)
+            binary=path.with_suffix('')
+            built=subprocess.run(['rustc','--edition=2021','--crate-name','character_allocations','-O',str(path),'-o',str(binary)],capture_output=True,text=True,timeout=120)
+            self.assertEqual(built.returncode,0,built.stderr)
+            counts=[]
+            for length in (1,1000,1000000):
+                data=character*length+'\n'
+                expected=subprocess.run([sys.executable,'-I','-B','-c',source],input=data,capture_output=True,text=True,timeout=10)
+                actual=subprocess.run([str(binary)],input=data,capture_output=True,text=True,timeout=10)
+                self.assertEqual((actual.returncode,actual.stdout),(expected.returncode,expected.stdout),actual.stderr)
+                match=re.fullmatch(r'allocations=(\d+)\n',actual.stderr)
+                self.assertIsNotNone(match,actual.stderr)
+                counts.append(int(match.group(1)))
+            self.assertLessEqual(counts[-1]-counts[0],64,(mode,counts))
 
 
 if __name__ == "__main__":

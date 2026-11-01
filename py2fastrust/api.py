@@ -48,7 +48,7 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
             return TranspileResult(None, (Diagnostic(str(exc), options.filename, code="E004"),))
         program = build_program(source, options.filename, options.module_paths, options.include_modules)
         from .native_module_linking import needs_linking,generate_linked
-        linked=needs_linking(program)
+        linked=needs_linking(program,integer=options.integer)
         if options.include_modules:
             return TranspileResult(None, (Diagnostic(
                 "Cannot lower --include-module: prebundled runtime module lookup for compile/eval/exec is not implemented for the requested modules (" + ", ".join(options.include_modules) + "). Fixed-name source imports use static linking without this option.",
