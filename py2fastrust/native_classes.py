@@ -573,9 +573,10 @@ class Model:
             values.append(value)
 
     def snapshot(self):
+        from .native_class_extrema import snapshot as extrema_snapshot
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
-                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),
+                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())))
 
@@ -1538,7 +1539,8 @@ class Emitter:
         if tag=="iterator"and hasattr(value.kind.record,"tool"):
             return 'format!("<itertools.'+value.kind.record.tool+' object at 0x{:x}>",Rc::as_ptr(&('+value.code+'))as usize)'
         if tag=="function":
-            raise ClassUnsupported(node,"this stored source function needs Python's function-object repr/name/address protocol; typed callable capture and direct dispatch are supported, but function-object display metadata is not implemented",types=(("value",value.kind),),proof="function-object display protocol")
+            from .native_callable_display import emit as show_callable
+            return show_callable(self,value,node)
         if tag=="globals_dict":
             raise ClassUnsupported(node,"displaying this globals dictionary needs value lookup and ordered dictionary repr; the live namespace view currently implements binding membership, length and identity",proof="module namespace value/iteration protocol")
         if tag in {"int","bool","int_bool","str","bytes","none","object","list","float"}:
@@ -1798,6 +1800,8 @@ class Emitter:
         symbols={ast.Eq:"==",ast.NotEq:"!=",ast.Lt:"<",ast.LtE:"<=",ast.Gt:">",ast.GtE:">="}
         if a in numeric and b in numeric and type(operator)in symbols:
             return f"({self.number(left)}){symbols[type(operator)]}({self.number(right)})"
+        if a==b=="float"and type(operator)in symbols:
+            return f"({left.code}){symbols[type(operator)]}({right.code})"
         if a==b and a in {"str","bytes"}and type(operator)in symbols:
             return f"{left.code}{symbols[type(operator)]}{right.code}"
         if self.model.integer!="bigint"and a in numeric|{"float"}and b in numeric|{"float"}:
@@ -1805,6 +1809,13 @@ class Emitter:
             return self.numeric.compare(temporary,[self.scalar(left),self.scalar(right)]).code
         if isinstance(operator,(ast.Eq,ast.NotEq))and a!=b:
             return str(isinstance(operator,ast.NotEq)).lower()
+        if isinstance(operator,(ast.Lt,ast.LtE,ast.Gt,ast.GtE))and'object'in {a,b}:
+            sealed={'object','int','bool','int_bool','float','str','bytes','none','function','list','tuple','tuple_sequence','range','globals_dict','dict','set','dict_view'}
+            if a in sealed and b in sealed:
+                from .native_class_builtins import _type_name
+                symbol=symbols[type(operator)]
+                message=_string(f"TypeError: '{symbol}' not supported between instances of '{{}}' and '{{}}'")
+                return self.at('Err::<bool,String>(format!('+message+','+_type_name(self,left,node)+','+_type_name(self,right,node)+'))',node)
         from .native_union_sequences import ordering_error
         error=ordering_error(self,operator,left,right,node)
         if error is not None:return error
@@ -2423,6 +2434,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         for record in model.mappings.records:
             add_kind(shape(record.key));add_kind(shape(record.value))
         for kind in model.expanded_calls.kinds():add_kind(kind)
+        from .native_class_extrema import kinds as extrema_kinds
+        for kind in extrema_kinds(model):add_kind(kind)
         for _,kind in model.namespace.fields():add_kind(kind)
         for _,kind in model.namespace.default_fields():add_kind(kind)
         for value in model.namespace.local_schemas.values():add_kind(shape(value))

@@ -98,7 +98,11 @@ print(clamp(int(input()),-4,9),clamp(7,2,3))
         for name in ["min", "max"]:
             self.differential(f"print(1)\nprint({name}([]))\n")
 
-    def test_unproved_callbacks_and_rebound_builtins_are_not_specialized(self):
-        for source in ["print(max([1,2],key=lambda x:-x))\n",
-                       "print(max(1,2,default=3))\n"]:
-            self.assertIsNone(try_generate_native(source,"native_input.py","i64"))
+    def test_callbacks_and_invalid_defaults_use_native_execution(self):
+        import test_native_class_iterators as execution
+        cases={"key": "print(max([1,2],key=lambda x:-x))\n",
+               "invalid_default": "print(max(1,2,default=3))\n"}
+        helper=execution.IteratorExecutionTests()
+        helper.cases=cases
+        for name in cases:
+            with self.subTest(name=name):helper.check(name)

@@ -25,6 +25,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name=='sorted':
         from .native_class_sorting import analyze_builtin
         return analyze_builtin(model,plan,node,arguments,keywords,environment,factory=cell)
+    if name in {'min','max'}:
+        from .native_class_extrema import analyze as analyze_extrema
+        return analyze_extrema(model,plan,node,name,arguments,keywords,environment,factory=cell)
     if name=='pow':
         from .native_class_numeric_calls import analyze as analyze_numeric
         return analyze_numeric(model,plan,node,identity,arguments,keywords,environment,factory=cell,call_arguments=call_arguments)
@@ -117,6 +120,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
 def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_classes import Expression
     from .native_unions import project,union_kind
+    if identity.name in {'min','max'}:
+        from .native_class_extrema import emit as emit_extrema
+        return emit_extrema(emitter,node,identity.name,arguments,keywords,wanted)
     if identity.name=='tuple':
         from .native_class_materialization import emit_tuple
         return emit_tuple(emitter,node,arguments,wanted)

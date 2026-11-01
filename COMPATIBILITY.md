@@ -63,8 +63,22 @@ tuples with supported comparable fields; fixed-width modes also support scalar
 floats. Every argument runs before comparisons, ties retain the first value,
 and tuples compare lexicographically with short-circuited field comparisons.
 `key=None` is supported. Captured builtin identities can replace `min`/`max`
-bindings without dispatching by their old spelling. User key callbacks, general
-mutable candidates, and tuple float identity rules require further lowering.
+bindings without dispatching by their old spelling. Typed frames also support
+`key` callbacks and the single-iterable `default` argument. Keys run once per
+candidate in source order; equal keys retain the first original candidate and
+mutable aliases are preserved. Empty input returns its captured default without
+calling the key. Generator inputs use direct loop sinks, keeping construction,
+keyword evaluation and body execution in their original order. Source callbacks
+invalidate loop field caches through a shared semantic-effect registry. Bare
+binary64 comparisons retain native partial ordering in every integer mode;
+exact mixed BigInt/float ordering and identity-sensitive floating containers
+still require their own protocols.
+
+Canonical builtin and registered native-member references have stable display
+metadata, including builtin class names. Display of source functions and bound
+methods still requires their name/address object protocol. Default user objects
+raise ordering `TypeError` only when a comparison is actually needed; defining
+custom special methods remains an explicit unsupported class protocol.
 
 Generator expressions consumed by `sum`, `any`, `all`, `min`, or `max` lower to
 typed Rust loops, including proved nested clauses, filters, and

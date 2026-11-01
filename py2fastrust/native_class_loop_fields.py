@@ -21,8 +21,8 @@ def key(emitter,node):
 
 def _may_call_source(emitter,node):
     """Resolve a call's effects through the same proof/carrier as emission."""
-    sorting=getattr(emitter.model,"sorting_sites",{}).get((emitter.plan.index,id(node)))
-    if sorting is not None and sorting.callback is not None:return True
+    from .native_callback_effects import may_call
+    if may_call(emitter.model,emitter.plan,node):return True
     from .native_frame_references import call_target
     if call_target(emitter.model,emitter.plan,node)is not None:return True
     site=emitter.model.callable_cells.sites.get((emitter.plan.index,id(node)))
@@ -43,6 +43,8 @@ def candidates(emitter,node):
     nodes=[child for root in roots for child in ast.walk(root)]
     if any(isinstance(child,(ast.Lambda,ast.ListComp,ast.SetComp,ast.DictComp,ast.GeneratorExp,ast.FunctionDef,ast.ClassDef))for child in nodes):return {}
     if any(isinstance(child,ast.Attribute)and isinstance(child.ctx,(ast.Store,ast.Del))for child in nodes):return {}
+    from .native_callback_effects import may_call
+    if any(may_call(emitter.model,emitter.plan,child)for child in nodes):return {}
     for child in nodes:
         if not isinstance(child,ast.Call):continue
         if emitter.model.iterators.effects(emitter.plan,child):return {}

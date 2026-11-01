@@ -141,5 +141,7 @@ def select_frames(unit):
            for site,node in nodes.items()):reasons+=("expanded positional call arguments",)
     from .native_type_checks import requires_frames
     if requires_frames(analysis):reasons+=("captured builtin type predicates",)
+    from .native_class_extrema import requires_frames as extrema_requires_frames
+    if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)
