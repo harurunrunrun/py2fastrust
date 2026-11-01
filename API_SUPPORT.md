@@ -274,3 +274,10 @@ Unlisted `sys` APIs are unsupported.
 | `typing` | `TypeVar`, `ParamSpec`, `TypeVarTuple`, `TypeAliasType`, `Generic`, `Unpack`, `Union`, `ForwardRef`, `NoDefault`, `ParamSpecArgs`/`ParamSpecKwargs`, `get_args`/`get_origin`; the whole module is not supported |
 
 Typed frame sorting supports `sorted(iterable, *, key=None, reverse=False)` and exact builtin `list.sort(*, key=None, reverse=False)` with captured source functions, closures, lambdas, builtin adapters and bound source methods as keys. Keys run once per input element before ordering; reverse sorting remains stable. Integer/boolean, text/bytes, and finite tuple/list key shapes use native comparisons while retaining element references. Floating NaN ordering and custom rich-comparison protocols remain required unfinished work.
+
+Canonical eager native-member capabilities also admit original generator
+expressions to `Counter` construction and its sealed `update`/`subtract` methods.
+The shared generator collector writes directly into count storage; it preserves
+argument order, body frames, PEP 479 and dictionary mutation checks without an
+intermediate list. Saved generators, lazy adapters and arbitrary user methods
+still require general suspension state.

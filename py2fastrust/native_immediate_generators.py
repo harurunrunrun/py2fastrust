@@ -50,18 +50,40 @@ class Generators:
         if isinstance(parent,ast.Starred):
             call=self.parents.get(id(parent))
             return isinstance(call,ast.Call)and parent in call.args
-        if not isinstance(parent,ast.Call)or not parent.args or parent.args[0]is not node:return False
+        if not isinstance(parent,ast.Call)or node not in parent.args:return False
+        position=parent.args.index(node)
+        from .native_module_calls import BuiltinRef
+        def admitted(identity):
+            if isinstance(identity,BuiltinIdentity):return position==0 and identity.name in CONSUMERS
+            if isinstance(identity,BuiltinRef):
+                adapter=self.model.callable_cells.member_adapters.get(identity.module)
+                capabilities=getattr(adapter,'EAGER_ARGUMENTS',{})
+                if identity.name in capabilities:
+                    positions=capabilities[identity.name]
+                    return positions is None or position in positions
+            return False
         identity=self.model.builtin_identity(plan,parent.func,environment)if isinstance(parent.func,(ast.Name,ast.Attribute))else None
         linked=getattr(self.model.callable_cells,'linked_builtins',None)
         if linked is not None:identity=linked.identity(plan,parent.func,identity)
-        if isinstance(identity,BuiltinIdentity)and identity.name in CONSUMERS:return True
+        if admitted(identity):return True
         value=self.model.records.get((plan.index,id(parent.func)))
         if value is not None:
             targets=[]
             for branch in alternatives(shape(value)):
-                if not getattr(branch,'_native_function_reference',False):return False
+                if not getattr(branch,'_native_function_reference',False):break
                 targets.extend(branch.targets)
-            return bool(targets)and all(isinstance(target,BuiltinIdentity)and target.name in CONSUMERS for target in targets)
+            else:
+                if targets and all(admitted(target)for target in targets):return True
+        if isinstance(parent.func,ast.Attribute):
+            receiver=self.model.records.get((plan.index,id(parent.func.value)))
+            if receiver is not None and shape(receiver)is not None:
+                def accepted(kind):
+                    for adapter in self.model.callable_cells.member_adapters.values():
+                        capability=getattr(adapter,'eager_method_arguments',None)
+                        positions=None if capability is None else capability(kind,parent.func.attr)
+                        if positions is not None and position in positions:return True
+                    return False
+                return all(accepted(kind)for kind in alternatives(shape(receiver)))
         return False
 
     def analyze(self,plan,node,environment):

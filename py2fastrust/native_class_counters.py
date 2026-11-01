@@ -6,6 +6,13 @@ from .native_types import alternatives,EmptyType
 class CollectionsAdapter:
     NAMES=frozenset({'Counter'})
     TYPES=frozenset({'Counter'})
+    EAGER_ARGUMENTS={'Counter':frozenset({0})}
+
+    @staticmethod
+    def eager_method_arguments(kind,name):
+        if (getattr(kind,'_native_class_mapping',False)and kind.record.flavor=='Counter'
+                and name in {'update','subtract'}):return frozenset({0})
+        return None
 
     @staticmethod
     def match_type(emitter,node,value,name):
@@ -65,6 +72,10 @@ class Counters:
         from .native_class_mappings import mapping_kind
         site.source=source;kinds=alternatives(shape(source))
         owners=alternatives(shape(site.owner))
+        if getattr(shape(source),'_native_class_generator',False):
+            item=self.model.generators.demand(plan,node,source,environment)
+            for owner in owners:self.mappings.contribute_key(owner.record,item,node)
+            return
         ordinary=[]
         for kind in kinds:
             if kind=='none':continue
@@ -184,6 +195,10 @@ class Counters:
         from .native_classes import Expression,shape
         from .native_unions import project,union_kind
         if source.kind=='none':return ''
+        if getattr(source.kind,'_native_class_generator',False):
+            def append(current,item):
+                return self._add(current,node,owner,item,Expression(current.literal(1),'int',1),subtract=subtract)
+            return self.model.generators.consume(emitter,node,'eager_member',source,[source],{},'none',append_item=append).code+';'
         if union_kind(source.kind):
             from .native_class_mappings import mapping_kind
             def branch(kind,text):
