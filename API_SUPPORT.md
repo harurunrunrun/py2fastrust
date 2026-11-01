@@ -246,7 +246,8 @@ coverage.
 ## itertools
 
 Direct typed frames currently adapt canonical `repeat`, `chain`, `islice`,
-`pairwise`, and `accumulate`, including saved aliases, lazy consumption, shared mutable values,
+`pairwise`, `accumulate`, `product`, `combinations`, `permutations`, and
+`combinations_with_replacement`, including saved aliases, lazy consumption, shared mutable values,
 loop/comprehension consumers and their builtin class-info queries. `chain`
 defers acquisition of each input iterator until it is reached; `chain.from_iterable`
 and the other entries in the retained inventory below still need direct adapters.
@@ -346,7 +347,16 @@ still require general suspension state.
 from concrete pool/index state. Runtime `repeat`, zero dimensions, mutable
 element aliases and eager generator inputs are supported. Small proved ranks
 retain Rust tuple field types; other ranks use typed immutable tuple storage.
-General stored generators and the remaining combinatoric APIs remain unfinished.
+General stored generators still require suspension state.
+
+`combinations`, `permutations`, and `combinations_with_replacement` also capture
+one immutable input pool at construction and emit tuples lazily from native
+indices/cycles. They support positional/keyword arguments, dynamic `r`, the
+permutation default/None rank, mutable item identity, source errors, shared
+partial consumption, generator pools, and runtime-rank tuple unpacking. Rank
+conversion and pool consumption retain each API's Python ordering.
+The eager-member capability registry also recognizes admitted keyword iterable
+arguments; unrelated user/lazy calls do not gain eager generator admission.
 
 Typed frame `enumerate` values now have shared concrete cursor state, including
 source aliases, keyword starts, returned iterators, generic `zip`/sorting/extrema

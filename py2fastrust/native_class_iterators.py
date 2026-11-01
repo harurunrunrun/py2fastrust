@@ -56,6 +56,12 @@ class IteratorRecord:
 def iterator_kind(kind):return isinstance(kind,IteratorType)
 
 
+def tuple_cursor_required(kind):
+    from .native_types import TupleType
+    return (isinstance(kind,TupleType)and len(set(kind.fields))>1 and
+            not all(value in {'int','bool','int_bool'}for value in kind.fields))
+
+
 class Iterators:
     def __init__(self,model):
         self.model=model

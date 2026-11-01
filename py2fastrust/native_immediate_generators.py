@@ -50,13 +50,20 @@ class Generators:
         if isinstance(parent,ast.Starred):
             call=self.parents.get(id(parent))
             return isinstance(call,ast.Call)and parent in call.args
-        if not isinstance(parent,ast.Call)or node not in parent.args:return False
-        position=parent.args.index(node)
+        keyword=None
+        if isinstance(parent,ast.keyword):
+            keyword=parent.arg;parent=self.parents.get(id(parent))
+            if keyword is None or not isinstance(parent,ast.Call):return False
+            position=None
+        else:
+            if not isinstance(parent,ast.Call)or node not in parent.args:return False
+            position=parent.args.index(node)
         from .native_module_calls import BuiltinRef
         def admitted(identity):
-            if isinstance(identity,BuiltinIdentity):return position==0 and identity.name in CONSUMERS
+            if isinstance(identity,BuiltinIdentity):return keyword is None and position==0 and identity.name in CONSUMERS
             if isinstance(identity,BuiltinRef):
                 adapter=self.model.callable_cells.member_adapters.get(identity.module)
+                if keyword is not None:return keyword in getattr(adapter,'EAGER_KEYWORDS',{}).get(identity.name,())
                 capabilities=getattr(adapter,'EAGER_ARGUMENTS',{})
                 if identity.name in capabilities:
                     positions=capabilities[identity.name]
@@ -74,6 +81,7 @@ class Generators:
                 targets.extend(branch.targets)
             else:
                 if targets and all(admitted(target)for target in targets):return True
+        if keyword is not None:return False
         if isinstance(parent.func,ast.Attribute):
             receiver=self.model.records.get((plan.index,id(parent.func.value)))
             if receiver is not None and shape(receiver)is not None:

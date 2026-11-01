@@ -1308,7 +1308,8 @@ class Model:
                 value=None
                 if isinstance(node,ast.For):
                     value = self.expression(plan,node.iter,environment)
-                    if self.mappings.views.element(shape(value))is not None:
+                    from .native_class_iterators import tuple_cursor_required
+                    if self.mappings.views.element(shape(value))is not None or tuple_cursor_required(shape(value)):
                         value=Cell(self.iterators.source(plan,node,value))
                 start=Environment(environment)
                 key=plan.index,id(node)
@@ -2269,7 +2270,8 @@ class Emitter:
                     and iterable.func.id=="enumerate"and domain(self.kind(iterable))=="enumerate")
         source_node=iterable.args[0]if enumerated else iterable
         setup,source=self.capture(self.expression(source_node))
-        if self.model.mappings.views.element(source.kind)is not None:
+        from .native_class_iterators import tuple_cursor_required
+        if self.model.mappings.views.element(source.kind)is not None or tuple_cursor_required(source.kind):
             before,source=self.capture(self.model.iterators.construct(self,node,source));setup+=before
         counter=None
         if enumerated:

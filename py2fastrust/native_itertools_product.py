@@ -79,16 +79,7 @@ def emit(emitter,node,identity,call,positional,keywords):
     for target in (pools,indices):code+=emitter.at(target+'.try_reserve_exact('+dimensions+').map_err(|_|"MemoryError".to_owned())',node)+';'
     code+=indices+'.resize('+dimensions+',0);if '+count+'>0{'
     for value,source_kind in zip(positional,record.input_types):
-        pool=emitter.fresh();code+='let mut '+pool+':Vec<'+rendered+'>=Vec::new();'
-        def append(current,item):
-            reserve=current.at(pool+'.try_reserve(1).map_err(|_|"MemoryError".to_owned())',node)
-            return reserve+';'+pool+'.push('+current.coerce(item,element,node)+');'
-        if getattr(value.kind,'_native_class_generator',False):
-            code+=emitter.model.generators.consume(emitter,node,'eager_member',value,[value],{},'none',append_item=append).code+';'
-        else:
-            before,source=emitter.capture(emitter.model.iterators.construct(emitter,node,value,kind=source_kind));code+=before
-            pulled=emitter.model.iterators.pull(emitter,node,source);item=emitter.fresh()
-            code+='loop{let Some('+item+')=('+pulled.code+')else{break;};'+append(emitter,Expression(item,pulled.kind))+'}'
+        pool=emitter.fresh();code+=collect_pool(emitter,node,value,source_kind,element,pool)
         code+=pools+'.push(Rc::new('+pool+'));'
     if positional:
         cursor=emitter.fresh()
@@ -96,6 +87,22 @@ def emit(emitter,node,identity,call,positional,keywords):
     code+='}'
     code+=f'Rc::new(RefCell::new(ClassIteratorState_{record.index}{{pools:{pools},indices:{indices},started:false,done:false}}))'
     return Expression('{'+code+'}',record.kind)
+
+
+def collect_pool(emitter,node,value,source_kind,element,pool):
+    from .native_classes import Expression
+    rendered=emitter.rust_type(element)
+    code='let mut '+pool+':Vec<'+rendered+'>=Vec::new();'
+    def append(current,item):
+        reserve=current.at(pool+'.try_reserve(1).map_err(|_|"MemoryError".to_owned())',node)
+        return reserve+';'+pool+'.push('+current.coerce(item,element,node)+');'
+    if getattr(value.kind,'_native_class_generator',False):
+        code+=emitter.model.generators.consume(emitter,node,'eager_member',value,[value],{},'none',append_item=append).code+';'
+    else:
+        before,source=emitter.capture(emitter.model.iterators.construct(emitter,node,value,kind=source_kind));code+=before
+        pulled=emitter.model.iterators.pull(emitter,node,source);item=emitter.fresh()
+        code+='loop{let Some('+item+')=('+pulled.code+')else{break;};'+append(emitter,Expression(item,pulled.kind))+'}'
+    return code
 
 
 class ProductState:

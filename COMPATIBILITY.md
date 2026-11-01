@@ -1014,3 +1014,22 @@ callbacks, optional initial values, partial consumption and shared payloads.
 Default addition uses the common value-operator planner, including boolean
 first-value identity, strings and shared lists. Transient source/callback
 `StopIteration` ends one pull without permanently exhausting its source.
+
+
+`itertools.combinations`, `permutations`, and `combinations_with_replacement`
+share the concrete eager pool collector with `product`. Their outputs remain
+lazy, retaining input item references and independent iterator progress through
+aliases. Explicit small literal ranks use native Rust tuple fields; dynamic
+ranks use typed immutable tuple storage, including checked loop unpacking.
+Positional/keyword binding, nullable permutation rank, boolean ranks, negative
+ranks, checked allocation sizes, source exhaustion and original error frames
+follow each API's Python ordering. Ordinary generator expressions can fill
+proved eager iterable parameters, including canonical keyword calls, without
+an intermediate list. General stored generators and user `__index__` protocols
+remain unfinished.
+
+Typed frame loops can consume heterogeneous immutable tuples through the same
+registered source cursor used by other containers. Their element families can
+contain captured callables or concrete iterators; `next` dispatches finite
+iterator alternatives while retaining source callback effects. Invalid
+noniterator alternatives raise their runtime `TypeError` at the call site.

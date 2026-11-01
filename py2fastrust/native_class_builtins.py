@@ -79,10 +79,22 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         return cell(model.iterators.source(plan,node,arguments[0]))
     if name == "next" and 1<=len(arguments)<=2 and not keywords:
         from .native_class_iterators import iterator_kind
-        from .native_classes import shape
+        from .native_types import alternatives
+        from .native_classes import shape,Environment
         result=cell()
-        if iterator_kind(shape(arguments[0]))or getattr(shape(arguments[0]),'_native_class_generator',False):
+        kinds=alternatives(shape(arguments[0]))
+        valid=[kind for kind in kinds if iterator_kind(kind)or getattr(kind,'_native_class_generator',False)]
+        if len(valid)==len(kinds):
             model.contribute(result,model.iterators.demand(plan,node,arguments[0],environment),node)
+        elif valid:
+            branches=[Environment(environment)]
+            for kind in valid:
+                inside=Environment(environment)
+                model.contribute(result,model.iterators.demand(plan,node,model.cell_for_kind(kind),inside),node)
+                branches.append(inside)
+            joined=branches[0]
+            for branch in branches[1:]:joined=model.join(joined,branch,node,'next_iterator_union')
+            model.replace_environment(environment,joined)
         elif shape(arguments[0])is not None:model.contribute(result,Cell("none"),node)
         if len(arguments)==2:model.contribute(result,arguments[1],node)
         return result
@@ -152,7 +164,7 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         return emit_numeric(emitter,node,identity,arguments,keywords,wanted)
     # Inspect finite tagged alternatives over captured values. Arguments and
     # keyword expressions have already run; these matches never replay them.
-    if identity.name in {"len","abs","int","bool","float","list","sum"}and arguments and union_kind(arguments[0].kind):
+    if identity.name in {"len","abs","int","bool","float","list","sum","next"}and arguments and union_kind(arguments[0].kind):
         value=arguments[0]
         code=project(value.kind,value.code,lambda kind,code:emit(emitter,node,identity,
             [Expression(f"({code}).clone()",kind)]+arguments[1:],keywords,wanted,raw_kind).code)
