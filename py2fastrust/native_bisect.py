@@ -6,30 +6,39 @@ from .native import _Binding,_Expression,_Unsupported
 from .native_types import EmptyType,TupleType,TupleSequenceType,alternatives,immutable,is_maybe,list_type
 
 
-HELPERS=r'''
-fn native_bisect_search<T,X,F:FnMut(&T,&X)->bool>(values:&[T],item:&X,lo:Option<isize>,hi:Option<isize>,mut advance:F)->Result<usize,String> {
+CHECKED_HELPERS=r'''
+fn native_bisect_search_checked<T,X,F:FnMut(&T,&X)->Result<bool,String>>(values:&[T],item:&X,lo:Option<isize>,hi:Option<isize>,mut advance:F)->Result<usize,String> {
     let mut lo=lo.unwrap_or(0);let mut hi=hi.unwrap_or(-1);
     if lo<0{return Err("ValueError: lo must be non-negative".into());}
     if hi== -1{hi=isize::try_from(values.len()).map_err(|_|"OverflowError: sequence is too large".to_owned())?;}
     while lo<hi {
         let mid=lo+(hi-lo)/2;
         let value=values.get(mid as usize).ok_or_else(||"IndexError: list index out of range".to_owned())?;
-        if advance(value,item){lo=mid+1;}else{hi=mid;}
+        if advance(value,item)?{lo=mid+1;}else{hi=mid;}
     }
     Ok(lo as usize)
 }
-fn native_bisect_insert<T,F:FnMut(&T,&T)->bool>(values:&mut Vec<T>,item:T,lo:Option<isize>,hi:Option<isize>,advance:F)->Result<(),String> {
-    let index=native_bisect_search(values,&item,lo,hi,advance)?.min(values.len());
+fn native_bisect_insert_checked<T,F:FnMut(&T,&T)->Result<bool,String>>(values:&mut Vec<T>,item:T,lo:Option<isize>,hi:Option<isize>,advance:F)->Result<(),String> {
+    let index=native_bisect_search_checked(values,&item,lo,hi,advance)?.min(values.len());
     values.try_reserve(1).map_err(|_|"MemoryError: cannot allocate list".to_owned())?;
     values.insert(index,item);Ok(())
 }
 '''
 
+HELPERS=CHECKED_HELPERS+r'''
+fn native_bisect_search<T,X,F:FnMut(&T,&X)->bool>(values:&[T],item:&X,lo:Option<isize>,hi:Option<isize>,mut advance:F)->Result<usize,String> {
+    native_bisect_search_checked(values,item,lo,hi,|a,b|Ok(advance(a,b)))
+}
+fn native_bisect_insert<T,F:FnMut(&T,&T)->bool>(values:&mut Vec<T>,item:T,lo:Option<isize>,hi:Option<isize>,mut advance:F)->Result<(),String> {
+    native_bisect_insert_checked(values,item,lo,hi,|a,b|Ok(advance(a,b)))
+}
+'''
 
-def helpers(bits):
+
+def helpers(bits,*,checked=False):
     conversion=('isize::try_from(*value).ok()'if bits else
                 'value.to_i128().and_then(|value|isize::try_from(value).ok())')
-    return HELPERS+f'''fn native_bisect_index(value:&NativeInt)->Result<isize,String>{{
+    return(CHECKED_HELPERS if checked else HELPERS)+f'''fn native_bisect_index(value:&NativeInt)->Result<isize,String>{{
     {conversion}.ok_or_else(||"OverflowError: Python int too large to convert to C ssize_t".to_owned())
 }}
 '''

@@ -109,6 +109,10 @@ class LinkedModel(Model):
         provider.register_member_adapter('sys',SysAdapter)
         from .native_itertools import ItertoolsAdapter
         provider.register_member_adapter('itertools',ItertoolsAdapter)
+        from .native_frame_heapq import HeapAdapter
+        provider.register_member_adapter('heapq',HeapAdapter)
+        from .native_frame_bisect import BisectAdapter
+        provider.register_member_adapter('bisect',BisectAdapter)
         from .native_class_counters import CollectionsAdapter
         provider.register_member_adapter('collections',CollectionsAdapter)
         return provider
@@ -583,6 +587,10 @@ def render_linked_runtime(model,source):
         else:support.append(f'fn class_import_{module.number}(class_scope:ClassScope)->ClassFuture<ClassModuleRef>{{Box::pin(async move{{{body}}})}}')
     from .native_math_calls import helpers as math_helpers
     support.append(math_helpers(model.integer,getattr(model,'native_math_functions',())))
+    from .native_frame_heapq import runtime as heap_runtime
+    support.append(heap_runtime(model))
+    from .native_frame_bisect import runtime as bisect_runtime
+    support.append(bisect_runtime(model))
     return source+'\n'+'\n'.join(support)
 
 

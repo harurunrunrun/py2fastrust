@@ -3,6 +3,7 @@ import ast
 
 LINKED_MODULES=frozenset({'itertools'})
 LINKED_EXPORTS={'collections':frozenset({'Counter'})}
+FRAME_MODULES=frozenset({'heapq','bisect'})
 
 
 def needs_linked_members(program):
@@ -10,6 +11,15 @@ def needs_linked_members(program):
         for imported in unit.imports:
             if imported.origin not in {'builtin','vendored'}:continue
             if imported.module in LINKED_MODULES:return True
+            if imported.module in FRAME_MODULES:
+                from .native_frame_selection import select_frames
+                from .native import _Unsupported,_direct_diagnostic
+                from .native_constraints import ConstraintFailure
+                from .diagnostics import CompilationError
+                try:required=select_frames(unit).required
+                except (SyntaxError,_Unsupported,RecursionError,ConstraintFailure)as error:
+                    raise CompilationError(_direct_diagnostic(unit.source,unit.filename,error,unit=unit))from None
+                if required:return True
             exports=LINKED_EXPORTS.get(imported.module,frozenset())
             if exports.intersection(imported.names):return True
             if exports and not imported.names:

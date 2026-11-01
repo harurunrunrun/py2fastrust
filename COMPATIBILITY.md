@@ -470,7 +470,7 @@ and escaped generator suspension still need their respective native adapters.
 The ten `heapq` operations `heapify`, `heappush`, `heappop`, `heappushpop`,
 `heapreplace`, and their `_max` counterparts operate directly on the original
 typed list. Supported payloads include immutable integer/bool, text/bytes and
-tuple values. Bare fixed-width floats use Python's strict `<` comparison,
+tuple values. Bare floats use Python's strict `<` comparison in every integer mode,
 including NaNs. Shared list handles preserve caller/row aliases and capture
 the receiver before later arguments run. Floating tuple identity, custom or
 fallible comparisons, `merge`, `nlargest`, and `nsmallest` remain unfinished.
@@ -482,7 +482,14 @@ conversion and before borrowing the captured list. `key=None` is supported;
 callable keys, arbitrary sequence protocols, and custom/fallible comparisons
 remain unfinished. Module/member aliases and local imports retain their
 resolved identities. These adapters support all integer modes; BigInt/float
-comparison is still a separate unfinished requirement.
+comparison is still a separate unfinished requirement. Canonical heap/bisection
+imports also work inside typed class, closure and linked-module frames. Captured
+callee and argument values retain evaluation order, source-list identity and
+argument effects before binding/bounds errors. Frame bisection dispatches finite
+scalar/list alternatives and raises builtin ordering errors only for elements
+actually visited. Callable keys, custom index/sequence/ordering protocols,
+heap stream selection and native-member starred expansion remain explicit
+positioned diagnostics. Ordinary vector-only programs retain their direct path.
 
 Module members and standard-input references share a lexical identity resolver.
 Function specializations preserve the presence of global names even when their

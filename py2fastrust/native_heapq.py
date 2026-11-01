@@ -83,7 +83,7 @@ def _comparator(g,element,node,maximum):
     a=_Expression(f'(*{left})',element,owned=False);b=_Expression(f'(*{right})',element,owned=False)
     if maximum:a,b=b,a
     if element=='float'or isinstance(element,UnionType)and 'float'in alternatives(element):
-        if not g.bits:
+        if not g.bits and element!='float':
             raise _Unsupported('the BigInt path has no exact float comparison representation for heap items',node=node,types=(('element',element),),proof='BigInt/float heap comparison')
         from .native_comparisons import ordering
         # Bare floats use only <, including unordered NaN comparisons. Tuple
