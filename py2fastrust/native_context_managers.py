@@ -168,8 +168,12 @@ class ContextManagers:
             dispatch.append('Ok(ClassWithFlow::Return(value))=>'+_return_value(emitter,'value'))
             dispatch.append('Ok(ClassWithFlow::Break)=>'+_loop_transfer(emitter,False))
             dispatch.append('Ok(ClassWithFlow::Continue)=>'+_loop_transfer(emitter,True))
-            truth=emitter.truth(Expression(exit_value,exited.kind))
-            dispatch.append(f'Err(error)=>{{if !({truth}){{return Err(error);}}}}')
+            from .native_builtin_singletons import has_singleton
+            truth=emitter.truth(Expression(exit_value,exited.kind),item.context_expr)
+            if has_singleton(exited.kind):
+                checked=emitter.fresh()
+                dispatch.append(f'Err(previous)=>{{let {checked}:ClassResult<bool>=(||->ClassResult<bool>{{Ok({truth})}})();match {checked}{{Ok(true)=>(),Ok(false)=>return Err(previous),Err(mut error)=>{{class_with_attach_context(&mut error,previous);return Err(error);}}}}}}')
+            else:dispatch.append(f'Err(error)=>{{if !({truth}){{return Err(error);}}}}')
             return '{'+setup+'match '+outcome+'{'+','.join(dispatch)+'}}'
         return emit_item(0)
 

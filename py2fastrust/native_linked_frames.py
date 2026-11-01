@@ -332,9 +332,9 @@ class LinkedEmitter(Emitter):
         if defining_class is None:raise ClassUnsupported(constructor.node,"a linked class call needs its captured defining class object")
         return [defining_class]
 
-    def truth(self,value):
+    def truth(self,value,node=None):
         if isinstance(value.kind,(ModuleType,ClassReferenceType)):return "true"
-        return super().truth(value)
+        return super().truth(value,node)
 
     def comparison(self,operator,left,right,node):
         from .native_unions import union_kind

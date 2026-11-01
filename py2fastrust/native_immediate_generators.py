@@ -178,7 +178,7 @@ class Generators:
                     computed=e.numeric.binary(ast.Add(),e.scalar(Expression(result+'.clone()',wanted)),e.scalar(item),node)
                     action=f'{result}={e.coerce(computed,wanted,node)};'
                 elif name in {'any','all'}:
-                    truth=e.truth(item)
+                    truth=e.truth(item,node)
                     if name=='all':truth='!('+truth+')'
                     action=f'if {truth}{{break \'{label} {str(name=="any").lower()};}}'
                 elif name=='next':action=f'break \'{label} {e.coerce(item,wanted,node)};'

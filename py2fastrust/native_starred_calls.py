@@ -502,6 +502,12 @@ class ExpandedCalls:
         from .native_classes import Expression, ClassUnsupported
         from .native_class_builtins import _type_name
         from .native_unions import project, union_kind
+        from .native_builtin_singletons import has_singleton
+        if "flush"in keywords and has_singleton(keywords["flush"].kind):
+            checked=emitter.fresh()
+            converted=emitter.truth(keywords["flush"],node)
+            result=self._print(emitter,node,vector,element,{**keywords,"flush":Expression(checked,"bool")},wanted)
+            return "{let "+checked+"="+converted+";"+result+"}"
         for parameter in ("sep", "end", "file"):
             value = keywords.get(parameter)
             if value is not None and union_kind(value.kind):

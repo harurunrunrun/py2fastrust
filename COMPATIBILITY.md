@@ -1381,6 +1381,20 @@ looking up the target owner. Augmented assignment retains its owner and reads
 the old value before evaluating its RHS. Method/descriptor alternatives and
 cycle-aware object lifetimes remain independent capabilities.
 
+The canonical builtin `NotImplemented` has a distinct native singleton type.
+Unmodified builtin reads, saved aliases, parameter/return values, mixed shared
+containers, identity and display preserve that value separately from `None` and
+function objects. Truth testing raises Python3.14's `TypeError` at the original
+demand location, including deferred filter/any/all consumers and map strictness.
+Fallible `print(flush=...)` conversion precedes output and separator validation;
+cleanup-result truth errors retain the active body exception context.
+
+Mutable builtin-singleton namespace fallback and `builtins.NotImplemented`
+exports remain positioned conversion boundaries. This value carrier is a
+prerequisite for source numeric/reflected operator dispatch; it does not by
+itself enable user-defined numeric special methods. Programs without singleton
+values omit its runtime declaration.
+
 
 Native frame `for` and `while` loops support exhaustion `else` suites. Normal
 exhaustion and `continue` enter the suite; a completed `break`, `return`, or an

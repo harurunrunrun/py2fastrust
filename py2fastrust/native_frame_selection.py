@@ -145,6 +145,8 @@ def select_frames(unit,*,integer="i64"):
     if any(site in recorded and isinstance(node,ast.Call)and any(isinstance(value,ast.Starred)for value in node.args)
            and requires_expansion(unit,analysis,node)
            for site,node in nodes.items()):reasons+=("expanded positional call arguments",)
+    from .native_builtin_singletons import requires_frames as singleton_requires_frames
+    if singleton_requires_frames(unit,analysis):reasons+=("canonical builtin singleton values",)
     from .native_type_checks import requires_frames
     if requires_frames(analysis):reasons+=("captured builtin type predicates",)
     from .native_heap_selection import requires_frames as heap_selection_requires_frames

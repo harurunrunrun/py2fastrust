@@ -237,6 +237,8 @@ class CallableCells:
 
     def candidate(self,plan,node,environment):
         function=node.func
+        from .native_builtin_singletons import canonical_kind
+        if canonical_kind(self.model,plan,function,environment)is not None:return True
         if isinstance(function,ast.Name):
             name=self.model.resolved_name(plan,function)
             if self.stable_direct(plan,function,environment):
@@ -566,7 +568,7 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
             if set(kind.targets)!=(provider.used|provider.builtin_used|provider.member_used|provider.bound_methods.used):
                 arms.append('_=>unreachable!("callable binding contradicts finite target proof")')
             return "match "+code+"{"+",".join(arms)+"}"
-        names={"int":"int","bool":"bool","str":"str","bytes":"bytes","float":"float","none":"NoneType","list":"list","tuple":"tuple","range":"range"}
+        names={"int":"int","bool":"bool","str":"str","bytes":"bytes","float":"float","none":"NoneType","list":"list","tuple":"tuple","range":"range","builtin_singleton":"NotImplementedType"}
         from .native_classes import domain
         tag=domain(kind)
         if tag=="object":name=emitter.model.classes[kind.name].node.name

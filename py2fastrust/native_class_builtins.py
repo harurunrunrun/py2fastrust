@@ -144,6 +144,12 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
 def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_classes import Expression
     from .native_unions import project,union_kind
+    from .native_builtin_singletons import has_singleton
+    if identity.name=="print"and "flush"in keywords and has_singleton(keywords["flush"].kind):
+        checked=emitter.fresh()
+        converted=emitter.truth(keywords["flush"],node)
+        result=emit(emitter,node,identity,arguments,{**keywords,"flush":Expression(checked,"bool")},wanted,raw_kind)
+        return Expression("{let "+checked+"="+converted+";"+result.code+"}",result.kind)
     if identity.name=='int':
         from .native_integer_base import emit as emit_integer_base
         explicit=emit_integer_base(emitter,node,arguments,keywords,wanted)
@@ -303,7 +309,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         code=('NativeText::new()'if not arguments else arguments[0].code+'.clone()'
               if arguments[0].kind=="str"else self.show(arguments[0],node))
     elif name == "bool":
-        code='false'if not arguments else self.truth(arguments[0])
+        code='false'if not arguments else self.truth(arguments[0],node)
         raw_kind='bool'
     elif name == "float":
         from .native_float_constructor import frame_value
@@ -349,7 +355,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         source=arguments[0];setup=""
         if not iterator_kind(source.kind):
             setup,source=self.capture(self.model.iterators.construct(self,node,source))
-        pulled=self.model.iterators.pull(self,node,source);current=self.fresh();test=self.truth(Expression(current,pulled.kind))
+        pulled=self.model.iterators.pull(self,node,source);current=self.fresh();test=self.truth(Expression(current,pulled.kind),node)
         if name=="all":test="!("+test+")"
         return Expression("{"+setup+"loop{"+f"let Some({current})=({pulled.code}) else{{break {str(name=='all').lower()};}};if {test}{{break {str(name=='any').lower()};}}"+"}}","bool")
     elif name == "list":

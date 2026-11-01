@@ -47,6 +47,7 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,"_native_builtin_singleton",False):return "builtin_singleton"
     if getattr(kind,'_native_cmp_key',False):return 'cmp_key'
     if getattr(kind,'_native_class_deque',False):return 'deque'
     if getattr(kind,'_native_mapping_view',False):return 'dict_view'
@@ -245,7 +246,7 @@ class Environment(dict):
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
-    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict","dict","set","dict_view"}
+    DATA = {"builtin_singleton", "int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict","dict","set","dict_view"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -749,6 +750,9 @@ class Model:
                 from .native_class_builtins import SUPPORTED
                 if name not in SUPPORTED or plan is not self.module and plan.class_body is None:
                     raise ClassUnsupported(node,"this imported reference is not definitely bound at this execution point; a namespace-owned imported-object carrier is required for lookup before/after import",proof="import binding initialization and call-context availability")
+            from .native_builtin_singletons import analyze as analyze_singleton
+            singleton=analyze_singleton(self,plan,node,environment)
+            if singleton is not None:return self.remember(plan,node,singleton)
             provider=getattr(self,"callable_cells",None)
             function=provider.value(plan,node,environment)if provider is not None else None
             if function is not None:return self.remember(plan,node,function)
@@ -1475,6 +1479,7 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,"_native_builtin_singleton",False):return "NativeNotImplemented"
         if getattr(value,'_native_cmp_key',False):return 'Rc<NativeCmpKey_'+str(value.record.index)+'>'
         if getattr(value,"_native_erased_argument",False):return "()"
         if getattr(value,'_native_class_deque',False):return self.model.deques.rust_type(self,value)
@@ -1584,19 +1589,22 @@ class Emitter:
         value=self.expression(node)
         owner,result=self.fresh(),self.fresh()
         captured=Expression(owner,value.kind,value.constant)
-        truth=self.truth(captured)
+        truth=self.truth(captured,node)
         # Truth-only use supplies no result-type context for an empty generic
         # container. Retain its solved physical type and end borrow guards
         # before the captured Rc owner leaves this block.
         setup=f"let {owner}:{self.rust_type(value.kind)}={value.code};"
         return Expression("{"+setup+f"let {result}={truth};{result}"+"}","bool")
 
-    def truth(self, value):
+    def truth(self, value, node=None):
+        if getattr(value.kind,"_native_builtin_singleton",False):
+            from .native_builtin_singletons import truth
+            return truth(self,value,node)
         if getattr(value.kind,'_native_class_deque',False):return self.model.deques.truth(self,value)
         if getattr(value.kind,'_native_mapping_view',False):return self.model.mappings.views.truth(self,value)
         if isinstance(value.kind,EmptyType):return f"native_empty::<bool>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
-            lambda kind,code:self.truth(Expression(code,kind)))
+            lambda kind,code:self.truth(Expression(code,kind),node))
         tag = domain(value.kind)
         if tag in {"dict","set"}:return self.model.mappings.truth(self,value)
         if tag in {"int","bool","int_bool"}:
@@ -1627,6 +1635,7 @@ class Emitter:
         if getattr(value.kind,'_native_named_tuple',False):
             from .native_named_tuples import show
             return show(self,value,node)
+        if getattr(value.kind,"_native_builtin_singleton",False):return _string(value.kind.name)+".to_owned()"
         if getattr(value.kind,'_native_class_deque',False):return self.model.deques.show(self,value,node)
         if getattr(value.kind,'_native_mapping_view',False):return self.model.mappings.views.show(self,value,node)
         if isinstance(value.kind,EmptyType):return f"native_empty::<String>({value.code})"
@@ -1675,6 +1684,9 @@ class Emitter:
         return result
 
     def expression(self, node):
+        from .native_builtin_singletons import read as read_singleton
+        singleton=read_singleton(self,node)
+        if singleton is not None:return singleton
         wanted = self.kind(node)
         if isinstance(node,ast.JoinedStr):
             from .native_formatting import emit_joined
@@ -1819,7 +1831,7 @@ class Emitter:
                 retained = self.coerce(value,wanted,node)
                 rest = combine(values[1:])
                 yes,no = (rest,retained)if isinstance(node.op,ast.And)else(retained,rest)
-                return "{"+setup+"if "+self.truth(value)+"{"+yes+"}else{"+no+"}}"
+                return "{"+setup+"if "+self.truth(value,values[0])+"{"+yes+"}else{"+no+"}}"
             return Expression(combine(node.values),wanted)
         if isinstance(node,ast.Compare):
             values = [node.left]+node.comparators
@@ -1863,6 +1875,8 @@ class Emitter:
         return self.encoded(result.code,raw,wanted,node,result.constant)
 
     def comparison(self, operator, left, right, node):
+        if getattr(left.kind,"_native_builtin_singleton",False)and left.kind==right.kind and isinstance(operator,(ast.Is,ast.IsNot,ast.Eq,ast.NotEq)):
+            return "false"if isinstance(operator,(ast.IsNot,ast.NotEq))else"true"
         if union_kind(left.kind):return project(left.kind,left.code,
             lambda kind,code:self.comparison(operator,Expression(f"({code}).clone()",kind),right,node))
         if union_kind(right.kind):return project(right.kind,right.code,
@@ -2679,6 +2693,9 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     class_runtime=global_runtime(call_runtime(runtime.joinpath("native_classes.rs").read_text(encoding="utf-8"),model),model,emitters[0])
     if string_mode=="unicode" and not model.string_repr_required:
         class_runtime=class_runtime.replace("    fn class_repr(&self)->String{text_repr_str(self)}\n", "")
+    from .native_builtin_singletons import runtime as singleton_runtime
+    singleton_layout=singleton_runtime(model)
+    if singleton_layout:pieces.append(singleton_layout)
     from .native_variadic import runtime as variadic_runtime
     pieces.append(variadic_runtime(model))
     from .native_class_materialization import empty_runtime

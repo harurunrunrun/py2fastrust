@@ -306,11 +306,16 @@ class Iterators:
         from .native_classes import Expression
         record=wanted.record;record.emitted=True
         before=[];fields=[]
+        from .native_builtin_singletons import has_singleton
+        if has_singleton(strict.kind):
+            checked=emitter.fresh()
+            before.append("let "+checked+"="+emitter.truth(strict,node)+";")
+            strict=Expression(checked,"bool")
         for index,(source,kind)in enumerate(zip(sources,record.input_types)):
             setup,value=emitter.capture(self.construct(emitter,node,source,kind=kind))
             before.append(setup);fields.append(f"source_{index}:{value.code}")
         if callback is not None:fields.append("callback:"+callback.code)
-        fields.append("strict:"+emitter.truth(strict))
+        fields.append("strict:"+emitter.truth(strict,node))
         return Expression("{"+"".join(before)+f"Rc::new(RefCell::new(ClassIteratorState_{record.index}{{"+",".join(fields)+"}))}",wanted)
 
     def pull(self,emitter,node,value,active=()):
@@ -490,13 +495,13 @@ class Iterators:
         from .native_unions import project,union_kind
         from .native_aot_callables import emit_values
         def branch(kind,code):
-            if kind=="none":return 'Some('+emitter.truth(item)+')'
+            if kind=="none":return 'Some('+emitter.truth(item,node)+')'
             site=record.demands.get((emitter.plan.index,id(node)))
             if site is None:raise ClassUnsupported(node,"the deferred predicate has no matching typed demand proof",proof="deferred callable demand site")
             result=emit_values(emitter,node,site,Expression("("+code+").clone()",kind),[Expression(item.code+".clone()",item.kind)],[],shape(site.result))
             temporary=emitter.fresh()
             optional=self._callback_result(emitter,result)
-            return 'match '+optional.code+'{Some('+temporary+')=>Some('+emitter.truth(Expression(temporary,result.kind))+'),None=>None}'
+            return 'match '+optional.code+'{Some('+temporary+')=>Some('+emitter.truth(Expression(temporary,result.kind),node)+'),None=>None}'
         if union_kind(callback.kind):return project(callback.kind,callback.code,branch)
         return branch(callback.kind,callback.code)
 
