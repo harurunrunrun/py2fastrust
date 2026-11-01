@@ -9,6 +9,9 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
     if deque_type(storage.kind):
         from .native_deques import lower as deque_lower
         return deque_lower(g,storage,method,bound,node,environment)
+    if method.error:
+        from .native import _string
+        return _Expression(g.at(f"Err::<(),String>({_string(method.error)}.into())",node),"none")
     element=storage.element
     from .native_nested_lists import shared_element
     shared_kind=getattr(g,"shared_element",shared_element)
@@ -19,6 +22,15 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
         value=bound["value"]
         owned=value.code if value.kind==element and value.owned else g.coerce(value,element)
         code=g.at(f"native_typed_push({storage.mutable},{owned})",node)
+    elif name=="insert":
+        index=g.temporary()
+        value=bound["value"]
+        owned=value.code if value.kind==element and value.owned else g.coerce(value,element)
+        payload=g.temporary()
+        code=(f"{{let {index}={_insert_index(g,bound['index'],node)};let {payload}={owned};"
+              +g.at(f"native_sequence_insert({storage.mutable},{index},{payload})",node)+"}")
+    elif name=="remove":
+        code=_remove(g,storage,bound["value"],node)
     elif name=="extend":
         value=bound["iterable"]
         if not list_type(value.kind):
@@ -101,7 +113,69 @@ def _bound(g,value,default):
     return f"({code}) as i128" if g.bits else f"({code}).to_i128().unwrap_or_else(||if ({code}).is_negative(){{i128::MIN}}else{{i128::MAX}})"
 
 
+def _insert_index(g,value,node):
+    from .native_unions import project,union_kind
+    if union_kind(value.kind):
+        return project(value.kind,value.code,lambda kind,code:_insert_index(g,_Expression(f"({code}).clone()",kind),node))
+    if value.kind in {"int","bool","int_bool"}:
+        code=g.number(value)
+        if g.bits:converted=f"isize::try_from(({code}) as i128).ok()"
+        else:converted=f"({code}).to_i128().and_then(|value|isize::try_from(value).ok())"
+        return g.at(f'{converted}.ok_or_else(||"OverflowError: Python int too large to convert to C ssize_t".to_owned())',node)
+    from .native_comparisons import _type_name
+    type_name=getattr(g,"sequence_type_name",_type_name)
+    try:label=type_name(value)
+    except _Unsupported:
+        raise _Unsupported("list.insert index requires Python __index__ conversion for this value; that protocol adapter is not implemented",node=node,types=(("index",value.kind),),proof="Python integer-index protocol")from None
+    from .native_classes import InstanceType
+    if isinstance(value.kind,InstanceType):
+        raise _Unsupported("list.insert index requires Python __index__ conversion for this instance; that protocol adapter is not implemented",node=node,types=(("index",value.kind),),proof="Python integer-index protocol")
+    return g.at(f'Err::<isize,String>(format!("TypeError: \'{{}}\' object cannot be interpreted as an integer",{label}))',node)
+
+
+def _remove(g,storage,needle,node):
+    from .native_list_methods import _supported
+    from .native_tuples import _equal
+    from .native_types import SharedListType
+    from .native import _string
+    element=storage.element
+    missing=g.at(f'Err::<(),String>({_string("ValueError: list.remove(x): x not in list")}.into())',node)
+    if isinstance(element,EmptyType):return missing
+    custom_equal=getattr(g,"sequence_equal",None)if storage.shared else None
+    if isinstance(storage.kind,SharedListType):
+        from .native_nested_lists import equality
+        custom_equal=lambda left,right,node:equality(g,left,right,node)
+    if custom_equal is None and(not _supported(element)or not _supported(needle.kind)):
+        raise _Unsupported("list.remove requires Python equality and identity for this element/needle pair; that equality adapter is not implemented",node=node,types=(("element",element),("needle",needle.kind)),proof="Python list removal equality and identity")
+    from .native_classes import has_float_payload
+    if has_float_payload(element)or has_float_payload(needle.kind):
+        raise _Unsupported("list.remove requires identity-aware floating-point equality, including NaN objects; this element/needle adapter is not implemented",node=node,types=(("element",element),("needle",needle.kind)),proof="floating-point identity in list removal")
+    cursor,item,found,removed,values,candidate=(g.temporary()for _ in range(6))
+    if storage.shared:
+        value=_Expression(item,element)
+        equal=custom_equal(value,needle,node)if custom_equal else _equal(g,value,needle)
+        compare=(f"let {candidate}={{let {values}={storage.read};{values}.get({cursor}).cloned()}};"
+                 +f"let {found}=match {candidate}"
+                 +f"{{Some({item})=>{{let same={equal};drop({item});same}},None=>{{{missing};unreachable!()}}}};")
+    else:
+        equal=_equal(g,_Expression(f"(*{item})",element,owned=False),needle)
+        compare=(f"let {found}={{({storage.read}).get({cursor}).map(|{item}|{equal})}};"
+                 +f"let {found}=match {found}{{Some(value)=>value,None=>{{{missing};unreachable!()}}}};")
+    advance=g.at(f'{cursor}.checked_add(1).ok_or_else(||"OverflowError: list removal index overflow".to_owned())',node)
+    return (f"{{let mut {cursor}=0_usize;loop{{"+compare
+            +f"if {found}{{let {removed}={{let {values}={storage.mutable};"
+            +f"if {cursor}<{values}.len(){{Some({values}.remove({cursor}))}}else{{None}}}};drop({removed});break;}}"
+            +f"{cursor}={advance};"+"}}")
+
+
 HELPERS=r'''
+fn native_sequence_insert<T>(values:&mut Vec<T>,index:isize,value:T)->Result<(),String> {
+    native_typed_reserve(values,1)?;
+    let length=isize::try_from(values.len()).map_err(|_|"MemoryError".to_owned())?;
+    let position=if index<0 {index.saturating_add(length).max(0) as usize}
+        else {(index as usize).min(values.len())};
+    values.insert(position,value);Ok(())
+}
 fn native_typed_extend<T>(values:&mut Vec<T>,additional:Vec<T>)->Result<(),String> {
     native_typed_reserve(values,additional.len())?;
     values.extend(additional);Ok(())

@@ -241,16 +241,18 @@ print(*A)
                 if index:
                     self.differential(source + "print(A)\n", profiles=(False, True))
 
-    def test_unproved_live_iteration_mutations_reject(self):
-        programs = ["A=[1]\nfor a in A:\n A.append(a)\n",
-                    "A=[1]\nfor a in A:\n A[0]=2\n",
+    def test_unbounded_live_growth_compiles_without_execution(self):
+        source="A=[1]\nfor a in A:\n A.append(a)\n"
+        for release in (False,True):
+            with self.subTest(release=release):
+                self.compile(source,release)
+
+    def test_live_iteration_mutations_follow_python(self):
+        programs = ["A=[1]\nfor a in A:\n A[0]=2\n",
                     "A=[1]\nfor a in A:\n A=[2]\n"]
         for source in programs:
             with self.subTest(source=source):
-                result = transpile(source, TranspileOptions(integer="bigint", filename="unproved.py"))
-                self.assertFalse(result.success)
-                self.assertIsNone(result.rust_source)
-                self.assertEqual(result.diagnostics[0].code, "E006")
+                self.differential(source,profiles=(False,True))
 
 
 if __name__ == "__main__":

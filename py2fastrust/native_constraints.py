@@ -6,6 +6,7 @@ does not contain source values, invoke an emitter, or execute Python code.
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from dataclasses import dataclass,field
 from types import MappingProxyType
 
@@ -67,6 +68,7 @@ class TupleValue:
 @dataclass(frozen=True)
 class IteratorValue:
     item: Value
+    sources: frozenset[Allocation]=frozenset()
 
 
 @dataclass(frozen=True)
@@ -341,6 +343,7 @@ class Solver:
         self.shared_references=set()
         self.allocation_contexts={}
         self.incoming_sources={}
+        self.active_iterations=[]
 
     def constrain(self,variable,item):
         self.variables[variable]=self.variables.get(variable,BOTTOM).join(item)
@@ -439,13 +442,34 @@ class Solver:
                     fields=("element",)if part.category in {"list","tuple_sequence","deque"}else("key",)if part.category=="set"else("key","value")
                     pending.extend(self.field(part,name)for name in fields)
                 elif isinstance(part,TupleValue):pending.extend(part.fields)
-                elif isinstance(part,IteratorValue):pending.append(part.item)
+                elif isinstance(part,IteratorValue):
+                    pending.append(part.item)
+                    pending.extend(value(source)for source in part.sources)
                 elif isinstance(part,FunctionValue):pending.extend(item for _,item in part.defaults)
                 elif isinstance(part,MethodValue):pending.append(part.receiver)
         return allocations
 
+    def iteration_allocations(self,item):
+        """Bounded MAY-alias roots retained by an actual iterator, not its items."""
+        result=set()
+        for part in self.provenance(item).alternatives:
+            if isinstance(part,Allocation)and part.category=='list':result.add(part)
+            elif isinstance(part,IteratorValue):result.update(part.sources)
+        return frozenset(result)
+
+    def retain_iteration(self,item):
+        active=set().union(*self.active_iterations)if self.active_iterations else set()
+        self.shared_references.update(active&self.iteration_allocations(item))
+
+    @contextmanager
+    def iterating(self,item):
+        self.active_iterations.append(self.iteration_allocations(item))
+        try:yield
+        finally:self.active_iterations.pop()
+
     def record_mutation(self,receiver,context):
         """Preserve caller-owned list identity across a proved mutable call."""
+        self.retain_iteration(receiver)
         if context is None or context[0]is None:return
         incoming=self.incoming_allocations(context)
         for part in self.provenance(receiver).alternatives:
@@ -462,6 +486,7 @@ class Solver:
 
     def assign(self,target,item,state,context=None):
         if target[0]=="name":
+            self.retain_iteration(state.get(target[1],BOTTOM))
             incoming={part for part in self.provenance(item).alternatives if isinstance(part,Allocation)and part.category=="list"}
             if incoming:
                 for name,other in state.items():
@@ -584,12 +609,17 @@ class Solver:
                     state.clear();state.update(joined)
         elif op=="comprehension":
             inside=state.copy()
-            for target,source,filters in args[0]:
-                iterable=self.expression(source,inside,globals,locals,context)
-                self.assign(target,self.field_values(iterable,"iteration"),inside,context)
-                for condition in filters:self.expression(condition,inside,globals,locals,context)
-            items=tuple(self.expression(child,inside,globals,locals,context) for child in args[1])
-            if term.data=="iterator":result=value(IteratorValue(items[0]))
+            depth=len(self.active_iterations);sources=set()
+            try:
+                for target,source,filters in args[0]:
+                    iterable=self.expression(source,inside,globals,locals,context)
+                    owners=self.iteration_allocations(iterable);sources.update(owners)
+                    self.active_iterations.append(owners)
+                    self.assign(target,self.field_values(iterable,"iteration"),inside,context)
+                    for condition in filters:self.expression(condition,inside,globals,locals,context)
+                items=tuple(self.expression(child,inside,globals,locals,context) for child in args[1])
+            finally:del self.active_iterations[depth:]
+            if term.data=="iterator":result=value(IteratorValue(items[0],frozenset(sources)))
             else:
                 result=value(self.allocation(term.site,term.data,context))
                 if term.data=="dict":self.insert(result,"key",items[0]);self.insert(result,"value",items[1])
@@ -607,14 +637,19 @@ class Solver:
             return result
         if isinstance(identity,MethodValue):
             receiver=self.provenance(identity.receiver);name=identity.name
+            category={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
+            if category=={"list"}and name in {"insert","remove"}:
+                from .native_sequence_plans import LIST_METHODS,bind_error
+                if bind_error(LIST_METHODS[name],len(args),keywords).error:return value("none")
             if name in {"append","extend","clear","reverse","sort","pop","insert","remove"}:
                 self.record_mutation(receiver,context)
             category={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
             kinds={part for part in receiver.alternatives if isinstance(part,(str,ListType,DictType,SetType))}
             if name in {"append","appendleft","add"} and args and (category&{"list","deque","set"}):
                 self.insert(receiver,"key" if name=="add" else "element",args[0]);return value("none")
-            if name=="insert"and len(args)>1 and "deque"in category:
+            if name=="insert"and len(args)>1 and category&{"list","deque"}:
                 self.insert(receiver,"element",args[1]);return value("none")
+            if name=="remove"and "list"in category:return value("none")
             if name in {"extend","extendleft","update"} and args and (category&{"list","deque","set"}):
                 self.insert(receiver,"key" if name=="update" else "element",self.field_values(args[0],"iteration"));return value("none")
             if name in {"clear","reverse","rotate"}and "deque"in category:return value("none")
@@ -710,7 +745,9 @@ class Solver:
             else:item=UNKNOWN
             if name=="sorted":
                 result=value(self.allocation(term.site,"list",context));self.insert(result,"element",item);return result
-            return value(IteratorValue(item))
+            inputs=(args[1:]if name in {'map','filter'}else args if name=='zip'else args[:1]if name in {'iter','reversed','enumerate'}else())
+            sources=frozenset().union(*(self.iteration_allocations(item)for item in inputs))
+            return value(IteratorValue(item,sources))
         if name=="next" and args:
             item=self.field_values(args[0],"iteration")
             return item.join(args[1]) if len(args)>1 else item
@@ -802,11 +839,12 @@ class Solver:
                     self.expression(args[1],state.copy(),globals,locals,context)
             elif op=="delete":
                 def delete(target):
-                    if target[0]=='name':state[target[1]]=MISSING
+                    if target[0]=='name':self.assign(target,MISSING,state,context)
                     elif target[0]=='unpack':
                         for child in target[1]:delete(child)
                     elif target[0]=='index':
-                        evaluate(target[1]);evaluate(target[2])
+                        receiver=evaluate(target[1]);evaluate(target[2])
+                        self.record_mutation(receiver,context)
                     elif target[0]=='attribute':evaluate(target[1])
                 for target in operation.data:delete(target)
             elif op=="branch":
@@ -815,16 +853,17 @@ class Solver:
             elif op in {"for","while"}:
                 if op=="for":source=evaluate(args[0])
                 header=state.copy()
-                for iteration in range(128):
-                    inside=header.copy()
-                    if op=="for":self.assign(operation.data,self.field_values(source,"iteration"),inside,context)
-                    else:self.expression(args[0],inside,globals,locals,context)
-                    body=self.block(operation.blocks[0],inside,globals,locals,context)
-                    joined=merge([state,body.normal,*body.continues])
-                    if joined==header:break
-                    header=joined
-                else:
-                    header={name:UNKNOWN for name in header}
+                with self.iterating(source if op=='for'else BOTTOM):
+                    for iteration in range(128):
+                        inside=header.copy()
+                        if op=="for":self.assign(operation.data,self.field_values(source,"iteration"),inside,context)
+                        else:self.expression(args[0],inside,globals,locals,context)
+                        body=self.block(operation.blocks[0],inside,globals,locals,context)
+                        joined=merge([state,body.normal,*body.continues])
+                        if joined==header:break
+                        header=joined
+                    else:
+                        header={name:UNKNOWN for name in header}
                 self.headers[(context,operation.site)]=header
                 otherwise=self.block(operation.blocks[1],header,globals,locals,context)
                 flow.normal=merge([otherwise.normal,*body.breaks]);flow.breaks+=otherwise.breaks;flow.continues+=otherwise.continues

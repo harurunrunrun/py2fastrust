@@ -1367,6 +1367,9 @@ class _Generator:
         from .native_nested_lists import try_statement as shared_statement
         shared=shared_statement(self,node,environment)
         if shared is not None:return shared
+        from .native_unbinding import try_statement as unbinding_statement
+        unbound=unbinding_statement(self,node,environment)
+        if unbound is not None:return unbound
         from .native_deques import import_statement as deque_import
         imported=deque_import(self,node,environment)
         if imported is not None:return imported

@@ -1124,9 +1124,13 @@ class Model:
                     raise ClassUnsupported(function)
                 return self.bind_call(plan,node,method,[receiver]+arguments,keywords,environment)
             if receiver.tag == "list":
-                from .native_sequence_plans import sequence_method
+                from .native_sequence_plans import sequence_method,bind_error
                 method=sequence_method(shape(receiver),function.attr)
                 if method is not None:
+                    method=bind_error(method,len(arguments),keywords)
+                    if method.error:
+                        self.sequence_calls[(plan.index,id(node))]=method
+                        return self.cell(plan,node,"none")
                     if method.name=="sort":
                         from .native_class_sorting import analyze_method
                         self.sequence_calls[(plan.index,id(node))]=method
@@ -1139,6 +1143,8 @@ class Model:
                     self.sequence_calls[(plan.index,id(node))]=method
                     item=receiver.args[0]
                     if method.name=="append":self.contribute(item,bound["value"],node)
+                    elif method.name=="insert"and bound["index"].root().tag in {None,"int","bool","int_bool","union"}:
+                        self.contribute(item,bound["value"],node)
                     elif method.name=="extend":self.contribute(item,self.item(bound["iterable"],node),node)
                     elif method.name=="sort"and bound["key"].root().tag not in {None,"none"}:
                         raise ClassUnsupported(node,"the class-aware sequence path only captures None for list.sort key; retaining and invoking a user key callable once per element is not implemented",types=(("key",bound["key"]),),proof="key callable capture and ordered once-per-element evaluation")
@@ -1432,7 +1438,8 @@ class Model:
                         self.iterators.source(plan,node,value.root().args[0])
                 start=Environment(environment)
                 key=plan.index,id(node)
-                header=self.join(start,self.loop_feedback.get(key),node,"loop_header")
+                from .native_loop_flow import header as loop_header
+                header=loop_header(self,start,self.loop_feedback.get(key),node)
                 if isinstance(node,ast.For):
                     self.target(plan,node.target,self.iterators.demand(plan,node,value,header),header)
                 else:
@@ -2115,13 +2122,21 @@ class Emitter:
                 from .native_class_storage import ordering
                 return ordering(emitter,left,right,node)
             def coerce(self,value,kind):return emitter.coerce(value,kind,node)
+            def sequence_type_name(self,value):
+                from .native_class_builtins import _type_name
+                return _type_name(emitter,value,node)
         adapter=Adapter()
         storage=capture_shared(adapter,self.expression(node.func.value))
         lines=list(storage.setup)
         bound={}
-        try:call=method.signature.plan(normalize_call(node),implicit_count=1)
-        except CallBindingError:raise ClassUnsupported(node)from None
-        for argument,name in zip(call.arguments.evaluation_order,call.argument_parameters):
+        arguments=normalize_call(node)
+        if method.error:
+            explicit=tuple((argument,f"argument_{index}")for index,argument in enumerate(arguments.evaluation_order))
+        else:
+            try:call=method.signature.plan(arguments,implicit_count=1)
+            except CallBindingError:raise ClassUnsupported(node)from None
+            explicit=zip(call.arguments.evaluation_order,call.argument_parameters)
+        for argument,name in explicit:
             before,value=self.capture(self.expression(argument.expression))
             lines.append(before)
             bound[name]=value

@@ -452,7 +452,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         if isinstance(node,ast.For):
             if not isinstance(node.iter,ast.Call) or not isinstance(node.iter.func,ast.Name) or node.iter.func.id != "range":
                 raise _Unsupported
-        if isinstance(node,(ast.Pass,ast.FunctionDef,ast.Return,ast.AugAssign,ast.If,ast.For,ast.While,ast.Break,ast.Continue,ast.Expr)):
+        if isinstance(node,(ast.Pass,ast.FunctionDef,ast.Return,ast.AugAssign,ast.If,ast.For,ast.While,ast.Break,ast.Continue,ast.Expr,ast.Delete)):
             return super().statement(node,environment)
         raise _Unsupported
 

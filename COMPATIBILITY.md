@@ -889,7 +889,7 @@ class namespaces and nested lambda/generator scopes retain their lexical owners.
 This metadata does not itself implement an otherwise unsupported language feature.
 
 Exact builtin list methods share typed signatures and operation lowering across
-owned vectors and shared class-scope handles: `append`, list-to-list `extend`,
+owned vectors and shared class-scope handles: `append`, `insert`, `remove`, list-to-list `extend`,
 `clear`, `reverse`, `copy`, `sort`, `index`, `count`, and `pop`. Receiver names,
 fields, and checked row indices are captured before explicit arguments; contents
 are borrowed afterward. A callback replacing a class field therefore does not
@@ -898,6 +898,19 @@ parent mutation checks. Class sorting supports proved captured callable keys
 through the same compiled-call ABI, including saved bound methods. General
 iterables for `extend`, custom ordering, and identity-sensitive float search
 remain required work.
+
+`list.insert(index, value)` clips an accepted signed index to the current list
+length, checks structural growth, and reports an index outside the platform's
+signed size range before borrowing the list. `list.remove(value)` deletes the
+first Python-equal element or raises `ValueError`; integer/boolean, text/bytes,
+proved tuples, nested shared lists, and default instance identity use their
+existing equality adapters. Receiver and argument evaluation retain shared
+object identities even when an argument rebinds the receiver field. Removal
+captures only the visited shared payload, releases its read borrow before
+comparison, and takes a new mutable borrow after comparison. Custom `__index__`
+or `__eq__`, floating-object identity (including NaN), and cyclic ownership
+remain explicit diagnostics. The live-list storage proof also allows insertion
+or removal during ordinary list iteration without borrowing the whole sequence.
 
 On typed compiled frames, `sorted` materializes its input before converting
 `reverse` or diagnosing unsupported keywords, then evaluates a captured key
@@ -1543,3 +1556,12 @@ the clearing boundary, including recursive callbacks, rather than being
 identified by line/name equality. Builtin C callbacks do not invent Python
 frames. General iterator-object display and lambdas defined inside generator
 expression scopes remain separate positioned capability boundaries.
+
+Live ordinary list loops retain source identity with per-pull borrows when
+mutation or source binding changes require it. The allocation solver propagates
+bounded source-owner sets through builtin lazy adapters and comprehensions;
+it does not infer object identity from equal shapes or allocation sites.
+Lexical value deletion drops the binding independently from references held by
+iterators and aliases. Maybe-unbound cells retain positioned NameError and
+UnboundLocalError behavior; the ordinary static callable/import identity ABI
+does not yet expose generic deletion cells.

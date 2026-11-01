@@ -87,6 +87,7 @@ class MethodPlan:
     identity: BuiltinMethodIdentity
     receiver: Operand
     invocation: BoundInvocation
+    error: str|None=None
 
 @dataclass(frozen=True)
 class DeferredProducer:
@@ -228,6 +229,15 @@ class Normalizer:
             operand=Operand(expression,parameter)
             explicit.append(operand)
             return operand
+        if sequence is not None and list_type(receiver.kind):
+            from .native_sequence_plans import bind_error
+            admitted=bind_error(sequence,len(invocation.arguments.positional),invocation.arguments.keywords)
+            if admitted.error:
+                for index,argument in enumerate(invocation.arguments.evaluation_order):
+                    capture(argument.expression,f"argument_{index}")
+                result=MethodPlan(identity,implicit,BoundInvocation(invocation,None,tuple(explicit)),admitted.error)
+                self._methods[key]=result
+                return result
         call=signature.plan(invocation.arguments,implicit_count=1)
         binding=call.capture(capture,implicit=(implicit,),defaults=default_values)
         bound=BoundInvocation(invocation,binding,tuple(explicit))

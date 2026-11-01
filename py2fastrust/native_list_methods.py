@@ -45,6 +45,9 @@ def try_expression(g,node,environment):
     receiver=plan.receiver.captured
     method=sequence_method(receiver.kind,plan.identity.name)
     if method is None:return None
+    if plan.error:
+        from dataclasses import replace
+        method=replace(method,error=plan.error,mutates=False)
     if deque_type(receiver.kind)and method.name in {"extend","extendleft"}:
         from .native_deques import extend
         return extend(g,node,environment,plan=plan)
@@ -101,8 +104,8 @@ def try_expression(g,node,environment):
         if not is_maybe(binding.kind):
             length=getattr(binding.info,"length",None)
             if method.name=="clear":length=0
-            elif method.name=="append":length=None if length is None else length+1
-            elif method.name=="pop":length=None if length is None else max(0,length-1)
+            elif method.name in {"append","insert"}:length=None if length is None else length+1
+            elif method.name in {"pop","remove"}:length=None if length is None else max(0,length-1)
             elif method.name=="extend":length=None
             g.update_info(environment,name,g.binding(_Expression("",receiver.kind,length=length)))
     result=lower(g,storage,method,bound,node,environment,sort_key=sort_key)

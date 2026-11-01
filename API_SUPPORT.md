@@ -90,6 +90,12 @@ Resolved integer calls to `math.gcd`, `lcm`, `isqrt`, `factorial`, `comb`, and
 lowering with the payload, storage and evaluation-order limits documented in
 [COMPATIBILITY.md](COMPATIBILITY.md):
 
+Builtin `list.insert` and `list.remove` also share the owned/shared sequence
+lowering. Both preserve receiver and argument order; insertion checks signed
+indices and allocation size, while removal uses existing equality adapters and
+reports the missing-element `ValueError`. Custom equality/index protocols,
+floating-object identity and cyclic ownership remain explicit boundaries.
+
 | Module | Direct APIs | Remaining requirements |
 |---|---|---|
 | `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts; `nlargest`/`nsmallest` with captured keys | `merge`, custom rich comparisons, floating decorated tuple identity |
@@ -764,3 +770,13 @@ the clearing boundary, including recursive callbacks, rather than being
 identified by line/name equality. Builtin C callbacks do not invent Python
 frames. General iterator-object display and lambdas defined inside generator
 expression scopes remain separate positioned capability boundaries.
+
+Builtin list traversal retains the original object while observing later
+append/extend, element stores/deletion, clear, reversal and sorting. Alias,
+source-binding replacement, nested loops and comprehension effects use the
+same solved allocation facts. Lists requiring live mutation use typed shared
+handles; read-only lists keep ordinary owned-vector loops. Canonical iterator
+adapters retain source allocation provenance without wrapping values in a VM.
+Ordinary lexical value bindings support `del`, including conditional and
+loop-carried unbound states. Imported/callable static-reference bindings still
+need their own unbinding representation.

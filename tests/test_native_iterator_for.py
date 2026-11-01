@@ -360,13 +360,15 @@ class NativeIteratorForTests(NativeIteratorReductionTests):
                 main()
         ''', ("0\n", "2\n"), trace=True)
 
-    def test_unproved_alias_mutation_and_tuple_bindings_are_rejected(self):
-        for source in (
-            "a=[1,2]\nfor x in a:a.append(x)",
-            "for (x,) in [1]:pass",
-        ):
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source,"case.py","i64"))
+    def test_unbounded_live_growth_compiles_without_execution(self):
+        source="a=[1,2]\nfor x in a:a.append(x)"
+        for mode in ("i64","i128","bigint"):
+            for release in (False,True):
+                with self.subTest(mode=mode,release=release):
+                    self.compile(source,mode,release)
+
+    def test_unproved_tuple_target_and_nested_list_aliases(self):
+        self.assertIsNone(try_generate_native("for (x,) in [1]:pass","case.py","i64"))
         self.differential("for x in zip([1]):print(x)",modes=("i64","i128","bigint"))
         self.differential("a=[[1]]\nfor row in a:row.append(2)",modes=("i64","i128","bigint"))
 
