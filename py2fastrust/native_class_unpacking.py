@@ -11,13 +11,15 @@ def has_star(target):
 
 def requires_frames(unit,analysis):
     nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
+    logical={unit.scope_for(node).ordinal for node in nodes.values()
+             if isinstance(node,(ast.ListComp,ast.SetComp,ast.DictComp,ast.GeneratorExp))}
     scopes={0}
     for definition,_ in analysis.scopes:
         if definition is not None:scopes.add(unit.scope_for(nodes[definition]).ordinal)
     for node in ast.walk(unit.tree):
         if not isinstance(node,ast.Starred)or not isinstance(node.ctx,ast.Store):continue
         scope=unit.nodes[unit.ordinal(node)].scope
-        while scope is not None and unit.scopes[scope].kind=='comprehension':scope=unit.scopes[scope].parent
+        while scope is not None and(scope in logical or unit.scopes[scope].kind=='comprehension'):scope=unit.scopes[scope].parent
         if scope in scopes:return True
     return False
 
@@ -35,11 +37,14 @@ def _sites(model):
     return model.unpack_sites
 
 
-def analyze(model, plan, target, value, environment):
+def analyze(model, plan, target, value, environment,*,bind_target=None):
     from .native_classes import Cell,shape
     from .native_types import EMPTY
     from .native_unions import union_kind
     from .native_class_iterators import default_noniterable
+    def bind(node,item):
+        if bind_target is not None:bind_target(node,item)
+        else:model.target(plan,node,item,environment)
     star=next((i for i,node in enumerate(target.elts)if isinstance(node,ast.Starred)),None)
     source=value.root()
     mismatch=source.tag=='tuple'and star is None and len(source.args)!=len(target.elts)
@@ -58,10 +63,10 @@ def analyze(model, plan, target, value, environment):
                 for member in members:model.contribute(rest.root().args[0],member,node)
                 if not members:model.contribute(rest.root().args[0],Cell(EMPTY),node)
                 record.rest=rest
-                model.target(plan,node.value,rest,environment)
+                bind(node.value,rest)
             else:
                 index=i if star is None or i<star else len(fields)-len(target.elts)+i
-                model.target(plan,node,fields[index]if enough else Cell(EMPTY),environment)
+                bind(node,fields[index]if enough else Cell(EMPTY))
     else:
         record.source_kind=model.iterators.source(plan,target,value)
         member=model.iterators.demand(plan,target,Cell(record.source_kind),environment)
@@ -70,15 +75,16 @@ def analyze(model, plan, target, value, environment):
                 rest=model.cell(plan,node,'list',(Cell(),))
                 model.contribute(rest.root().args[0],member,node)
                 record.rest=rest
-                model.target(plan,node.value,rest,environment)
-            else:model.target(plan,node,member,environment)
+                bind(node.value,rest)
+            else:bind(node,member)
     _sites(model)[(plan.index,id(target))]=record
     return True
 
 
-def emit(emitter, target, value):
+def emit(emitter, target, value,*,assign_target=None):
     from .native import _string
     from .native_classes import Expression,shape
+    assign=assign_target or emitter.assign
     record=_sites(emitter.model).get((emitter.plan.index,id(target)))
     if record is None:
         return None
@@ -105,7 +111,7 @@ def emit(emitter, target, value):
         captured=[]
         for member in members:
             before,member=emitter.capture(member);setup+=before;captured.append(member)
-        return setup+''.join(emitter.assign(node.value if isinstance(node,ast.Starred)else node,member)
+        return setup+''.join(assign(node.value if isinstance(node,ast.Starred)else node,member)
                              for node,member in zip(target.elts,captured))
     from .native_class_builtins import _type_name
     constructed=emitter.model.iterators.construct(emitter,target,source,kind=record.source_kind,
@@ -136,7 +142,7 @@ def emit(emitter, target, value):
             setup+='for '+current+' in '+values+'{'+converted+'.push('+item+');}'
             values=converted
         before,remainder=emitter.capture(Expression('class_list('+values+')',kind));setup+=before;members[record.star]=remainder
-        return setup+''.join(emitter.assign(node.value if isinstance(node,ast.Starred)else node,member)
+        return setup+''.join(assign(node.value if isinstance(node,ast.Starred)else node,member)
                              for node,member in zip(target.elts,members))
     members = []
     for index in range(expected):
@@ -148,4 +154,4 @@ def emit(emitter, target, value):
     message = f"ValueError: too many values to unpack (expected {expected})"
     excess = emitter.at(f'Err::<(),String>({_string(message)}.to_owned())', target)
     setup += f"if ({pulled.code}).is_some(){{{excess};}}"
-    return setup + "".join(emitter.assign(node, member) for node, member in zip(target.elts, members))
+    return setup + "".join(assign(node, member) for node, member in zip(target.elts, members))

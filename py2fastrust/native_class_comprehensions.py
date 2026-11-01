@@ -38,9 +38,10 @@ def target_ordinals(tree, unit):
 def _target_names(model, plan, node):
     from .native_classes import ClassUnsupported
     if isinstance(node, ast.Name):return {model.resolved_name(plan,node)}
+    if isinstance(node,ast.Starred):return _target_names(model,plan,node.value)
     if isinstance(node,(ast.Tuple,ast.List)):
         return set().union(*(_target_names(model,plan,child)for child in node.elts))
-    raise ClassUnsupported(node,"comprehension targets currently require names or fixed unpacking patterns; starred, attribute and index target protocols are not implemented",proof="comprehension-local target binding")
+    raise ClassUnsupported(node,"comprehension targets currently require names or nested unpacking patterns; attribute and indexed target stores are not implemented by this lexical target adapter",proof="comprehension-local target binding")
 
 
 def _normalizer(model, plan, environment):
@@ -82,6 +83,9 @@ def _bind(model, plan, target, item, environment, record):
         model.remember(plan,target,binding)
         return
     if isinstance(target,(ast.Tuple,ast.List)):
+        from .native_class_unpacking import analyze as analyze_unpack
+        if analyze_unpack(model,plan,target,item,environment,
+                bind_target=lambda target,value:_bind(model,plan,target,value,environment,record)):return
         item=item.root()
         if item.tag=="tuple":
             if len(item.args)!=len(target.elts):
@@ -125,6 +129,7 @@ def analyze(model, plan, node, environment, *, contribute=None, first_value=None
                 binding=model.cell(plan,target)
                 record.targets[id(target)]=binding
                 record.bindings.setdefault(name,binding)
+            elif isinstance(target,ast.Starred):declare(target.value)
             else:
                 for child in target.elts:declare(child)
         for clause in semantic.clauses:declare(clause.target)
@@ -271,6 +276,9 @@ def _assign(emitter, target, value, bindings):
         if captured is not None:return captured
         return clearing+f"{bindings[(name,kind)]}=Some({emitter.coerce(value,kind,target)});"
     if isinstance(target,(ast.Tuple,ast.List)):
+        from .native_class_unpacking import emit as emit_unpack
+        unpacked=emit_unpack(emitter,target,value,assign_target=lambda target,value:_assign(emitter,target,value,bindings))
+        if unpacked is not None:return unpacked
         setup,source=emitter.capture(value)
         if domain(source.kind)=="tuple":
             if len(source.kind.fields)!=len(target.elts):raise ClassUnsupported(target)
@@ -311,6 +319,7 @@ def emit(emitter, node, *, collector=None, first=None, wanted=None):
         if isinstance(target,ast.Name):
             key=emitter.model.resolved_name(emitter.plan,target),emitter.kind(target)
             if key not in bindings:bindings[key]=emitter.fresh()
+        elif isinstance(target,ast.Starred):declare(target.value)
         else:
             for child in target.elts:declare(child)
     for clause in record.semantic.clauses:declare(clause.target)

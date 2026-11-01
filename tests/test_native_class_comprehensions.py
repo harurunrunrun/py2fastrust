@@ -30,7 +30,7 @@ class ClassComprehensionMetadataTests(unittest.TestCase):
         self.assertEqual(unit.source,source)
 
     def test_unsupported_comprehension_forms_remain_explicit_errors(self):
-        for expression in ['(i for i in range(3))','[x for *x, in [(1,2)]]']:
+        for expression in ['(i for i in range(3))']:
             for mode in ('i64','i128','bigint'):
                 with self.subTest(expression=expression,mode=mode):
                     result=transpile('class Marker:pass\nvalues='+expression+'\n',TranspileOptions(integer=mode))
@@ -42,6 +42,9 @@ class ClassComprehensionMetadataTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class ClassComprehensionExecutionTests(unittest.TestCase):
+    def test_promoted_exact_starred_target_source(self):
+        self.compare('values=[x for *x, in [(1,2)]]\n')
+
     def compare(self,source,data='',string_mode='ascii'):
         source='class Marker:pass\n'+source
         expected=subprocess.run([sys.executable,'-I','-c',source],input=data,text=True,capture_output=True,timeout=10)

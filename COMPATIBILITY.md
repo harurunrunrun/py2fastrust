@@ -1333,3 +1333,9 @@ arbitrary classinfo expressions and global subjects retain conservative facts.
 Loop joins still retain a possible zero-trip entry, so some post-loop operations
 remain explicit capability diagnostics. Builtin `bytes` is also available as a
 type-predicate object; its constructor protocol is a separate capability.
+
+Comprehension and generator target adapters invoke that same unpack plan with
+their own lexical binding/store callbacks. They retain outer-iterable capture,
+ordered nested clauses and filters, local target lifetimes, late-bound closure
+cells and generator error frames. No synthetic target or rewritten source is
+used. Ordinary `for` targets share the assignment path as well.

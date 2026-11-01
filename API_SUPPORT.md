@@ -602,3 +602,7 @@ arbitrary classinfo expressions and global subjects retain conservative facts.
 Loop joins still retain a possible zero-trip entry, so some post-loop operations
 remain explicit capability diagnostics. Builtin `bytes` is also available as a
 type-predicate object; its constructor protocol is a separate capability.
+
+The same extended target planner is used in ordinary `for` loops, list/set/
+dictionary comprehensions and consumed generator expressions. Comprehension
+targets retain their lexical scope and do not overwrite enclosing bindings.
