@@ -133,6 +133,8 @@ SOURCES={'heap_integer_class_storage': 'import heapq\n'
                              'heappush(heap,2.25)\n'
                              'print(heappop(heap),heap)\n'}
 
+SOURCES['original_key_member_protocol']='from bisect import bisect_left\nclass S:\n def run(self):return bisect_left([1],1,key=lambda x:x)\nprint(S().run())\n'
+
 class NativeFrameHeapProofTests(unittest.TestCase):
     def test_ordinary_heaps_and_bisection_keep_their_direct_vector_backend(self):
         for source in('from heapq import heappush,heappop\nh=[]\nheappush(h,3)\nprint(heappop(h))\n',
@@ -145,7 +147,6 @@ class NativeFrameHeapProofTests(unittest.TestCase):
     def test_custom_protocols_and_streams_remain_positioned_diagnostics(self):
         for source,detail in(
             ('import heapq\nclass Q:\n def run(self):return heapq.nlargest(2,[1,2])\nprint(Q().run())\n','stream/key'),
-            ('from bisect import bisect_left\nclass S:\n def run(self):return bisect_left([1],1,key=lambda x:x)\nprint(S().run())\n','key'),
             ('from bisect import bisect_left\nclass S:\n def run(self):return bisect_left((1,3),2)\nprint(S().run())\n','sequence'),
             ('from bisect import bisect_left\nclass Index:\n def __index__(self):return 0\nclass S:\n def run(self):return bisect_left([1],1,Index())\nprint(S().run())\n','__index__')):
             for mode in('i64','i128','bigint'):
@@ -183,6 +184,9 @@ class NativeFrameHeapExecutionTests(unittest.TestCase):
                             self.assertEqual(final(actual.stderr),final(expected.stderr))
                             frames=lambda text:re.findall(r'File "[^"]+", line (\d+), in ([^\n]+)',text)
                             self.assertEqual(frames(actual.stderr),frames(expected.stderr))
+
+    def test_original_key_member_protocol_executes(self):
+        self.compare(('original_key_member_protocol',))
 
     def test_heap_min_max_layout_and_captured_effects(self):
         self.compare(('heap_integer_class_storage','heap_max_integer','heap_saved_callable_before_argument_rebind','heap_item_mutates_captured_heap','heap_runtime_tuple_identity'))

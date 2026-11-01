@@ -81,14 +81,18 @@ lowering with the payload, storage and evaluation-order limits documented in
 | Module | Direct APIs | Remaining requirements |
 |---|---|---|
 | `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts | `merge`, `nlargest`, `nsmallest`, custom/fallible comparisons, floating tuple identity |
-| `bisect` | `bisect`, `bisect_left`, `bisect_right`, `insort`, `insort_left`, `insort_right` with checked bounds and `key=None` | Callable keys, arbitrary sequence protocols, custom/fallible comparisons |
+| `bisect` | `bisect`, `bisect_left`, `bisect_right`, `insort`, `insort_left`, `insort_right` with checked bounds and captured `key` callbacks | Arbitrary sequence protocols, custom/fallible comparisons |
 
 Canonical heap/bisection imports also work in typed class, closure and linked
 module frames, including saved member aliases and shared list fields. Ordinary
 vector-only programs keep their direct path. Bare float heaps work in all integer
 modes; mixed BigInt/float ordering still requires implementation. Frame bisection
 retains keyword evaluation order, checked bounds and per-visited-element builtin
-ordering errors. Custom index/key/sequence/ordering protocols and native-member
+ordering errors. Keys may be captured source functions, closures, lambdas, builtin adapters or
+bound source methods. Search transforms only visited existing elements; insertion
+computes the new item key once, then retains the original inserted object.
+Callbacks run without a list borrow and preserve live element mutations.
+Custom index/sequence/ordering protocols and native-member
 starred calls remain positioned diagnostics.
 
 The frame path also stores typed `iter`, `filter`, multi-source `map` and `zip`

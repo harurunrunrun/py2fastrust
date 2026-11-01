@@ -7,9 +7,8 @@ from tests import test_native_heapq as _heap
 
 
 class BisectProofTests(unittest.TestCase):
-    def test_remaining_callback_and_custom_comparison_boundaries_are_explicit(self):
-        for source in ('import bisect\nprint(bisect.bisect_left([1,2],1,key=lambda x:x))\n',
-                       'import bisect\nprint(bisect.bisect_left([None],None))\n'):
+    def test_remaining_custom_comparison_boundary_is_explicit(self):
+        for source in ('import bisect\nprint(bisect.bisect_left([None],None))\n',):
             for mode in('i64','i128','bigint'):
                 with self.subTest(source=source,mode=mode):
                     result=transpile(source,TranspileOptions(integer=mode))
@@ -27,6 +26,9 @@ class BisectProofTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class BisectExecutionTests(unittest.TestCase):
     def compare(self,*args,**kwargs):return _heap.HeapExecutionTests.compare(self,*args,**kwargs)
+
+    def test_original_key_callback_source_executes(self):
+        self.compare('import bisect\nprint(bisect.bisect_left([1,2],1,key=lambda x:x))\n')
 
     def test_integer_bounds_include_empty_intervals_and_index_errors(self):
         self.compare('''import bisect

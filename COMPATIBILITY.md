@@ -644,16 +644,22 @@ fallible comparisons, `merge`, `nlargest`, and `nsmallest` remain unfinished.
 The six `bisect`/`insort` names use the same list storage adapter, including
 read-only function parameters, shared rows, empty lists, and immutable scalar
 or tuple comparisons. Explicit argument expressions run before checked `lo`/`hi`
-conversion and before borrowing the captured list. `key=None` is supported;
-callable keys, arbitrary sequence protocols, and custom/fallible comparisons
-remain unfinished. Module/member aliases and local imports retain their
+conversion and before borrowing the captured list. Captured source functions,
+closures, lambdas, builtin adapters and bound methods can serve as `key`, as can
+`None`. Search applies the key only to visited existing elements; the probe is
+already a key. Insertion computes the inserted item key once before checking
+negative bounds or taking the default length, then inserts the original item.
+Each visited element is retained while its temporary list borrow is released
+before the callback, preserving source mutations, aliasing and callback errors.
+Binary search uses O(log n) visits without copying the source list.
+Arbitrary sequence protocols and custom/fallible comparisons remain unfinished. Module/member aliases and local imports retain their
 resolved identities. These adapters support all integer modes; BigInt/float
 comparison is still a separate unfinished requirement. Canonical heap/bisection
 imports also work inside typed class, closure and linked-module frames. Captured
 callee and argument values retain evaluation order, source-list identity and
 argument effects before binding/bounds errors. Frame bisection dispatches finite
 scalar/list alternatives and raises builtin ordering errors only for elements
-actually visited. Callable keys, custom index/sequence/ordering protocols,
+actually visited. Custom index/sequence/ordering protocols,
 heap stream selection and native-member starred expansion remain explicit
 positioned diagnostics. Ordinary vector-only programs retain their direct path.
 

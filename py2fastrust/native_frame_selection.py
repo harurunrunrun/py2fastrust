@@ -134,6 +134,8 @@ def select_frames(unit,*,integer="i64"):
     if mapping_handles(unit,analysis):reasons+=("native mapping identity/key storage",)
     from .native_class_deques import requires_frames as deque_requires_frames
     if deque_requires_frames(unit,analysis):reasons+=("shared deque identity and element storage",)
+    from .native_frame_bisect import requires_keys as bisect_requires_keys
+    if bisect_requires_keys(unit,analysis):reasons+=("captured bisection key callbacks",)
     from .native_class_iterators import requires_state
     if requires_state(unit,analysis,integer=integer):reasons+=("stored lazy builtin iterators",)
     from .native_starred_calls import requires_expansion

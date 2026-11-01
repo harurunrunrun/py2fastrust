@@ -11,6 +11,31 @@ class BisectCall:
     result:object
     binding:object=None
     error:str|None=None
+    key:object=None
+    key_argument:object=None
+    callback:object=None
+
+
+def _contribute(model,destination,value,node):
+    if not model.namespace.contribute(destination,value,node,force=True):model.contribute(destination,value,node)
+
+
+def _sites(model):
+    if not hasattr(model,'bisect_key_sites'):
+        model.bisect_key_sites={}
+        from .native_callback_effects import register
+        register(model,lambda plan,node:any(key[:2]==(plan.index,id(node))and site.callback is not None for key,site in model.bisect_key_sites.items()))
+    return model.bisect_key_sites
+
+
+def requires_keys(unit,analysis):
+    from .native_module_calls import BuiltinRef
+    for facts in analysis.scopes.values():
+        for call in facts.calls.values():
+            if not any(isinstance(identity,BuiltinRef)and identity.module=='bisect'and identity.name in NAMES for identity in call.identity.alternatives):continue
+            for name,value in call.keywords:
+                if name=='key'and(value.unknown or value.unbound or value.alternatives!=frozenset({'none'})):return True
+    return False
 
 
 class BisectAdapter:
@@ -28,8 +53,6 @@ class BisectAdapter:
             raise ClassUnsupported(node,'bisect argument binding needs its captured C-API TypeError adapter: '+str(error),proof='bisection signature error transport')from None
         values=iter(arguments+[value for _,value in keywords])
         bound=binding.capture(lambda expression,parameter:next(values),defaults={'lo':Cell('int'),'hi':Cell('none'),'key':Cell('none')}).by_name
-        if any(kind!='none'for kind in alternatives(shape(bound['key']))if kind is not None):
-            raise ClassUnsupported(node,'bisect callable keys need once-per-visited-element callback invocation without retaining a source-list borrow; that key adapter is not implemented',proof='bisection key callback timing and receiver mutation')
         sealed={'int','bool','int_bool','none','float','str','bytes','list','tuple','tuple_sequence','range','function','dict','set','dict_view','iterator','globals_dict'}
         for parameter in('lo','hi'):
             for kind in alternatives(shape(bound[parameter])):
@@ -40,8 +63,27 @@ class BisectAdapter:
                 raise ClassUnsupported(node,'this bisection member adapter requires builtin list storage; other sequence subscription/insert protocols need their own adapter',types=(('sequence',kind),),proof='bisection sequence storage')
         if mutating:
             for source in branches(bound['a']):
-                if source.tag=='list':model.contribute(source.args[0],bound['x'],node)
-        return BisectCall(result,binding)
+                if source.tag=='list':_contribute(model,source.args[0],bound['x'],node)
+        site=BisectCall(result,binding,key=bound['key'])
+        sites=_sites(model);sites[(plan.index,id(node),identity.name)]=site
+        key_kinds=[kind for kind in alternatives(shape(bound['key']))if kind!='none']if shape(bound['key'])is not None else[]
+        if key_kinds:
+            from .native_types import union_type,EmptyType
+            from .native_classes import Environment
+            from .call_semantics import Argument,CallArguments
+            from .native_aot_callables import analyze_values
+            item=model.cell(plan,node,identity=('bisect_key_argument',identity.name))
+            for source in branches(bound['a']):
+                if source.tag=='list':_contribute(model,item,source.args[0],node)
+            if mutating:_contribute(model,item,bound['x'],node)
+            site.key_argument=item
+            if shape(item)is not None and not isinstance(shape(item),EmptyType):
+                callback=model.cell_for_kind(union_type(*key_kinds))
+                inside=Environment(environment)
+                site.callback=analyze_values(model.callable_cells,plan,node,callback,
+                    CallArguments((Argument(node),),()),[item],[],inside,identity=('bisect_key',identity.name))
+                model.replace_environment(environment,model.join(environment,inside,node,('bisect_key',identity.name)))
+        return site
 
     @staticmethod
     def emit(emitter,node,identity,record,arguments,keywords):
@@ -81,8 +123,17 @@ class BisectAdapter:
             if not mutating:code='class_from_usize('+code+')'
             return code
         owner=bound['a']
-        code=project(owner.kind,owner.code,lambda kind,code:leaf(Expression('('+code+').clone()',kind)))if union_kind(owner.kind)else leaf(owner)
+        def selected(key):
+            if key.kind!='none':return _emit_keyed(emitter,node,identity,record,owner,bound['x'],key,bounds,wanted)
+            return project(owner.kind,owner.code,lambda kind,code:leaf(Expression('('+code+').clone()',kind)))if union_kind(owner.kind)else leaf(owner)
+        key=bound['key']
+        code=project(key.kind,key.code,lambda kind,text:selected(Expression('('+text+').clone()',kind)))if union_kind(key.kind)else selected(key)
         return Expression('{'+before+code+'}',wanted)
+
+
+def _emit_keyed(*arguments):
+    from .native_bisect_keys import emit
+    return emit(*arguments)
 
 
 def _checked_advance(emitter,element,item,node,right):
