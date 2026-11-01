@@ -108,6 +108,8 @@ class Iterators:
                     # No Python value inhabits the immutable empty tuple.
                     item=Cell(EMPTY)
                 self._contribute(record.element,item,node)
+            elif self.model.mappings.views.element(shape(choice))is not None:
+                self._contribute(record.element,self.model.mappings.views.element(shape(choice)),node)
             elif choice.tag is not None and all(branch in {"int","bool","int_bool","none","float"}or getattr(branch,"_native_function_reference",False)for branch in alternatives(shape(choice))):
                 # Construction raises before a noniterable can yield a value.
                 # It must not add a fictitious None to valid source payloads.
@@ -147,6 +149,7 @@ class Iterators:
 
     def demand(self,plan,node,value,environment,active=()):
         from .native_classes import Cell,Environment,ClassUnsupported,shape
+        if getattr(shape(value),'_native_class_generator',False):return self.model.generators.demand(plan,node,value,environment)
         if value.root().tag=="union":
             result=Cell();branches=[]
             for choice in value.root().args:
@@ -216,7 +219,7 @@ class Iterators:
                       tuple(source.index for source in record.input_types))
                      for record in self.records)
 
-    def construct(self,emitter,node,source,*,kind=None):
+    def construct(self,emitter,node,source,*,kind=None,not_iterable=None):
         from .native_classes import Expression,ClassUnsupported,shape,domain
         kind=kind or self.sites[(emitter.plan.index,id(node),"source",None)].kind
         if iterator_kind(source.kind):return source
@@ -224,14 +227,16 @@ class Iterators:
         tag=domain(source.kind)
         from .native_unions import project,union_kind
         if union_kind(source.kind):
-            code=project(source.kind,source.code,lambda branch,code:self.construct(emitter,node,Expression(f"({code}).clone()",branch),kind=kind).code)
+            code=project(source.kind,source.code,lambda branch,code:self.construct(emitter,node,Expression(f"({code}).clone()",branch),kind=kind,not_iterable=not_iterable).code)
             return Expression(code,kind)
-        if tag=="range":payload=source.code+".iter()"
+        if self.model.mappings.views.element(source.kind)is not None:payload=self.model.mappings.views.construct_cursor(emitter,source.kind,source.code)
+        elif tag=="range":payload=source.code+".iter()"
         elif tag in {"list","tuple","tuple_sequence","str","bytes"}:payload="Some("+source.code+")"
         else:
             from .native_class_builtins import _type_name
             name=_type_name(emitter,source,node)
             error=f'format!("TypeError: \'{{}}\' object is not iterable",{name})'
+            if not_iterable is not None:error=not_iterable(source)
             return Expression(emitter.at(f'Err::<ClassIterator_{record.index},String>({error})',node),kind)
         full=shape(record.source)
         if union_kind(full):
@@ -297,6 +302,8 @@ class Iterators:
             return Expression(begin+f"let {old_index}={state}.index;let ({item},{advance})=match &mut {state}.source{{"+
                 ",".join(arms)+f"}};{state}.index+={advance};{item}"+"}",item_kind)
         if tag=="range":return Expression(begin+state+".source.next()}",item_kind)
+        if self.model.mappings.views.element(shape(record.source))is not None:
+            return Expression(begin+self.model.mappings.views.pull_cursor(emitter,node,shape(record.source),state+'.source',item_kind)+'}',item_kind)
         if tag=="tuple":
             source_kind=shape(record.source)
             arms=[]
@@ -366,6 +373,9 @@ class Iterators:
         """One concrete source alternative; no source borrow crosses a callback."""
         from .native_classes import domain,Expression
         tag=domain(kind);item=emitter.fresh()
+        if self.model.mappings.views.element(kind)is not None:
+            current=self.model.mappings.views.pull_cursor(emitter,node,kind,'(*'+source+')',item_kind)
+            return '('+current+',0)'
         if tag=="range":current=source+".next()";advance="0"
         elif tag=="list":
             current=f"{source}.as_ref().and_then(|value|value.borrow().get({index}).cloned())";advance="1"
@@ -428,11 +438,11 @@ class Iterators:
                 if union_kind(kind):
                     variants=[]
                     for index,choice in enumerate(alternatives(kind)):
-                        payload="NativeRange"if domain(choice)=="range"else"Option<"+emitter.rust_type(choice)+">"
+                        payload=self.model.mappings.views.cursor_payload(emitter,choice)or("NativeRange"if domain(choice)=="range"else"Option<"+emitter.rust_type(choice)+">")
                         variants.append(f"V{index}({payload})")
                     result.append(f"enum ClassIteratorSource_{record.index}{{"+",".join(variants)+"}")
                     payload=f"ClassIteratorSource_{record.index}"
-                else:payload="NativeRange"if tag=="range"else"Option<"+emitter.rust_type(kind)+">"
+                else:payload=self.model.mappings.views.cursor_payload(emitter,kind)or("NativeRange"if tag=="range"else"Option<"+emitter.rust_type(kind)+">")
                 fields=f"source:{payload},index:usize"
             result.append(f"type ClassIterator_{record.index}=Rc<RefCell<ClassIteratorState_{record.index}>>;struct ClassIteratorState_{record.index}{{{fields}}}")
         return "\n".join(result)

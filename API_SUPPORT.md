@@ -57,6 +57,16 @@ and byte sources have adapters. Custom iteration protocols and cyclic ownership
 still require implementation; this does not establish complete builtin object
 compatibility.
 
+Typed frame dictionaries and sets have shared native storage, including
+ordinary mutable aliases, dictionary values and class fields. Direct adapters
+cover literals/comprehensions, `dict`/`set` constructors, dictionary subscripts,
+`get`, `setdefault`, shallow `copy`, set `add`, length/truth/membership and
+order-insensitive `sorted` set consumption. Live dictionary `keys`/`items`/
+`values` views and checked shared cursors support iteration and the same
+materialization/reduction consumers, including `tuple(iterable)`. Key families
+and the remaining deletion, view-operation and custom-protocol limits are documented in
+[COMPATIBILITY.md](COMPATIBILITY.md).
+
 Module/function aliases use resolved identities. General starred calls and
 the remaining module APIs still need implementation. The tables below describe
 the retained runtime inventory, not additional direct coverage.

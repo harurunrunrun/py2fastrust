@@ -30,8 +30,7 @@ class ClassComprehensionMetadataTests(unittest.TestCase):
         self.assertEqual(unit.source,source)
 
     def test_unsupported_comprehension_forms_remain_explicit_errors(self):
-        for expression in ['{i for i in range(3)}','{i:i for i in range(3)}',
-                           '(i for i in range(3))','[x for *x, in [(1,2)]]']:
+        for expression in ['(i for i in range(3))','[x for *x, in [(1,2)]]']:
             for mode in ('i64','i128','bigint'):
                 with self.subTest(expression=expression,mode=mode):
                     result=transpile('class Marker:pass\nvalues='+expression+'\n',TranspileOptions(integer=mode))

@@ -129,9 +129,15 @@ def select_frames(unit):
     if requires_instances(unit,analysis,targets):reasons+=("escaping lambda instances",)
     from .native_aot_callables import requires_cells
     if requires_cells(unit,analysis,references):reasons+=("first-class AOT function references",)
-    from .native_class_capabilities import shared_tuple_storage
+    from .native_class_capabilities import shared_tuple_storage,mapping_handles
     if shared_tuple_storage(analysis):reasons+=("shared mutable tuple storage",)
+    if mapping_handles(unit,analysis):reasons+=("native mapping identity/key storage",)
     from .native_class_iterators import requires_state
     if requires_state(unit,analysis):reasons+=("stored lazy builtin iterators",)
+    from .native_starred_calls import requires_expansion
+    recorded={site for facts in analysis.scopes.values()for site in facts.expressions}
+    if any(site in recorded and isinstance(node,ast.Call)and any(isinstance(value,ast.Starred)for value in node.args)
+           and requires_expansion(unit,analysis,node)
+           for site,node in nodes.items()):reasons+=("expanded positional call arguments",)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

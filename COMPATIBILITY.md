@@ -246,8 +246,36 @@ implicit Python execution supplies these operations.
 Proved immutable tuple keys use structurally typed Rust sets and dictionaries
 in every integer mode. Numeric keys preserve Python's bool/int equality while
 retaining the original key, and dictionaries retain insertion order. BigInt
-integer keys use the same typed containers. Mutable values, observable set
-iteration, and general container aliases remain unfinished.
+integer keys use the same typed containers. The frame adapter also stores
+shared dictionaries and sets in typed reference-counted handles, including
+mutable dictionary values, class fields, captured arguments and returned
+aliases. Dictionary/set literals, comprehensions and constructors preserve
+source evaluation order. Frame keys may be integer/bool, text, bytes, `None`,
+or compatible immutable tuple shapes; custom hash/equality protocols and
+heterogeneous key representations remain unfinished.
+
+Frame dictionary indexing, assignment, numeric augmented entries, membership,
+`get`, `setdefault`, and shallow `copy` preserve shared payload identity. They
+retain the original key on equal-key overwrites. Set membership, `add`, `copy`,
+length, truth and `sorted(..., key=None)` use the same typed key adapter.
+Observable set traversal/display and callable sorting keys that expose set tie
+order remain diagnosed. Frame dictionaries provide live `keys`, `items` and `values` views, preserving
+captured owner identity, insertion order, current values and mutable payload
+aliases. Dictionary/view cursors check size changes at each pull, release all
+borrows before callbacks, and stay exhausted after completion. Traversal uses
+linked storage with O(1) cursor progress, without eager key snapshots or
+repeated scans. Frame deletion/mapping expansion, view membership/set-like
+operations, recursive ownership cycles and arbitrary mapping subclasses still
+need their own protocols. The existing unique-owner path retains its
+separate deletion support described below.
+
+`tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
+immutable tuples with alias-preserving mutable elements, retains an existing
+tuple's identity, and shares the empty tuple. Fixed and runtime tuple query
+keys are converted to the stored canonical hash representation in O(key size),
+including nested tuple lengths. This retains hash lookup complexity and avoids
+scanning dictionary entries. Floating/custom key queries remain precise
+conversion diagnostics rather than spurious missing/unhashable-key results.
 
 Builtin dictionaries support `del d[key]`, including sequential deletion
 targets, checked missing-key errors and numeric augmented entry updates.
@@ -420,7 +448,7 @@ share the canonical binding and typed captured-argument adapters; mutations of
 the `builtins` namespace also affect subsequent builtin fallback reads, while
 previously saved aliases keep their value. Repeated definition instances,
 callable objects, function
-metadata, dynamic argument expansion, variadic keyword packs and general
+metadata, variadic keyword packs and general
 dynamic namespaces still require implementation.
 
 Reading a supported ordinary instance method as a value captures its receiver
@@ -438,8 +466,21 @@ keyword-only parameters and captured bound receivers before entering compiled
 Rust functions. Empty packs use the canonical empty tuple; nonempty calls create
 fresh tuple objects and preserve mutable element aliases. Stored/returned packs,
 ordinary iteration, indexing, unpacking, display, equality and identity use the
-same typed representation. Runtime tuple slicing/ordering, variadic keyword packs
-and starred call expansion remain required work.
+same typed representation. Runtime tuple slicing/ordering and variadic keyword
+packs remain required work.
+
+Call-site `*iterable` expansion supports typed lists, fixed/runtime tuples,
+ranges, strings, bytes and registered lazy iterators for compiled source
+functions, lambdas, captured closures and bound methods, plus builtin `print`.
+Several positional segments share the normal signature, default and
+keyword-only parameter binder. The captured callee and argument expressions run
+in Python order; a sole starred positional source is materialized after keyword
+expressions, while mixed/multiple positional segments expand eagerly. Iteration
+finishes before binding errors, and expanded mutable elements retain their
+identities. Proved ordinary typed sequence print calls retain their existing
+direct adapter. Other builtin/member/constructor expansion adapters and
+`**mapping` keyword expansion remain unfinished, with specific positioned
+diagnostics.
 
 Named nested functions have canonical lexical definition identities and typed
 per-invocation environments. Returned and sibling functions preserve captured
@@ -523,9 +564,10 @@ namespace; targets, later iterables, filters and elements use an isolated logica
 scope. Reused target names have separate typed versions, zero-iteration targets
 do not escape, and calls retain the callee's lexical namespace. List iteration
 loads one shared element handle at a time and releases its borrow before a
-callback or compiled function call. Class-path set/dict comprehensions, escaping
-generators, async clauses, walrus assignment and arbitrary iterator protocols
-remain unfinished.
+callback or compiled function call. Frame set/dict comprehensions use these same
+logical plans and scopes, with dictionary keys evaluated before their values.
+Escaping generators, async clauses, walrus assignment and arbitrary iterator
+protocols remain unfinished.
 
 Nested class-path lists retain shared handles at each mutable level. Fresh list
 expressions allocate distinct containers; copy, concatenation, repetition,

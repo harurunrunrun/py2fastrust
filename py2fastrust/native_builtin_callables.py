@@ -16,7 +16,7 @@ def binding_error(identity,arguments):
     if name=="globals"and(count or keywords):return f"TypeError: globals() takes no arguments ({count+len(keywords)} given)"
     if name=="print":
         unknown=next((item.name for item in keywords if item.name not in {"sep","end","file","flush"}),None)
-        return f"TypeError: {unknown!r} is an invalid keyword argument for print()"if unknown else None
+        return f"TypeError: print() got an unexpected keyword argument {unknown!r}"if unknown else None
     if name=="map":
         if count<2:return "TypeError: map() must have at least two arguments."
         unknown=next((item.name for item in keywords if item.name!="strict"),None)

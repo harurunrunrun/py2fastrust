@@ -59,7 +59,7 @@ class Namespace:
     def contribute(self,destination,source,node,*,force=False):
         """Directional ABI flow from a binding; never widen its source value."""
         from .native_classes import Cell,shape
-        from .native_class_storage import check_merge
+        from .native_class_storage import check_merge,contains_cell
         left,right=destination.root(),source.root()
         if not(force or self.is_flow(right)or left in self.flow_cells):return False
         if not complete(shape(right)):return False
@@ -68,7 +68,10 @@ class Namespace:
             destination.parent=None
             destination.tag,destination.args=left.tag,left.args
             left=destination
-        check_merge(left,right,node)
+        # This creates a new directional ABI view, rather than unifying the
+        # source with its destination. A destination containing the scalar
+        # source is finite; the reverse would create a real self-reference.
+        if contains_cell(right,left):check_merge(left,right,node)
         variable=Variable(("native_global_flow",id(left)),"value")
         if left not in self.flow_inputs:
             self.flow_inputs[left]=set()if left.tag is None else{Cell(left.tag,left.args)}

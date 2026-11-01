@@ -204,7 +204,7 @@ class VariadicBindingTests(unittest.TestCase):
         self.assertIn("NativeTuple",result.rust_source)
 
     def test_cycles_and_remaining_keyword_expansion_are_precise_boundaries(self):
-        sources=("def f(*items):return items\nclass Box:pass\nbox=Box()\nbox.saved=f(box)\n", "def f(**items):return 1\nprint(f(a=1))\n", "def f(*items):return len(items)\nprint(f(*[1,2]))\n")
+        sources=("def f(*items):return items\nclass Box:pass\nbox=Box()\nbox.saved=f(box)\n", "def f(**items):return 1\nprint(f(a=1))\n")
         for source in sources:
             for integer in ("i64","i128","bigint"):
                 with self.subTest(source=source,integer=integer):

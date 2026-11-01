@@ -243,7 +243,9 @@ class Normalizer:
             source = self.producer(clause.iter) if index == 0 else DeferredProducer(clause.iter)
             clauses.append(GeneratorClause(clause.target, source, tuple(clause.ifs)))
         frame = "<genexpr>" if isinstance(node, ast.GeneratorExp) else None
-        return ProducerPlan(ProducerKind.GENERATOR, node, clauses=tuple(clauses), element=node.elt, frame=frame)
+        elements=(node.key,node.value)if isinstance(node,ast.DictComp)else()
+        return ProducerPlan(ProducerKind.GENERATOR, node, clauses=tuple(clauses),
+                            element=getattr(node,"elt",None),elements=elements,frame=frame)
 
     def _producer(self, node):
         if isinstance(node, ast.GeneratorExp):

@@ -287,7 +287,7 @@ class LexicalCells:
 
     def error_message(self,emitter,node):
         binding=self.binding(node);name=binding.name
-        if binding.owner==self.scope(emitter.plan):
+        if binding.owner==getattr(emitter,'logical_binding_scope',self.scope(emitter.plan)):
             return f"UnboundLocalError: cannot access local variable '{name}' where it is not associated with a value"
         return f"NameError: cannot access free variable '{name}' where it is not associated with a value in enclosing scope"
 
@@ -400,7 +400,9 @@ class LexicalCells:
         from .native_classes import ClassUnsupported,InstanceType,shape
         from .native_types import ListType,TupleType,TupleSequenceType,NullableType,MaybeType,UnionType
         def targets(kind):
-            if getattr(kind,'_native_class_iterator',False):yield('iterator',kind.index)
+            if getattr(kind,'_native_mapping_view',False):yield('mapping_view',kind.index)
+            elif getattr(kind,'_native_class_iterator',False):yield('iterator',kind.index)
+            elif getattr(kind,'_native_class_mapping',False):yield('mapping',kind.index)
             elif getattr(kind,'_native_function_reference',False):
                 for definition in kind.definitions:
                     target=self.plans[definition]
@@ -428,6 +430,7 @@ class LexicalCells:
             edges[('object',name)]={target for field in owner.fields.values()for target in targets(shape(field.cell))}
         self.model.lambda_cells.add_lifetime_edges(edges,targets)
         self.model.iterators.add_lifetime_edges(edges,targets)
+        self.model.mappings.add_lifetime_edges(edges,targets)
         done=set();visiting=set()
         def visit(node):
             if node in visiting:

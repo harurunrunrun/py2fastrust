@@ -47,6 +47,9 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,'_native_mapping_view',False):return 'dict_view'
+    if getattr(kind,"_native_class_mapping",False):return kind.record.category
+    if getattr(kind,"_native_class_generator",False):return "generator"
     if getattr(kind,"_native_function_reference",False):return "function"
     if getattr(kind,"_native_namespace_view",False):return "globals_dict"
     if getattr(kind,"_native_class_iterator",False):return "iterator"
@@ -235,7 +238,7 @@ class Environment(dict):
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
-    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict"}
+    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict","dict","set","dict_view"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -277,6 +280,8 @@ class Model:
         self.global_written_names=frozenset(binding.name for binding in unit.bindings
             if self.module_owner(binding.owner) and binding.role not in {"load","parameter"})if unit is not None else frozenset()
         self.namespace=self.create_namespace()
+        from .native_class_mappings import Mappings
+        self.mappings=Mappings(self)
         self.discover()
         from .native_lambda_cells import LambdaCells
         self.lambda_cells=LambdaCells(self)
@@ -284,6 +289,10 @@ class Model:
         self.callable_cells=self.create_callable_cells()
         from .native_class_iterators import Iterators
         self.iterators=Iterators(self)
+        from .native_starred_calls import ExpandedCalls
+        self.expanded_calls=ExpandedCalls(self)
+        from .native_immediate_generators import Generators
+        self.generators=Generators(self)
 
     def semantic_graph(self,unit):return SemanticGraph(unit)
 
@@ -566,7 +575,7 @@ class Model:
     def snapshot(self):
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
-                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),
+                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())))
 
@@ -608,8 +617,10 @@ class Model:
         self.infer_until_stable()
         from .native_variadic import default_empty
         default_empty(self)
+        self.expanded_calls.default_empty()
         self.namespace.default_uninhabited()
         self.lexical.default_uninhabited()
+        self.mappings.default_uninhabited()
         for owner in self.classes.values():
             for value in owner.fields.values():
                 if value.cell.root().tag is None and not value.written:
@@ -656,6 +667,8 @@ class Model:
                 self.storage(plan.result, plan.node)
                 for value in plan.arguments.values():
                     self.storage(value, plan.node)
+        for record in self.mappings.records:self.mappings.validate(record.kind,record.node,frozenset())
+        for record in self.mappings.views.records:self.mappings.views.validate(record.kind,record.node,frozenset())
         for name in self.namespace.active:self.storage(self.namespace.cells[name],self.tree)
         for (index,name),value in self.namespace.defaults.items():self.storage(value,self.plans[index].defaults[name])
         self.lexical.validate()
@@ -666,6 +679,9 @@ class Model:
         validate(cell,node,self.integer,field_value=field_value,model=self)
 
     def expression(self, plan, node, environment):
+        mapped=self.mappings.analyze_expression(plan,node,environment)
+        if mapped is not None:return mapped
+        if isinstance(node,ast.GeneratorExp):return self.generators.analyze(plan,node,environment)
         if isinstance(node,ast.Lambda):return self.lambda_cells.value(plan,node,environment)
         if isinstance(node,ast.ListComp):
             from .native_class_comprehensions import analyze
@@ -739,6 +755,8 @@ class Model:
             index = self.expression(plan, node.slice, environment).root()
             captured=self.subscript_item(plan,node,owner,index,environment)
             if captured is not None:return captured
+            mapped=self.mappings.analyze_item(plan,node,owner,index,environment)
+            if mapped is not None:return mapped
             if owner.tag is None and not self.final:
                 return self.cell(plan,node)
             if index.tag not in {None,"int","bool","int_bool"}:
@@ -915,6 +933,8 @@ class Model:
         return callee.result
 
     def call(self, plan, node, environment):
+        expanded=self.expanded_calls.analyze(plan,node,environment)
+        if expanded is not None:return expanded
         value=self.callable_cells.analyze(plan,node,environment)
         if value is not None:return value
         from .native_frame_references import call_target
@@ -996,6 +1016,8 @@ class Model:
                 self.remember(plan,function,callable_)
                 return self.cell(plan,node,"bytes" if callable_.tag in {"reader_bytes","read_bytes"} else "str")
         if receiver is not None:
+            mapped=self.mappings.analyze_method(plan,node,receiver,arguments,keywords,environment)
+            if mapped is not None:return mapped
             if receiver.tag == "object":
                 owner = self.classes[receiver.args[0]]
                 method = owner.methods.get(self.resolved_name(plan,function))
@@ -1074,6 +1096,8 @@ class Model:
 
     def item(self, value, node):
         value = value.root()
+        mapping=self.mappings.views.element(shape(value))
+        if mapping is not None:return mapping
         if getattr(value.tag,"_native_class_iterator",False):return self.iterators.item(value.tag)
         if value.tag in {"list","tuple_sequence"}:
             return value.args[0]
@@ -1124,7 +1148,8 @@ class Model:
                 return
         if isinstance(node,ast.Subscript) and not isinstance(node.slice,ast.Slice):
             owner = self.expression(plan,node.value,environment).root()
-            self.expression(plan,node.slice,environment)
+            index=self.expression(plan,node.slice,environment)
+            if self.mappings.analyze_store(plan,node,owner,index,value,environment):return
             if owner.tag == "list":
                 self.contribute(owner.args[0],value,node)
                 self.remember(plan,node,owner.args[0])
@@ -1255,6 +1280,8 @@ class Model:
                 value=None
                 if isinstance(node,ast.For):
                     value = self.expression(plan,node.iter,environment)
+                    if self.mappings.views.element(shape(value))is not None:
+                        value=Cell(self.iterators.source(plan,node,value))
                 start=Environment(environment)
                 key=plan.index,id(node)
                 header=self.join(start,self.loop_feedback.get(key),node,"loop_header")
@@ -1344,6 +1371,9 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,'_native_mapping_view',False):return self.model.mappings.views.rust_type(value)
+        if getattr(value,"_native_class_mapping",False):return self.model.mappings.rust_type(value)
+        if getattr(value,"_native_class_generator",False):return f"ClassIterator_{value.record.outer.index}"
         if getattr(value,"_native_class_iterator",False):return f"ClassIterator_{value.index}"
         if getattr(value,"_native_function_reference",False):return "ClassFunctionRef"
         if getattr(value,"_native_namespace_view",False):return "ClassGlobalsView"
@@ -1377,7 +1407,7 @@ class Emitter:
     def at(self, result, node):
         return f"native_at({result},{node.lineno},{self.location_code()})?"
 
-    def location_code(self):return _string(self.plan.scope)
+    def location_code(self):return _string(getattr(self,'logical_scope',self.plan.scope))
 
     def prepare_call_context(self,callee,receiver,constructor,defining_module=None):return ""
 
@@ -1449,10 +1479,12 @@ class Emitter:
         return Expression("{"+setup+f"let {result}={truth};{result}"+"}","bool")
 
     def truth(self, value):
+        if getattr(value.kind,'_native_mapping_view',False):return self.model.mappings.views.truth(self,value)
         if isinstance(value.kind,EmptyType):return f"native_empty::<bool>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
             lambda kind,code:self.truth(Expression(code,kind)))
         tag = domain(value.kind)
+        if tag in {"dict","set"}:return self.model.mappings.truth(self,value)
         if tag in {"int","bool","int_bool"}:
             return self.numeric.truth(self.scalar(value))
         if tag in {"function","iterator"}:return "true"
@@ -1478,12 +1510,14 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        if getattr(value.kind,'_native_mapping_view',False):return self.model.mappings.views.show(self,value,node)
         if isinstance(value.kind,EmptyType):return f"native_empty::<String>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
             lambda kind,code:self.show(Expression(code,kind),node,representation))
         if isinstance(value.kind,TupleSequenceType):
             from .native_variadic import show
             return show(self,value,node)
+        if getattr(value.kind,"_native_class_mapping",False):return self.model.mappings.show(self,value,node)
         if isinstance(value.kind,ListType):
             item=self.fresh()
             rendered=self.show(Expression(f"(*{item}).clone()",value.kind.element),node,True)
@@ -1521,6 +1555,7 @@ class Emitter:
 
     def expression(self, node):
         wanted = self.kind(node)
+        if isinstance(node,ast.GeneratorExp):return self.model.generators.construct(self,node)
         if isinstance(node,ast.Lambda):return self.model.lambda_cells.emit_value(self,node)
         if isinstance(node,ast.ListComp):
             from .native_class_comprehensions import emit
@@ -1562,6 +1597,8 @@ class Emitter:
                 return Expression(f"class_list(Vec::<{self.rust_type(wanted.element)}>::new())",wanted)
             values = [self.coerce(self.expression(value),wanted.element,value) for value in node.elts]
             return Expression("class_list(vec!["+",".join(values)+"])",wanted)
+        if isinstance(node,(ast.Dict,ast.Set,ast.DictComp,ast.SetComp)):
+            return self.model.mappings.emit_expression(self,node)
         if isinstance(node,ast.Attribute):
             bound=self.model.callable_cells.bound_methods.read(self,node)
             if bound is not None:return bound
@@ -1579,6 +1616,9 @@ class Emitter:
         if isinstance(node,ast.Subscript):
             setup,owner = self.capture(self.expression(node.value))
             index_setup,index = self.capture(self.expression(node.slice))
+            if getattr(owner.kind,"_native_class_mapping",False)or union_kind(owner.kind)and any(getattr(part,"_native_class_mapping",False)for part in alternatives(owner.kind)):
+                value=self.model.mappings.emit_get(self,node,owner,index,wanted)
+                return Expression('{'+setup+index_setup+value.code+'}',wanted)
             tag = domain(owner.kind)
             if tag == "list":
                 code = self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node)
@@ -1682,6 +1722,8 @@ class Emitter:
             lambda kind,code:self.comparison(operator,Expression(f"({code}).clone()",kind),right,node))
         if union_kind(right.kind):return project(right.kind,right.code,
             lambda kind,code:self.comparison(operator,left,Expression(f"({code}).clone()",kind),node))
+        mapped=self.model.mappings.comparison(self,operator,left,right,node)
+        if mapped is not None:return mapped
         from .native_globals_view import comparison as globals_comparison
         observed=globals_comparison(self,operator,left,right,node)
         if observed is not None:return observed
@@ -1691,7 +1733,7 @@ class Emitter:
         a,b = domain(left.kind),domain(right.kind)
         if isinstance(operator,(ast.Is,ast.IsNot)):
             if a==b=="function":code=self.model.callable_cells.identity(left.code,right.code)
-            elif a==b and a in {"object","list","iterator"}:
+            elif a==b and a in {"object","list","iterator","dict_view"}:
                 code = (f"Rc::ptr_eq(&{left.code},&{right.code})"if left.kind==right.kind else"false")
             elif a==b=="none":
                 code = "true"
@@ -1845,6 +1887,10 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        expanded=self.model.expanded_calls.emit(self,node)
+        if expanded is not None:return expanded
+        mapped=self.model.mappings.emit_method(self,node)
+        if mapped is not None:return mapped
         from .native_aot_callables import emit_call
         dispatched=emit_call(self,node)
         if dispatched is not None:return dispatched
@@ -1980,6 +2026,8 @@ class Emitter:
         if isinstance(target,ast.Subscript):
             setup,owner=self.capture(self.expression(target.value))
             more,index=self.capture(self.expression(target.slice))
+            if all(getattr(kind,"_native_class_mapping",False)for kind in alternatives(owner.kind)):
+                return setup+more,("mapping",owner,index,self.kind(target))
             if domain(owner.kind)!="list":raise ClassUnsupported(target)
             return setup+more,("index",owner,index,owner.kind.element)
         raise ClassUnsupported(target)
@@ -2002,6 +2050,8 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=="mapping":
+            return self.model.mappings.emit_get(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]=="name":
             target=reference[1]
             kind=kind or self.kind(target)
@@ -2025,6 +2075,8 @@ class Emitter:
         return Expression(self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node),kind)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=="mapping":
+            return self.model.mappings.emit_store(self,node,reference[1],reference[2],value)
         if reference[0]=="name":
             return self.assign(reference[1],value)
         if reference[0]=="field":
@@ -2136,6 +2188,8 @@ class Emitter:
                     and iterable.func.id=="enumerate"and domain(self.kind(iterable))=="enumerate")
         source_node=iterable.args[0]if enumerated else iterable
         setup,source=self.capture(self.expression(source_node))
+        if self.model.mappings.views.element(source.kind)is not None:
+            before,source=self.capture(self.model.iterators.construct(self,node,source));setup+=before
         counter=None
         if enumerated:
             start=self.expression(iterable.args[1])if len(iterable.args)==2 else Expression(self.literal(0),'int',0)
@@ -2330,6 +2384,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
         layouts=model.iterators.runtime(emitters[0])+"\n"+layouts
+        layouts=model.mappings.runtime(emitters[0])+"\n"+layouts
         unions={}
         def add_kind(kind):
             if isinstance(kind,UnionType):
@@ -2340,6 +2395,9 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                 for field in kind.fields:add_kind(field)
             elif isinstance(kind,(ListType,TupleSequenceType)):add_kind(kind.element)
         for value in model.records.values():add_kind(shape(value))
+        for record in model.mappings.records:
+            add_kind(shape(record.key));add_kind(shape(record.value))
+        for kind in model.expanded_calls.kinds():add_kind(kind)
         for _,kind in model.namespace.fields():add_kind(kind)
         for _,kind in model.namespace.default_fields():add_kind(kind)
         for value in model.namespace.local_schemas.values():add_kind(shape(value))
@@ -2392,6 +2450,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         class_runtime=class_runtime.replace("    fn class_repr(&self)->String{text_repr_str(self)}\n", "")
     from .native_variadic import runtime as variadic_runtime
     pieces.append(variadic_runtime(model))
+    from .native_starred_calls import runtime as expanded_runtime
+    pieces.append(expanded_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),class_runtime,layouts,*bodies])
     entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if synchronous(model,model.module)
@@ -2402,7 +2462,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                   'for &(line,function)in error.frames.iter().rev(){\n'
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}",{_string(filename)},line,function);}}\n'
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);std::process::exit(1);}}}}')
-    result=model.finish_runtime("\n".join(pieces))
+    result=model.finish_runtime(model.generators.runtime("\n".join(pieces)))
     from .native_text_policy import apply_text_policy
     result=apply_text_policy(result,string_mode)
     from .native_cached_text import apply_cached_text

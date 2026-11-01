@@ -46,6 +46,12 @@ def validate(cell,node,integer,*,field_value=False,seen=frozenset(),model=None):
     from .native_types import EmptyType
     cell=cell.root()
     if isinstance(cell.tag,EmptyType):return
+    if getattr(cell.tag,'_native_mapping_view',False):
+        model.mappings.views.validate(cell.tag,node,seen)
+        return
+    if getattr(cell.tag,"_native_class_mapping",False):
+        model.mappings.validate(cell.tag,node,seen)
+        return
     if getattr(cell.tag,"_native_class_iterator",False):
         registry=getattr(model,"iterators",None)
         if registry is None or not registry.owns(cell.tag):

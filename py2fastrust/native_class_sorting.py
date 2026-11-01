@@ -37,8 +37,10 @@ def _analyze(model,plan,node,source,key,environment,*,method,error=None):
     kind=None
     if method:element=source.root().args[0]
     else:
-        kind=model.iterators.source(plan,node,source)
-        element=model.iterators.demand(plan,node,Cell(kind),environment)
+        element=model.mappings.sorted_element(source,key,node)
+        if element is None:
+            kind=model.iterators.source(plan,node,source)
+            element=model.iterators.demand(plan,node,Cell(kind),environment)
     site=SortSite(key,element,source_kind=kind,error=error)
     _sites(model)[(plan.index,id(node))]=site
     if not error and not isinstance(shape(element),EmptyType)and any(value!='none'for value in alternatives(shape(key))):
@@ -143,14 +145,17 @@ def _sort(emitter,node,values,element,reverse,key,site):
 
 def emit_builtin(emitter,node,arguments,keywords,wanted):
     from .native_classes import Expression,shape
-    from .native_types import ListType
+    from .native_types import ListType,alternatives
     site=_sites(emitter.model)[(emitter.plan.index,id(node))]
     if site.error and site.source_kind is None:return Expression(_error(emitter,node,site.error,wanted),wanted)
     key=keywords.get('key',Expression('()','none'));reverse=keywords.get('reverse',Expression('false','bool'))
     values,direction,current=(emitter.fresh()for _ in range(3))
     element=shape(site.element)
     from .native_classes import domain
-    if domain(arguments[0].kind)=='list'and arguments[0].kind.element==element:
+    from .native_class_mappings import mapping_kind
+    if all(mapping_kind(kind)for kind in alternatives(arguments[0].kind)):
+        materialize=f'let mut {values}='+emitter.model.mappings.sorted_values(emitter,node,arguments[0],element)+';'
+    elif domain(arguments[0].kind)=='list'and arguments[0].kind.element==element:
         materialize=f'let mut {values}={arguments[0].code}.borrow().clone();'
     else:
         source=emitter.model.iterators.construct(emitter,node,arguments[0],kind=site.source_kind)

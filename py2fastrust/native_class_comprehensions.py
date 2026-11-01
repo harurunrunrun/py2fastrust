@@ -94,11 +94,25 @@ def _bind(model, plan, target, item, environment, record):
     _target_names(model,plan,target)
 
 
-def analyze(model, plan, node, environment):
+def _register_sources(model,plan,producer,value=None):
+    """Retain a proved shared cursor for finite iterable alternatives."""
+    from .native_classes import shape,Cell
+    from .native_unions import union_kind
+    if value is None:value=model.records.get((plan.index,id(producer.node)))
+    children=[_register_sources(model,plan,source)for source in producer.sources]
+    if value is not None and union_kind(shape(value)):
+        return Cell(model.iterators.source(plan,producer.node,value))
+    if (value is not None and producer.kind is ProducerKind.ENUMERATE
+            and value.root().tag=='enumerate'and children and children[0]is not None):
+        return Cell('enumerate',(children[0],value.root().args[1]))
+    return value
+
+
+def analyze(model, plan, node, environment, *, contribute=None, first_value=None, semantic=None):
     """Contribute actual element/storage facts without exporting local targets."""
-    from .native_classes import Cell, Environment, ClassUnsupported
+    from .native_classes import Cell, Environment, ClassUnsupported,shape
     key=(plan.index,id(node))
-    try:semantic=_normalizer(model,plan,environment).comprehension(node)
+    try:semantic=semantic or _normalizer(model,plan,environment).comprehension(node)
     except CallBindingError as error:
         raise ClassUnsupported(node,str(error),proof="synchronous comprehension iteration")from None
     names=set().union(*(_target_names(model,plan,clause.target)for clause in semantic.clauses))
@@ -119,7 +133,7 @@ def analyze(model, plan, node, environment):
     # The first iterable sees the enclosing environment, even when one of its
     # names is also a target in this or a later generator clause.
     first=semantic.clauses[0]
-    first_value=model.expression(plan,first.source.node,environment)
+    if first_value is None:first_value=model.expression(plan,first.source.node,environment)
     inside=Environment(environment)
     if plan is model.module:
         # Calls still resolve their globals in the module namespace, even
@@ -135,12 +149,17 @@ def analyze(model, plan, node, environment):
             except CallBindingError as error:
                 raise ClassUnsupported(clause.source.expression,str(error),proof="typed comprehension iterable")from None
             value=model.expression(plan,source.node,inside)
+        if model.mappings.views.element(shape(value))is not None:
+            value=Cell(model.iterators.source(plan,source.node,value))
         sources.append(source)
-        _bind(model,plan,clause.target,model.iterators.demand(plan,source.node,value,inside),inside,record)
+        adapted=_register_sources(model,plan,source,value)
+        _bind(model,plan,clause.target,model.iterators.demand(plan,source.node,adapted,inside),inside,record)
         for condition in clause.filters:model.condition(plan,condition,inside)
     record.sources=tuple(sources)
-    result=model.cell(plan,node,"list",(Cell(),))
-    model.contribute(result.root().args[0],model.expression(plan,semantic.element,inside),semantic.element)
+    if contribute is None:
+        result=model.cell(plan,node,"list",(Cell(),))
+        model.contribute(result.root().args[0],model.expression(plan,semantic.element,inside),semantic.element)
+    else:result=contribute(inside,semantic)
     model.namespace.comprehension_effects(plan,node,environment,inside)
     return result
 
@@ -170,8 +189,18 @@ def _prepare(emitter, producer):
     from .native_classes import ClassUnsupported, Expression, domain, shape
     node=producer.node
     from .native_class_iterators import iterator_kind
-    if iterator_kind(emitter.kind(node)):
+    from .native_unions import union_kind
+    registered=emitter.model.iterators.sites.get((emitter.plan.index,id(node),'source',None))
+    if iterator_kind(emitter.kind(node))or registered is not None and union_kind(emitter.kind(node)):
         setup,source=emitter.capture(emitter.expression(node))
+        if not iterator_kind(source.kind):
+            before,source=emitter.capture(emitter.model.iterators.construct(emitter,node,source,kind=registered.kind))
+            setup+=before
+        value=emitter.model.iterators.pull(emitter,node,source)
+        return _Iterator(setup,value.kind,value.code)
+    if emitter.model.mappings.views.element(emitter.kind(node))is not None:
+        setup,source=emitter.capture(emitter.expression(node))
+        before,source=emitter.capture(emitter.model.iterators.construct(emitter,node,source));setup+=before
         value=emitter.model.iterators.pull(emitter,node,source)
         return _Iterator(setup,value.kind,value.code)
     if producer.kind is ProducerKind.ENUMERATE:
@@ -255,12 +284,25 @@ def _assign(emitter, target, value, bindings):
     raise ClassUnsupported(target)
 
 
-def emit(emitter, node):
+@dataclass(frozen=True)
+class Collector:
+    initialize: object
+    append: object
+    finish: object
+
+
+def prepare_first(emitter,node):
+    """Capture the original first iterable before a consumer's later operands."""
+    record=emitter.model.comprehensions[(emitter.plan.index,id(node))]
+    return _prepare(emitter,record.sources[0])
+
+
+def emit(emitter, node, *, collector=None, first=None, wanted=None):
     from .native_classes import Expression, shape
     record=emitter.model.comprehensions[(emitter.plan.index,id(node))]
-    wanted=emitter.kind(node)
+    wanted=emitter.kind(node)if wanted is None else wanted
     # Generate/capture the first source before installing the target namespace.
-    first=_prepare(emitter,record.sources[0])
+    first=prepare_first(emitter,node)if first is None else first
     bindings={}
     def declare(target):
         if isinstance(target,ast.Name):
@@ -289,13 +331,18 @@ def emit(emitter, node):
                 before,value=emitter.capture(emitter.condition(condition))
                 body+=before+f"if !({emitter.truth(value)}){{continue;}}"
             if index+1<len(record.sources):body+=loop(index+1)
+            elif collector is not None:
+                body+=collector.append(emitter,result,record.semantic)
             else:
                 before,value=emitter.capture(emitter.expression(record.semantic.element))
                 reserve=emitter.at(f'{result}.try_reserve(1).map_err(|_|"MemoryError: cannot allocate list".to_owned())',node)
                 body+=before+reserve+";"+f"{result}.push({emitter.coerce(value,wanted.element,record.semantic.element)});"
             setup=""if index==0 else source.setup
             return setup+f"while let Some({current})={source.next}{{{body}}}"
-        code=first.setup+lexical_setup+declarations+f"let mut {result}:Vec<{emitter.rust_type(wanted.element)}>=Vec::new();"+loop(0)+f"class_list({result})"
+        initial=(f"let mut {result}:Vec<{emitter.rust_type(wanted.element)}>=Vec::new();"if collector is None
+                 else collector.initialize(emitter,result,wanted))
+        finish=f"class_list({result})"if collector is None else collector.finish(emitter,result,wanted)
+        code=first.setup+lexical_setup+declarations+initial+loop(0)+finish
     finally:
         scopes.pop()
         if lexical_context is not None:

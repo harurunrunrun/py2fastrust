@@ -212,8 +212,9 @@ class SemanticGraph:
             op="dict";args=tuple((self.expression(key),self.expression(item)) for key,item in zip(node.keys,node.values))
         elif isinstance(node,ast.Call):
             try:
-                arguments=normalize_call(node)
-                op="call";args=(self.expression(node.func),tuple(self.expression(item.expression) for item in arguments.positional),
+                arguments=normalize_call(node,allow_starred=True)
+                op="expanded_call"if arguments.expanded else"call"
+                args=(self.expression(node.func),tuple(self.expression(item.expression) for item in arguments.positional),
                                  tuple((item.name,self.expression(item.expression)) for item in arguments.keywords))
             except CallBindingError:pass
         elif isinstance(node,ast.Subscript):
@@ -515,6 +516,14 @@ class Solver:
             for identity in callee.alternatives:
                 result=result.join(self.call(identity,positional,keywords,term,state,globals,locals,context))
             if callee.unknown or callee.unbound or not callee.alternatives:result=result.join(UNKNOWN)
+        elif op=="expanded_call":
+            # Observe real expression order without pretending one iterable
+            # supplies one positional argument to the fixed-arity solver.
+            callee=evaluate(args[0])
+            for child in args[1]:evaluate(child)
+            for name,child in args[2]:evaluate(child)
+            if not callee.unknown and not callee.unbound and callee.alternatives==frozenset({BuiltinIdentity("print")}):
+                result=value("none")
         elif op=="index":
             receiver=evaluate(args[0]);evaluate(args[1])
             literal=self.graph.literals.get(args[1].site)

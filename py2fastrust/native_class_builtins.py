@@ -7,7 +7,7 @@ import ast
 from .references import BuiltinIdentity
 
 SUPPORTED=frozenset({"input","print","int","str","bool","float","len","abs","id","globals",
-                     "range","list","sum","min","max","map","zip","enumerate","filter","iter","next","any","all","pow","sorted"})
+                     "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","next","any","all","pow","sorted","dict","set"})
 
 
 def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=None,call_arguments=None):
@@ -15,6 +15,11 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='tuple':
+        from .native_class_materialization import analyze_tuple
+        return analyze_tuple(model,plan,node,arguments,keywords,environment,cell)
+    if name in {'dict','set'}:
+        return model.mappings.analyze_builtin(plan,node,name,arguments,keywords,environment,cell)
     if name=='sorted':
         from .native_class_sorting import analyze_builtin
         return analyze_builtin(model,plan,node,arguments,keywords,environment,factory=cell)
@@ -67,7 +72,7 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         from .native_class_iterators import iterator_kind
         from .native_classes import shape
         result=cell()
-        if iterator_kind(shape(arguments[0])):
+        if iterator_kind(shape(arguments[0]))or getattr(shape(arguments[0]),'_native_class_generator',False):
             model.contribute(result,model.iterators.demand(plan,node,arguments[0],environment),node)
         elif shape(arguments[0])is not None:model.contribute(result,Cell("none"),node)
         if len(arguments)==2:model.contribute(result,arguments[1],node)
@@ -76,13 +81,16 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         from .native_classes import shape
         from .native_class_iterators import iterator_kind
         source=arguments[0]
-        if not iterator_kind(shape(source)):
+        if not iterator_kind(shape(source))and not getattr(shape(source),'_native_class_generator',False):
             source=Cell(model.iterators.source(plan,node,source))
         model.iterators.demand(plan,node,source,environment)
         return cell("bool")
     if name == "list" and len(arguments) <= 1 and not keywords:
         result = cell("list",(Cell(),))
         if arguments:
+            from .native_classes import shape
+            if self.mappings.views.element(shape(arguments[0]))is not None:
+                arguments=[Cell(self.iterators.source(plan,node,arguments[0]))]
             self.contribute(result.root().args[0],self.iterators.demand(plan,node,arguments[0],environment),node)
         return result
     if name == "sum" and 1 <= len(arguments) <= 2 and not keywords:
@@ -108,6 +116,14 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
 def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_classes import Expression
     from .native_unions import project,union_kind
+    if identity.name=='tuple':
+        from .native_class_materialization import emit_tuple
+        return emit_tuple(emitter,node,arguments,wanted)
+    if identity.name in {'dict','set'}:
+        return emitter.model.mappings.emit_builtin(emitter,node,identity.name,arguments,keywords,wanted)
+    if arguments and getattr(arguments[0].kind,'_native_class_generator',False):
+        from .native_immediate_generators import CONSUMERS
+        if identity.name in CONSUMERS:return emitter.model.generators.consume(emitter,node,identity.name,arguments[0],arguments,keywords,wanted)
     if identity.name=='sorted':
         from .native_class_sorting import emit_builtin
         return emit_builtin(emitter,node,arguments,keywords,wanted)
@@ -141,6 +157,7 @@ def _type_name(emitter,value,node):
     if tag=="iterator"and value.kind.record.operation in {"filter","map","zip"}:
         return _string(value.kind.record.operation)
     if tag=="tuple_sequence":return '"tuple"'
+    if tag=='dict_view':return _string('dict_'+value.kind.record.mode)
     if tag=="function":
         from .native_aot_callables import variant
         arms=[f'{emitter.model.callable_cells.reference_pattern(definition)}=>"function"'for definition in value.kind.definitions]
@@ -199,7 +216,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         code = "{"+"".join(pieces)+"()}"
     elif name == "len":
         value=arguments[0]
-        if domain(value.kind)=="list":length=f"{value.code}.borrow().len()"
+        if domain(value.kind)=='dict_view':length=self.model.mappings.views.length(self,value)
+        elif domain(value.kind)in {"list","dict","set"}:length=f"{value.code}.borrow().len()"
         elif domain(value.kind)=="str":
             length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"codepoint_len()")
         elif domain(value.kind)in {"bytes","tuple_sequence"}:length=f"{value.code}.len()"
@@ -250,7 +268,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
             name=_type_name(emitter,value,node)
             return _error(emitter,node,wanted,f'format!("TypeError: bad operand type for abs(): \'{{}}\'",{name})')
     elif name == "id":
-        if domain(arguments[0].kind)not in{"object","list","iterator"}:raise ClassUnsupported(node)
+        if domain(arguments[0].kind)not in{"object","list","iterator","dict","set","dict_view"}:raise ClassUnsupported(node)
         code=f"class_from_usize(Rc::as_ptr(&{arguments[0].code}) as usize)"
         raw_kind='int'
     elif name == "range":
@@ -285,6 +303,11 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         return Expression("{"+setup+"loop{"+f"let Some({current})=({pulled.code}) else{{break {str(name=='all').lower()};}};if {test}{{break {str(name=='any').lower()};}}"+"}}","bool")
     elif name == "list":
         if not arguments:code=f"class_list(Vec::<{self.rust_type(wanted.element)}>::new())"
+        elif self.model.mappings.views.element(arguments[0].kind)is not None:
+            before,source=self.capture(self.model.iterators.construct(self,node,arguments[0]))
+            pulled=self.model.iterators.pull(self,node,source);current=self.fresh();values=self.fresh()
+            item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
+            code="{"+before+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}class_list({values})"+"}"
         elif domain(arguments[0].kind)=="iterator":
             pulled=self.model.iterators.pull(self,node,arguments[0]);current=self.fresh();values=self.fresh()
             item=self.coerce(Expression(current,pulled.kind),wanted.element,node)

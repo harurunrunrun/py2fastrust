@@ -85,7 +85,7 @@ def comparison(emitter, operator, left, right, node):
 
 
 def runtime(model):
-    if not any(plan.reachable and getattr(plan, "variadic_element", None) is not None for plan in model.plans):
+    if not getattr(model,'materialized_tuple',False)and not any(plan.reachable and getattr(plan, "variadic_element", None) is not None for plan in model.plans):
         return ""
     from .native_tuple_sequences import HELPERS
     from .native_constraint_lowering import EMPTY_HELPERS

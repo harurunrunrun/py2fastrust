@@ -18,6 +18,7 @@ class CallBindingError(ValueError):
 class Argument:
     expression: ast.expr
     name: str | None = None
+    spread: bool = False
 
 
 @dataclass(frozen=True)
@@ -29,19 +30,24 @@ class CallArguments:
     def evaluation_order(self):
         return self.positional + self.keywords
 
+    @property
+    def expanded(self):
+        return any(argument.spread for argument in self.positional)
 
-def normalize_call(node):
+
+def normalize_call(node, *, allow_starred=False):
     """Normalize explicit arguments without executing their expressions.
 
-    Expanding *args/**kwargs requires an emitted iterator/mapping operation and
-    cannot be safely treated as a fixed signature. Keep it an explicit boundary
-    until that general lowering is available.
+    Positional expansion is opt-in metadata for typed iterator/arity lowering;
+    fixed-signature consumers continue to reject it. Keyword mapping expansion
+    remains an explicit boundary until its mapping protocol is implemented.
     """
-    if any(isinstance(value, ast.Starred) for value in node.args):
+    if not allow_starred and any(isinstance(value, ast.Starred) for value in node.args):
         raise CallBindingError("expanded positional arguments require dynamic call lowering")
     if any(value.arg is None for value in node.keywords):
         raise CallBindingError("expanded keyword arguments require dynamic call lowering")
-    return CallArguments(tuple(Argument(value) for value in node.args),
+    return CallArguments(tuple(Argument(value.value, spread=True) if isinstance(value,ast.Starred)
+                               else Argument(value) for value in node.args),
                          tuple(Argument(value.value, value.arg) for value in node.keywords))
 
 
@@ -165,6 +171,8 @@ class FunctionSignature:
 
     def plan(self,arguments,*,implicit_count=0,allow_variadic=False):
         """Resolve argument positions once, before backend-specific evaluation."""
+        if arguments.expanded:
+            raise CallBindingError("expanded positional arguments require runtime-arity binding")
         positional=tuple(ValueSource("implicit",index)for index in range(implicit_count))
         positional+=tuple(ValueSource("argument",index)for index in range(len(arguments.positional)))
         keywords=tuple((argument.name,ValueSource("argument",len(arguments.positional)+index))
