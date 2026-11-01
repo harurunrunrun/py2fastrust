@@ -165,10 +165,10 @@ fn class_read_bytes(scope:&ClassScope,line:bool)->Result<Vec<u8>,String> {
     match class_read(scope,true,line,false)?{ClassRead::Bytes(value)=>Ok(value),_=>unreachable!()}
 }
 fn class_parse_text(value:&str)->Result<NativeInt,String> {
-    native_parse_integer(value).map_err(|_|format!("ValueError: invalid literal for int() with base 10: {}",text_repr_str(value)))
+    native_parse_integer(value).map_err(|_|format!("ValueError: invalid literal for int() with base 10: {:.200}",text_repr_str(value)))
 }
 fn class_parse_bytes(value:&[u8])->Result<NativeInt,String> {
-    native_parse_bytes_integer(value).map_err(|_|format!("ValueError: invalid literal for int() with base 10: {}",text_repr_bytes(value)))
+    native_parse_bytes_integer(value).map_err(|_|format!("ValueError: invalid literal for int() with base 10: {:.200}",text_repr_bytes(value)))
 }
 fn class_split_text(value:&str)->ClassList<String> {
     class_list(value.split(native_space).filter(|word|!word.is_empty()).map(str::to_owned).collect())

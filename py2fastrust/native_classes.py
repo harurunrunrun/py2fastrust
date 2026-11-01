@@ -1912,7 +1912,10 @@ class Emitter:
         from .native_source_returns import emit_result
         return Expression(emit_result(self,node,callee,code,self.kind(node)),self.kind(node))
 
-    def parse_words(self, node, count=None):
+    def parse_words(self, node, count=None,*,consumer=None):
+        from .native_integer_word_maps import parse_immediate
+        fused=parse_immediate(self,node,count,consumer=consumer)
+        if fused is not None:return fused
         words = self.expression(node.args[1])
         before,words = self.capture(words)
         if domain(words.kind) != "list":
@@ -1925,7 +1928,7 @@ class Emitter:
         else:
             raise ClassUnsupported(node)
         limit = "None"if count is None else f"Some({count})"
-        call = self.at(f"class_parse_words(&{words.code},{limit},{parser})",node)
+        call = self.at(f"class_parse_words(&{words.code},{limit},{parser})",consumer or node)
         return f"{{{before}{call}}}"
 
     def sequence_call(self,node,method):
@@ -2001,7 +2004,7 @@ class Emitter:
             receiver = None
         if (isinstance(function,ast.Name) and function.id == "list" and len(node.args)==1
                 and domain(self.kind(node.args[0])) == "map_int"):
-            values = self.parse_words(node.args[0])
+            values = self.parse_words(node.args[0],consumer=node)
             if wanted.element == 'int_bool':
                 values = f"({values}).into_iter().map(NativeScalar::Int).collect::<Vec<_>>()"
             elif wanted.element != 'int':
@@ -2221,7 +2224,7 @@ class Emitter:
                 if len(node.targets)!=1 or not isinstance(node.targets[0],(ast.Tuple,ast.List)):
                     raise ClassUnsupported(node)
                 target=node.targets[0];temporary=self.fresh()
-                setup=f"let {temporary}={self.parse_words(node.value,len(target.elts))};"
+                setup=f"let {temporary}={self.parse_words(node.value,len(target.elts),consumer=node)};"
                 return setup+"".join(self.assign(value,Expression(f"{temporary}[{i}].clone()",'int'))
                                      for i,value in enumerate(target.elts))
             setup,value=self.capture(self.expression(node.value))

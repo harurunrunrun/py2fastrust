@@ -112,6 +112,13 @@ use their live list cursor. Ordinary integer-word collectors report the original
 invalid literal with its base and Python representation through a cold error
 path.
 
+Immediate frame `list(map(int, ...))`, captured canonical `list` aliases and
+checked unpacking share the borrowed word collector. Final lists receive parsed
+integers directly. Unpacking converts the extra item before reporting excess
+values and completes all checks before storing targets. Invalid literal displays
+use Python's 200-character representation limit, and errors from multiline
+consumers retain the consumer's original source location.
+
 Frame `str.split`/`rsplit` and `bytes.split`/`rsplit` accept optional `sep` and
 `maxsplit`, including keywords, `None` whitespace splitting and checked signed
 index-size bounds. Borrowed cursors preserve receiver/argument evaluation order

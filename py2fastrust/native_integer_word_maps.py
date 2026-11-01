@@ -64,6 +64,8 @@ def emit_call(emitter,node):
     from .native_class_iterators import iterator_kind
     from .call_semantics import normalize_call
     kind=emitter.kind(node)
+    direct=emit_immediate_list(emitter,node,kind)
+    if direct is not None:return direct
     if not iterator_kind(kind):return None
     record=kind.record;adapter=getattr(record,'adapter',None)
     if not isinstance(adapter,IntegerWordMap)or record.node is not node:return None
@@ -97,3 +99,72 @@ def emit_call(emitter,node):
         before,value=emitter.capture(emitter.expression(keyword.value));setup+=before
         setup+='let _='+emitter.truth(value)+';'
     return Expression('{'+setup+snapshot.code+'}',kind)
+
+
+def parse_immediate(emitter,node,count=None,*,consumer=None,shared=False):
+    """Fuse a proved immediate map_int source without allocating text words."""
+    from .native_classes import domain
+    from .native_types import ListType
+    from .call_semantics import normalize_call
+    if domain(emitter.kind(node))!='map_int'or not isinstance(node,ast.Call)or len(node.args)!=2:return None
+    source=node.args[1]
+    if not isinstance(source,ast.Call)or not isinstance(source.func,ast.Attribute):return None
+    if (emitter.plan.index,id(source))not in getattr(emitter.model,'text_split_sites',{}):return None
+    receiver_kind=emitter.kind(source.func.value)
+    if receiver_kind not in {'str','bytes'}:return None
+    consumer=consumer or node
+    setup=''
+    for expression in (node.func,node.args[0]):
+        if (emitter.plan.index,id(expression))in emitter.model.records:
+            setup+='let _='+emitter.expression(expression).code+';'
+    before,receiver=emitter.capture(emitter.expression(source.func.value));setup+=before
+    positional=[];keywords={}
+    for argument in normalize_call(source).evaluation_order:
+        before,value=emitter.capture(emitter.expression(argument.expression));setup+=before
+        if argument.name is None:positional.append(value)
+        else:keywords[argument.name]=value
+    wanted=ListType('int')
+    def collect(kind,text,cursor,reverse):
+        words,part,base,values,first,length,word=(emitter.fresh()for _ in range(7))
+        view=f'({text}).as_str()'if kind=='str'else f'({text}).as_slice()'
+        parse='class_parse_text'if kind=='str'else'class_parse_bytes'
+        reserve=emitter.at(f'{words}.try_reserve(1).map_err(|_|"MemoryError: cannot allocate split words".to_owned())',source)
+        body=(f'let {base}=({view}).as_ptr()as usize;let mut {words}=Vec::<(usize,usize)>::new();'
+              f'for {part} in {cursor}{{{reserve};{words}.push(({part}.as_ptr()as usize-{base},{part}.len()));}}')
+        if reverse:body+=f'{words}.reverse();'
+        limit=f'{words}.len()'if count is None else str(count)
+        body+=f'let mut {values}=Vec::<NativeInt>::new();'
+        body+=emitter.at(f'{values}.try_reserve_exact({limit}).map_err(|_|"MemoryError: cannot allocate integers".to_owned())',consumer)+';'
+        parsed=emitter.at(f'{parse}({word})',consumer)
+        if count is None:
+            body+=f'for ({first},{length})in {words}{{let {word}=&({view})[{first}..{first}+{length}];{values}.push({parsed});}}'
+        else:
+            index=emitter.fresh()
+            position=emitter.at(f'{words}.get({index}).copied().ok_or_else(||format!("ValueError: not enough values to unpack (expected {count}, got {{}})",{index}))',consumer)
+            body+=f'for {index} in 0..{count}{{let ({first},{length})={position};let {word}=&({view})[{first}..{first}+{length}];{values}.push({parsed});}}'
+            extra=emitter.at(f'Err::<(),String>("ValueError: too many values to unpack (expected {count})".to_owned())',consumer)
+            body+=f'if let Some(({first},{length}))={words}.get({count}).copied(){{let {word}=&({view})[{first}..{first}+{length}];let _={parsed};{extra};}}'
+        return '{'+body+f'class_list({values})'+'}'
+    from .native_class_splits import emit
+    result=emit(emitter,source,receiver,positional,keywords,wanted,collector=collect)
+    code='{'+setup+result.code+'}'
+    if not shared:code='Rc::try_unwrap('+code+').unwrap_or_else(|_|unreachable!()).into_inner()'
+    return code
+
+
+def emit_immediate_list(emitter,node,wanted):
+    from .native_classes import Expression
+    from .native_types import ListType
+    if wanted!=ListType('int')or len(node.args)!=1 or node.keywords:return None
+    site=emitter.model.callable_cells.sites.get((emitter.plan.index,id(node)))
+    if site is not None:
+        if site.targets or site.members or set(site.builtins)!={BuiltinIdentity('list')}:return None
+    elif not(isinstance(node.func,ast.Name)and node.func.id=='list'
+             and emitter.model.resolved_name(emitter.plan,node.func)not in emitter.plan.declared
+             and 'list'not in emitter.model.global_written_names):return None
+    if isinstance(node.args[0],ast.Starred):return None
+    fused=parse_immediate(emitter,node.args[0],consumer=node,shared=True)
+    if fused is None:return None
+    setup=''
+    if (emitter.plan.index,id(node.func))in emitter.model.records:setup+='let _='+emitter.expression(node.func).code+';'
+    return Expression('{'+setup+fused+'}',wanted)
