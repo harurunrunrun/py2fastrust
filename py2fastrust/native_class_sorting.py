@@ -1,6 +1,6 @@
 """Stable sorting over captured typed values and original compiled callbacks."""
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 
 from .call_semantics import Argument,CallArguments
 
@@ -12,6 +12,7 @@ class SortSite:
     callback:object=None
     source_kind:object=None
     error:str|None=None
+    comparators:dict=field(default_factory=dict)
 
 
 def requires_frames(unit,analysis):
@@ -62,8 +63,17 @@ def _analyze(model,plan,node,source,key,environment,*,method,error=None):
     if not error and not isinstance(shape(element),EmptyType)and any(value!='none'for value in alternatives(shape(key))):
         from .native_aot_callables import analyze_values
         inside=Environment(environment)
-        site.callback=analyze_values(model.callable_cells,plan,node,key,
-            CallArguments((Argument(node),),()),[element],[],inside,identity=('sorting_key',method))
+        from .native_cmp_keys import CmpKeyType,analyze_comparison
+        ordinary=model.cell(plan,node,identity=('sorting_ordinary_key',method))
+        has_ordinary=False
+        for branch in alternatives(shape(key)):
+            if isinstance(branch,CmpKeyType):site.comparators[branch]=analyze_comparison(model,plan,node,branch,element,inside)
+            elif branch!='none':
+                cell=Cell('function',branch.targets)if getattr(branch,'_native_function_reference',False)else Cell(branch)
+                model.contribute(ordinary,cell,node);has_ordinary=True
+        if has_ordinary:
+            site.callback=analyze_values(model.callable_cells,plan,node,ordinary,
+                CallArguments((Argument(node),),()),[element],[],inside,identity=('sorting_key',method))
         model.replace_environment(environment,model.join(environment,inside,node,'sorting_key'))
     return site
 
@@ -134,6 +144,9 @@ def _sort(emitter,node,values,element,reverse,key,site):
     if isinstance(element,EmptyType):return ''
     if union_kind(key.kind):
         return project(key.kind,key.code,lambda kind,code:'{'+_sort(emitter,node,values,element,reverse,Expression(f'({code}).clone()',kind),site)+'}')+';'
+    if getattr(key.kind,'_native_cmp_key',False):
+        from .native_cmp_keys import sort
+        return sort(emitter,node,values,element,reverse,key,site)
     first,second,order,error=(emitter.fresh()for _ in range(4))
     key_kind=element if key.kind=='none'else shape(site.callback.result)
     if key_kind is None:
@@ -189,7 +202,9 @@ def emit_builtin(emitter,node,arguments,keywords,wanted):
     body=(materialize+
         ( _error(emitter,node,site.error,'none')+';'if site.error else'')+f'let {direction}={emitter.truth(reverse)};'+
         _sort(emitter,node,values,element,direction,key,site)+f'Ok(class_list({values}))')
-    code='( ||->Result<'+emitter.rust_type(ListType(element))+',NativeError>{'+body+'})()?'
+    from .native_class_calls import synchronous
+    if synchronous(emitter.model,emitter.plan):code='( ||->Result<'+emitter.rust_type(ListType(element))+',NativeError>{'+body+'})()?'
+    else:code='(async{'+body+'}).await?'
     return emitter.encoded(code,ListType(element),wanted,node)
 
 
@@ -210,8 +225,12 @@ def emit_method(emitter,node):
     element=shape(site.element)
     # No RefCell borrow spans a user callback. The detached vector is restored
     # after both key failure and successful sorting before propagating errors.
+    from .native_class_calls import synchronous
+    operation=_sort(emitter,node,values,element,direction,key,site)+'Ok::<(),NativeError>(())'
+    operation=('(||->Result<(),NativeError>{'+operation+'})()'if synchronous(emitter.model,emitter.plan)else'(async{'+operation+'}).await')
     body=(f'let {direction}={emitter.truth(reverse)};let mut {values}=std::mem::take(&mut *{receiver.code}.borrow_mut());'
-        f'let {result}=(||->Result<(),NativeError>{{'+_sort(emitter,node,values,element,direction,key,site)+'Ok(())})();'
+        f'let {result}='+operation+';'
         f'let {modified}={receiver.code}.borrow().capacity()!=0;*{receiver.code}.borrow_mut()={values};'
         f'{result}?;if {modified}{{'+_error(emitter,node,'ValueError: list modified during sort','none')+';}Ok(())')
-    return Expression('{'+setup+'(||->Result<(),NativeError>{'+body+'})()?'+'}','none')
+    operation=('(||->Result<(),NativeError>{'+body+'})()?'if synchronous(emitter.model,emitter.plan)else'(async{'+body+'}).await?')
+    return Expression('{'+setup+operation+'}','none')

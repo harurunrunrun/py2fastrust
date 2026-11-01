@@ -47,6 +47,7 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,'_native_cmp_key',False):return 'cmp_key'
     if getattr(kind,'_native_class_deque',False):return 'deque'
     if getattr(kind,'_native_mapping_view',False):return 'dict_view'
     if getattr(kind,"_native_class_mapping",False):return kind.record.category
@@ -1096,6 +1097,8 @@ class Model:
 
     def attribute_value(self,plan,node,receiver,environment):
         receiver=receiver.root()
+        if getattr(shape(receiver),'_native_cmp_key',False):
+            raise ClassUnsupported(node,'functools.KeyWrapper attribute '+repr(node.attr)+' requires exposed wrapper-object storage; this native adapter currently supports captured comparison-key factories in sorted and list.sort',types=(('receiver',shape(receiver)),),proof='exposed comparison-key object attributes')
         default=self.mappings.defaultdicts.attribute(plan,node,receiver,environment)
         if default is not None:return default
         deque=self.deques.analyze_attribute(plan,node,receiver)
@@ -1412,6 +1415,7 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,'_native_cmp_key',False):return 'Rc<NativeCmpKey_'+str(value.record.index)+'>'
         if getattr(value,'_native_class_deque',False):return self.model.deques.rust_type(self,value)
         if getattr(value,'_native_mapping_view',False):return self.model.mappings.views.rust_type(value)
         if getattr(value,"_native_class_mapping",False):return self.model.mappings.rust_type(value)
@@ -1532,7 +1536,7 @@ class Emitter:
         if tag in {"dict","set"}:return self.model.mappings.truth(self,value)
         if tag in {"int","bool","int_bool"}:
             return self.numeric.truth(self.scalar(value))
-        if tag in {"function","iterator"}:return "true"
+        if tag in {"function","iterator","cmp_key"}:return "true"
         if tag=="globals_dict":return "true"
         if tag in {"str","bytes","tuple_sequence"}:
             return f"!({value.code}).is_empty()"
@@ -1801,7 +1805,7 @@ class Emitter:
         a,b = domain(left.kind),domain(right.kind)
         if isinstance(operator,(ast.Is,ast.IsNot)):
             if a==b=="function":code=self.model.callable_cells.identity(left.code,right.code)
-            elif a==b and a in {"object","list","iterator","dict_view"}:
+            elif a==b and a in {"object","list","iterator","dict_view","cmp_key"}:
                 code = (f"Rc::ptr_eq(&{left.code},&{right.code})"if left.kind==right.kind else"false")
             elif a==b=="none":
                 code = "true"
@@ -2583,6 +2587,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(split_runtime(model))
     from .native_class_text_ops import runtime as text_operation_runtime
     pieces.append(text_operation_runtime(model))
+    from .native_cmp_keys import runtime as comparison_key_runtime
+    pieces.append(comparison_key_runtime(model,emitters[0]))
     from .native_starred_calls import runtime as expanded_runtime
     pieces.append(expanded_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),

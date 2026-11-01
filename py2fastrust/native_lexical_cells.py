@@ -419,6 +419,8 @@ class LexicalCells:
                 for field in kind.fields:yield from targets(field)
             elif isinstance(kind,UnionType):
                 for branch in kind.alternatives:yield from targets(branch)
+            elif getattr(kind,'_native_stored_reference',False):
+                for owned in getattr(kind,'_native_owned_kinds',()):yield from targets(owned)
         edges={}
         for scope,environment in self.environments.items():
             if not environment.plan.reachable:continue

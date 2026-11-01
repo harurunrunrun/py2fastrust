@@ -36,6 +36,12 @@ def retain_native_notices(source: str) -> str:
             "// Modifications: Rust f64 arithmetic and Result-based error reporting.\n"
         )
         notices.append(attribution + licenses["PYTHON_LICENSE.txt"])
+    if functions.intersection({'native_cmp_sort_indices','native_cmp_sort_indices_async'}):
+        notices.append(
+            '// CPython-derived stable sorting: Objects/listobject.c, Python 3.14.4.\n'
+            '// Copyright Python Software Foundation; PSF License Version 2.\n'
+            '// Modifications: typed Rust index permutations and fallible synchronous/asynchronous callbacks.\n'+
+            (''if notices else licenses['PYTHON_LICENSE.txt']))
     suffix = "\n\n" + "\n\n".join(notices) if notices else ""
     code = strip_comments(source).strip()
     code = cleanup_rust_source(code)

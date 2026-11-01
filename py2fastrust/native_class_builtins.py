@@ -198,6 +198,7 @@ def _type_name(emitter,value,node):
     from .native_classes import domain
     from .native import _string
     tag=domain(value.kind)
+    if tag=='cmp_key':return '"functools.KeyWrapper"'
     if tag=="int_bool":return f'match {value.code}{{NativeScalar::Int(_)=>"int",NativeScalar::Bool(_)=>"bool"}}'
     if tag=="object":return _string(emitter.model.classes[value.kind.name].node.name)
     if tag=="globals_dict":return '"dict"'

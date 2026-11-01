@@ -23,6 +23,7 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
     """Render Python-facing kinds without leaking Rust slot/type spellings."""
     if kind is None:
         return "unresolved"
+    if getattr(kind,'_native_python_name',None):return kind._native_python_name
     if _depth >= 5 or id(kind) in _seen:
         return "..."
     if isinstance(kind, str):

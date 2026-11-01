@@ -11,5 +11,5 @@ def may_call(model,plan,node):
     prefix=(plan.index,id(node))
     for name in ('sorting_sites','extrema_sites'):
         for key,site in getattr(model,name,{}).items():
-            if key[:2]==prefix and getattr(site,'callback',None)is not None:return True
+            if key[:2]==prefix and (getattr(site,'callback',None)is not None or getattr(site,'comparators',None)):return True
     return any(provider(plan,node)for provider in getattr(model,'callback_effect_providers',()))

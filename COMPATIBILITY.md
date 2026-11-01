@@ -1233,3 +1233,20 @@ invalid later members. Matching uses actual class-object identity, including
 same-named classes from different modules. Source inheritance and metaclass
 instance-check protocols still require their own registered adapters. This does
 not implement finite class-constructor unions or new class-object admission.
+
+`functools.cmp_to_key` retains its captured comparator for ordinary `sorted`
+and `list.sort` keys. Each comparison enters the original compiled function
+with the actual shared element handles and tests its result against zero.
+The native fallible Powersort kernel follows CPython 3.14.4's run detection,
+binary insertion, galloping and stable merge schedule. Reverse sorting keeps
+tie stability. A failed in-place sort restores the same partial permutation
+before propagating its original callback exception and user source frames;
+callbacks observe the temporarily detached list just as in Python.
+
+Factories preserve capture order, alias identity and closure ownership. Empty
+or single-item inputs do not invoke the comparator. Recursive comparator
+functions use the existing compiled future ABI, with no Python operation
+interpreter. Exposed KeyWrapper object construction/attributes/comparisons,
+other ordering consumers and custom rich-comparison results remain explicit
+boundaries. The retained CPython-derived kernel carries its required PSF
+notice only when generated output actually contains it.

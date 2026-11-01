@@ -521,3 +521,12 @@ invalid later members. Matching uses actual class-object identity, including
 same-named classes from different modules. Source inheritance and metaclass
 instance-check protocols still require their own registered adapters. This does
 not implement finite class-constructor unions or new class-object admission.
+
+Canonical `functools.cmp_to_key` factories are accepted as `sorted` and
+`list.sort` keys. Captured comparators, aliases, closures and bound methods use
+the normal typed callback ABI. Sorting is stable and follows Python 3.14's
+less-than comparison sequence, including reverse order, non-total results,
+callback side effects and failures. Comparators may return builtin int/bool or
+float values. Unorderable results retain Python's runtime error. Standalone
+KeyWrapper calls, attributes and rich comparisons, other key consumers and
+custom comparison-result protocols remain positioned unsupported diagnostics.

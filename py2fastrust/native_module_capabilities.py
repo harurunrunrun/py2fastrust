@@ -2,7 +2,7 @@
 import ast
 
 LINKED_MODULES=frozenset({'itertools','typing'})
-LINKED_EXPORTS={'collections':frozenset({'Counter','defaultdict'}),'functools':frozenset({'reduce'}),'operator':frozenset({'add','sub','mul','and_','or_','xor','lshift','rshift','floordiv','mod','truediv'})}
+LINKED_EXPORTS={'collections':frozenset({'Counter','defaultdict'}),'functools':frozenset({'reduce','cmp_to_key'}),'operator':frozenset({'add','sub','mul','and_','or_','xor','lshift','rshift','floordiv','mod','truediv'})}
 FRAME_MODULES=frozenset({'heapq','bisect','math'})
 
 

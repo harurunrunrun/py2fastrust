@@ -517,6 +517,8 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted):
     def branch(kind,code):
         if union_kind(kind):
             return project(kind,code,lambda child,value:branch(child,f"({value}).clone()"))
+        if getattr(kind,'_native_cmp_key',False):
+            raise ClassUnsupported(node,'calling functools.KeyWrapper outside a registered sorting-key consumer requires exposed wrapper-object construction; this native adapter currently supports captured factories in sorted and list.sort',types=(('callee',kind),),proof='exposed comparison-key object construction')
         if function_kind(kind):
             arms=[]
             for definition in kind.definitions:

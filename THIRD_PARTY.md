@@ -58,6 +58,16 @@ table, and later tables explicitly refer to it. Numeric table entries share
 lines. Other notices follow the components actually present in the output.
 Using the official `ast` and `symtable` APIs in the compiler
 does not by itself embed Python code in a generated program.
+
+The native comparison-key sorting kernel in
+`py2fastrust/runtime/native_cmp_sort.rs` and
+`py2fastrust/runtime/native_cmp_sort_methods.rs` is adapted from
+[CPython 3.14.4's Objects/listobject.c](https://github.com/python/cpython/blob/v3.14.4/Objects/listobject.c).
+The Rust implementation sorts concrete index permutations and propagates typed
+callback errors. It retains the PSF license in
+`py2fastrust/stdlib/PYTHON_LICENSE.txt`; generated output includes that license
+and attribution only when it retains these sorting helpers.
+
 The repository LICENSE grants an output permission for original generated
 runtime helpers; they do not require the project's copyright or MIT notice in
 generated programs. The selected license for translated program logic does not

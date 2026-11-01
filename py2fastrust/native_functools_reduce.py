@@ -40,12 +40,15 @@ def _count(node,metadata):
 
 
 class FunctoolsAdapter:
-    NAMES=frozenset({'reduce'})
+    NAMES=frozenset({'reduce','cmp_to_key'})
     TYPES=frozenset()
     EAGER_ARGUMENTS={'reduce':frozenset({1})}
 
     @staticmethod
     def analyze(model,plan,node,identity,metadata,positional,keywords,environment,*,factory):
+        if identity.name=='cmp_to_key':
+            from .native_cmp_keys import analyze
+            return analyze(model,plan,node,identity,metadata,positional,keywords,environment,factory=factory)
         from .native_classes import Cell,Environment,shape
         from .native_aot_callables import analyze_values
         from .native_callback_effects import register
@@ -95,6 +98,9 @@ class FunctoolsAdapter:
 
     @staticmethod
     def emit(emitter,node,identity,record,positional,keywords):
+        if identity.name=='cmp_to_key':
+            from .native_cmp_keys import emit
+            return emit(emitter,node,identity,record,positional,keywords)
         from .native import _string
         from .native_classes import Expression,shape,ClassUnsupported
         from .native_aot_callables import emit_values
