@@ -192,6 +192,9 @@ class LinkedModel(Model):
         linker.seed_namespaces()
 
     def expression(self,plan,node,environment):
+        from .native_typing_metadata import registry
+        metadata=registry(self).analyze(plan,node,environment)
+        if metadata is not None:return metadata
         if isinstance(node,ast.Name):
             value=self.class_namespaces.read_name(plan,node,environment)
             if value is not None:return value
@@ -312,7 +315,7 @@ class LinkedEmitter(Emitter):
 
     def rust_leaf(self,value,recurse):
         from .native_typing_aliases import AnnotationAlias
-        if isinstance(value,AnnotationAlias):return '()'
+        if isinstance(value,AnnotationAlias)or getattr(value,'_native_typing_metadata',False):return 'NativeTypingSymbol'
         if isinstance(value,ModuleType):return "ClassModuleRef"
         if isinstance(value,ClassReferenceType):return "ClassClassRef"
         return super().rust_leaf(value,recurse)
@@ -333,10 +336,14 @@ class LinkedEmitter(Emitter):
         return [defining_class]
 
     def truth(self,value,node=None):
+        from .native_typing_metadata import reject_observation
+        reject_observation(value.kind,node or self.plan.node)
         if isinstance(value.kind,(ModuleType,ClassReferenceType)):return "true"
         return super().truth(value,node)
 
     def comparison(self,operator,left,right,node):
+        from .native_typing_metadata import reject_observation
+        reject_observation(left.kind,node);reject_observation(right.kind,node)
         from .native_unions import union_kind
         from .native import _Expression
         if union_kind(left.kind)or union_kind(right.kind):return super().comparison(operator,left,right,node)
@@ -349,6 +356,8 @@ class LinkedEmitter(Emitter):
         return super().comparison(operator,left,right,node)
 
     def show(self,value,node=None,quoted=False):
+        from .native_typing_metadata import reject_observation
+        reject_observation(value.kind,node)
         from .native import _string
         if isinstance(value.kind,ModuleType):
             module=self.model.module_linker.by_number[value.kind.number]
@@ -367,6 +376,9 @@ class LinkedEmitter(Emitter):
     def expression(self,node):
         value=self.model.class_namespaces.named_tuples.emit_attribute(self,node)
         if value is not None:return value
+        from .native_typing_metadata import registry
+        metadata=registry(self.model).emit(self,node)
+        if metadata is not None:return metadata
         if isinstance(node,ast.Name):
             value=self.model.class_namespaces.emit_name(self,node)
             if value is not None:return value
@@ -621,10 +633,12 @@ def render_linked_runtime(model,source):
         implicit[number].append(f'globals.borrow_mut().value_{index}=Some({code});')
     for name,(number,alias)in linker.annotation_aliases.items():
         index=model.namespace.index(name)
-        implicit[number].append(f'globals.borrow_mut().value_{index}=Some(());')
+        raw=Expression('NativeTypingSymbol{case:0}',alias)
+        code=emitter.coerce(raw,dict(fields)[name],model.tree)
+        implicit[number].append(f'globals.borrow_mut().value_{index}=Some({code});')
     names=','.join(f'{module.number}=>({_string(module.name)},{_string(repr(module.name))},{_string(module.filename or "unknown location")},{_string(repr(module.filename or "unknown location"))},{str(module.possibly_shadowing).lower()},{str(module.shadowing_stdlib).lower()})'
                    for module in sorted(linker.modules.values(),key=lambda value:value.number))
-    support=['type ClassLocation=(&\'static str,&\'static str);',
+    support=(["#[derive(Clone,Copy)] struct NativeTypingSymbol{case:usize}"]if linker.annotation_aliases or getattr(model,'typing_metadata',None)and model.typing_metadata.records else[])+['type ClassLocation=(&\'static str,&\'static str);',
              'type ClassModuleRef=Rc<RefCell<ClassGlobals>>;',
              'struct ClassClassReference{definition:usize,module:ClassModuleRef}',
              'type ClassClassRef=Rc<ClassClassReference>;',

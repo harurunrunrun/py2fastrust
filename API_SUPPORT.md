@@ -511,6 +511,22 @@ its arguments normally and returns the original value, without conversion or
 copying mutable payloads. Import binding presence is updated after each actual
 linked import, including `globals()` membership observations.
 
+Unobserved type metadata passed to the captured canonical `typing.cast` `typ`
+parameter supports nested subscriptions of canonical `typing` aliases and
+builtin generic classes. Builtin type objects, ordinary source class objects,
+fixed type-parameter tuples, closed literal parameters and callable parameter
+lists use dedicated compiler-symbol carriers. Assignments, source-function
+argument/return transport and aliases retain their actual evaluation order;
+`cast` returns its `val` without deriving or changing its type from `typ`.
+Constructor arity, type-argument validation and closed forward-reference syntax
+errors follow the host Python 3.14 `typing` implementation after evaluating the
+original receiver and index expressions. No source expression is executed by
+the converter. Dynamic scalar parameters, arbitrary mutable parameter packs,
+custom metadata hashing/equality, metadata warnings, and general observation
+of metadata objects remain positioned diagnostics. Printing, truth tests,
+comparison, exposed metadata attributes and calling these compiler symbols do
+not silently produce Python `None` or runtime metadata objects.
+
 `typing.NamedTuple` supports canonical class syntax, including nested source
 classes and captured factory aliases. Constructors support positional and
 keyword fields, shared trailing defaults and Python binding errors. Records

@@ -39,13 +39,12 @@ def seed_alias(linker,module,name):
     return True
 
 
-def runtime_value(cell,node):
-    from .native_classes import ClassUnsupported
-    root=cell.root()
-    if isinstance(root.tag,AnnotationAlias):
-        raise ClassUnsupported(node,root.tag.module+'.'+root.tag.name+' is available as an imported annotation/compiler symbol; observing or calling this object at runtime needs its unimplemented metadata-object protocol',proof='runtime annotation/compiler symbol value protocol')
-    if root.tag=='union':
-        for child in root.args:runtime_value(child,node)
+def runtime_value(cell,node,model=None,plan=None):
+    from .native_classes import shape
+    from .native_typing_metadata import contains,registry,reject_observation
+    if contains(shape(cell)):
+        if model is not None and registry(model).allowed(plan,node,shape(cell)):return
+        reject_observation(shape(cell),node)
 
 
 SIGNATURE=FunctionSignature.declaration(('typ','val'))

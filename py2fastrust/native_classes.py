@@ -452,7 +452,7 @@ class Model:
     def remember(self, plan, node, result):
         if isinstance(node,ast.expr)and not isinstance(getattr(node,'ctx',None),(ast.Store,ast.Del)):
             from .native_typing_aliases import runtime_value
-            runtime_value(result,node)
+            runtime_value(result,node,self,plan)
         self.records[(plan.index, id(node))] = result
         return result
 
@@ -608,9 +608,10 @@ class Model:
 
     def snapshot(self):
         from .native_class_extrema import snapshot as extrema_snapshot
+        from .native_typing_metadata import snapshot as metadata_snapshot
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
-                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.deques.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),
+                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.deques.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),metadata_snapshot(self),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())),
                 self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else())

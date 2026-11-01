@@ -298,8 +298,10 @@ class CallableCells:
             raise ClassUnsupported(node,str(error),proof="dynamic positional/keyword argument expansion")from None
         callee=(self.model.attribute_value(plan,node.func,self.receivers[key],environment)
                 if isinstance(node.func,ast.Attribute)else self.model.expression(plan,node.func,environment))
-        positional=[self.model.expression(plan,arg.expression,environment)for arg in arguments.positional]
-        keywords=[(arg.name,self.model.expression(plan,arg.expression,environment))for arg in arguments.keywords]
+        from .native_typing_metadata import registry
+        with registry(self.model).arguments(plan,callee,arguments):
+            positional=[self.model.expression(plan,arg.expression,environment)for arg in arguments.positional]
+            keywords=[(arg.name,self.model.expression(plan,arg.expression,environment))for arg in arguments.keywords]
         site=analyze_values(self,plan,node,callee,arguments,positional,keywords,environment)
         self.sites[(plan.index,id(node))]=site
         return self.model.remember(plan,node,site.result)
