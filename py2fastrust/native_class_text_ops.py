@@ -27,6 +27,8 @@ def bind(arguments,keywords,default):
 def requires_frames(unit,analysis):
     from .native_class_text_replace import requires_frames as replace_requires_frames
     if replace_requires_frames(unit,analysis):return True
+    from .native_class_text_search import requires_frames as search_requires_frames
+    if search_requires_frames(unit,analysis):return True
     import ast
     from .native_constraints import MethodValue,value
     from .call_semantics import normalize_call
@@ -54,6 +56,9 @@ def analyze(model,plan,node,receiver,arguments,keywords):
     from .native_class_text_replace import analyze as analyze_replace
     replacement=analyze_replace(model,plan,node,receiver,arguments,keywords)
     if replacement is not None:return replacement
+    from .native_class_text_search import analyze as analyze_search
+    search=analyze_search(model,plan,node,receiver,arguments,keywords)
+    if search is not None:return search
     from .native_classes import Cell,shape
     name=node.func.attr
     if name not in STRIP_NAMES:return None
@@ -70,6 +75,9 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
     from .native_class_text_replace import emit as emit_replace
     replacement=emit_replace(emitter,node,receiver,arguments,keywords,wanted)
     if replacement is not None:return replacement
+    from .native_class_text_search import emit as emit_search
+    search=emit_search(emitter,node,receiver,arguments,keywords,wanted)
+    if search is not None:return search
     from .native_classes import Expression,ClassUnsupported,domain
     from .native_unions import project,union_kind
     from .native_class_builtins import _error,_type_name
@@ -113,6 +121,8 @@ fn native_frame_bytes_strip(text:&[u8],characters:Option<&[u8]>,left:bool,right:
 def runtime(model):
     from .native_class_text_replace import runtime as replace_runtime
     replacement=replace_runtime(model)
-    if not getattr(model,'text_operation_sites',None):return replacement
+    from .native_class_text_search import runtime as search_runtime
+    search=search_runtime(model)
+    if not getattr(model,'text_operation_sites',None):return replacement+'\n'+search
     from .native_text_methods import HELPERS
-    return HELPERS+'\n'+BYTES_STRIP+'\n'+replacement
+    return HELPERS+'\n'+BYTES_STRIP+'\n'+replacement+'\n'+search

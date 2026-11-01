@@ -423,6 +423,23 @@ copying. Finite builtin receiver/argument alternatives use the same typed
 kernels. Saved builtin method values, custom bytes-buffer/`__index__` objects
 and arbitrary builtin text subclasses still need their own protocols.
 
+Frame text/bytes `find`, `rfind`, `index` and `rindex` bind one required pattern
+and optional positional start/end values. Bounds accept builtin integers,
+booleans and `None`, clip large/negative values after selected-width arithmetic,
+and preserve empty-pattern/out-of-range behavior. Bytes also accept integer
+needles from 0 through 255. Text validates its pattern before bounds; bytes
+validate bounds before their integer/buffer pattern. Missing raising searches,
+wrong closed arguments and invalid bindings retain Python error text and frames.
+
+Text reuses cached native windows and standard string matching. Unicode byte
+results map to code-point indices by binary search through cached boundaries;
+ASCII avoids Unicode scans. Bytes reuse the forward prefix matcher and use a
+reverse prefix scan for rightmost matches, including overlaps, without copying
+or reversing input. Single-byte and empty-pattern cases have direct paths.
+Native user methods named find/index remain ordinary source calls. Custom
+`__index__`/buffer objects, saved builtin methods and arbitrary text subclasses
+still require their own protocols.
+
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing
 tuple's identity, and shares the empty tuple. Fixed and runtime tuple query

@@ -107,6 +107,12 @@ errors and captured evaluation order. Text accepts the `count` keyword; bytes
 keeps its positional-only signature. Byte matching uses a linear prefix-table
 algorithm, with checked output sizes and no intermediate match-position list.
 
+Frame text/bytes `find`, `rfind`, `index` and `rindex` support optional clipped
+start/end bounds, empty patterns and integer byte needles. Unicode results use
+code-point indices through the existing cached boundary table; ASCII uses byte
+offsets. Byte searches use linear forward/reverse prefix matching and stop at
+the first match in the requested direction.
+
 Typed frame dictionaries and sets have shared native storage, including
 ordinary mutable aliases, dictionary values and class fields. Direct adapters
 cover literals/comprehensions, `dict`/`set` constructors, dictionary subscripts,
