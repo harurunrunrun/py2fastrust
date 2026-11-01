@@ -213,7 +213,17 @@ class Namespace:
             kind=shape(source)
             # Container element facts may still be bottom on the first pass.
             if complete(kind):known.append(source)
-        if not known:return cell
+        if not known:
+            # A shared allocation can be mutated by a reached callee before
+            # its first element kind is known. Keep that allocation's real
+            # element cell; defaulting the namespace first would insert a
+            # phantom scalar kind and block the callee's append constraints.
+            pending=self.flattened(sources)
+            if pending and all(value.tag=='list'for value in pending):
+                members={value.args[0].root()for value in pending}
+                if len(members)==1:
+                    cell.tag,cell.args='list',pending[0].args
+            return cell
         variable=Variable(("native_module",name),"value")
         kind=self.value_kind(variable,known)
         if kind is None:return cell
