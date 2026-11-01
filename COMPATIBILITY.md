@@ -1250,3 +1250,14 @@ interpreter. Exposed KeyWrapper object construction/attributes/comparisons,
 other ordering consumers and custom rich-comparison results remain explicit
 boundaries. The retained CPython-derived kernel carries its required PSF
 notice only when generated output actually contains it.
+
+Typed frame sequences support list, text, bytes and homogeneous runtime-tuple
+slices, including negative strides, omitted bounds and arbitrary BigInt bounds.
+The owner and bound expressions are evaluated once in Python order; builtin
+bound conversion and errors follow that evaluation. List slicing allocates a
+new outer list while retaining referenced mutable elements. Finite sequence and
+bound alternatives use concrete Rust projections. ASCII text slices use byte
+indices, Unicode text slices use cached codepoint offsets, and unused slice
+helpers are omitted. User `__index__` and `__getitem__` slice protocols and fixed
+heterogeneous-tuple slicing remain positioned capability diagnostics. Pending
+index types are deferred until the type-analysis fixed point is reached.

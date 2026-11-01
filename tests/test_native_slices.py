@@ -130,13 +130,10 @@ print(*sorted([],reverse=True))
 '''
         self.compare(source, ["0\n", "1\n", "-1\n"])
 
-    def test_unsupported_shallow_matrix_or_custom_key_stays_diagnostic(self):
+    def test_shallow_matrix_slice_and_rebound_sorted_match_python(self):
         for source in ("a=[[1],[2]]\nb=a[:]\nb[0].append(3)\nprint(a)\n",
                        "sorted=3\na=[2,1]\nprint(sorted(a))\n"):
-            for mode in ("i64", "i128", "bigint"):
-                result = transpile(source, TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+            self.compare(source)
 
     def test_sorted_proved_abs_callback(self):
         self.compare('a=[-3,2,-1]\nprint(sorted(a,key=abs))\n')

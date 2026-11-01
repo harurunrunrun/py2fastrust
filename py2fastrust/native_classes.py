@@ -763,7 +763,8 @@ class Model:
             return self.attribute_value(plan,node,receiver,environment)
         if isinstance(node, ast.Subscript):
             if isinstance(node.slice, ast.Slice):
-                raise ClassUnsupported(node)
+                from .native_frame_slices import analyze
+                return analyze(self,plan,node,environment)
             owner = self.expression(plan, node.value, environment).root()
             index = self.expression(plan, node.slice, environment).root()
             captured=self.subscript_item(plan,node,owner,index,environment)
@@ -1677,6 +1678,9 @@ class Emitter:
             from .native_class_loop_fields import read
             return Expression(read(self,node,code,wanted),wanted)
         if isinstance(node,ast.Subscript):
+            if isinstance(node.slice,ast.Slice):
+                from .native_frame_slices import emit
+                return emit(self,node,wanted)
             setup,owner = self.capture(self.expression(node.value))
             index_setup,index = self.capture(self.expression(node.slice))
             if getattr(owner.kind,"_native_class_mapping",False)or union_kind(owner.kind)and any(getattr(part,"_native_class_mapping",False)for part in alternatives(owner.kind)):
@@ -2591,6 +2595,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(comparison_key_runtime(model,emitters[0]))
     from .native_starred_calls import runtime as expanded_runtime
     pieces.append(expanded_runtime(model))
+    from .native_frame_slices import runtime as slice_runtime
+    pieces.append(slice_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),class_runtime,layouts,*bodies])
     entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if synchronous(model,model.module)

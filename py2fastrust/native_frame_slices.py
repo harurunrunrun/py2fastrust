@@ -1,0 +1,130 @@
+"""Slice concrete shared sequences after capturing the owner and all bounds."""
+import ast
+
+from .native_types import alternatives
+
+INTEGRAL=frozenset({'int','bool','int_bool'})
+SEQUENCES=frozenset({'list','str','bytes','tuple_sequence'})
+NONINDEXABLE=frozenset({'int','bool','int_bool','float','none','function','range'})
+INVALID_BOUNDS=frozenset({'float','str','bytes','list','tuple','tuple_sequence','function','range'})
+
+
+def requires_frames(unit,analysis):
+    from .native_types import TupleSequenceType,ListType,immutable
+    nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
+    for facts in analysis.scopes.values():
+        for site in facts.expressions:
+            node=nodes.get(site)
+            if not isinstance(node,ast.Subscript)or not isinstance(node.slice,ast.Slice):continue
+            owner=facts.expressions.get(unit.ordinal(node.value))
+            choices=alternatives(owner)
+            if owner is not None and (len(choices)>1 or any(kind=='bytes'or isinstance(kind,TupleSequenceType)for kind in choices)):
+                return True
+            if any(isinstance(kind,ListType)and not immutable(kind.element)for kind in choices):return True
+            for bound in (node.slice.lower,node.slice.upper,node.slice.step):
+                if bound is None:continue
+                kind=facts.expressions.get(unit.ordinal(bound))
+                if kind is not None and any(value not in INTEGRAL|{'none'}for value in alternatives(kind)):return True
+    return False
+
+
+def analyze(model,plan,node,environment):
+    from .native_classes import Cell,ClassUnsupported,domain,shape
+    from .native_union_sequences import branches
+    owner=model.expression(plan,node.value,environment)
+    for bound in (node.slice.lower,node.slice.upper,node.slice.step):
+        if bound is None:continue
+        value=model.expression(plan,bound,environment)
+        for kind in alternatives(shape(value)):
+            if kind is None and not model.final:continue
+            if domain(kind)not in INTEGRAL|{'none'}|INVALID_BOUNDS:
+                raise ClassUnsupported(bound,'this slice bound needs its user __index__ method; the typed sequence slice adapter supports builtin integral bounds and their builtin type errors',types=(('bound',kind),),proof='slice bound __index__ protocol')
+    result=model.cell(plan,node)
+    for value in branches(owner):
+        if value.tag in {'list','tuple_sequence'}:
+            output=Cell(value.tag,(value.args[0],))
+        elif value.tag in {'str','bytes'}:output=Cell(value.tag)
+        elif value.tag in NONINDEXABLE:output=Cell('none')
+        elif value.tag is None and not model.final:continue
+        else:
+            raise ClassUnsupported(node,'slicing this receiver needs its tuple-layout or user __getitem__ slice protocol; the typed slice adapter supports lists, strings, bytes and homogeneous runtime tuples',types=(('receiver',shape(value)),),proof='registered sequence slice storage')
+        if not model.namespace.contribute(result,output,node,force=True):model.contribute(result,output,node)
+    return model.remember(plan,node,result)
+
+
+def _bound(emitter,node,value):
+    from .native_classes import Expression,domain
+    from .native_unions import project,union_kind
+    from .native import _string
+    if value is None:return 'None'
+    if union_kind(value.kind):
+        return project(value.kind,value.code,lambda kind,code:_bound(emitter,node,Expression(f'({code}).clone()',kind)))
+    if value.kind=='none':return 'None'
+    if domain(value.kind)in INTEGRAL:
+        number=emitter.number(value)
+        if emitter.model.integer=='bigint':
+            number=f'({number}).to_i128().unwrap_or_else(||if ({number}).is_negative(){{i128::MIN}}else{{i128::MAX}})'
+        else:number=f'({number})as i128'
+        return 'Some('+number+')'
+    message='TypeError: slice indices must be integers or None or have an __index__ method'
+    return emitter.at('Err::<Option<i128>,String>('+_string(message)+'.to_owned())',node)
+
+
+def _owner(emitter,node,owner,bounds,wanted):
+    from .native_classes import Expression,domain
+    from .native_types import ListType,TupleSequenceType
+    from .native_unions import union_kind,project
+    from .native_class_builtins import _error,_type_name
+    if union_kind(owner.kind):
+        return Expression(project(owner.kind,owner.code,lambda kind,code:_owner(emitter,node,Expression(f'({code}).clone()',kind),bounds,wanted).code),wanted)
+    tag=domain(owner.kind)
+    if tag in NONINDEXABLE:
+        return _error(emitter,node,wanted,'format!("TypeError: \'{}\' object is not subscriptable",'+_type_name(emitter,owner,node)+')')
+    setup,owner=emitter.capture(owner)
+    # Bound expressions were captured in source order. Builtin slice conversion
+    # checks step first, then start and stop, after evaluating all expressions.
+    names=[emitter.fresh()for _ in bounds]
+    setup+=''.join(f'let {names[i]}={_bound(emitter,node,bounds[i])};'for i in (2,0,1))
+    if tag=='list':length=f'{owner.code}.borrow().len()'
+    elif tag=='str':length=f'{owner.code}.'+('byte_len()'if emitter.model.string_mode=='ascii'else'codepoint_len()')
+    else:length=f'{owner.code}.len()'
+    indices=emitter.fresh()
+    setup+=f'let {indices}='+emitter.at(f'native_slice_indices({length},{",".join(names)})',node)+';'
+    if tag=='str':
+        value=Expression(emitter.at(f'native_text_slice(&{owner.code},{indices},'+('true'if emitter.model.string_mode=='ascii'else'false')+')',node),'str')
+    else:
+        values,position=emitter.fresh(),emitter.fresh()
+        element=owner.kind.element if tag in {'list','tuple_sequence'}else None
+        raw_type=emitter.rust_type(element)if element is not None else'u8'
+        setup+=f'let mut {values}=Vec::<{raw_type}>::new();'
+        setup+=emitter.at(f'{values}.try_reserve({indices}.len()).map_err(|_|"MemoryError: cannot allocate slice".to_owned())',node)+';'
+        if tag=='list':
+            read=emitter.fresh()
+            setup+=f'{{let {read}={owner.code}.borrow();for {position} in {indices}{{{values}.push({read}[{position}].clone());}}}}'
+            value=Expression(f'class_list({values})',ListType(element))
+        elif tag=='tuple_sequence':
+            setup+=f'for {position} in {indices}{{{values}.push({owner.code}.as_slice()[{position}].clone());}}'
+            value=Expression(f'NativeTuple::from_vec({values})',TupleSequenceType(element))
+        else:
+            setup+=f'for {position} in {indices}{{{values}.push({owner.code}[{position}]);}}'
+            value=Expression(values,'bytes')
+    return Expression('{'+setup+emitter.coerce(value,wanted,node)+'}',wanted)
+
+
+def emit(emitter,node,wanted):
+    setup,owner=emitter.capture(emitter.expression(node.value))
+    bounds=[]
+    for bound in (node.slice.lower,node.slice.upper,node.slice.step):
+        if bound is None:bounds.append(None)
+        else:
+            before,value=emitter.capture(emitter.expression(bound));setup+=before;bounds.append(value)
+    emitter.model.native_frame_slices_required=True
+    value=_owner(emitter,node,owner,bounds,wanted)
+    from .native_classes import Expression
+    return Expression('{'+setup+value.code+'}',wanted)
+
+
+def runtime(model):
+    if not getattr(model,'native_frame_slices_required',False):return ''
+    from .native_slices import SLICE_HELPERS
+    return SLICE_HELPERS

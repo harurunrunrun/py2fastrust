@@ -42,8 +42,11 @@ def ordering_error(emitter,operator,left,right,node):
 def analyze_subscript(model,plan,node,owner,index):
     from .native_classes import Cell,ClassUnsupported,domain,shape
     a,b=shape(owner),shape(index)
-    if a is None or b is None:return None
+    if a is None:return None
     if not all(domain(choice)in SEQUENCES|NONINDEXABLE for choice in alternatives(a)):return None
+    if b is None:
+        if not model.final:return model.cell(plan,node)
+        return None
     from .native_type_checks import TYPE_NAMES
     for kind in alternatives(a):
         if any(identity.name in TYPE_NAMES for identity in getattr(kind,"builtins",())):

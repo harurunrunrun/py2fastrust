@@ -530,3 +530,14 @@ callback side effects and failures. Comparators may return builtin int/bool or
 float values. Unorderable results retain Python's runtime error. Standalone
 KeyWrapper calls, attributes and rich comparisons, other key consumers and
 custom comparison-result protocols remain positioned unsupported diagnostics.
+
+Typed frame sequences support list, text, bytes and homogeneous runtime-tuple
+slices, including negative strides, omitted bounds and arbitrary BigInt bounds.
+The owner and bound expressions are evaluated once in Python order; builtin
+bound conversion and errors follow that evaluation. List slicing allocates a
+new outer list while retaining referenced mutable elements. Finite sequence and
+bound alternatives use concrete Rust projections. ASCII text slices use byte
+indices, Unicode text slices use cached codepoint offsets, and unused slice
+helpers are omitted. User `__index__` and `__getitem__` slice protocols and fixed
+heterogeneous-tuple slicing remain positioned capability diagnostics. Pending
+index types are deferred until the type-analysis fixed point is reached.
