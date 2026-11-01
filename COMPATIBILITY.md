@@ -70,8 +70,15 @@ Generator expressions consumed by `sum`, `any`, `all`, `min`, or `max` lower to
 typed Rust loops, including proved nested clauses, filters, and
 `map`/`filter`/`enumerate`/`zip` adapters. Construction and iteration keep their
 different evaluation times, and short-circuit consumers stop without evaluating
-later elements. Escaping generators and unproved mutation still need direct
-implementation. Floating-point compensated `sum` is not implemented here.
+later elements. On typed frames, `list` and `next` also consume nonescaping
+generator expressions. Positional `*generator` arguments fill the call's typed
+argument buffer directly, including nested clauses and filters, without an
+intermediate list. The first iterator is constructed at generator creation;
+body evaluation follows the consumer's actual timing. Body `StopIteration`
+becomes `RuntimeError`; a `map`/`filter` callback `StopIteration` ends one pull
+without permanently exhausting a resumable source. Escaping generators and
+unproved mutation still need direct implementation. Floating-point compensated
+`sum` is not implemented here.
 Ordinary `for` loops share these typed adapters, including string character
 iteration, `reversed`, destructuring `enumerate`/`zip`, and generator producers.
 They preserve `break`, `continue`, `return`, and loop `else`. A possibly unset
@@ -383,8 +390,9 @@ Fixed-width results are computed with native integer operations without BigInt
 temporaries. Combinations separate powers of two and use an odd modular inverse;
 variadic LCM retains bounded factors so intermediate wrapping cannot corrupt
 later gcd reductions. Mathematical argument expressions run before binding and
-integer-index validation, preserving their effects and Python errors. Module
-linking on typed frames remains required work.
+integer-index validation, preserving their effects and Python errors. These
+six APIs also support captured references through linked module namespaces;
+other mathematical object and function protocols still require direct lowering.
 
 Float literals, variables, ordinary arguments/results, unary signs, truth and
 display retain their binary64 representation in every integer mode. Typed
@@ -392,6 +400,27 @@ frames can also store and return these values. `int(float_value)` uses the
 selected integer representation, including nonfinite conversion errors. General
 BigInt/f64 arithmetic and identity-sensitive floating containers remain required
 work.
+
+Typed `isinstance` calls retain canonical primitive and container class
+identities through aliases and captured arguments. Supported builtin classes
+are `int`, `bool`, `float`, `str`, `list`, `tuple`, `dict`, `set`, `range`, `map`,
+`zip`, `filter` and `enumerate`; checking an iterator's class does not execute
+its callback. Boolean values match `int`. Class-info tuples short-circuit in
+order, including invalid later members, and runtime variadic tuples use the
+same protocol. This does not add source-class inheritance, metaclass
+`__instancecheck__`, or arbitrary union-type objects.
+
+Typed frames dispatch finite list/scalar alternatives for list repetition and
+concatenation, including nullable counts and Python operand errors. Supported
+list `+=` and `*=` branches mutate the captured list handle; numeric branches
+retain ordinary value arithmetic. Child layouts and mutable element identities
+are shared with the original containers. Indexed reads dispatch list, fixed or
+runtime tuple, text and bytes alternatives, preserving runtime index/type errors
+and evaluation order. Sealed incompatible ordering alternatives produce Python
+`TypeError` paths. These operations do not narrow globals or captured locals
+across calls. Indexed writes through alternative owner layouts, list `+=` from
+non-list iterables, user index/subscription special methods and remaining
+container protocols still require their native adapters.
 
 The ten `heapq` operations `heapify`, `heappush`, `heappop`, `heappushpop`,
 `heapreplace`, and their `_max` counterparts operate directly on the original

@@ -441,10 +441,11 @@ class Mappings:
         record=value.kind.record
         if record.category=='set':
             raise ClassUnsupported(node,'set display would expose traversal order; the typed set adapter currently proves order-insensitive sorted/membership consumers only',proof='set traversal-order observation')
+        before,value=emitter.capture(Expression('('+value.code+').clone()',value.kind))
         key,item,read=(emitter.fresh()for _ in range(3))
         a=emitter.show(Expression(key+'.clone()',shape(record.key)),node,True)
         b=emitter.show(Expression(item+'.clone()',shape(record.value)),node,True)
-        return '{'+f'let {read}={value.code}.borrow();format!("{{{{{{}}}}}}",{read}.entries.iter().map(|({key},{item})|format!("{{}}: {{}}",{a},{b})).collect::<Vec<_>>().join(", "))'+'}'
+        return '{'+before+f'let {read}={value.code}.borrow();format!("{{{{{{}}}}}}",{read}.entries.iter().map(|({key},{item})|format!("{{}}: {{}}",{a},{b})).collect::<Vec<_>>().join(", "))'+'}'
 
     def comparison(self,emitter,operator,left,right,node):
         from .native_classes import Expression,shape,ClassUnsupported

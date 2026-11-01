@@ -757,6 +757,9 @@ class Model:
             if captured is not None:return captured
             mapped=self.mappings.analyze_item(plan,node,owner,index,environment)
             if mapped is not None:return mapped
+            from .native_union_sequences import analyze_subscript
+            indexed=analyze_subscript(self,plan,node,owner,index)
+            if indexed is not None:return indexed
             if owner.tag is None and not self.final:
                 return self.cell(plan,node)
             if index.tag not in {None,"int","bool","int_bool"}:
@@ -1154,6 +1157,8 @@ class Model:
                 self.contribute(owner.args[0],value,node)
                 self.remember(plan,node,owner.args[0])
                 return
+            if owner.tag=="union":
+                raise ClassUnsupported(node,"indexed assignment through finite owner alternatives needs per-alternative target storage and correlated value projection; that write adapter is not implemented",types=(("receiver",shape(owner)),),proof="per-alternative indexed write storage")
             if owner.tag is None and not self.final:
                 return
         raise ClassUnsupported(node)
@@ -1619,6 +1624,9 @@ class Emitter:
             if getattr(owner.kind,"_native_class_mapping",False)or union_kind(owner.kind)and any(getattr(part,"_native_class_mapping",False)for part in alternatives(owner.kind)):
                 value=self.model.mappings.emit_get(self,node,owner,index,wanted)
                 return Expression('{'+setup+index_setup+value.code+'}',wanted)
+            from .native_union_sequences import emit_subscript
+            indexed=emit_subscript(self,node,owner,index,wanted)
+            if indexed is not None:return Expression("{"+setup+index_setup+indexed.code+"}",wanted)
             tag = domain(owner.kind)
             if tag == "list":
                 code = self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node)
@@ -1794,6 +1802,9 @@ class Emitter:
             return self.numeric.compare(temporary,[self.scalar(left),self.scalar(right)]).code
         if isinstance(operator,(ast.Eq,ast.NotEq))and a!=b:
             return str(isinstance(operator,ast.NotEq)).lower()
+        from .native_union_sequences import ordering_error
+        error=ordering_error(self,operator,left,right,node)
+        if error is not None:return error
         raise ClassUnsupported(node)
 
     def function_name(self, plan):
@@ -2151,7 +2162,7 @@ class Emitter:
             if domain(old.kind)=="list"and isinstance(node.op,ast.Add)and domain(right.kind)=="list":
                 operation=f"class_list_extend(&{old.code},&{right.code});"
                 result=Expression(old.code,old.kind)
-            elif domain(old.kind)=="list"and isinstance(node.op,ast.Mult):
+            elif domain(old.kind)=="list"and isinstance(node.op,ast.Mult)and domain(right.kind)in {"int","bool","int_bool"}:
                 operation=self.at(f"class_list_repeat_in_place(&{old.code},&({self.number(right)}))",node)+";"
                 result=Expression(old.code,old.kind)
             else:

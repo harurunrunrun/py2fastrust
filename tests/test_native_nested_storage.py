@@ -244,14 +244,11 @@ print(sorted(a,key=lambda row:row[0]))
 print((lambda row:row.append(7))(a[0]),a)
 ''',('',))
 
-    def test_sort_callback_cannot_observe_shared_alias_or_parent(self):
-        from py2fastrust import transpile,TranspileOptions
+    def test_sort_callback_observes_temporarily_empty_shared_receiver(self):
         for source in ('a=[[2,1]]\nb=a[0]\nb.sort(key=lambda value:len(a[0])+value)\n',
                        'a=[[2,1]]\nb=a[0]\na[0].sort(key=lambda value:len(b)+value)\n'):
-            for mode in ('i64','i128','bigint'):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,'E006')
+            self.exercise(source,('',))
+            self.exercise(source+'print(a,b)\n',('',))
 
     def test_repeated_same_shape_function_calls_preserve_each_argument_identity(self):
         self.exercise('''def wrap(row):

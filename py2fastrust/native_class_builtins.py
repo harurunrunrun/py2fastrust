@@ -6,7 +6,7 @@ and the adapter never traverses/evaluates argument ASTs a second time.
 import ast
 from .references import BuiltinIdentity
 
-SUPPORTED=frozenset({"input","print","int","str","bool","float","len","abs","id","globals",
+SUPPORTED=frozenset({"input","print","int","str","bool","float","len","abs","id","globals","isinstance",
                      "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","next","any","all","pow","sorted","dict","set"})
 
 
@@ -20,6 +20,8 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         return analyze_tuple(model,plan,node,arguments,keywords,environment,cell)
     if name in {'dict','set'}:
         return model.mappings.analyze_builtin(plan,node,name,arguments,keywords,environment,cell)
+    if name == 'isinstance' and len(arguments) == 2 and not keywords:
+        return cell('bool')
     if name=='sorted':
         from .native_class_sorting import analyze_builtin
         return analyze_builtin(model,plan,node,arguments,keywords,environment,factory=cell)
@@ -124,6 +126,9 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     if arguments and getattr(arguments[0].kind,'_native_class_generator',False):
         from .native_immediate_generators import CONSUMERS
         if identity.name in CONSUMERS:return emitter.model.generators.consume(emitter,node,identity.name,arguments[0],arguments,keywords,wanted)
+    if identity.name == 'isinstance':
+        from .native_type_checks import emit as emit_type_check
+        return emit_type_check(emitter,node,arguments)
     if identity.name=='sorted':
         from .native_class_sorting import emit_builtin
         return emit_builtin(emitter,node,arguments,keywords,wanted)

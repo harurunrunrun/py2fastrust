@@ -13,6 +13,9 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name=='isinstance':
+        if keywords:return 'TypeError: isinstance() takes no keyword arguments'
+        if count!=2:return f'TypeError: isinstance expected 2 arguments, got {count}'
     if name=="globals"and(count or keywords):return f"TypeError: globals() takes no arguments ({count+len(keywords)} given)"
     if name=="print":
         unknown=next((item.name for item in keywords if item.name not in {"sep","end","file","flush"}),None)

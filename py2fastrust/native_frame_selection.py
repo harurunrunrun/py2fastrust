@@ -139,5 +139,7 @@ def select_frames(unit):
     if any(site in recorded and isinstance(node,ast.Call)and any(isinstance(value,ast.Starred)for value in node.args)
            and requires_expansion(unit,analysis,node)
            for site,node in nodes.items()):reasons+=("expanded positional call arguments",)
+    from .native_type_checks import requires_frames
+    if requires_frames(analysis):reasons+=("captured builtin type predicates",)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

@@ -31,6 +31,10 @@ differential execution coverage in all integer modes.
 The unchanged bundled `atcoder.math` caller for `pow_mod`, `inv_mod`, `crt`, and
 `floor_sum` also has standalone smoke coverage in all integer modes. This does
 not establish exhaustive numerical coverage of those APIs.
+Unchanged callers using `atcoder.dsu.DSU`, `atcoder.segtree.SegTree`, and
+`atcoder.lazysegtree.LazySegTree` now also pass standalone differential smoke
+checks in every integer mode, including callbacks and indexed operations.
+These callers are not exhaustive coverage of each API's inputs or callbacks.
 Other ACL APIs still encounter required core-language and builtin gaps; bundled
 source availability is not evidence that those APIs are implemented.
 
@@ -67,9 +71,12 @@ materialization/reduction consumers, including `tuple(iterable)`. Key families
 and the remaining deletion, view-operation and custom-protocol limits are documented in
 [COMPATIBILITY.md](COMPATIBILITY.md).
 
-Module/function aliases use resolved identities. General starred calls and
-the remaining module APIs still need implementation. The tables below describe
-the retained runtime inventory, not additional direct coverage.
+Module/function aliases use resolved identities. Positional `*` call expansion
+supports compiled source functions and `print`, including nonescaping generator
+expressions and shared dictionary views. Expansion into other native builtins,
+module functions and constructors, and `**` mappings still need their adapters.
+The tables below describe the retained runtime inventory, not additional direct
+coverage.
 
 ## math
 

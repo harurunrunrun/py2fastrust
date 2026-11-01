@@ -174,14 +174,10 @@ print(a==b,a!=b,a<b,a<=b,a>b,a>=b)
             cases.append(f"{a}\n{rng.choice(strings)}\n{rng.randrange(2)}\n{b}\n{rng.choice(strings)}\n{rng.randrange(2)}\n")
         self.differential(source,cases,profiles=(True,),string_mode="unicode")
 
-    def test_unproved_mutable_tuple_fields_reject(self):
+    def test_mutable_tuple_fields_preserve_shared_native_payloads(self):
         for source in ["A=[]\nt=(A,)\nA.append(1)\nprint(t)\n","t=([1],)\nprint(t)\n",
                        "t=({'a':1},)\nprint(t)\n"]:
-            for mode in ("i64","i128","bigint"):
-                result=transpile(source,TranspileOptions(integer=mode,filename="unsupported.py"))
-                self.assertFalse(result.success)
-                self.assertIsNone(result.rust_source)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+            self.differential(source)
 
 
 if __name__=="__main__":unittest.main()
