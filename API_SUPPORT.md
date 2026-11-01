@@ -176,6 +176,12 @@ coverage.
 
 ## itertools
 
+Direct typed frames currently adapt canonical `repeat`, `chain`, `islice`, and
+`pairwise`, including saved aliases, lazy consumption, shared mutable values,
+loop/comprehension consumers and their builtin class-info queries. `chain`
+defers acquisition of each input iterator until it is reached; `chain.from_iterable`
+and the other entries in the retained inventory below still need direct adapters.
+
 | API | Status |
 |---|---|
 | `accumulate` | Implemented |

@@ -459,7 +459,7 @@ def needs_linking(program):
     from .module_catalog import VENDORED_MODULES
     # Builtin exports are snapshots of the same canonical namespace as its
     # module-object imports; source modules retain their own global shadows.
-    builtin_namespace=any(module.name=='builtins'and module.origin=='builtin'for module in program.modules)
+    builtin_namespace=any(module.name in {'builtins','itertools'}and module.origin=='builtin'for module in program.modules)
     return builtin_namespace or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
                for module in program.modules)
 

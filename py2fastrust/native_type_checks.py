@@ -54,6 +54,10 @@ def emit(emitter, node, arguments):
         if function_kind(classes.kind):
             arms = [f'{variant(identity)}=>{builtin_match(value, identity.name)}'
                     for identity in classes.kind.builtins if identity.name in TYPE_NAMES]
+            for identity in classes.kind.members:
+                adapter=emitter.model.callable_cells.member_adapters.get(identity.module)
+                if adapter is not None and identity.name in getattr(adapter,'TYPES',()):
+                    arms.append(f'{variant(identity)}=>'+adapter.match_type(emitter,node,value,identity.name))
             return 'match ' + classes.code + '{' + ','.join(arms + ['_=>' + invalid()]) + '}'
         return invalid()
 

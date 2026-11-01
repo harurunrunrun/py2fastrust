@@ -844,3 +844,10 @@ Existing code objects can be executed with `exec(code, globals, locals, closure=
 The exact tuple of cells must match `co_freevars`; `eval` rejects code with free variables.
 `types.CellType`, `types.FunctionType`, and `types.LambdaType` support constructing shared closures.
 Replacing `function.__code__` checks the free-variable count and preserves closure cells by position.
+
+Canonical `itertools.repeat`, `chain`, `islice`, and `pairwise` now use typed
+shared cursor states in every integer mode. Construction/evaluation order,
+partial consumption, source mutations and callback exhaustion are preserved.
+These adapters compose with `map`, `filter`, `zip`, list/comprehension collectors
+and ordinary loops without materializing intermediate lists. Custom iterator
+protocols and the remaining itertools APIs still need direct adapters.

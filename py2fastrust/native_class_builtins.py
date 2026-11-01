@@ -161,6 +161,7 @@ def _type_name(emitter,value,node):
     if tag=="globals_dict":return '"dict"'
     if tag=="iterator"and value.kind.record.operation in {"filter","map","zip"}:
         return _string(value.kind.record.operation)
+    if tag=="iterator"and hasattr(value.kind.record,"tool"):return _string("itertools."+value.kind.record.tool)
     if tag=="tuple_sequence":return '"tuple"'
     if tag=='dict_view':return _string('dict_'+value.kind.record.mode)
     if tag=="function":
@@ -171,7 +172,9 @@ def _type_name(emitter,value,node):
             name="type"if identity.name in {"int","bool","float","str","list","range","map","zip","enumerate"}else"builtin_function_or_method"
             arms.append(f'{variant(identity)}=>{_string(name)}')
         for identity in value.kind.members:
-            arms.append(f'{variant(identity)}=>"builtin_function_or_method"')
+            adapter=emitter.model.callable_cells.member_adapters.get(identity.module)
+            name="type"if adapter is not None and identity.name in getattr(adapter,"TYPES",())else"builtin_function_or_method"
+            arms.append(f'{variant(identity)}=>{_string(name)}')
         arms.append('_=>unreachable!("callable type contradicts finite family")')
         return f'match {value.code}{{'+','.join(arms)+'}'
     return _string({"none":"NoneType"}.get(tag,tag))

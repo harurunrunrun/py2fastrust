@@ -24,6 +24,7 @@ class IteratorType:
     def _native_owned_kinds(self):
         from .native_classes import shape
         record=self.record
+        if hasattr(record,"adapter"):return record.adapter.owned(record)
         if record.operation=="map":
             return (*record.input_types,shape(record.callback))
         if record.operation=="zip":
@@ -167,6 +168,7 @@ class Iterators:
         record=kind.record
         if record.index in active:
             raise ClassUnsupported(node,"recursive lazy iterator source ownership needs a recursive typed pull adapter; the finite source graph is not established",proof="finite iterator source graph")
+        if hasattr(record,"adapter"):return record.adapter.demand(self,plan,node,record,environment,active)
         if record.operation in {"map","zip"}:
             items=[self.demand(plan,node,Cell(source),environment,active+(record.index,))
                    for source in record.input_types]
@@ -201,6 +203,7 @@ class Iterators:
         from .native_classes import shape
         if not iterator_kind(kind)or kind.index in seen:return False
         record=kind.record
+        if hasattr(record,"adapter"):return record.adapter.may_call(self,record,seen)
         return record.operation=="map"or(record.operation=="zip"and any(self.may_call(source,seen|{kind.index})for source in record.input_types))or(record.operation=="filter"and(shape(record.callback)!="none"or self.may_call(record.input_type,seen|{kind.index})))
 
     def effects(self,plan,node):
@@ -278,6 +281,7 @@ class Iterators:
         if record.index in active:raise ClassUnsupported(node,"recursive iterator source pull is not yet representable",proof="finite iterator source graph")
         item_kind=shape(record.element)
         if item_kind is None:raise ClassUnsupported(node,"the iterator's element storage remains unresolved",proof="solved lazy iterator element type")
+        if hasattr(record,"adapter"):return record.adapter.pull(self,emitter,node,value,active)
         if record.operation in {"map","zip"}:return self._pull_multiple(emitter,node,value,active)
         if isinstance(item_kind,EmptyType):return Expression("None::<NativeEmpty>",item_kind)
         state=emitter.fresh();item=emitter.fresh()
@@ -441,7 +445,8 @@ class Iterators:
         # Every family has a concrete payload; aliases clone only the Rc handle.
         for record in self.records:
             if not record.emitted:continue
-            if record.operation in {"map","zip"}:
+            if hasattr(record,"adapter"):fields=record.adapter.fields(emitter,record)
+            elif record.operation in {"map","zip"}:
                 fields=",".join(f"source_{index}:ClassIterator_{source.index}"for index,source in enumerate(record.input_types))
                 if record.operation=="map":fields+=f",callback:{emitter.rust_type(shape(record.callback))}"
                 fields+=(","if fields else"")+"strict:bool"

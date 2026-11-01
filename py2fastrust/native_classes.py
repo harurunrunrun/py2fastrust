@@ -1534,6 +1534,8 @@ class Emitter:
             fields = [self.show(Expression(f"{value.code}.{i}.clone()",kind),node,True)
                       for i,kind in enumerate(value.kind.fields)]
             return "class_tuple_text(&[" + ",".join(fields) + "])"
+        if tag=="iterator"and hasattr(value.kind.record,"tool"):
+            return 'format!("<itertools.'+value.kind.record.tool+' object at 0x{:x}>",Rc::as_ptr(&('+value.code+'))as usize)'
         if tag=="function":
             raise ClassUnsupported(node,"this stored source function needs Python's function-object repr/name/address protocol; typed callable capture and direct dispatch are supported, but function-object display metadata is not implemented",types=(("value",value.kind),),proof="function-object display protocol")
         if tag=="globals_dict":
