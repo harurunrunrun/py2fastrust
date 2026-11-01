@@ -149,5 +149,7 @@ def select_frames(unit):
     if divmod_requires_frames(analysis):reasons+=('captured quotient/remainder builtin',)
     from .native_class_splits import requires_frames as split_requires_frames
     if split_requires_frames(unit,analysis):reasons+=('bound text/bytes split protocols',)
+    from .native_class_text_ops import requires_frames as text_requires_frames
+    if text_requires_frames(unit,analysis):reasons+=('bound text/bytes strip protocols',)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

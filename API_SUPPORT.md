@@ -81,6 +81,11 @@ and materialize one shared typed list. ASCII uses byte whitespace scans; Unicode
 uses character boundaries, while bytes retain their separate whitespace set.
 Custom `__index__` and bytes-buffer objects still require protocol adapters.
 
+Frame `str`/`bytes` `strip`, `lstrip` and `rstrip` accept optional character sets
+or `None`, including ordinary `readline().rstrip("\n")` and binary line readers.
+They preserve receiver/argument order, Unicode versus bytes whitespace, and
+positioned argument errors. Custom bytes-buffer objects need their own adapter.
+
 Typed frame dictionaries and sets have shared native storage, including
 ordinary mutable aliases, dictionary values and class fields. Direct adapters
 cover literals/comprehensions, `dict`/`set` constructors, dictionary subscripts,

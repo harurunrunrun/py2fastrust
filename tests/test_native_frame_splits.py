@@ -44,10 +44,10 @@ class SplitCapabilityTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class SplitExecutionTests(unittest.TestCase):
-    def exercise(self,source,*,expected_by_integer=None):
+    def exercise(self,source,*,expected_by_integer=None,data=""):
         with tempfile.TemporaryDirectory(prefix='pytors-frame-split-')as directory:
             root=Path(directory);main=root/'main.py';main.write_text(source)
-            reference=subprocess.run([sys.executable,'-S',str(main)],text=True,capture_output=True,timeout=15)
+            reference=subprocess.run([sys.executable,'-S',str(main)],input=data,text=True,capture_output=True,timeout=15)
             def frames(stderr):return re.findall(r'File "([^"]+)", line (\d+), in ([^\n]+)',stderr)
             for mode in ('i64','i128','bigint'):
                 expected=(expected_by_integer or {}).get(mode,(reference.stdout,reference.stderr,reference.returncode))
@@ -69,7 +69,7 @@ class SplitExecutionTests(unittest.TestCase):
                         binary=root/(mode+('_release'if optimized else'_debug'))
                         build=subprocess.run(['rustc','--edition=2021','--crate-name','frame_split_tests',*(['-O']if optimized else[]),str(rust),'-o',str(binary)],text=True,capture_output=True,timeout=180)
                         self.assertEqual(build.returncode,0,build.stderr)
-                        actual=subprocess.run([str(binary)],text=True,capture_output=True,timeout=15,env={**os.environ,'PATH':'/pytors-no-runtime-dependencies','PYTHONPATH':'/pytors-no-runtime-dependencies'})
+                        actual=subprocess.run([str(binary)],input=data,text=True,capture_output=True,timeout=15,env={**os.environ,'PATH':'/pytors-no-runtime-dependencies','PYTHONPATH':'/pytors-no-runtime-dependencies'})
                         self.assertEqual(actual.stdout,expected[0])
                         self.assertEqual(actual.returncode,expected[2],actual.stderr)
                         self.assertEqual(frames(actual.stderr),frames(expected[1]))

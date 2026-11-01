@@ -1031,6 +1031,9 @@ class Model:
             from .native_class_splits import analyze as analyze_split
             split=analyze_split(self,plan,node,receiver,arguments,keywords)
             if split is not None:return split
+            from .native_class_text_ops import analyze as analyze_text_operation
+            text_operation=analyze_text_operation(self,plan,node,receiver,arguments,keywords)
+            if text_operation is not None:return text_operation
             mapped=self.mappings.analyze_method(plan,node,receiver,arguments,keywords,environment)
             if mapped is not None:return mapped
             if receiver.tag == "object":
@@ -1061,8 +1064,6 @@ class Model:
                     if method.result=="copy":return self.cell(plan,node,"list",(item,))
                     if method.result=="element":return self.remember(plan,node,item)
                     return self.cell(plan,node,method.result)
-            if receiver.tag in {"str","bytes"} and function.attr == "strip" and not arguments and not keywords:
-                return self.cell(plan,node,receiver.tag)
             if receiver.tag == "str" and function.attr == "join" and len(arguments) == 1 and not keywords:
                 merge(self.item(arguments[0],node),Cell("str"),node)
                 return self.cell(plan,node,"str")
@@ -2008,10 +2009,11 @@ class Emitter:
             from .native_class_splits import emit as emit_split
             split=emit_split(self,node,receiver,arguments,keywords,wanted)
             if split is not None:return Expression("{"+"\n".join(setup)+split.code+"}",wanted)
+            from .native_class_text_ops import emit as emit_text_operation
+            text_operation=emit_text_operation(self,node,receiver,arguments,keywords,wanted)
+            if text_operation is not None:return Expression("{"+"\n".join(setup)+text_operation.code+"}",wanted)
             tag,method=domain(receiver.kind),function.attr
-            if tag=="str"and method=="strip":code=f"{receiver.code}.trim_matches(native_space).to_owned()"
-            elif tag=="bytes"and method=="strip":code=f"class_strip_bytes(&{receiver.code})"
-            elif tag=="str"and method=="join":
+            if tag=="str"and method=="join":
                 if arguments[0].kind!=ListType("str"):raise ClassUnsupported(node)
                 code=f"{arguments[0].code}.borrow().join(&{receiver.code})"
             elif tag in{"int","bool","int_bool"}and method in{"bit_length","bit_count"}:
@@ -2529,6 +2531,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(empty_runtime(model,empty_required))
     from .native_class_splits import runtime as split_runtime
     pieces.append(split_runtime(model))
+    from .native_class_text_ops import runtime as text_operation_runtime
+    pieces.append(text_operation_runtime(model))
     from .native_starred_calls import runtime as expanded_runtime
     pieces.append(expanded_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),

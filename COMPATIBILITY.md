@@ -362,6 +362,19 @@ alternatives use the same native kernels. Saved builtin bound methods, custom
 `__index__`, bytes-buffer protocols and arbitrary string subclasses still need
 separate adapters.
 
+Frame `str`/`bytes` `strip`, `lstrip` and `rstrip` bind one optional positional
+`chars` argument. `None` selects the type's whitespace rules; other builtin
+text/bytes arguments are character sets, with empty sets preserving content.
+Receivers are captured before argument callbacks, including field rebinding.
+Finite builtin receiver/character alternatives retain their concrete native
+return types. The existing text kernel supports ASCII and Unicode; bytes use a
+separate slice kernel and whitespace set. Wrong closed argument types, extra
+arguments and forbidden keywords retain Python error messages and source
+frames. Plain text calls that the static path already supports stay there; bytes
+and optional/error bindings use semantic frame capability selection. Saved
+builtin bound methods, custom bytes-buffer objects and arbitrary string
+subclasses still require separate protocols.
+
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing
 tuple's identity, and shares the empty tuple. Fixed and runtime tuple query
