@@ -47,6 +47,9 @@ class Generators:
     def _immediate(self,plan,node,environment):
         from .native_classes import shape
         parent=self.parents.get(id(node))
+        if isinstance(parent,ast.Starred):
+            call=self.parents.get(id(parent))
+            return isinstance(call,ast.Call)and parent in call.args
         if not isinstance(parent,ast.Call)or not parent.args or parent.args[0]is not node:return False
         identity=self.model.builtin_identity(plan,parent.func,environment)if isinstance(parent.func,(ast.Name,ast.Attribute))else None
         linked=getattr(self.model.callable_cells,'linked_builtins',None)
@@ -113,7 +116,7 @@ class Generators:
             else:emitter.logical_binding_scope=old_binding
             emitter.numeric.scope_code=old_numeric_scope
 
-    def consume(self,emitter,node,name,value,arguments,keywords,wanted):
+    def consume(self,emitter,node,name,value,arguments,keywords,wanted,*,append_item=None):
         from .native_classes import Expression,shape
         from .native_class_comprehensions import Collector,_Iterator,emit
         from .native_class_calls import synchronous
@@ -124,6 +127,7 @@ class Generators:
         generator_binding=self.model.unit.scope_for(record.node).ordinal
         stage=emitter.fresh();label='generator_result_'+emitter.fresh()
         def initialize(e,result,kind):
+            if append_item is not None:return ''
             if name=='list':return f'let mut {result}:Vec<{e.rust_type(kind.element)}>=Vec::new();'
             if name=='sum':
                 initial=arguments[1]if len(arguments)==2 else Expression(e.literal(0),'int',0)
@@ -136,7 +140,8 @@ class Generators:
             if isinstance(item.kind,EmptyType):return before+'match '+item.code+'{};'
             action=''
             with self.context(e,caller_scope,caller_binding):
-                if name=='list':
+                if append_item is not None:action=append_item(e,item)
+                elif name=='list':
                     reserve=e.at(f'{result}.try_reserve(1).map_err(|_|"MemoryError: cannot allocate list".to_owned())',node)
                     action=reserve+';'+f'{result}.push({e.coerce(item,wanted.element,node)});'
                 elif name=='sum':
@@ -154,7 +159,8 @@ class Generators:
             return before+f'{stage}=false;'+action+f'{stage}=true;'
         def finish(e,result,kind):
             with self.context(e,caller_scope,caller_binding):
-                if name=='list':ending=f'class_list({result})'
+                if append_item is not None:ending='()'
+                elif name=='list':ending=f'class_list({result})'
                 elif name=='sum':ending=result
                 elif name in {'min','max'}:ending=e.at(f'{result}.ok_or_else(||"ValueError: {name}() iterable argument is empty".to_owned())',node)
                 elif name=='next':

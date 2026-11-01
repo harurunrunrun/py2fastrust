@@ -168,9 +168,12 @@ class ExpandedCalls:
             value = self.model.expression(plan, argument.expression, environment)
             part = Segment(original, argument.spread, value)
             if argument.spread:
-                part.iterator = self.model.iterators.source(plan, original, value)
-                part.element = self.model.iterators.demand(plan, node,
-                                                          Cell(part.iterator), environment)
+                if getattr(shape(value),'_native_class_generator',False):
+                    part.element = self.model.generators.demand(plan,node,value,environment)
+                else:
+                    part.iterator = self.model.iterators.source(plan, original, value)
+                    part.element = self.model.iterators.demand(plan, node,
+                                                              Cell(part.iterator), environment)
                 part.minimum, part.maximum = _range_for(value)
                 part.viable = _iterable_possible(value)
                 if value.root().tag == "tuple":part.fields = value.root().args
@@ -309,6 +312,11 @@ class ExpandedCalls:
 
     def _materialize(self, emitter, node, site, part, source, callee, vector, element):
         from .native_classes import Expression
+        if getattr(source.kind,'_native_class_generator',False):
+            def append_item(e,item):
+                reserve=e.at(f'{vector}.try_reserve(1).map_err(|_|"MemoryError: cannot expand positional arguments".to_owned())',node)
+                return reserve+';'+f'{vector}.push({e.coerce(item,element,node)});'
+            return self.model.generators.consume(emitter,node,'expanded_arguments',source,[],{},'none',append_item=append_item).code+';'
         callback = lambda value:self._not_iterable(emitter, node, site, callee, value)
         iterator = self.model.iterators.construct(emitter, node, source, kind=part.iterator, not_iterable=callback)
         before, iterator = emitter.capture(iterator)

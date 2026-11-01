@@ -248,7 +248,7 @@ class Iterators:
         from .native_classes import Expression
         record=wanted.record;record.emitted=True
         inner=self.construct(emitter,record.node,source,kind=record.input_type)
-        return Expression(f"Rc::new(RefCell::new(ClassIteratorState_{record.index}{{source:{inner.code},callback:{callback.code},exhausted:false}}))",wanted)
+        return Expression(f"Rc::new(RefCell::new(ClassIteratorState_{record.index}{{source:{inner.code},callback:{callback.code}}}))",wanted)
 
     def emit_map(self,emitter,node,callback,sources,strict,wanted):
         return self.emit_multiple(emitter,node,sources,strict,wanted,callback)
@@ -282,13 +282,13 @@ class Iterators:
         if isinstance(item_kind,EmptyType):return Expression("None::<NativeEmpty>",item_kind)
         state=emitter.fresh();item=emitter.fresh()
         if record.operation=="filter":
-            source=emitter.fresh();callback=emitter.fresh();result=emitter.fresh()
+            source=emitter.fresh();callback=emitter.fresh();result=emitter.fresh();decision=emitter.fresh()
             nested=self.pull(emitter,node,Expression(source,record.input_type),active+(record.index,))
             condition=self._predicate(emitter,node,record,Expression(callback,shape(record.callback)),Expression(item,item_kind))
             code=("{loop{"+f"let ({source},{callback})={{{{let {state}={value.code}.borrow();"
-                  f"if {state}.exhausted{{break None;}}({state}.source.clone(),{state}.callback.clone())}}}};"
-                  f"let {result}={nested.code};let Some({item})={result} else{{{value.code}.borrow_mut().exhausted=true;break None;}};"
-                  f"if {condition}{{break Some({item});}}"+"}}")
+                  f"({state}.source.clone(),{state}.callback.clone())}}}};"
+                  f"let {result}={nested.code};let Some({item})={result} else{{break None;}};"
+                  f"let Some({decision})=({condition})else{{break None;}};if {decision}{{break Some({item});}}"+"}}")
             return Expression(code,item_kind)
         tag=domain(shape(record.source))
         begin="{let mut "+state+"="+value.code+".borrow_mut();"
@@ -356,7 +356,7 @@ class Iterators:
                     checks.append("if ("+later.code+").is_some(){"+emitter.at(f"Err::<(),String>({_string(message)}.to_owned())",node)+";}")
                 absent="if "+strict+"{"+"".join(checks)+"}"
             code+="let Some("+item+")=("+pulled.code+")else{"+absent+"break '"+label+" None;};"
-        if isinstance(shape(record.element),EmptyType):
+        if any(isinstance(item.kind,EmptyType)for item in items):
             empty=next(item for item in items if isinstance(item.kind,EmptyType))
             return Expression(code+"match "+empty.code+"{}}}",shape(record.element))
         if record.operation=="zip":
@@ -366,8 +366,22 @@ class Iterators:
             site=record.demands.get((emitter.plan.index,id(node)))
             if site is None:raise ClassUnsupported(node,"the deferred map callback has no matching typed demand proof",proof="deferred callable demand site")
             result=emit_values(emitter,node,site,Expression(callback,shape(record.callback)),items,[],shape(record.element))
-        code+="Some("+result.code+")}}"
+        if record.operation=="map":code+=self._callback_result(emitter,result).code+"}}"
+        else:code+="Some("+result.code+")}}"
         return Expression(code,shape(record.element))
+
+    def _callback_result(self,emitter,value):
+        """A callback StopIteration terminates this pull without latching it."""
+        from .native_classes import Expression
+        from .native_class_calls import synchronous
+        result=emitter.fresh();error=emitter.fresh()
+        inside='Ok::<'+emitter.rust_type(value.kind)+',NativeError>('+value.code+')'
+        invocation=('(||{'+inside+'})()'if synchronous(emitter.model,emitter.plan)
+                    else '(async{'+inside+'}).await')
+        code=('match '+invocation+'{Ok('+result+')=>Some('+result+'),Err('+error+')=>{'
+              'if '+error+'.message=="StopIteration"||'+error+'.message.starts_with("StopIteration:"){None}'
+              'else{return Err('+error+');}}}')
+        return Expression(code,value.kind)
 
     def _union_source_pull(self,emitter,node,record,kind,source,index,item_kind):
         """One concrete source alternative; no source borrow crosses a callback."""
@@ -408,12 +422,13 @@ class Iterators:
         from .native_unions import project,union_kind
         from .native_aot_callables import emit_values
         def branch(kind,code):
-            if kind=="none":return emitter.truth(item)
+            if kind=="none":return 'Some('+emitter.truth(item)+')'
             site=record.demands.get((emitter.plan.index,id(node)))
             if site is None:raise ClassUnsupported(node,"the deferred predicate has no matching typed demand proof",proof="deferred callable demand site")
             result=emit_values(emitter,node,site,Expression(code,kind),[Expression(item.code+".clone()",item.kind)],[],shape(site.result))
             temporary=emitter.fresh()
-            return "{let "+temporary+"="+result.code+";"+emitter.truth(Expression(temporary,result.kind))+"}"
+            optional=self._callback_result(emitter,result)
+            return 'match '+optional.code+'{Some('+temporary+')=>Some('+emitter.truth(Expression(temporary,result.kind))+'),None=>None}'
         if union_kind(callback.kind):return project(callback.kind,callback.code,branch)
         return branch(callback.kind,callback.code)
 
@@ -431,7 +446,7 @@ class Iterators:
                 if record.operation=="map":fields+=f",callback:{emitter.rust_type(shape(record.callback))}"
                 fields+=(","if fields else"")+"strict:bool"
             elif record.operation=="filter":
-                fields=f"source:ClassIterator_{record.input_type.index},callback:{emitter.rust_type(shape(record.callback))},exhausted:bool"
+                fields=f"source:ClassIterator_{record.input_type.index},callback:{emitter.rust_type(shape(record.callback))}"
             else:
                 kind=shape(record.source);tag=domain(kind)
                 from .native_unions import union_kind
