@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from .native_types import EMPTY,EmptyType
 
 
-NAMES=frozenset({'repeat','chain','islice','pairwise','accumulate'})
+NAMES=frozenset({'repeat','chain','islice','pairwise','accumulate','product'})
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,7 @@ def _bind(name,positional,keywords):
 class ItertoolsAdapter:
     NAMES=NAMES
     TYPES=NAMES
+    EAGER_ARGUMENTS={'product':None}
 
     @staticmethod
     def match_type(emitter,node,value,name):
@@ -50,6 +51,9 @@ class ItertoolsAdapter:
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
         from .native_classes import Cell,shape
+        if identity.name=='product':
+            from .native_itertools_product import analyze
+            return analyze(model,plan,node,identity,positional,keywords,environment,factory=factory)
         if identity.name=='accumulate':
             from .native_itertools_accumulate import analyze
             return analyze(model,plan,node,identity,positional,keywords,environment,factory=factory)
@@ -83,6 +87,9 @@ class ItertoolsAdapter:
         from .native import _string
         if call.error is not None:
             return Expression(emitter.at(f'Err::<{emitter.rust_type(shape(call.result))},String>({_string(call.error)}.into())',node),shape(call.result))
+        if identity.name=='product':
+            from .native_itertools_product import emit
+            return emit(emitter,node,identity,call,positional,keywords)
         if identity.name=='accumulate':
             from .native_itertools_accumulate import emit
             return emit(emitter,node,identity,call,positional,keywords)

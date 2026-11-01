@@ -275,6 +275,9 @@ def _assign(emitter, target, value, bindings):
         if domain(source.kind)=="tuple":
             if len(source.kind.fields)!=len(target.elts):raise ClassUnsupported(target)
             values=[Expression(f"{source.code}.{i}.clone()",kind)for i,kind in enumerate(source.kind.fields)]
+        elif domain(source.kind)=="tuple_sequence":
+            setup+=emitter.at(f"class_tuple_unpack_length({source.code}.len(),{len(target.elts)})",target)+";"
+            values=[Expression(f"{source.code}.as_slice()[{i}].clone()",source.kind.element)for i in range(len(target.elts))]
         elif domain(source.kind)=="list":
             unpack=emitter.fresh()
             setup+=f"let {unpack}={emitter.at(f'class_unpack(&{source.code},{len(target.elts)})',target)};"

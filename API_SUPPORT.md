@@ -289,3 +289,9 @@ The shared generator collector writes directly into count storage; it preserves
 argument order, body frames, PEP 479 and dictionary mutation checks without an
 intermediate list. Saved generators, lazy adapters and arbitrary user methods
 still require general suspension state.
+
+`itertools.product` captures its input pools at construction and emits results
+from concrete pool/index state. Runtime `repeat`, zero dimensions, mutable
+element aliases and eager generator inputs are supported. Small proved ranks
+retain Rust tuple field types; other ranks use typed immutable tuple storage.
+General stored generators and the remaining combinatoric APIs remain unfinished.
