@@ -665,7 +665,9 @@ class Solver:
                     self.record_mutation(receiver,context);self.insert(receiver,"element",item)
                     return value("none")
                 return value("int")
-            if getattr(identity,"module",None)=="math":return value("int")
+            if getattr(identity,"module",None)=="math":
+                from .native_math_calls import result_kind
+                return value(result_kind(identity))
             return UNKNOWN
         name=identity.name
         if name in {"int","float","str","bool","bytes"}:return value(name)

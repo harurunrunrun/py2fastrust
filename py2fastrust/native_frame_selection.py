@@ -159,6 +159,8 @@ def select_frames(unit,*,integer="i64"):
     if formatting_requires_frames(unit,analysis):reasons+=("typed format fields and canonical formatting calls",)
     from .native_character_builtins import requires_frames as character_requires_frames
     if character_requires_frames(analysis):reasons+=('character codes and integer radix output',)
+    from .native_math_calls import requires_frames as math_requires_frames
+    if math_requires_frames(analysis,integer):reasons+=('BigInt real-valued math representation',)
     from .native_integer_base import requires_frames as integer_base_requires_frames
     if integer_base_requires_frames(analysis):reasons+=('explicit-base captured integer conversion',)
     from .native_formal_bindings import requires_frames as formal_bindings_require_frames

@@ -469,3 +469,9 @@ multiplication, true/floor division and remainder when a float operand is
 present. Integral operands convert once through the exact `Int.ratio` helper,
 with overflow errors instead of silent infinity. Pure integral true division
 retains its existing exact-ratio path.
+
+Canonical `math.sqrt`, `floor`, `ceil` and `trunc` have direct numeric adapters
+for int/bool/float values and captured aliases. Integer rounding retains exact
+integers; square root converts integers once to binary64 with overflow checks.
+NaN, infinities, signed zero and positioned argument errors follow Python 3.14.
+User numeric conversion protocols remain explicit unsupported diagnostics.

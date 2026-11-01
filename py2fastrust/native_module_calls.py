@@ -22,7 +22,7 @@ class BuiltinRef:
 MODULES = {name: ModuleRef(name) for name in ("math", "bisect", "heapq")}
 MEMBERS = {
     "math": {name: BuiltinRef("math",name) for name in
-             ("gcd","lcm","isqrt","factorial","comb","perm")},
+             ("gcd","lcm","isqrt","factorial","comb","perm","sqrt","floor","ceil","trunc")},
     "bisect": {name: BuiltinRef("bisect",name) for name in
                ("bisect","bisect_left","bisect_right","insort","insort_left","insort_right")},
 }
@@ -96,7 +96,10 @@ def helpers(generator):
     from .native_bisect import helpers as bisection_helpers
     from .native_math_calls import helpers as math_helpers
     integer='bigint'if not generator.bits else'i'+str(generator.bits)
-    return math_helpers(integer)+HEAP_HELPERS+bisection_helpers(generator.bits)
+    names=set(getattr(generator,"native_math_functions",()))
+    for local in getattr(getattr(generator,"specializations",None),"generators",()):
+        names.update(getattr(local,"native_math_functions",()))
+    return math_helpers(integer,names)+HEAP_HELPERS+bisection_helpers(generator.bits)
 
 
 def reference(node,environment):

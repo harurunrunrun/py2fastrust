@@ -3,7 +3,7 @@ import ast
 
 LINKED_MODULES=frozenset({'itertools'})
 LINKED_EXPORTS={'collections':frozenset({'Counter','defaultdict'}),'functools':frozenset({'reduce'}),'operator':frozenset({'add','sub','mul','and_','or_','xor','lshift','rshift','floordiv','mod','truediv'})}
-FRAME_MODULES=frozenset({'heapq','bisect'})
+FRAME_MODULES=frozenset({'heapq','bisect','math'})
 
 
 def needs_linked_members(program,*,integer="i64"):

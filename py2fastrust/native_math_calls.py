@@ -4,7 +4,20 @@ from .native_types import TupleType, TupleSequenceType, list_type, alternatives
 from .native_unions import project, union_kind
 
 
-NAMES = frozenset({'gcd', 'lcm', 'isqrt', 'factorial', 'comb', 'perm'})
+INTEGER_NAMES=frozenset({'gcd','lcm','isqrt','factorial','comb','perm'})
+REAL_NAMES=frozenset({'sqrt','floor','ceil','trunc'})
+NAMES=INTEGER_NAMES|REAL_NAMES
+
+def result_kind(identity):return 'float'if identity.name=='sqrt'else'int'
+
+def requires_frames(analysis,integer):
+    if integer!='bigint':return False
+    for scope in analysis.scopes.values():
+        for fact in scope.calls.values():
+            if not any(accepts(identity)and identity.name in REAL_NAMES for identity in fact.identity.alternatives):continue
+            if any(accepts(identity)and identity.name=='sqrt'for identity in fact.identity.alternatives):return True
+            if any(value.unknown or value.unbound or 'float'in value.alternatives for value in fact.positional):return True
+    return False
 
 
 def accepts(identity):
@@ -16,7 +29,7 @@ def binding_error(name, arguments, keywords):
     if keywords:
         return f'TypeError: math.{name}() takes no keyword arguments'
     count = len(arguments)
-    if name in {'isqrt', 'factorial'} and count != 1:
+    if name in {'isqrt','factorial'}|REAL_NAMES and count != 1:
         return f'TypeError: math.{name}() takes exactly one argument ({count} given)'
     if name == 'comb' and count != 2:
         return f'TypeError: comb expected 2 arguments, got {count}'
@@ -42,13 +55,17 @@ def analyze(model, plan, node, identity, captured_arg_cells, kw_pairs, environme
             kind = shape(value)
             if kind is None and not model.final:
                 continue
-            if not all(_index_kind(choice) for choice in alternatives(kind)):
+            if identity.name in REAL_NAMES:
+                if not all(_real_kind(choice)for choice in alternatives(kind)):
+                    protocols={'sqrt':'__float__/__index__','floor':'__floor__/__float__/__index__','ceil':'__ceil__/__float__/__index__','trunc':'__trunc__'}[identity.name]
+                    raise ClassUnsupported(node,'math.'+identity.name+' needs its user '+protocols+' conversion protocol; the native adapter accepts captured builtin numbers and reports errors for closed builtin nonnumbers',types=((f'argument {index+1}',kind),),proof='canonical math real-number protocol')
+            elif not all(_index_kind(choice) for choice in alternatives(kind)):
                 raise ClassUnsupported(node, 'this math argument needs the Python __index__ protocol; '
                                        'its native protocol adapter is not implemented',
                                        types=((f'argument {index + 1}', kind),),
                                        proof='canonical integer-index protocol')
     model.native_math_functions = getattr(model, 'native_math_functions', set()) | {identity.name}
-    return model.cell(plan, node, 'int')
+    return model.cell(plan,node,result_kind(identity))
 
 
 def _bits(generator):
@@ -77,7 +94,37 @@ def _index(generator, value, node):
     return generator.at(error, node)
 
 
-def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted='int'):
+def _real_kind(kind):
+    from .native_classes import domain
+    return domain(kind)in {'int','bool','int_bool','float','none','str','bytes','list','tuple','tuple_sequence','range','dict','set','dict_view','function','deque','globals_dict'}
+
+
+def _real(generator,value,node,name):
+    if union_kind(value.kind):
+        return project(value.kind,value.code,lambda kind,code:_real(generator,_Expression('('+code+').clone()',kind),node,name))
+    if value.kind in {'int','bool','int_bool'}:
+        integer=generator.number(value)
+        if name!='sqrt':return integer
+        if _bits(generator):return '('+integer+') as f64'
+        return generator.at('('+integer+').ratio(&Int::exact_small(1)).map_err(|_|"OverflowError: int too large to convert to float".to_owned())',node)
+    if value.kind=='float':
+        if name=='sqrt':return value.code
+        conversion='native_float_integer'if _bits(generator)else'Int::from_f64'
+        return generator.at(conversion+'(('+value.code+').'+name+'())',node)
+    if not _real_kind(value.kind):
+        raise _Unsupported('math.'+name+' needs its user conversion protocol; only builtin numeric values have a proved direct representation',node=node,types=(('argument',value.kind),),proof='canonical math real-number protocol')
+    if hasattr(generator,'model'):
+        from .native_class_builtins import _type_name
+        typename=_type_name(generator,value,node)
+    else:
+        from .native_comparisons import _type_name
+        typename=_type_name(value)
+    message=("TypeError: type {} doesn't define __trunc__ method"if name=='trunc'else'TypeError: must be real number, not {}')
+    result='f64'if name=='sqrt'else'NativeInt'
+    return generator.at('Err::<'+result+',String>(format!('+_string(message)+','+typename+'))',node)
+
+
+def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted=None):
     """Do not evaluate a callee or source argument: the caller captured them."""
     if not accepts(identity):
         return None
@@ -85,9 +132,16 @@ def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted='in
     owner.native_math_functions = getattr(owner, 'native_math_functions', set()) | {identity.name}
     if owner is generator:
         generator.has_native_modules = True
+    raw_kind=result_kind(identity)
+    if wanted is None:wanted=raw_kind
+    if identity.name in REAL_NAMES and not hasattr(generator,'model'):generator.has_extended_scalars=True
     error = binding_error(identity.name, captured_arg_Expressions, kw_map)
     if error is not None:
-        code = generator.at(f'Err::<NativeInt,String>({_string(error)}.into())', node)
+        result='f64'if raw_kind=='float'else'NativeInt'
+        code=generator.at(f'Err::<{result},String>({_string(error)}.into())',node)
+    elif identity.name in REAL_NAMES:
+        value=_real(generator,captured_arg_Expressions[0],node,identity.name)
+        code=generator.at('native_math_sqrt('+value+')',node)if identity.name=='sqrt'else value
     else:
         names, lines = [], []
         for index, value in enumerate(captured_arg_Expressions):
@@ -110,8 +164,8 @@ def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted='in
                                  'Some(' + ('&' if not _bits(generator) else '') + optional + ')')
             code = generator.at(f'native_math_{name}({",".join(arguments)})', node)
         code = '{' + ''.join(lines) + code + '}'
-    result = _Expression(code, 'int')
-    if wanted != 'int':
+    result=_Expression(code,raw_kind)
+    if wanted!=raw_kind:
         result = _Expression(generator.coerce(result, wanted, node), wanted)
     return result
 
@@ -214,10 +268,15 @@ fn native_math_comb(n:NativeInt,k:NativeInt)->Result<NativeInt,String> {
 
 
 def helpers(integer, names=NAMES):
-    if not set(names) & NAMES:
-        return ''
-    if integer == 'bigint':
-        from .native_module_calls import MATH_HELPERS
-        return MATH_HELPERS
-    bits = {'i64': 64, 'i128': 128}[integer]
-    return f'type MathUnsigned=u{bits};\n' + _FIXED
+    if not set(names)&NAMES:return ''
+    pieces=[]
+    if set(names)&INTEGER_NAMES:
+        if integer=='bigint':
+            from .native_module_calls import MATH_HELPERS
+            pieces.append(MATH_HELPERS)
+        else:
+            bits={'i64':64,'i128':128}[integer]
+            pieces.append(f'type MathUnsigned=u{bits};\n'+_FIXED)
+    if 'sqrt'in names:
+        pieces.append('fn native_math_sqrt(value:f64)->Result<f64,String>{if value<0.0{Err(format!("ValueError: expected a nonnegative input, got {}",native_float_text(value)))}else{Ok(value.sqrt())}}')
+    return '\n'.join(pieces)

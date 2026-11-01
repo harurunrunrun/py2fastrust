@@ -87,7 +87,7 @@ print(lower(a,2),lower([],5))
 '''
         self.compare(source)
 
-    def test_module_precedence_and_unproved_writes_are_not_substituted(self):
+    def test_module_precedence_and_proved_member_rebinding(self):
         with tempfile.TemporaryDirectory(prefix="pytors-native-module-")as directory:
             root=Path(directory)
             (root/"math.py").write_text("def isqrt(n):return 123\n")
@@ -102,11 +102,7 @@ print(lower(a,2),lower([],5))
             else:
                 self.assertEqual(program.module('math').origin,'user')
                 self.assertNotIn('math',program.native_imports)
-        for source in ["import math\nmath.gcd=lambda a,b:7\nprint(math.gcd(1,2))\n"]:
-            for mode in ("i64","i128","bigint"):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+        self.compare("import math\nmath.gcd=lambda a,b:7\nprint(math.gcd(1,2))\n")
 
     def test_invalid_math_keyword_executes_its_python_binding_error(self):
         self.compare("import math\nprint(math.factorial(n=4))\n")

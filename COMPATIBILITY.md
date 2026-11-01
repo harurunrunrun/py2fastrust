@@ -1154,3 +1154,22 @@ expressions evaluate before primitive numeric conversion begins. Integral
 true division keeps its existing exact-ratio implementation, while otherwise
 integral programs keep their static selection. Floating power/complex results
 and custom numeric conversion protocols remain separate adapters.
+
+Canonical `math.sqrt`, `floor`, `ceil` and `trunc` use shared typed numeric
+adapters on ordinary and frame paths, including imported/captured aliases and
+finite callable alternatives. Floor/ceil/trunc preserve builtin integral
+values exactly and normalize float-to-integer results in the selected integer
+mode. Sqrt converts integrals once, using fallible exact `Int.ratio(1)` for
+BigInt, then applies native binary64 square root. Signed zero, NaN, infinities,
+negative-input diagnostics, binding errors and closed nonnumeric type errors
+retain Python 3.14 behavior and source frames. Simple fixed-width calls and
+integral BigInt rounding retain static selection; BigInt float results use
+typed frames selected before generation. Custom `__floor__`, `__ceil__`,
+`__trunc__`, `__float__` and index protocols are not simulated. Ordinary module
+support emits reached math kernels across function specializations, including
+when unused-code pruning is disabled.
+
+Admitted math namespaces preserve proved member rebinding through shared
+module cells. Captured old callables retain their identity, functions read
+the current member, and argument callbacks cannot replace the callee already
+captured for the current call.
