@@ -127,6 +127,12 @@ clipped start/end bounds, empty patterns and integer byte needles. Counts reuse
 cached Unicode windows or ASCII byte scans; multi-byte patterns use a linear
 prefix matcher. Existing simple text-count and input-parsing paths remain static.
 
+Typed frame `for` loops accept raw text and bytes through shared source cursors,
+including finite source alternatives and `enumerate`. Text yields characters
+in the configured ASCII/Unicode mode; bytes yield integers. Captured immutable
+owners survive local or field rebinding during the loop. Ordinary static text
+loops retain their existing path.
+
 Typed frame dictionaries and sets have shared native storage, including
 ordinary mutable aliases, dictionary values and class fields. Direct adapters
 cover literals/comprehensions, `dict`/`set` constructors, dictionary subscripts,

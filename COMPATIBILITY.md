@@ -459,6 +459,14 @@ bounds and argument errors select typed frames. User methods named `count`
 retain their source identity. Custom `__index__` and buffer objects remain
 positioned unsupported protocol diagnostics.
 
+Direct frame `for` loops admit builtin `str` and `bytes` through the shared
+source/pull registry, including text/bytes or text/list/range alternatives,
+`enumerate`, nested loops, zero iterations, break/continue and retained owners
+when source names or fields are rebound. Text yields configured characters;
+byte sources yield integers. The existing inline one-character text carrier
+avoids a heap allocation for each yielded character. This capability does not
+force otherwise static text loops onto frames.
+
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing
 tuple's identity, and shares the empty tuple. Fixed and runtime tuple query
