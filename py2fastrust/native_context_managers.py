@@ -31,6 +31,11 @@ class ContextManagers:
     def __init__(self,model):
         self.model=model
         self.sites={}
+        from .native_callback_effects import register
+        register(model,self.may_call)
+
+    def may_call(self,plan,node):
+        return bool(self.sites.get((plan.index,id(node))))
 
     @property
     def used(self):return bool(self.sites)
