@@ -496,3 +496,11 @@ Canonical `math.log`, `log2` and `log10` support builtin real arguments,
 including huge positive BigInt values without converting them to infinity.
 `log` accepts an optional positional base. Domain errors distinguish integral
 and floating inputs; argument capture and base conversion retain Python order.
+
+Canonical `typing` annotation aliases may be imported without using annotations
+for inference. Their initialized binding presence is retained; runtime alias
+object operations remain positioned diagnostics. Linked compiler-feature
+exports retain the same unobserved-symbol behavior. `typing.cast` evaluates
+its arguments normally and returns the original value, without conversion or
+copying mutable payloads. Import binding presence is updated after each actual
+linked import, including `globals()` membership observations.

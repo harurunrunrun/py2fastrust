@@ -107,6 +107,8 @@ class LinkedModel(Model):
         from .native_linked_members import MathAdapter,SysAdapter
         provider.register_member_adapter('math',MathAdapter)
         provider.register_member_adapter('sys',SysAdapter)
+        from .native_typing_aliases import TypingAdapter
+        provider.register_member_adapter('typing',TypingAdapter)
         from .native_itertools import ItertoolsAdapter
         provider.register_member_adapter('itertools',ItertoolsAdapter)
         from .native_functools_reduce import FunctoolsAdapter
@@ -268,6 +270,8 @@ class LinkedEmitter(Emitter):
         self.numeric.scope_code=self.location_code
 
     def rust_leaf(self,value,recurse):
+        from .native_typing_aliases import AnnotationAlias
+        if isinstance(value,AnnotationAlias):return '()'
         if isinstance(value,ModuleType):return "ClassModuleRef"
         if isinstance(value,ClassReferenceType):return "ClassClassRef"
         return super().rust_leaf(value,recurse)
@@ -438,6 +442,8 @@ class LinkedEmitter(Emitter):
             before,target=self.capture(target)
             lines.append(before)
             lines.append(self.assign_name(binding.node,target))
+            from .native_globals_view import store
+            lines.append(store(self,binding.node))
         return "".join(lines)
 
     def import_alias_step(self,owner,name,node,wanted):
@@ -537,6 +543,9 @@ def render_linked_runtime(model,source):
         raw=model.callable_cells.reference_expression(identity)
         code=emitter.coerce(raw,kind,model.tree)
         implicit[number].append(f'globals.borrow_mut().value_{index}=Some({code});')
+    for name,(number,alias)in linker.annotation_aliases.items():
+        index=model.namespace.index(name)
+        implicit[number].append(f'globals.borrow_mut().value_{index}=Some(());')
     names=','.join(f'{module.number}=>({_string(module.name)},{_string(repr(module.name))},{_string(module.filename or "unknown location")},{_string(repr(module.filename or "unknown location"))},{str(module.possibly_shadowing).lower()},{str(module.shadowing_stdlib).lower()})'
                    for module in sorted(linker.modules.values(),key=lambda value:value.number))
     support=['type ClassLocation=(&\'static str,&\'static str);',

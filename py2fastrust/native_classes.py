@@ -437,6 +437,9 @@ class Model:
         return merge(destination,self.flow_copy(source),node,allow_unresolved=not self.final)
 
     def remember(self, plan, node, result):
+        if isinstance(node,ast.expr)and not isinstance(getattr(node,'ctx',None),(ast.Store,ast.Del)):
+            from .native_typing_aliases import runtime_value
+            runtime_value(result,node)
         self.records[(plan.index, id(node))] = result
         return result
 

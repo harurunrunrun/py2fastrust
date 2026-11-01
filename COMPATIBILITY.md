@@ -1203,3 +1203,11 @@ and exponent terms; guaranteed-overflow direct conversion is skipped above
 1024 bits. Both source arguments evaluate before conversion, then the value
 logarithm precedes optional-base conversion and division. Custom numeric
 conversion protocols remain positioned unsupported diagnostics.
+
+Canonical `typing` annotation aliases may be imported without using annotations
+for inference. Their initialized binding presence is retained; runtime alias
+object operations remain positioned diagnostics. Linked compiler-feature
+exports retain the same unobserved-symbol behavior. `typing.cast` evaluates
+its arguments normally and returns the original value, without conversion or
+copying mutable payloads. Import binding presence is updated after each actual
+linked import, including `globals()` membership observations.

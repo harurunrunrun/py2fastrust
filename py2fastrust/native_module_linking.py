@@ -292,6 +292,7 @@ class ModuleLinker:
         self.alias_steps={}
         self.implicit_values={}
         self.implicit_members={}
+        self.annotation_aliases={}
         self.model=None
 
     @staticmethod
@@ -418,6 +419,8 @@ class ModuleLinker:
 
     def seed_native_member(self,provider,module,name):
         """Populate a reachable trusted export with the common callable carrier."""
+        from .native_typing_aliases import seed_alias
+        if seed_alias(self,module,name):return
         from .native_module_calls import BuiltinRef
         from .references import BuiltinIdentity
         from .native_class_builtins import SUPPORTED
