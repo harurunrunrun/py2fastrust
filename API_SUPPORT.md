@@ -38,6 +38,15 @@ These callers are not exhaustive coverage of each API's inputs or callbacks.
 Other ACL APIs still encounter required core-language and builtin gaps; bundled
 source availability is not evidence that those APIs are implemented.
 
+F-strings and canonical builtin `format`, `repr`, and `ascii` calls have direct
+frame lowering for supported native values, including captured aliases.
+Integer, binary64, and string fields support alignment, width, grouping,
+precision, and the supported standard presentation codes. Dynamic format specs,
+debug fields, `!s`/`!r`/`!a`, and field/spec evaluation order use the original
+Python AST. Plain fields emit only the needed display helpers. Source-defined
+format/display methods, complex values, and string `format`/`format_map` methods
+still require their own direct protocols.
+
 Builtin `divmod` supports captured integral/boolean calls in every integer mode,
 binary64 pairs in every mode, and mixed integer/binary64 calls in fixed-width
 modes. It shares quotient/remainder kernels with the arithmetic operators.

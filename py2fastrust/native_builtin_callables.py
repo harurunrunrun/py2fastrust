@@ -13,6 +13,10 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name in {"format","repr","ascii"}:
+        if keywords:return f"TypeError: {name}() takes no keyword arguments"
+        if name=="format" and not 1<=count<=2:return f"TypeError: format expected {'at least 1'if not count else'at most 2'} argument{'s'if count else''}, got {count}"
+        if name!="format" and count!=1:return f"TypeError: {name}() takes exactly one argument ({count} given)"
     if name=='isinstance':
         if keywords:return 'TypeError: isinstance() takes no keyword arguments'
         if count!=2:return f'TypeError: isinstance expected 2 arguments, got {count}'

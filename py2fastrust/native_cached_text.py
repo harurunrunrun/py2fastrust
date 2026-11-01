@@ -192,7 +192,7 @@ def _text_kernel(string_mode):
     if not separator:raise RuntimeError('the shared NativeText traits are missing')
     return resources.joinpath('native_text_ascii.rs').read_text(encoding='utf-8')+'\n'+separator+traits
 
-def apply_cached_text(source,string_mode):
+def apply_cached_text(source,string_mode,*,class_repr=True):
     """Override complete internal helper items; never rewrite source literals."""
     tokens,_comments,pairs=_lex(source)
     identifiers={token.text for token in tokens if token.kind=="identifier"}
@@ -218,7 +218,8 @@ def apply_cached_text(source,string_mode):
 }
 '''
     if "ClassDisplay"in identifiers:
-        helpers+='\nimpl ClassDisplay for NativeText {fn class_str(&self)->String{self.as_str().to_string()} fn class_repr(&self)->String{text_repr_str(self.as_str())}}\n'
+        representation=' fn class_repr(&self)->String{text_repr_str(self.as_str())}'if class_repr else''
+        helpers+='\nimpl ClassDisplay for NativeText {fn class_str(&self)->String{self.as_str().to_string()}'+representation+'}\n'
     policy='const NATIVE_TEXT_UNICODE:bool=true;\n'if string_mode=='unicode'else''
     prefix='\n'+policy+kernel+'\n'+helpers+'\n'
     position=0

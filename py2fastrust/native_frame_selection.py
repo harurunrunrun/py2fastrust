@@ -151,5 +151,7 @@ def select_frames(unit):
     if split_requires_frames(unit,analysis):reasons+=('bound text/bytes split protocols',)
     from .native_class_text_ops import requires_frames as text_requires_frames
     if text_requires_frames(unit,analysis):reasons+=('bound text/bytes strip protocols',)
+    from .native_formatting import requires_frames as formatting_requires_frames
+    if formatting_requires_frames(unit,analysis):reasons+=("typed format fields and canonical formatting calls",)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

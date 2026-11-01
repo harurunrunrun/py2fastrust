@@ -17,6 +17,18 @@ dynamic execution, import reflection/reloading and many mixed-type/alias cases
 still require direct lowering. An `E006`
 diagnostic makes that gap explicit; it does not satisfy the missing feature.
 
+F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
+string construction. Fields, conversions, and dynamic specs run in Python 3.14
+order: an explicit `!s`/`!r`/`!a` conversion runs before spec expressions, while
+default formatting observes the captured object's state after those expressions.
+Debug fields, nested f-strings, canonical `format`/`repr`/`ascii` aliases,
+integer/boolean/string/binary64 formatting, and supported container display work
+in all integer modes. Nonempty specs for containers raise `TypeError`.
+Source-defined `__format__`, `__str__`, and `__repr__` methods, complex formatting,
+and `str.format`/`str.format_map` remain positioned diagnostics. Unicode format
+widths and fills follow the selected string mode; Unicode data is included and
+attributed only when its helpers remain reachable.
+
 Fixed-name imports now compile supported user modules, pure-Python packages and
 bundled module sources to separate typed namespaces in the same Rust file.
 Original AST, symbol-table, scope and source positions remain attached to each

@@ -685,6 +685,9 @@ class Model:
         validate(cell,node,self.integer,field_value=field_value,model=self)
 
     def expression(self, plan, node, environment):
+        if isinstance(node,ast.JoinedStr):
+            from .native_formatting import analyze_joined
+            return analyze_joined(self,plan,node,environment)
         mapped=self.mappings.analyze_expression(plan,node,environment)
         if mapped is not None:return mapped
         if isinstance(node,ast.GeneratorExp):return self.generators.analyze(plan,node,environment)
@@ -1586,6 +1589,9 @@ class Emitter:
 
     def expression(self, node):
         wanted = self.kind(node)
+        if isinstance(node,ast.JoinedStr):
+            from .native_formatting import emit_joined
+            return emit_joined(self,node)
         if isinstance(node,ast.GeneratorExp):return self.model.generators.construct(self,node)
         if isinstance(node,ast.Lambda):return self.model.lambda_cells.emit_value(self,node)
         if isinstance(node,ast.ListComp):
@@ -2521,7 +2527,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         pieces.extend([bigint_helpers,_named_helpers(_INPUT_HELPERS,{"native_space"}),
                        "fn native_parse_integer(value:&str)->Result<Int,String>{Int::parse(value,10)}",
                        "fn native_parse_bytes_integer(value:&[u8])->Result<Int,String>{Int::parse_ascii(value,10)}"])
-        if any(has_float_payload(shape(value))for value in model.records.values()):
+        if getattr(model,"formatting_required",False)or any(has_float_payload(shape(value))for value in model.records.values()):
             from .native_scalar import SCALAR_HELPERS
             pieces.extend([_named_helpers(SCALAR_HELPERS,{"native_float_text"}|({"native_float_divmod"}if getattr(model,"divmod_float_required",False)else set())),
                            "impl ClassDisplay for f64 {fn class_str(&self)->String{native_float_text(*self)}}"])
@@ -2542,6 +2548,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(variadic_runtime(model))
     from .native_class_materialization import empty_runtime
     pieces.append(empty_runtime(model,empty_required))
+    from .native_formatting import runtime as format_runtime
+    pieces.append(format_runtime(model))
     from .native_class_splits import runtime as split_runtime
     pieces.append(split_runtime(model))
     from .native_class_text_ops import runtime as text_operation_runtime
@@ -2562,7 +2570,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     from .native_text_policy import apply_text_policy
     result=apply_text_policy(result,string_mode)
     from .native_cached_text import apply_cached_text
-    result=apply_cached_text(result,string_mode)
+    result=apply_cached_text(result,string_mode,class_repr=model.string_repr_required)
     if prune_output:
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)

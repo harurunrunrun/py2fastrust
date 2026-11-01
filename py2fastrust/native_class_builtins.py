@@ -6,7 +6,7 @@ and the adapter never traverses/evaluates argument ASTs a second time.
 import ast
 from .references import BuiltinIdentity
 
-SUPPORTED=frozenset({"divmod","input","print","int","str","bool","float","len","abs","id","globals","isinstance",
+SUPPORTED=frozenset({"format","repr","ascii","divmod","input","print","int","str","bool","float","len","abs","id","globals","isinstance",
                      "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","next","any","all","pow","sorted","dict","set"})
 
 
@@ -15,6 +15,7 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name in {"format","repr","ascii"}:return cell("str")
     if name=='divmod':
         from .native_class_divmod import analyze as analyze_divmod
         return analyze_divmod(model,plan,node,arguments,keywords,factory=cell)
@@ -123,6 +124,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
 def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_classes import Expression
     from .native_unions import project,union_kind
+    if identity.name in {"format","repr","ascii"}:
+        from .native_formatting import emit_builtin
+        return emit_builtin(emitter,node,identity.name,arguments,keywords,wanted)
     if identity.name in {'min','max'}:
         from .native_class_extrema import emit as emit_extrema
         return emit_extrema(emitter,node,identity.name,arguments,keywords,wanted)

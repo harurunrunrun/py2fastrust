@@ -10,7 +10,7 @@ import re
 from .rust_pruning import _lex, _Unsupported
 
 _NAMES=frozenset({"ZEROES","RANGES","TEXT_PRINTABLE","NATIVE_TUPLE_PRINTABLE",
-                  "NATIVE_FIXED_INT_ZEROES","NATIVE_FIXED_INT_SPACE"})
+                  "NATIVE_FIXED_INT_ZEROES","NATIVE_FIXED_INT_SPACE","NATIVE_FORMAT_ZEROES"})
 _NUMBER=re.compile(r"(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9][0-9_]*)(?:u32)?\Z")
 
 
