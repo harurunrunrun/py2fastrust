@@ -473,7 +473,9 @@ def needs_linking(program,*,integer="i64"):
     # Builtin exports are snapshots of the same canonical namespace as its
     # module-object imports; source modules retain their own global shadows.
     builtin_namespace=any(module.name=='builtins'and module.origin=='builtin'for module in program.modules)
-    return requires_namespaces(program)or needs_linked_members(program,integer=integer)or builtin_namespace or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
+    native_adapters=native_adapter_module_names(program)
+    reached_with=any(isinstance(node,ast.With)for unit in program.units if unit.name not in native_adapters for node in ast.walk(unit.tree))
+    return reached_with or requires_namespaces(program)or needs_linked_members(program,integer=integer)or builtin_namespace or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
                for module in program.modules)
 
 

@@ -274,6 +274,7 @@ class ExpandedCalls:
             if name in supplied:candidates[name].append(supplied[name])
             elif name in defaults:candidates[name].append(defaults[name])
         for name, values in candidates.items():
+            if name in getattr(target,"erased_context_parameters",()):continue
             if name == signature.variadic_positional:
                 from .native_variadic import pack_analysis
                 self._contribute(target.arguments[name], pack_analysis(self.model, target, values, node), node)
@@ -466,6 +467,8 @@ class ExpandedCalls:
         arguments = []
         for index, parameter in enumerate(signature.positional):
             kind = shape(target.arguments[parameter])
+            if getattr(kind,"_native_erased_argument",False):
+                arguments.append("()");continue
             if index < record.implicit:
                 value = Expression("class_selected_method.receiver.clone()", self.model.callable_cells.bound_methods.receiver_kind(record.method))
                 arguments.append(emitter.coerce(value, kind, node));continue
@@ -475,7 +478,9 @@ class ExpandedCalls:
             elif parameter in defaults:absent = emitter.coerce(defaults[parameter], kind, node)
             else:absent = 'unreachable!("validated expanded positional argument is absent")'
             arguments.append(f"if {count}>{index}{{{present}}}else{{{absent}}}")
-        if signature.variadic_positional:
+        if signature.variadic_positional and signature.variadic_positional in getattr(target,"erased_context_parameters",()):
+            arguments.append("()")
+        elif signature.variadic_positional:
             kind = shape(target.variadic_element)
             value = emitter.fresh()
             converted = narrow_binding(emitter, node, element, kind, value).code

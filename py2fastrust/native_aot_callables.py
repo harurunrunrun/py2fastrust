@@ -506,7 +506,7 @@ def emit_call(emitter,node):
     return _Expression("{"+''.join(lines)+result.code+"}",wanted)
 
 
-def emit_values(emitter,node,site,callee,positional,keywords,wanted):
+def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_call_location=None):
     """Invoke a captured callable without replaying any source expression."""
     from .native import _Expression,_string
     from .native_classes import ClassUnsupported,shape
@@ -538,12 +538,12 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted):
                     invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
                     from .native_class_calls import call
                     from .native_source_returns import emit_result
-                    result=emit_result(emitter,node,target,call(emitter,invocation,target,node),wanted)
+                    result=emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)
                 context=provider.call_context_setup(emitter,target)
                 if context:result="{"+context+result+"}"
                 arms.append(provider.call_pattern(definition)+"=>"+result)
             for target in kind.methods:
-                result=provider.bound_methods.emit(emitter,node,target,site,positional,keywords,wanted,error)
+                result=provider.bound_methods.emit(emitter,node,target,site,positional,keywords,wanted,error,source_call_location=source_call_location)
                 arms.append(provider.bound_methods.call_pattern(target)+"=>"+result)
             from .native_builtin_callables import emit as emit_builtin
             for identity in kind.builtins:

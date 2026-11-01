@@ -1291,3 +1291,22 @@ Arbitrary decorator replacement, stacked descriptor composition, raw class-body
 `classmethod` descriptor values, classmethod constructor overrides and mutable
 method-slot replacement remain positioned conversion errors. Inheritance,
 metaclass and descriptor metadata support is not implied by this subset.
+
+Source context managers with ordinary `__enter__` and `__exit__` methods use
+retained type-level method lookup and typed cleanup regions. Normal exits,
+exceptions, `return`, `break` and `continue` run cleanup once; nested managers
+unwind in reverse order. A truthy cleanup result suppresses body errors, and
+cleanup errors preserve the preceding exception chain and original source
+frames. `as` target binding occurs inside the protected region, after entry.
+
+The initial exception-argument adapter requires each received `__exit__`
+exception parameter to be unobserved. Official binding ownership checks include
+child closures, default expressions and lazy annotation captures. Frame
+introspection is rejected. These arguments are erased compiler values, not
+fabricated Python `None` metadata. Actual exception type/value/traceback objects,
+nonfunction special-method descriptors, finite manager-type alternatives and
+arbitrary builtin context managers remain explicit conversion boundaries.
+
+The richer error context layout and rendering helpers are selected only for a
+reached native `with` region. Programs without such a region retain their
+ordinary error layout and generated source bytes.

@@ -286,6 +286,8 @@ class Model:
         self.deques=Deques(self)
         from .native_class_mappings import Mappings
         self.mappings=Mappings(self)
+        from .native_context_managers import ContextManagers
+        self.context_managers=ContextManagers(self)
         self.discover()
         from .native_lambda_cells import LambdaCells
         self.lambda_cells=LambdaCells(self)
@@ -572,7 +574,7 @@ class Model:
                 continue
             if registry is not None and registry.class_statement(member):continue
             if not isinstance(member,ast.FunctionDef):raise ClassUnsupported(member)
-            if member.name.startswith("__")and member.name.endswith("__")and member.name!="__init__":
+            if member.name.startswith("__")and member.name.endswith("__")and member.name not in {"__init__","__enter__","__exit__"}:
                 protocol="truth-value"if member.name in {"__bool__","__len__"}else"special-method"
                 raise ClassUnsupported(member,f"class {node.name!r} defines {member.name}; native {protocol} protocol dispatch for this override is not implemented",operation=f"special method {node.name+'.'+member.name!r}",proof=f"Python {member.name} protocol dispatch")
             name=self.unit.name_for(member)if self.unit is not None else mangle(member.name,node.name)
@@ -964,6 +966,7 @@ class Model:
             bound={}if callee.class_body is not None else callee.signature.bind(argument_cells,keyword_cells,callee.default_cells,pack_positional=lambda members:pack_analysis(self,callee,members,node)).by_name
         except CallBindingError:raise ClassUnsupported(node)from None
         for name, value in bound.items():
+            if name in getattr(callee,"erased_context_parameters",()):continue
             if not self.namespace.contribute(callee.arguments[name],value,node,force=True):
                 self.contribute(callee.arguments[name], value, node)
         self.namespace.call_effects(caller,callee,environment)
@@ -1331,6 +1334,8 @@ class Model:
                     metadata_target(self,plan,target,environment)
                     if not analyze(self,plan,target,environment):
                         if not self.lexical.delete(plan,target,environment):self.namespace.delete(plan,target,environment)
+            elif isinstance(node,ast.With):
+                environment=self.context_managers.analyze(plan,node,environment)
             elif isinstance(node,ast.If):
                 self.condition(plan,node.test,environment)
                 environment = self.join(self.block(plan,node.body,environment),self.block(plan,node.orelse,environment),node)
@@ -1435,6 +1440,7 @@ class Emitter:
 
     def rust_leaf(self,value,recurse):
         if getattr(value,'_native_cmp_key',False):return 'Rc<NativeCmpKey_'+str(value.record.index)+'>'
+        if getattr(value,"_native_erased_argument",False):return "()"
         if getattr(value,'_native_class_deque',False):return self.model.deques.rust_type(self,value)
         if getattr(value,'_native_mapping_view',False):return self.model.mappings.views.rust_type(value)
         if getattr(value,"_native_class_mapping",False):return self.model.mappings.rust_type(value)
@@ -1485,6 +1491,7 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def coerce(self, value, kind, node):
+        if getattr(kind,"_native_erased_argument",False):return "{let _="+value.code+";()}"
         if value.kind == kind:return value.code
         if isinstance(value.kind,EmptyType):return f"native_empty({value.code})"
         if getattr(value.kind,"_native_function_reference",False)and getattr(kind,"_native_function_reference",False):
@@ -2219,6 +2226,10 @@ class Emitter:
         return "\n".join(self.statement(value)for value in values)
 
     def statement(self, node):
+        from .native_context_managers import control_statement
+        control=control_statement(self,node)
+        if control is not None:return control
+        if isinstance(node,ast.With):return self.model.context_managers.emit(self,node)
         if isinstance(node,(ast.Import,ast.ImportFrom)):
             imported=self.emit_import(node)
             if imported is not None:return imported
@@ -2626,6 +2637,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}",{_string(filename)},line,function);}}\n'
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);std::process::exit(1);}}}}')
     result=model.finish_runtime(model.generators.runtime("\n".join(pieces)))
+    from .native_context_managers import runtime as context_runtime
+    result=context_runtime(result,model)
     from .native_text_policy import apply_text_policy
     result=apply_text_policy(result,string_mode)
     from .native_cached_text import apply_cached_text

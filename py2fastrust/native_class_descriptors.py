@@ -76,14 +76,14 @@ def emit_member(registry,emitter,node,member,class_reference,function):
     return Expression(code,AotFunctionType.from_targets((target,)))
 
 
-def emit_bound(provider,emitter,node,target,site,positional,keywords,wanted,error):
+def emit_bound(provider,emitter,node,target,site,positional,keywords,wanted,error,*,source_call_location=None):
     from .native_classes import Expression
     from .native_aot_callables import AotFunctionType,CallSite,emit_values
     if target in site.errors:return error(site.errors[target])
     callee=Expression('class_selected_method.function.clone()',AotFunctionType((target.definition,)))
     receiver=Expression('class_selected_method.receiver.clone()',target._native_receiver_kind)
     nested=CallSite(provider.model.cell_for_kind(callee.kind),site.result)
-    return emit_values(emitter,node,nested,callee,[receiver]+positional,keywords,wanted).code
+    return emit_values(emitter,node,nested,callee,[receiver]+positional,keywords,wanted,source_call_location=source_call_location).code
 
 
 def runtime_bound(target):

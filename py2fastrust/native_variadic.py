@@ -20,6 +20,8 @@ def initialize(plan):
 
 def pack_analysis(model, callee, members, node):
     from .native_classes import Cell
+    if callee.signature.variadic_positional in getattr(callee,"erased_context_parameters",()):
+        return callee.arguments[callee.signature.variadic_positional]
     for value in members:
         model.contribute(callee.variadic_element, value, node)
     return Cell("tuple_sequence", (callee.variadic_element,))
@@ -35,6 +37,8 @@ def default_empty(model):
 
 def pack_emission(emitter, callee, members, node):
     from .native_classes import Expression, shape
+    if callee.signature.variadic_positional in getattr(callee,"erased_context_parameters",()):
+        return Expression("()",shape(callee.arguments[callee.signature.variadic_positional]))
     kind = TupleSequenceType(shape(callee.variadic_element))
     values = [emitter.coerce(value, kind.element, node) for value in members]
     return Expression("NativeTuple::from_vec(vec![" + ",".join(values) + "])", kind)

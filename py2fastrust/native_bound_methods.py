@@ -83,10 +83,10 @@ class BoundMethods:
         result=self.model.bind_captured(plan,node,method,[self.model.cell_for_kind(self.receiver_kind(target))]+positional,keywords,environment)
         if not self.model.namespace.contribute(site.result,result,node,force=True):self.model.contribute(site.result,result,node)
 
-    def emit(self,emitter,node,target,site,positional,keywords,wanted,error):
+    def emit(self,emitter,node,target,site,positional,keywords,wanted,error,*,source_call_location=None):
         from .native_classes import Expression,ClassUnsupported,InstanceType,shape
         from .native_class_descriptors import ClassMethodTarget,emit_bound
-        if isinstance(target,ClassMethodTarget):return emit_bound(self.provider,emitter,node,target,site,positional,keywords,wanted,error)
+        if isinstance(target,ClassMethodTarget):return emit_bound(self.provider,emitter,node,target,site,positional,keywords,wanted,error,source_call_location=source_call_location)
         if target in site.errors:return error(site.errors[target])
         method=self.provider.plans[target.definition]
         receiver=Expression('class_selected_method.receiver.clone()',InstanceType(target.owner))
@@ -98,7 +98,7 @@ class BoundMethods:
         values=[emitter.coerce(value,shape(method.arguments[name]),node)for name,value in zip(binding.parameters,binding.values)]
         invocation=emitter.function_name(method)+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'
         from .native_class_calls import call
-        result=emitter.coerce(Expression(call(emitter,invocation,method,node),shape(method.result)),wanted,node)
+        result=emitter.coerce(Expression(call(emitter,invocation,method,source_call_location or node),shape(method.result)),wanted,node)
         if self.linked:result='{'+self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')+result+'}'
         return result
 
