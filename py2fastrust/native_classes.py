@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from .native import _Expression, _Unsupported, _direct_diagnostic, _string
 from .call_semantics import FunctionSignature, CallBindingError, normalize_call
 from .references import CORE_BUILTINS, BuiltinIdentity, UnknownReference, resolve_static_callable
-from .native_types import (TupleType, ListType, MaybeType, NullableType, UnionType,EmptyType,
+from .native_types import (TupleType, TupleSequenceType, ListType, MaybeType, NullableType, UnionType,EmptyType,
                            alternatives, union_type, join_types, immutable, render_type,
                            tuple_code, union_declaration)
 from .native_types import reference_cloneable
@@ -51,6 +51,7 @@ def domain(kind):
     if getattr(kind,"_native_namespace_view",False):return "globals_dict"
     if getattr(kind,"_native_class_iterator",False):return "iterator"
     if isinstance(kind, InstanceType):return "object"
+    if isinstance(kind, TupleSequenceType):return "tuple_sequence"
     if isinstance(kind, TupleType):return "tuple"
     if isinstance(kind, ListType):return "list"
     if isinstance(kind, StreamType):return kind.name
@@ -64,7 +65,7 @@ def has_float_payload(kind):
     if isinstance(kind,(NullableType,MaybeType)):return has_float_payload(kind.value)
     if isinstance(kind,UnionType):return any(has_float_payload(value)for value in kind.alternatives)
     if isinstance(kind,TupleType):return any(has_float_payload(value)for value in kind.fields)
-    if isinstance(kind,ListType):return has_float_payload(kind.element)
+    if isinstance(kind,(ListType,TupleSequenceType)):return has_float_payload(kind.element)
     return False
 
 
@@ -90,6 +91,7 @@ def shape(cell):
     cell = cell.root()
     if cell.tag == "list":return ListType(shape(cell.args[0]))
     if cell.tag == "tuple":return TupleType(tuple(shape(value)for value in cell.args))
+    if cell.tag == "tuple_sequence":return TupleSequenceType(shape(cell.args[0]))
     if cell.tag == "object":return InstanceType(cell.args[0])
     if cell.tag=="function":
         from .native_aot_callables import AotFunctionType
@@ -150,7 +152,7 @@ def merge(left, right, node,*,allow_unresolved=False):
         left.tag,left.args="union",tuple(candidates)
         right.parent=left
         return left
-    if left.tag in {"list", "tuple", "enumerate", "map_int"}:
+    if left.tag in {"list", "tuple", "tuple_sequence", "enumerate", "map_int"}:
         if len(left.args) != len(right.args):
             raise ClassUnsupported(node)
         for a, b in zip(left.args, right.args):
@@ -209,6 +211,10 @@ class FunctionPlan:
     definition_key: object = None
 
     @property
+    def runtime_parameters(self):
+        return self.signature.parameters if self.signature is not None else tuple(self.parameters+self.keyword_only)
+
+    @property
     def scope(self):
         return self.node.name if isinstance(self.node,(ast.FunctionDef,ast.ClassDef))else "<lambda>"if isinstance(self.node,ast.Lambda)else "<module>"
 
@@ -229,7 +235,7 @@ class Environment(dict):
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
-    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "range","globals_dict"}
+    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -246,6 +252,7 @@ class Model:
         # immutable values retain independent types, just as in ordinary scopes.
         self.value_constraints = Solver(self.semantic_graph(unit) if unit is not None else SimpleNamespace())
         self.member_allocations = {}
+        self.value_variables = {}
         self.constructors = {}
         self.sequence_calls = {}
         self.condition_calls = set()
@@ -367,7 +374,7 @@ class Model:
         if tag == "list":
             site=self.unit.ordinal(node) if self.unit is not None else id(node)
             allocation=self.value_constraints.allocation(site,"list",("class",plan.index)if identity is None else("class",plan.index,identity))
-            self.member_allocations[id(result.root().args[0])]=allocation
+            self.member_allocations[result.root().args[0]]=allocation
             from .native_class_allocation_facts import register
             register(self,allocation,result.root().args[0])
         return result
@@ -390,6 +397,7 @@ class Model:
             return Cell("union",tuple(Model.cell_for_kind(choice)for choice in kind.alternatives))
         if isinstance(kind,TupleType):
             return Cell("tuple",tuple(Model.cell_for_kind(child)for child in kind.fields))
+        if isinstance(kind,TupleSequenceType):return Cell("tuple_sequence",(Model.cell_for_kind(kind.element),))
         return Cell(kind)
 
     def contribute(self,destination,source,node):
@@ -399,9 +407,13 @@ class Model:
         if source.tag is None:return destination
         kind=shape(source)
         if immutable(kind):
-            allocation=self.member_allocations.get(id(destination))
-            variable=(Variable(allocation.site,"element") if allocation is not None else
-                      Variable(("class_value",id(destination)),"value"))
+            allocation=self.member_allocations.get(destination)
+            if allocation is not None:variable=Variable(allocation.site,"element")
+            else:
+                variable=self.value_variables.get(destination)
+                if variable is None:
+                    variable=Variable(("class_value",len(self.value_variables)),"value")
+                    self.value_variables[destination]=variable
             previous=shape(destination)
             if previous is not None and immutable(previous):
                 self.value_constraints.constrain(variable,constraint_value(previous))
@@ -429,8 +441,8 @@ class Model:
 
     def function(self, node, owner=None):
         name=getattr(node,"name","<lambda>")
-        if node.args.vararg or node.args.kwarg:
-            raise ClassUnsupported(node,"variadic method/function arguments need tuple/dictionary packing and native argument-frame binding; that storage is not implemented on the class path",operation=f"signature of function {name!r}")
+        if node.args.kwarg:
+            raise ClassUnsupported(node,"variadic keyword arguments need dictionary packing and native argument-frame binding; that keyword storage is not implemented on the class path",operation=f"signature of function {name!r}")
         if getattr(node,"decorator_list",()):
             raise ClassUnsupported(node.decorator_list[0],"decorator calls can replace the method/function object at definition time; that native decorated-callable capture is not implemented on the class path",operation=f"decorator of function {name!r}")
         if getattr(node,"type_params",()):
@@ -446,10 +458,12 @@ class Model:
             locals_at_definition.update(self.resolved_name(plan,value)for value in arguments)
             signature=FunctionSignature.from_ast(node,name_for=lambda arg:self.resolved_name(plan,arg),local_names=locals_at_definition)
         plan.signature=signature
+        from .native_variadic import initialize
+        initialize(plan)
         plan.parameters=list(signature.positional)
         plan.positional_only=set(signature.positional_only)
         plan.keyword_only=list(signature.keyword_only)
-        if owner and not plan.parameters:raise ClassUnsupported(node)
+        if owner and not plan.parameters and (not signature.variadic_positional or name=="__init__"):raise ClassUnsupported(node,"this method needs an explicit positional receiver; constructor-only variadic receiver packing is not implemented",operation=f"signature of method {name!r}")
         for name in signature.parameters:plan.arguments[name]=Cell()
         plan.declared=set(signature.local_names)
         defaults=[(slot.name,slot.expression)for slot in signature.defaults]
@@ -469,7 +483,7 @@ class Model:
             if isinstance(value,ast.UnaryOp):
                 captured=-captured if isinstance(value.op,ast.USub)else +captured
             plan.default_literals[name]=captured
-        if owner:
+        if owner and plan.parameters:
             merge(plan.arguments[plan.parameters[0]], Cell("object", (self.class_key(owner),)), node)
         from .native_lexical_cells import own_return_values
         if not any(value is not None and not(isinstance(value,ast.Constant)and value.value is None)
@@ -592,6 +606,8 @@ class Model:
                         and binding.name in self.global_symbols and not self.namespace.eligible(binding.name)):
                     raise ClassUnsupported(nodes[binding.node],"rebinding or deleting this imported reference needs namespace-owned module/callable object storage; the existing static module adapter supports reads and member calls but cannot preserve this binding's mutation",proof="stored imported-reference binding identity and lifetime")
         self.infer_until_stable()
+        from .native_variadic import default_empty
+        default_empty(self)
         self.namespace.default_uninhabited()
         self.lexical.default_uninhabited()
         for owner in self.classes.values():
@@ -727,7 +743,7 @@ class Model:
                 return self.cell(plan,node)
             if index.tag not in {None,"int","bool","int_bool"}:
                 raise ClassUnsupported(node.slice)
-            if owner.tag == "list":
+            if owner.tag in {"list","tuple_sequence"}:
                 return self.remember(plan, node, owner.args[0])
             if owner.tag == "tuple" and isinstance(node.slice, ast.Constant) and type(node.slice.value) is int:
                 if not -len(owner.args) <= node.slice.value < len(owner.args):
@@ -889,7 +905,8 @@ class Model:
         """Shared binding for explicit calls and deferred produced arguments."""
         self.activate_frame(caller,node,callee,environment)
         try:
-            bound={}if callee.class_body is not None else callee.signature.bind(argument_cells,keyword_cells,callee.default_cells).by_name
+            from .native_variadic import pack_analysis
+            bound={}if callee.class_body is not None else callee.signature.bind(argument_cells,keyword_cells,callee.default_cells,pack_positional=lambda members:pack_analysis(self,callee,members,node)).by_name
         except CallBindingError:raise ClassUnsupported(node)from None
         for name, value in bound.items():
             if not self.namespace.contribute(callee.arguments[name],value,node,force=True):
@@ -1058,7 +1075,7 @@ class Model:
     def item(self, value, node):
         value = value.root()
         if getattr(value.tag,"_native_class_iterator",False):return self.iterators.item(value.tag)
-        if value.tag == "list":
+        if value.tag in {"list","tuple_sequence"}:
             return value.args[0]
         if value.tag == "tuple":
             result = Cell()
@@ -1440,7 +1457,7 @@ class Emitter:
             return self.numeric.truth(self.scalar(value))
         if tag in {"function","iterator"}:return "true"
         if tag=="globals_dict":return "true"
-        if tag in {"str","bytes"}:
+        if tag in {"str","bytes","tuple_sequence"}:
             return f"!({value.code}).is_empty()"
         if tag == "float":
             return f"({value.code})!=0.0"
@@ -1464,6 +1481,9 @@ class Emitter:
         if isinstance(value.kind,EmptyType):return f"native_empty::<String>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
             lambda kind,code:self.show(Expression(code,kind),node,representation))
+        if isinstance(value.kind,TupleSequenceType):
+            from .native_variadic import show
+            return show(self,value,node)
         if isinstance(value.kind,ListType):
             item=self.fresh()
             rendered=self.show(Expression(f"(*{item}).clone()",value.kind.element),node,True)
@@ -1562,6 +1582,9 @@ class Emitter:
             tag = domain(owner.kind)
             if tag == "list":
                 code = self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node)
+            elif tag == "tuple_sequence":
+                offset=self.at(f'class_index(&({self.number(index)}),{owner.code}.len()).map_err(|_|"IndexError: tuple index out of range".to_owned())',node)
+                code=f"{owner.code}.as_slice()[{offset}].clone()"
             elif tag == "tuple":
                 position = node.slice.value % (len(owner.kind.fields))
                 code = f"{owner.code}.{position}.clone()"
@@ -1662,6 +1685,9 @@ class Emitter:
         from .native_globals_view import comparison as globals_comparison
         observed=globals_comparison(self,operator,left,right,node)
         if observed is not None:return observed
+        from .native_variadic import comparison as tuple_sequence_comparison
+        sequence_result=tuple_sequence_comparison(self,operator,left,right,node)
+        if sequence_result is not None:return sequence_result
         a,b = domain(left.kind),domain(right.kind)
         if isinstance(operator,(ast.Is,ast.IsNot)):
             if a==b=="function":code=self.model.callable_cells.identity(left.code,right.code)
@@ -1748,8 +1774,9 @@ class Emitter:
                 setup.append(before)
                 return value
             try:
-                call_plan=signature.plan(call_arguments,implicit_count=len(arguments))
-                bound=call_plan.capture(argument_value,implicit=arguments,defaults=default_emitter.captured_defaults(callee))
+                from .native_variadic import pack_emission
+                call_plan=signature.plan(call_arguments,implicit_count=len(arguments),allow_variadic=True)
+                bound=call_plan.capture(argument_value,implicit=arguments,defaults=default_emitter.captured_defaults(callee),pack_positional=lambda members:pack_emission(self,callee,members,node))
             except CallBindingError:raise ClassUnsupported(node)from None
             values=[self.coerce(value,shape(callee.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
@@ -1928,6 +1955,9 @@ class Emitter:
             if domain(source.kind)=="tuple":
                 pieces = [self.assign(node,Expression(f"{source.code}.{i}.clone()",kind))
                           for i,(node,kind)in enumerate(zip(target.elts,source.kind.fields))]
+            elif domain(source.kind)=="tuple_sequence":
+                setup+=self.at(f'class_tuple_unpack_length({source.code}.len(),{len(target.elts)})',target)+";"
+                pieces=[self.assign(node,Expression(f"{source.code}.as_slice()[{i}].clone()",source.kind.element))for i,node in enumerate(target.elts)]
             elif domain(source.kind)=="list":
                 unpack = self.fresh()
                 setup += f"let {unpack}={self.at(f'class_unpack(&{source.code},{len(target.elts)})',target)};"
@@ -2128,6 +2158,9 @@ class Emitter:
             advance=self.at(f"{index}.checked_add(1).ok_or_else(||\"OverflowError: list iterator index overflow\".to_owned())",node)
             prefix=f"'{label}:loop{{let {current}={{{source.code}.borrow().get({index}).cloned()}};let Some({current})={current} else{{break;}};{index}={advance};"
             item=Expression(current,source.kind.element)
+        elif domain(source.kind)=="tuple_sequence":
+            prefix=f"'{label}:for {current} in {source.code}.iter().cloned(){{"
+            item=Expression(current,source.kind.element)
         elif domain(source.kind)=="range":
             iterator=self.fresh();setup+=f"let mut {iterator}={source.code}.iter();"
             prefix=f"'{label}:while let Some({current})={iterator}.next(){{"
@@ -2165,7 +2198,7 @@ class Emitter:
             body="return Ok("+self.coerce(value,shape(self.plan.result),self.plan.node.body)+");"
         else:body=self.statements(self.plan.node.body)
         parameters=[];initial=[]
-        for i,name in enumerate(self.plan.parameters+self.plan.keyword_only):
+        for i,name in enumerate(self.plan.runtime_parameters):
             kind=shape(self.plan.arguments[name]);argument=f"class_argument_{i}"
             parameters.append(f"{argument}:{self.rust_type(kind)}")
             captured=self.model.lexical.environments.get(self.model.lexical.scope(self.plan))
@@ -2245,7 +2278,7 @@ def _class_layouts(model,emitter):
         constructor=owner.methods.get("__init__")
         params=[];args=[]
         if constructor:
-            for i,name in enumerate(constructor.parameters[1:]+constructor.keyword_only):
+            for i,name in enumerate(constructor.signature.parameters[1:]):
                 params.append(f"argument_{i}:{emitter.rust_type(shape(constructor.arguments[name]))}")
                 args.append(f"argument_{i}")
         if extra_parameter:params.insert(0,extra_parameter)
@@ -2305,7 +2338,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
             elif isinstance(kind,(NullableType,MaybeType)):add_kind(kind.value)
             elif isinstance(kind,TupleType):
                 for field in kind.fields:add_kind(field)
-            elif isinstance(kind,ListType):add_kind(kind.element)
+            elif isinstance(kind,(ListType,TupleSequenceType)):add_kind(kind.element)
         for value in model.records.values():add_kind(shape(value))
         for _,kind in model.namespace.fields():add_kind(kind)
         for _,kind in model.namespace.default_fields():add_kind(kind)
@@ -2357,6 +2390,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     class_runtime=global_runtime(call_runtime(runtime.joinpath("native_classes.rs").read_text(encoding="utf-8"),model),model,emitters[0])
     if string_mode=="unicode" and not model.string_repr_required:
         class_runtime=class_runtime.replace("    fn class_repr(&self)->String{text_repr_str(self)}\n", "")
+    from .native_variadic import runtime as variadic_runtime
+    pieces.append(variadic_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),class_runtime,layouts,*bodies])
     entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if synchronous(model,model.module)

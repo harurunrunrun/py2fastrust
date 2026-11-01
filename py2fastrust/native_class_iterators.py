@@ -102,7 +102,7 @@ class Iterators:
             if choice.tag=="union":
                 choices.extend(choice.args)
                 continue
-            if choice.tag in {"list","tuple","range","str","bytes"}:
+            if choice.tag in {"list","tuple","tuple_sequence","range","str","bytes"}:
                 item=self.model.item(choice,node)
                 if choice.tag=="tuple"and not choice.args:
                     # No Python value inhabits the immutable empty tuple.
@@ -227,7 +227,7 @@ class Iterators:
             code=project(source.kind,source.code,lambda branch,code:self.construct(emitter,node,Expression(f"({code}).clone()",branch),kind=kind).code)
             return Expression(code,kind)
         if tag=="range":payload=source.code+".iter()"
-        elif tag in {"list","tuple","str","bytes"}:payload="Some("+source.code+")"
+        elif tag in {"list","tuple","tuple_sequence","str","bytes"}:payload="Some("+source.code+")"
         else:
             from .native_class_builtins import _type_name
             name=_type_name(emitter,source,node)
@@ -304,6 +304,7 @@ class Iterators:
                 code=emitter.coerce(Expression(f"{state}.source.as_ref().unwrap().{index}.clone()",old),item_kind,node)
                 arms.append(str(index)+"=>Some("+code+")")
             current="match "+state+".index{"+",".join(arms+["_=>None"])+"}"
+        elif tag=="tuple_sequence":current=f"{state}.source.as_ref().and_then(|value|value.as_slice().get({state}.index).cloned())"
         elif tag=="list":current=f"{{{state}.source.as_ref().and_then(|value|value.borrow().get({state}.index).cloned())}}"
         elif tag=="bytes":current=f"{state}.source.as_ref().and_then(|value|value.get({state}.index)).map(|value|class_from_usize(*value as usize))"
         elif tag=="str":
@@ -368,6 +369,8 @@ class Iterators:
         if tag=="range":current=source+".next()";advance="0"
         elif tag=="list":
             current=f"{source}.as_ref().and_then(|value|value.borrow().get({index}).cloned())";advance="1"
+        elif tag=="tuple_sequence":
+            current=f"{source}.as_ref().and_then(|value|value.as_slice().get({index}).cloned())";advance="1"
         elif tag=="bytes":
             current=f"{source}.as_ref().and_then(|value|value.get({index})).map(|value|class_from_usize(*value as usize))";advance="1"
         elif tag=="str":

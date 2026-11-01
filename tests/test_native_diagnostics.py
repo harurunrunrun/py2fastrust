@@ -33,7 +33,6 @@ class NativeDiagnosticTests(unittest.TestCase):
 
     def test_concrete_signature_default_and_closure_causes(self):
         sources=(
-            ('def f(*items):return sum(items)\nprint(f(1))\n',('signature','items','packing','tuple')),
             ('def f(**items):return 1\nprint(f(a=1))\n',('signature','items','packing','dictionary')),
         )
         for mode in ('i64','i128','bigint'):
@@ -122,12 +121,8 @@ class NativeDiagnosticTests(unittest.TestCase):
             source='def f(xs):\n '+statement+'\n return 0\nxs=[1]\nprint(f(xs))\n'
             self.positive(source)
 
-    def test_class_path_names_user_sort_key_invocation_boundary(self):
-        diagnostic=self.reject('class Item:pass\ndef score(x):return x\nxs=[2,1]\nxs.sort(key=score)\n')
-        self.assertEqual((diagnostic.line,diagnostic.column),(4,1))
-        self.assertIn("call 'xs.sort'",diagnostic.message)
-        self.assertIn('user key callable once per element',diagnostic.message)
-        self.assertIn('key callable capture and ordered once-per-element',diagnostic.message)
+    def test_class_path_accepts_implemented_user_sort_key(self):
+        self.positive('class Item:pass\ndef score(x):return x\nxs=[2,1]\nxs.sort(key=score)\n')
 
     def test_type_context_is_bounded_without_resolving_or_mutating_types(self):
         self.assertEqual(kind_name(TupleType(('int',)*30)),'tuple[int, int, int, int, int, int, ...]')
@@ -213,7 +208,7 @@ class NativeDiagnosticTests(unittest.TestCase):
 
     def test_cli_failure_contains_the_same_specific_reason_and_location(self):
         with tempfile.TemporaryDirectory(prefix='pytors-diagnostic-cli-')as directory:
-            source=Path(directory,'main.py');source.write_text('def f(*items):return sum(items)\nprint(f(1))\n')
+            source=Path(directory,'main.py');source.write_text('def f(**items):return 1\nprint(f(a=1))\n')
             target=Path(directory,'main.rs')
             command=[sys.executable,'-m','py2fastrust',str(source),'-o',str(target)]
             actual=subprocess.run(command,capture_output=True,text=True,timeout=10)

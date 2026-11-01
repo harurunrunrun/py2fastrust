@@ -353,7 +353,7 @@ class LexicalCells:
         if environment is None:return ''
         parent=''if not environment.parent else 'class_lexical_parent.clone()'
         code=f'let class_lexical_environment=std::rc::Rc::new({self.environment_type(scope)}::new({parent}));'
-        for index,name in enumerate(emitter.plan.parameters+emitter.plan.keyword_only):
+        for index,name in enumerate(emitter.plan.runtime_parameters):
             if name not in environment.fields:continue
             argument=Expression(f'class_argument_{index}',shape(emitter.plan.arguments[name]));slot=sorted(environment.fields).index(name)
             code+=f'class_lexical_environment.value_{slot}.replace(Some({emitter.coerce(argument,shape(environment.fields[name]),emitter.plan.node)}));'
@@ -398,7 +398,7 @@ class LexicalCells:
     def validate(self):
         """Reject unproved Rc cycles rather than retain every dead invocation."""
         from .native_classes import ClassUnsupported,InstanceType,shape
-        from .native_types import ListType,TupleType,NullableType,MaybeType,UnionType
+        from .native_types import ListType,TupleType,TupleSequenceType,NullableType,MaybeType,UnionType
         def targets(kind):
             if getattr(kind,'_native_class_iterator',False):yield('iterator',kind.index)
             elif getattr(kind,'_native_function_reference',False):
@@ -411,7 +411,7 @@ class LexicalCells:
                 for owned in getattr(kind,'_native_owned_kinds',()):yield from targets(owned)
             elif isinstance(kind,InstanceType):yield('object',kind.name)
             elif isinstance(kind,(NullableType,MaybeType)):yield from targets(kind.value)
-            elif isinstance(kind,ListType):yield from targets(kind.element)
+            elif isinstance(kind,(ListType,TupleSequenceType)):yield from targets(kind.element)
             elif isinstance(kind,TupleType):
                 for field in kind.fields:yield from targets(field)
             elif isinstance(kind,UnionType):

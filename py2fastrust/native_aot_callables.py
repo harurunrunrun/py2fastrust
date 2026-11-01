@@ -239,7 +239,12 @@ class CallableCells:
         function=node.func
         if isinstance(function,ast.Name):
             name=self.model.resolved_name(plan,function)
-            if self.stable_direct(plan,function,environment):return False
+            if self.stable_direct(plan,function,environment):
+                target=self.model.functions[name]
+                if target.signature.variadic_positional:
+                    try:target.signature.plan(normalize_call(node),allow_variadic=True)
+                    except CallBindingError:return True
+                return False
             if name in self.model.classes and self.model.module_owner(self.owner(plan,function)):return False
             current=environment.get(name)
             if current is not None and current.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
@@ -266,6 +271,9 @@ class CallableCells:
             owner=owner.root()
             if owner.tag=="object":
                 method=self.model.classes[owner.args[0]].methods.get(self.model.resolved_name(plan,function))
+                if method is not None and method.signature.variadic_positional:
+                    try:method.signature.plan(normalize_call(node),implicit_count=1,allow_variadic=True)
+                    except CallBindingError:return True
                 return method is None
             if owner.tag=="function":
                 from .native_classes import shape
@@ -411,7 +419,7 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
     for definition in sorted(targets):
         target=self.plans[definition]
         self.used.add(definition)
-        try:binding=target.signature.plan(arguments)
+        try:binding=target.signature.plan(arguments,allow_variadic=True)
         except CallBindingError as error:
             site.errors[definition]=binding_error(target,arguments,error)
             continue
@@ -438,7 +446,7 @@ def binding_error(target,arguments,error,*,implicit_count=0):
     supplied=set(signature.positional[:count])
     for argument in arguments.keywords:
         parameter=argument.name
-        if parameter not in signature.parameters or parameter in signature.positional_only:
+        if parameter not in signature.parameters or parameter in signature.positional_only or parameter==signature.variadic_positional:
             names=[name for name in signature.positional if name in signature.positional_only
                    and any(value.name==name for value in arguments.keywords)]
             if names:
@@ -446,7 +454,7 @@ def binding_error(target,arguments,error,*,implicit_count=0):
             return f"TypeError: {name} got an unexpected keyword argument {parameter!r}"
         if parameter in supplied:return f"TypeError: {name} got multiple values for argument {parameter!r}"
         supplied.add(parameter)
-    if count>maximum:
+    if count>maximum and not signature.variadic_positional:
         minimum=sum(parameter not in defaults for parameter in signature.positional)
         quantity=(str(maximum)if minimum==maximum else f"from {minimum} to {maximum}")
         noun="argument"if maximum==1 and minimum==maximum else"arguments"
@@ -519,7 +527,9 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted):
                     is_lambda=isinstance(target.node,ast.Lambda)
                     if is_lambda:default_emitter.lambda_instance_override="class_selected_environment"
                     if parent:default_emitter.lexical_environment_override="class_selected_environment.environment"if is_lambda else"class_selected_environment"
-                    try:bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target))
+                    try:
+                        from .native_variadic import pack_emission
+                        bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target),pack_positional=lambda members:pack_emission(emitter,target,members,node))
                     except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
                     values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
                     invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"

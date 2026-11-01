@@ -6,14 +6,14 @@ and clones element handles; it never copies the referenced inner containers.
 import ast
 
 from .native import _Expression
-from .native_types import ListType,TupleType,NullableType,UnionType,immutable,reference_cloneable
+from .native_types import ListType,TupleType,TupleSequenceType,NullableType,UnionType,immutable,reference_cloneable
 
 
 def shared_element(kind,*,allow_unresolved=False):
     """Kinds whose Clone implementation preserves Python element identity."""
     if kind is None:return allow_unresolved
     if reference_cloneable(kind):return True
-    if isinstance(kind,ListType):return shared_element(kind.element,allow_unresolved=allow_unresolved)
+    if isinstance(kind,(ListType,TupleSequenceType)):return shared_element(kind.element,allow_unresolved=allow_unresolved)
     if isinstance(kind,TupleType):return all(shared_element(field,allow_unresolved=allow_unresolved)for field in kind.fields)
     if isinstance(kind,NullableType):return shared_element(kind.value,allow_unresolved=allow_unresolved)
     if isinstance(kind,UnionType):return all(shared_element(value,allow_unresolved=allow_unresolved)for value in kind.alternatives)
@@ -60,7 +60,7 @@ def validate(cell,node,integer,*,field_value=False,seen=frozenset(),model=None):
     # the complete instance/list ownership graph before checking these fields;
     # nested handles are cloned, never recursively copied into their parents.
     seen=seen|{id(cell)}
-    if cell.tag=="list":
+    if cell.tag in {"list","tuple_sequence"}:
         validate(cell.args[0],node,integer,seen=seen,model=model)
     elif cell.tag in {"tuple","union"}:
         for value in cell.args:validate(value,node,integer,field_value=field_value,seen=seen,model=model)

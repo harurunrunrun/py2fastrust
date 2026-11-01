@@ -8,13 +8,13 @@ import ast
 import builtins
 
 from .native_constraints import Variable,Value,value as constraint_value
-from .native_types import (ListType,TupleType,UnionType,NullableType,alternatives,union_type,
+from .native_types import (ListType,TupleType,TupleSequenceType,UnionType,NullableType,alternatives,union_type,
                            immutable)
 
 
 def complete(kind):
     if kind is None:return False
-    if isinstance(kind,ListType):return complete(kind.element)
+    if isinstance(kind,(ListType,TupleSequenceType)):return complete(kind.element)
     if isinstance(kind,TupleType):return all(complete(field)for field in kind.fields)
     if isinstance(kind,NullableType):return complete(kind.value)
     if isinstance(kind,UnionType):return all(complete(choice)for choice in kind.alternatives)
@@ -88,7 +88,8 @@ class Namespace:
         key=plan.index,name
         kind=shape(value)
         if not complete(kind):return value
-        if not self.is_flow(value)and key not in self.local_schemas and not reference_cloneable(kind):return value
+        from .native_class_storage import shared_element
+        if not self.is_flow(value)and key not in self.local_schemas and not(reference_cloneable(kind)or isinstance(kind,TupleSequenceType)and shared_element(kind)):return value
         point=plan.index,id(node)
         result=self.local_values.setdefault(point,Cell())
         self.contribute(result,value,node,force=True)
@@ -190,6 +191,9 @@ class Namespace:
             lists=[value for value in sources if value.tag=="list"and shape(value)==kind]
             if not lists:return Cell("list",(self.representation(kind.element,[],node),))
             return Cell("list",lists[0].args)
+        if isinstance(kind,TupleSequenceType):
+            sequences=[value for value in sources if value.tag=="tuple_sequence"and shape(value)==kind]
+            return Cell("tuple_sequence",sequences[0].args if sequences else(self.representation(kind.element,[],node),))
         if isinstance(kind,TupleType):
             tuples=[value for value in sources if value.tag=="tuple"and shape(value)==kind]
             return Cell("tuple",tuple(self.representation(field,[value.args[index]for value in tuples],node)

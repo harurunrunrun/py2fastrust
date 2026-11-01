@@ -17,6 +17,7 @@ from py2fastrust.settings import LICENSES
 
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_NATIVE_PROGRAMS=(
+    ('def f(*items):return len(items)\nprint(f(1))\n',{}),
     ('class Item:pass\nn=3\nvalues=[[] for i in range(n)]\n',{}),
     ('from collections import deque\nvalues=deque([1])\n',{'integer':'bigint'}),
     ('values=[1]\nalias=values\n',{}),
@@ -158,7 +159,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_missing_native_feature_reasons_and_source_details_survive_transport(self):
         cases=(
-            ('def f(*items):return len(items)\nprint(f(1))\n',{},('signature','items','packing')),
+            ('def f(**items):return len(items)\nprint(f(a=1))\n',{},('signature','items','packing')),
             ('s=input()\nprint(s.replace("<img src=x>","x"))\n',{},("call 's.replace'",'receiver=str','<img src=x>')),
         )
         for source,options,tokens in cases:

@@ -73,6 +73,7 @@ class ValueSource:
     kind: str
     index: int | None = None
     name: str | None = None
+    items: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ class CallPlan:
     explicit: frozenset[str]
     defaults: frozenset[str]
 
-    def capture(self,evaluate,*,implicit=(),defaults=None):
+    def capture(self,evaluate,*,implicit=(),defaults=None,pack_positional=None):
         if len(implicit)!=self.implicit_count:
             raise CallBindingError("implicit receiver count does not match the call plan")
         values=tuple(evaluate(argument.expression,parameter)
@@ -96,6 +97,10 @@ class CallPlan:
         for source in self.sources:
             if source.kind=="argument":value=values[source.index]
             elif source.kind=="implicit":value=implicit[source.index]
+            elif source.kind=="variadic":
+                if pack_positional is None:raise CallBindingError("variadic positional tuple packing is not registered")
+                members=tuple(values[item.index]if item.kind=="argument"else implicit[item.index]for item in source.items)
+                value=pack_positional(members)
             else:
                 if source.name not in captured:raise CallBindingError(f"default was not captured at definition: {source.name}")
                 value=captured[source.name]
@@ -115,7 +120,7 @@ class FunctionSignature:
 
     @property
     def parameters(self):
-        return self.positional + self.keyword_only
+        return self.positional + ((self.variadic_positional,)if self.variadic_positional else()) + self.keyword_only
 
     @classmethod
     def from_ast(cls,node,*,name_for=None,local_names=(),ordinal=None,definition_scope=None):
@@ -158,31 +163,37 @@ class FunctionSignature:
                                  tuple(value for value in self.defaults if value.name!=name),self.local_names-{name},
                                  self.variadic_positional,self.variadic_keyword)
 
-    def plan(self,arguments,*,implicit_count=0):
+    def plan(self,arguments,*,implicit_count=0,allow_variadic=False):
         """Resolve argument positions once, before backend-specific evaluation."""
         positional=tuple(ValueSource("implicit",index)for index in range(implicit_count))
         positional+=tuple(ValueSource("argument",index)for index in range(len(arguments.positional)))
         keywords=tuple((argument.name,ValueSource("argument",len(arguments.positional)+index))
                        for index,argument in enumerate(arguments.keywords))
         defaults={slot.name:ValueSource("default",name=slot.name)for slot in self.defaults}
-        binding=self.bind(positional,keywords,defaults)
+        pack=(lambda items:ValueSource("variadic",items=items))if allow_variadic else None
+        binding=self.bind(positional,keywords,defaults,pack_positional=pack)
         parameters=[None]*len(arguments.evaluation_order)
         for name,source in zip(binding.parameters,binding.values):
             if source.kind=="argument":parameters[source.index]=name
+            elif source.kind=="variadic":
+                for item in source.items:
+                    if item.kind=="argument":parameters[item.index]=name
         return CallPlan(arguments,binding.parameters,binding.values,tuple(parameters),implicit_count,
                         binding.explicit,binding.defaults)
 
-    def bind(self, positional, keywords=(), defaults=None):
+    def bind(self, positional, keywords=(), defaults=None,*,pack_positional=None):
         """Bind opaque, already evaluated values; None is an ordinary value."""
-        if self.variadic_positional or self.variadic_keyword:
+        if self.variadic_keyword or self.variadic_positional and pack_positional is None:
             raise CallBindingError("variadic signatures require dynamic call lowering")
-        if len(positional)>len(self.positional):
+        if len(positional)>len(self.positional)and not self.variadic_positional:
             raise CallBindingError("too many positional arguments")
         bound=dict(zip(self.positional,positional))
+        if self.variadic_positional:
+            bound[self.variadic_positional]=pack_positional(tuple(positional[len(self.positional):]))
         for name,value in keywords:
             if name is None:raise CallBindingError("expanded keyword arguments require dynamic call lowering")
             if name in self.positional_only:raise CallBindingError(f"positional-only argument passed by keyword: {name}")
-            if name not in self.parameters:raise CallBindingError(f"unexpected keyword argument: {name}")
+            if name not in self.parameters or name==self.variadic_positional:raise CallBindingError(f"unexpected keyword argument: {name}")
             if name in bound:raise CallBindingError(f"multiple values for argument: {name}")
             bound[name]=value
         explicit=frozenset(bound)

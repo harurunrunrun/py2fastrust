@@ -420,7 +420,7 @@ share the canonical binding and typed captured-argument adapters; mutations of
 the `builtins` namespace also affect subsequent builtin fallback reads, while
 previously saved aliases keep their value. Repeated definition instances,
 callable objects, function
-metadata, dynamic argument expansion, emitted variadic functions and general
+metadata, dynamic argument expansion, variadic keyword packs and general
 dynamic namespaces still require implementation.
 
 Reading a supported ordinary instance method as a value captures its receiver
@@ -431,6 +431,15 @@ identity; copying a saved method preserves its identity. Immediate method calls
 keep their direct call path. Unbound class methods, descriptor overrides,
 `staticmethod`/`classmethod`, method metadata and cyclic receiver ownership still
 require implementation.
+
+Positional variadic functions and lambdas capture `*args` in shared immutable
+runtime tuples. The common signature binder handles positional-only, defaults,
+keyword-only parameters and captured bound receivers before entering compiled
+Rust functions. Empty packs use the canonical empty tuple; nonempty calls create
+fresh tuple objects and preserve mutable element aliases. Stored/returned packs,
+ordinary iteration, indexing, unpacking, display, equality and identity use the
+same typed representation. Runtime tuple slicing/ordering, variadic keyword packs
+and starred call expansion remain required work.
 
 Named nested functions have canonical lexical definition identities and typed
 per-invocation environments. Returned and sibling functions preserve captured

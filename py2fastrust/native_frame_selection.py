@@ -120,6 +120,9 @@ def select_frames(unit):
     from .native_frame_references import prove
     from .native_lexical_cells import requires_environments
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
+    nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
+    reached={definition for definitions in targets.values()for definition in definitions}
+    if any(unit.signature_for(nodes[definition]).variadic_positional for definition in reached):reasons+=("positional variadic argument packs",)
     references=prove(unit,analysis,targets)
     if requires_environments(unit,analysis,targets):reasons+=('lexical closure environments',)
     from .native_lambda_cells import requires_instances

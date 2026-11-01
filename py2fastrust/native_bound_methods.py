@@ -70,7 +70,7 @@ class BoundMethods:
         from .native_classes import Cell
         method=self.provider.plans[target.definition]
         self.used.add(target)
-        try:binding=method.signature.plan(arguments,implicit_count=1)
+        try:binding=method.signature.plan(arguments,implicit_count=1,allow_variadic=True)
         except CallBindingError as error:
             site.errors[target]=binding_error(method,arguments,error,implicit_count=1)
             return
@@ -84,7 +84,9 @@ class BoundMethods:
         method=self.provider.plans[target.definition]
         receiver=Expression('class_selected_method.receiver.clone()',InstanceType(target.owner))
         default_emitter=self.model.emitter(method)
-        try:binding=method.signature.bind([receiver]+positional,keywords,default_emitter.captured_defaults(method))
+        try:
+            from .native_variadic import pack_emission
+            binding=method.signature.bind([receiver]+positional,keywords,default_emitter.captured_defaults(method),pack_positional=lambda members:pack_emission(emitter,method,members,node))
         except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
         values=[emitter.coerce(value,shape(method.arguments[name]),node)for name,value in zip(binding.parameters,binding.values)]
         invocation=emitter.function_name(method)+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'

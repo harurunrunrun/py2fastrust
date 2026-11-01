@@ -140,6 +140,7 @@ def _type_name(emitter,value,node):
     if tag=="globals_dict":return '"dict"'
     if tag=="iterator"and value.kind.record.operation in {"filter","map","zip"}:
         return _string(value.kind.record.operation)
+    if tag=="tuple_sequence":return '"tuple"'
     if tag=="function":
         from .native_aot_callables import variant
         arms=[f'{emitter.model.callable_cells.reference_pattern(definition)}=>"function"'for definition in value.kind.definitions]
@@ -201,7 +202,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         if domain(value.kind)=="list":length=f"{value.code}.borrow().len()"
         elif domain(value.kind)=="str":
             length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"codepoint_len()")
-        elif domain(value.kind)=="bytes":length=f"{value.code}.len()"
+        elif domain(value.kind)in {"bytes","tuple_sequence"}:length=f"{value.code}.len()"
         elif domain(value.kind)=="tuple":length=str(len(value.kind.fields))
         elif domain(value.kind)=="globals_dict":length=f"class_globals_length(&{value.code})"
         elif domain(value.kind)=="range":
@@ -289,6 +290,10 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
             item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
             code="{"+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}class_list({values})"+"}"
         elif domain(arguments[0].kind)=="list":code=f"class_list({arguments[0].code}.borrow().clone())"
+        elif domain(arguments[0].kind)=="tuple_sequence":
+            source=arguments[0];item=self.fresh()
+            converted=self.coerce(Expression(item+".clone()",source.kind.element),wanted.element,node)
+            code=f"class_list({source.code}.iter().map(|{item}|{converted}).collect::<Vec<{self.rust_type(wanted.element)}>>())"
         elif domain(arguments[0].kind)=="range":
             values=f"{arguments[0].code}.iter()"
             if wanted.element=='int_bool':values+=".map(NativeScalar::Int)"
@@ -321,6 +326,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
                 pull=self.model.iterators.pull(self,node,stream);kind=pull.kind
             elif domain(stream.kind)=="list":
                 iterator=f"{stream.code}.borrow().iter().cloned()";kind=stream.kind.element
+            elif domain(stream.kind)=="tuple_sequence":
+                iterator=f"{stream.code}.iter().cloned()";kind=stream.kind.element
             elif domain(stream.kind)=="range":
                 iterator=f"{stream.code}.iter()";kind='int'
             elif domain(stream.kind)=="tuple" and bool(stream.kind.fields):
