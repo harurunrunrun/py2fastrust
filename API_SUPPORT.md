@@ -636,3 +636,14 @@ and is diagnosed explicitly. Attribute assignment evaluates its RHS before
 looking up the target owner. Augmented assignment retains its owner and reads
 the old value before evaluating its RHS. Method/descriptor alternatives and
 cycle-aware object lifetimes remain independent capabilities.
+
+
+Native frame `for` and `while` loops support exhaustion `else` suites. Normal
+exhaustion and `continue` enter the suite; a completed `break`, `return`, or an
+unsuppressed exception skips it. Break edges join after the suite, preserving
+zero-trip bindings and values assigned only by the suite. Inner loop suites
+can transfer to the enclosing loop. Context-manager cleanup runs before a
+pending transfer takes effect, including suppression of an error that replaced
+a pending break. Literal true/false while conditions omit unreachable suites
+without resolving their contents. These loops compile to typed Rust control
+flow, without a bytecode interpreter or generic execution loop.

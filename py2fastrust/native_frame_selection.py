@@ -153,6 +153,8 @@ def select_frames(unit,*,integer="i64"):
     if float_requires_frames(analysis):reasons+=("captured float argument and signature protocols",)
     from .native_frame_slices import requires_frames as slice_requires_frames
     if slice_requires_frames(unit,analysis):reasons+=("finite sequence slice alternatives and bounds",)
+    from .native_loop_else import requires_frames as loop_else_requires_frames
+    if loop_else_requires_frames(unit,analysis):reasons+=("loop exhaustion and else control flow",)
     from .native_class_extrema import requires_frames as extrema_requires_frames
     if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
     from .native_class_sorting import requires_frames as sorting_requires_frames

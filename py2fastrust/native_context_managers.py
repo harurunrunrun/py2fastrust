@@ -183,7 +183,9 @@ def _loop_transfer(emitter,continuing):
     boundaries=getattr(emitter,'context_flow_boundaries',())
     if boundaries and len(emitter.loops)<=boundaries[-1]:
         return 'return Ok(ClassWithFlow::'+('Continue'if continuing else'Break')+')'
-    if emitter.loops:return ('continue'if continuing else'break')+" '"+emitter.loops[-1]
+    if emitter.loops:
+        from .native_loop_else import transfer
+        return transfer(emitter,continuing)
     return 'unreachable!("context control contradicts lexical loop proof")'
 
 

@@ -686,7 +686,7 @@ class Model:
                 else:
                     raise ClassUnsupported(plan.node)
         self.final = True
-        self.reached_statements=set()if hasattr(self,'type_guard_cells')else None
+        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)else None
         self.module.visible_definitions = set()
         self.block(self.module, self.tree.body, dict(self.global_symbols))
         for plan in self.plans[1:]:
@@ -1370,8 +1370,14 @@ class Model:
                 yes,no=(environment,environment)if narrowed is None else narrowed
                 environment = self.join(None if yes is None else self.block(plan,node.body,yes),None if no is None else self.block(plan,node.orelse,no),node)
             elif isinstance(node,(ast.For,ast.While)):
-                if node.orelse:
-                    raise ClassUnsupported(node)
+                from .native_loop_else import condition as loop_condition
+                if node.orelse:self.loop_reachability_used=True
+                known=loop_condition(self,node)
+                if known is not None:self.loop_reachability_used=True
+                if known is False:
+                    self.condition(plan,node.test,environment)
+                    environment=self.block(plan,node.orelse,environment)
+                    continue
                 value=None
                 if isinstance(node,ast.For):
                     value = self.expression(plan,node.iter,environment)
@@ -1398,11 +1404,11 @@ class Model:
                 feedback=body
                 for edge in continues:feedback=self.join(feedback,edge,node,"loop_feedback")
                 if feedback is not None:self.loop_feedback[key]=Environment(feedback)
-                environment = self.join(start,body,node,"loop_exit")
+                environment = None if known is True else self.join(start,feedback,node,"loop_exit")
+                if node.orelse and environment is not None:
+                    environment = self.block(plan,node.orelse,environment)
                 for edge in edges:
                     environment = self.join(environment,edge,node,"loop_exit")
-                if node.orelse:
-                    environment = self.block(plan,node.orelse,environment)
             elif isinstance(node,ast.Return):
                 if self.is_module_plan(plan):
                     raise ClassUnsupported(node)
@@ -1412,8 +1418,8 @@ class Model:
             elif isinstance(node,(ast.Break,ast.Continue)):
                 if not self.loop_depth:
                     raise ClassUnsupported(node)
-                self.loop_edges[-1].append(Environment(environment))
                 if isinstance(node,ast.Continue):self.loop_continues[-1].append(Environment(environment))
+                else:self.loop_edges[-1].append(Environment(environment))
                 environment = None
             else:
                 raise ClassUnsupported(node)
@@ -2360,20 +2366,28 @@ class Emitter:
             if selected is not None:return selected
             return setup+f"if {self.truth(test)}{{\n{self.statements(node.body)}\n}}else{{\n{self.statements(node.orelse)}\n}}"
         if isinstance(node,ast.While):
+            from .native_loop_else import condition as loop_condition,enter,leave
+            if loop_condition(self.model,node)is False:
+                setup,test=self.capture(self.condition(node.test))
+                return '{'+setup+'let _='+test.code+';'+self.statements(node.orelse)+'}'
             label=self.fresh()
             self.loops.append(label)
+            flags=enter(self,node,label)
             from .native_class_loop_fields import scope
             with scope(self,node)as cache:
                 setup,test=self.capture(self.condition(node.test))
                 body=self.statements(node.body)
             self.loops.pop()
-            return "{"+cache+f"'{label}:loop{{{setup}if !({self.truth(test)}){{break;}}{body}}}"+"}"
+            tail=leave(self,node,label)
+            return "{"+flags+cache+f"'{label}:loop{{{setup}if !({self.truth(test)}){{break;}}{body}}}"+tail+"}"
         if isinstance(node,ast.For):
             return self.for_statement(node)
         if isinstance(node,ast.Break):
-            return f"break '{self.loops[-1]};"
+            from .native_loop_else import transfer
+            return transfer(self,False)+';'
         if isinstance(node,ast.Continue):
-            return f"continue '{self.loops[-1]};"
+            from .native_loop_else import transfer
+            return transfer(self,True)+';'
         raise ClassUnsupported(node)
 
     def for_statement(self, node):
@@ -2391,6 +2405,8 @@ class Emitter:
             counter=self.fresh()
             setup+=f"let mut {counter}={self.number(start)};"
         label=self.fresh();self.loops.append(label)
+        from .native_loop_else import enter,leave
+        setup+=enter(self,node,label)
         from .native_class_loop_fields import scope
         with scope(self,node)as cache:
             body=self.statements(node.body)
@@ -2434,7 +2450,8 @@ class Emitter:
             before+=f"{counter}={increment};"
             item=Expression(f"({saved},{item.code})",TupleType(("int",item.kind)))
         binding=self.assign(node.target,item)
-        return "{"+setup+prefix+before+binding+body+"}}"
+        tail=leave(self,node,label)
+        return "{"+setup+prefix+before+binding+body+"}"+tail+"}"
 
     def declaration(self):
         data=[f"let mut {slot}:{self.rust_type(MaybeType(kind))}=None;"for(_,kind),slot in self.slots.items()]
