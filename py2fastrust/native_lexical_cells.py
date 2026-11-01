@@ -455,6 +455,8 @@ class LexicalCells:
         self.model.deques.add_lifetime_edges(edges,targets)
         from .native_function_instances import lifetime_edges
         lifetime_edges(self,edges,targets)
+        from .native_class_gc import lexical_projection
+        edges=lexical_projection(self.model,edges)
         done=set();visiting=set()
         def visit(node):
             if node in visiting:

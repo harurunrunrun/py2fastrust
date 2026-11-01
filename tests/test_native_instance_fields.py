@@ -297,8 +297,17 @@ class NativeInstanceFieldTests(unittest.TestCase):
     def test_no_optimize_uses_the_same_reference_storage(self):
         self.compare("receiver_precedes_rebinding_argument",prune=False)
 
-    def test_reference_cycles_and_same_class_chains_require_a_collector_or_proof(self):
-        for name in ("same_class_chain_requires_stronger_proof","direct_reference_cycle","mutual_reference_cycle","cycle_through_list_field","cycle_through_callback_capture"):
+    def test_same_class_chain_uses_cycle_safe_storage(self):
+        self.compare("same_class_chain_requires_stronger_proof")
+
+    def test_direct_reference_cycle_preserves_identity(self):
+        self.compare("direct_reference_cycle")
+
+    def test_mutual_reference_cycle_preserves_both_aliases(self):
+        self.compare("mutual_reference_cycle")
+
+    def test_container_and_callback_cycles_remain_explicit(self):
+        for name in ("cycle_through_list_field","cycle_through_callback_capture"):
             source,_=CASES[name]
             for mode in ("i64","i128","bigint"):
                 result=transpile(source,TranspileOptions(integer=mode))

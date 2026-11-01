@@ -118,10 +118,13 @@ def validate_instance_graph(model):
                 found.update(owned_instances(shape(cell),set()))
                 pending.extend(value for value in cell.args if hasattr(value,"root"))
         graph[name]=found
+    from .native_class_gc import admit
+    collected=admit(model,graph)
     done=set()
     def visit(name,path):
         if name in path:
             cycle=path[path.index(name):]+(name,)
+            if all(member in collected for member in cycle):return
             raise ClassUnsupported(model.classes[name].node,"the class storage types permit a reference cycle ("+" -> ".join(model.display_name(value)for value in cycle)+"); this native path has no proof that those allocations remain acyclic and no cycle-aware collector for shared instance/list handles",operation="instance/list storage graph",proof="acyclic shared instance ownership or cycle-aware memory management")
         if name in done:return
         for target in graph.get(name,()):visit(target,path+(name,))

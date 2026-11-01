@@ -857,9 +857,9 @@ default object identity rather than structural field equality. Acyclic instance
 fields retain shared child handles; deleting a field clears its presence state
 without changing surviving aliases. Missing fields remain distinct from fields
 containing `None`, including after deletion. Descriptor deletion and finalizers
-remain required protocols. Recursive storage
-layouts and possible instance/list ownership cycles are conservatively rejected
-until allocation-cycle proofs or cycle-aware collection exist. Mixed mutable
+remain required protocols. Recursive container storage layouts and possible
+instance/list ownership cycles remain conservatively rejected. Direct plain-class
+cycles use the restricted collector described below. Mixed mutable
 alternative carriers, custom comparison protocols and floating element identity
 rules remain explicit boundaries.
 
@@ -1405,3 +1405,16 @@ pending transfer takes effect, including suppression of an error that replaced
 a pending break. Literal true/false while conditions omit unreachable suites
 without resolving their contents. These loops compile to typed Rust control
 flow, without a bytecode interpreter or generic execution loop.
+
+Direct cycles among plain source-class instances use a native trial-deletion
+collector when every field of the cyclic classes contains builtin scalar values,
+`None`, direct instance handles or finite alternatives of those kinds. Ordinary
+source functions remain compiled Rust functions. Only eligible cyclic classes
+register weak handles; programs with an acyclic class ownership type graph
+receive no collector or changed scope storage. Collection counts each direct
+field edge, treats external aliases and
+borrowed nodes as roots, traces reachable nodes and clears unreachable optional
+fields without invoking Python callbacks. Geometric collection thresholds avoid
+repeated full scans while a live graph grows. Container-, callable- and
+closure-mediated cycles, custom finalizers, weak references and resurrection
+remain explicit unsupported protocols; this is not general arena/container GC.

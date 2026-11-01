@@ -2551,6 +2551,9 @@ def _class_layouts(model,emitter):
         extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
         if extra_member:members=extra_member+(","+members if members else"")
         result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<RefCell<ClassData_{owner.index}>>;")
+        from .native_class_gc import layout as gc_layout,registration as gc_registration
+        gc_body=gc_layout(model,owner)
+        if gc_body:result.append(gc_body)
         for i,value in enumerate(fields):
             message=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{value.name}'")
             result.append(f"fn class_get_{owner.index}_{i}(value:&ClassHandle_{owner.index})->Result<{emitter.rust_type(shape(value.cell))},String>{{value.borrow().field_{i}.clone().ok_or_else(||{message}.to_owned())}}")
@@ -2566,6 +2569,7 @@ def _class_layouts(model,emitter):
         initialize=",".join(f"field_{i}:None"for i in range(len(fields)))
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
         body=f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));"
+        body+=gc_registration(model,owner)
         if constructor:
             suffix="?;"if synchronous(model,constructor)else".await?;"
             body+=f"class_function_{constructor.index}(class_scope.clone(),object.clone()"+(","+",".join(args)if args else"")+ ")"+suffix
@@ -2727,6 +2731,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=model.finish_runtime(model.generators.runtime("\n".join(pieces)))
     from .native_context_managers import runtime as context_runtime
     result=context_runtime(result,model)
+    from .native_class_gc import runtime as gc_runtime
+    result=gc_runtime(result,model)
     from .native_text_policy import apply_text_policy
     result=apply_text_policy(result,string_mode)
     from .native_cached_text import apply_cached_text
