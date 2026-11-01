@@ -444,6 +444,15 @@ across calls. Indexed writes through alternative owner layouts, list `+=` from
 non-list iterables, user index/subscription special methods and remaining
 container protocols still require their native adapters.
 
+Immutable range values can cross typed function returns, locals, closures and
+object fields, including finite list/range alternatives. Their existing range
+cursor remains independent for each iteration. `list(...)` materialization uses
+the shared pull protocol for text/bytes and finite raw-source alternatives,
+preserves saved iterator cursors, and raises Python `TypeError` for proved
+noniterables. Direct list/range/tuple copy paths remain available and preserve
+mutable element handles. Range object identity, display, checked `len(range)`
+and escaped generator suspension still need their respective native adapters.
+
 The ten `heapq` operations `heapify`, `heappush`, `heappop`, `heappushpop`,
 `heapreplace`, and their `_max` counterparts operate directly on the original
 typed list. Supported payloads include immutable integer/bool, text/bytes and

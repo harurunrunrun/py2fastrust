@@ -2400,7 +2400,13 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         layouts=model.iterators.runtime(emitters[0])+"\n"+layouts
         layouts=model.mappings.runtime(emitters[0])+"\n"+layouts
         unions={}
+        kind_closure=set()
+        empty_required=False
         def add_kind(kind):
+            nonlocal empty_required
+            if kind is None or kind in kind_closure:return
+            kind_closure.add(kind)
+            if isinstance(kind,EmptyType):empty_required=True
             if isinstance(kind,UnionType):
                 unions[kind]=None
                 for alternative in kind.alternatives:add_kind(alternative)
@@ -2408,7 +2414,12 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
             elif isinstance(kind,TupleType):
                 for field in kind.fields:add_kind(field)
             elif isinstance(kind,(ListType,TupleSequenceType)):add_kind(kind.element)
+            for child in getattr(kind,'_native_owned_kinds',()):add_kind(child)
         for value in model.records.values():add_kind(shape(value))
+        for record in model.iterators.records:
+            if record.emitted:
+                add_kind(record.kind)
+                add_kind(shape(record.element))
         for record in model.mappings.records:
             add_kind(shape(record.key));add_kind(shape(record.value))
         for kind in model.expanded_calls.kinds():add_kind(kind)
@@ -2464,6 +2475,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         class_runtime=class_runtime.replace("    fn class_repr(&self)->String{text_repr_str(self)}\n", "")
     from .native_variadic import runtime as variadic_runtime
     pieces.append(variadic_runtime(model))
+    from .native_class_materialization import empty_runtime
+    pieces.append(empty_runtime(model,empty_required))
     from .native_starred_calls import runtime as expanded_runtime
     pieces.append(expanded_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),

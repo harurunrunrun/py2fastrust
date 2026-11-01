@@ -12,6 +12,9 @@ from .native_types import ListType,TupleType,TupleSequenceType,NullableType,Unio
 def shared_element(kind,*,allow_unresolved=False):
     """Kinds whose Clone implementation preserves Python element identity."""
     if kind is None:return allow_unresolved
+    # The existing immutable ClassRange carrier can cross typed frame/storage
+    # boundaries; its unsupported object-identity protocols remain diagnostics.
+    if kind=="range":return True
     if reference_cloneable(kind):return True
     if isinstance(kind,(ListType,TupleSequenceType)):return shared_element(kind.element,allow_unresolved=allow_unresolved)
     if isinstance(kind,TupleType):return all(shared_element(field,allow_unresolved=allow_unresolved)for field in kind.fields)

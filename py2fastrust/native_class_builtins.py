@@ -90,9 +90,8 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name == "list" and len(arguments) <= 1 and not keywords:
         result = cell("list",(Cell(),))
         if arguments:
-            from .native_classes import shape
-            if self.mappings.views.element(shape(arguments[0]))is not None:
-                arguments=[Cell(self.iterators.source(plan,node,arguments[0]))]
+            from .native_class_materialization import list_source
+            arguments=[list_source(model,plan,node,arguments[0])]
             self.contribute(result.root().args[0],self.iterators.demand(plan,node,arguments[0],environment),node)
         return result
     if name == "sum" and 1 <= len(arguments) <= 2 and not keywords:
@@ -170,7 +169,8 @@ def _type_name(emitter,value,node):
         arms=[f'{emitter.model.callable_cells.reference_pattern(definition)}=>"function"'for definition in value.kind.definitions]
         arms.extend(f'{emitter.model.callable_cells.bound_methods.reference_pattern(target)}=>"method"'for target in value.kind.methods)
         for identity in value.kind.builtins:
-            name="type"if identity.name in {"int","bool","float","str","list","range","map","zip","enumerate"}else"builtin_function_or_method"
+            from .native_type_checks import TYPE_NAMES
+            name="type"if identity.name in TYPE_NAMES else"builtin_function_or_method"
             arms.append(f'{variant(identity)}=>{_string(name)}')
         for identity in value.kind.members:
             adapter=emitter.model.callable_cells.member_adapters.get(identity.module)
@@ -321,20 +321,36 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
             pulled=self.model.iterators.pull(self,node,arguments[0]);current=self.fresh();values=self.fresh()
             item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
             code="{"+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}class_list({values})"+"}"
-        elif domain(arguments[0].kind)=="list":code=f"class_list({arguments[0].code}.borrow().clone())"
+        elif domain(arguments[0].kind)=="list":
+            source=arguments[0]
+            if source.kind.element==wanted.element:code=f"class_list({source.code}.borrow().clone())"
+            else:
+                item=self.fresh()
+                converted=self.coerce(Expression(item+".clone()",source.kind.element),wanted.element,node)
+                code=f"class_list({source.code}.borrow().iter().map(|{item}|{converted}).collect::<Vec<{self.rust_type(wanted.element)}>>())"
         elif domain(arguments[0].kind)=="tuple_sequence":
             source=arguments[0];item=self.fresh()
             converted=self.coerce(Expression(item+".clone()",source.kind.element),wanted.element,node)
             code=f"class_list({source.code}.iter().map(|{item}|{converted}).collect::<Vec<{self.rust_type(wanted.element)}>>())"
         elif domain(arguments[0].kind)=="range":
             values=f"{arguments[0].code}.iter()"
-            if wanted.element=='int_bool':values+=".map(NativeScalar::Int)"
+            if wanted.element!='int':
+                item=self.fresh()
+                converted=self.coerce(Expression(item,'int'),wanted.element,node)
+                values+=f".map(|{item}|{converted})"
             code=f"class_list(({values}).collect::<Vec<_>>())"
         elif domain(arguments[0].kind)=="tuple":
             value=arguments[0]
             elements=[self.coerce(Expression(f"{value.code}.{i}.clone()",kind),wanted.element,node)for i,kind in enumerate(value.kind.fields)]
             code="class_list(vec!["+",".join(elements)+"])"
-        else:raise ClassUnsupported(node)
+        elif domain(arguments[0].kind)in {"none","int","bool","int_bool","float","function"}:
+            name=_type_name(self,arguments[0],node)
+            return _error(self,node,wanted,f'format!("TypeError: \'{{}}\' object is not iterable",{name})')
+        else:
+            before,source=self.capture(self.model.iterators.construct(self,node,arguments[0]))
+            pulled=self.model.iterators.pull(self,node,source);current=self.fresh();values=self.fresh()
+            item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
+            code="{"+before+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}class_list({values})"+"}"
     elif name in {"min","max","sum"}:
         accumulator=self.fresh();member=self.fresh()
         if name=="sum":

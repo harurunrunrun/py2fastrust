@@ -2,6 +2,31 @@
 from .native_types import TupleType,TupleSequenceType
 
 
+def empty_runtime(model,required):
+    """Own bottom carriers only when the existing runtime owners do not."""
+    from .native_classes import shape
+    from .native_types import EmptyType
+    if not required:return ''
+    if any(record.emitted and isinstance(shape(record.element),EmptyType)for record in model.iterators.records):return ''
+    if getattr(model,'materialized_tuple',False)or any(plan.reachable and getattr(plan,'variadic_element',None)is not None for plan in model.plans):return ''
+    if model.mappings.records:return ''
+    from .native_constraint_lowering import EMPTY_HELPERS
+    return EMPTY_HELPERS
+
+
+def list_source(model,plan,node,source):
+    """Keep saved iterator cursors; register only the raw source alternatives."""
+    from .native_classes import Cell,shape
+    from .native_class_iterators import iterator_kind
+    root=source.root()
+    if root.tag=="union":
+        return Cell("union",tuple(list_source(model,plan,node,choice)for choice in root.args))
+    kind=shape(source)
+    if iterator_kind(kind)or getattr(kind,'_native_class_generator',False):return source
+    if root.tag in {"list","tuple","tuple_sequence","range","enumerate","map_int"}:return source
+    return Cell(model.iterators.source(plan,node,source))
+
+
 def analyze_tuple(model,plan,node,arguments,keywords,environment,factory):
     from .native_classes import Cell,shape,ClassUnsupported
     if len(arguments)>1 or keywords:
