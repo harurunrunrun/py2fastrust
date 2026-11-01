@@ -347,11 +347,11 @@ class Iterators:
         elif tag=="bytes":current=f"{state}.source.as_ref().and_then(|value|value.get({state}.index)).map(|value|class_from_usize(*value as usize))"
         elif tag=="str":
             if emitter.model.string_mode=="ascii":
-                current=f"{state}.source.as_ref().and_then(|value|value.as_bytes().get({state}.index)).map(|value|NativeText::from((*value as char).to_string()))"
+                current=f"{state}.source.as_ref().and_then(|value|value.as_bytes().get({state}.index)).map(|value|NativeText::from(*value as char))"
             else:
                 character=emitter.fresh()
                 code=(begin+f"let {character}={state}.source.as_ref().and_then(|value|value.get({state}.index..)).and_then(|value|value.chars().next());"
-                      f"if let Some({character})={character}{{{state}.index+={character}.len_utf8();Some(NativeText::from({character}.to_string()))}}else{{{state}.source=None;None}}"+"}")
+                      f"if let Some({character})={character}{{{state}.index+={character}.len_utf8();Some(NativeText::from({character}))}}else{{{state}.source=None;None}}"+"}")
                 return Expression(code,item_kind)
         else:return Expression("None::<"+emitter.rust_type(item_kind)+">",item_kind)
         return Expression(begin+f"let {item}={current};if {item}.is_some(){{{state}.index+=1;}}else{{{state}.source=None;}}{item}"+"}",item_kind)
@@ -433,10 +433,10 @@ class Iterators:
             current=f"{source}.as_ref().and_then(|value|value.get({index})).map(|value|class_from_usize(*value as usize))";advance="1"
         elif tag=="str":
             if emitter.model.string_mode=="ascii":
-                current=f"{source}.as_ref().and_then(|value|value.as_bytes().get({index})).map(|value|NativeText::from((*value as char).to_string()))"
+                current=f"{source}.as_ref().and_then(|value|value.as_bytes().get({index})).map(|value|NativeText::from(*value as char))"
                 advance="1"
             else:
-                current=f"{source}.as_ref().and_then(|value|value.get({index}..)).and_then(|value|value.chars().next()).map(|value|NativeText::from(value.to_string()))"
+                current=f"{source}.as_ref().and_then(|value|value.get({index}..)).and_then(|value|value.chars().next()).map(NativeText::from)"
                 advance=f"{item}.as_ref().map_or(0,|value|value.len())"
         elif tag=="tuple":
             arms=[]
