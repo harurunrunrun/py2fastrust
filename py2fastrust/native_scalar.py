@@ -249,6 +249,10 @@ fn native_string_item(value: &str, index: NativeInt) -> Result<String, String> {
 '''
 
 
+from .native_float_constructor import ASCII_HELPER
+SCALAR_HELPERS+=ASCII_HELPER
+
+
 class ScalarGenerator(_Generator):
     BUILTINS = _Generator.BUILTINS | {"float", "str", "bool"}
 
@@ -357,6 +361,9 @@ class ScalarGenerator(_Generator):
 
     @result_shapes
     def expression(self, node, environment):
+        from .native_float_constructor import try_expression as float_expression
+        converted=float_expression(self,node,environment)
+        if converted is not None:return converted
         if isinstance(node,(ast.Compare,ast.BoolOp,ast.IfExp)):
             from .native_expression_flow import lower
             return lower(self,node,environment)

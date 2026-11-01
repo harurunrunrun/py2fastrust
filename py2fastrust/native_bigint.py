@@ -193,6 +193,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     @result_shapes
     def expression(self, node, environment):
+        from .native_float_constructor import try_expression as float_expression
+        converted=float_expression(self,node,environment)
+        if converted is not None:return converted
         if isinstance(node,(ast.Compare,ast.BoolOp,ast.IfExp)):
             from .native_expression_flow import lower
             return lower(self,node,environment)
@@ -514,6 +517,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
         generator.has_native_words |= any(local.has_native_words for local in specializations.generators)
         generator.has_extended_scalars |= any(local.has_extended_scalars for local in specializations.generators)
+        from .native_float_constructor import parser_names
+        generator.native_float_parsers=set(getattr(generator,"native_float_parsers",()))|set().union(*(parser_names(local)for local in specializations.generators))
     except (SyntaxError,_Unsupported,RecursionError,ConstraintFailure) as error:
         if diagnostic_out is not None:
             diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
@@ -531,7 +536,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.has_extended_scalars:
         from .native_scalar import SCALAR_HELPERS
         from .rust_pruning import select_named_rust_items
-        result.append(select_named_rust_items(SCALAR_HELPERS,{"native_float_text","native_float_div","native_float_divmod"}))
+        from .native_float_constructor import parser_names
+        result.append(select_named_rust_items(SCALAR_HELPERS,{"native_float_text","native_float_div","native_float_divmod"}|parser_names(generator)))
     if generator.has_deques:
         from .native_deques import HELPERS as DEQUE_HELPERS
         result.append(DEQUE_HELPERS)

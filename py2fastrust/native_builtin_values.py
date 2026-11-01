@@ -13,7 +13,7 @@ def integer_from_float(g, value, node):
         operation = f'Int::from_f64({value.code})'
     return _Expression(g.at(operation, node), 'int')
 
-UNARY_BUILTINS=frozenset({"int","bool","abs","str","len"})
+UNARY_BUILTINS=frozenset({"int","bool","abs","str","len","float"})
 
 
 def unary_capability(identity,kind):
@@ -29,6 +29,7 @@ def unary_capability(identity,kind):
                or getattr(kind,"_key_container",False)
                or kind in {"int","bool","int_bool","float","str","bytes","none",
                            "list_int","dict_int","set_int","matrix_int","deque_int"})
+    if name=="float":return kind in {"int","bool","int_bool","float","str","bytes"}
     if name=="int":return kind in {"int","bool","int_bool","float","str","bytes"}
     if name=="abs":return kind in {"int","bool","int_bool"}
     if name=="str":return kind in {"int","bool","int_bool","str"}
@@ -40,6 +41,9 @@ def unary(g, identity, value, node):
         return None
     if not unary_capability(identity,value.kind):raise _Unsupported
     name=identity.name
+    if name=="float":
+        from .native_float_constructor import plain_value
+        return plain_value(g,value,node)
     if name == "bool":
         return _Expression(g.truth(value),"bool")
     if name == "int":

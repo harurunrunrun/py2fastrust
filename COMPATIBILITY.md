@@ -1211,3 +1211,17 @@ exports retain the same unobserved-symbol behavior. `typing.cast` evaluates
 its arguments normally and returns the original value, without conversion or
 copying mutable payloads. Import binding presence is updated after each actual
 linked import, including `globals()` membership observations.
+
+Canonical `float` construction shares one typed conversion adapter across
+ordinary numeric code, saved builtin aliases, callbacks and linked frames.
+Omitted arguments produce positive zero; existing binary64 values retain their
+bits, including signed zero and nonfinite values. Fixed integers convert to
+binary64 directly; BigInt uses the exact `Int.ratio(1)` rounding path and reports
+`OverflowError: int too large to convert to float` instead of silent infinity.
+The ASCII parser validates signs, decimal/exponent syntax, separators and
+special values without a character vector or Unicode tables. Normal numeric
+text needs no normalization allocation. Unicode text uses the existing pinned
+decimal-digit parser; bytes always retain ASCII whitespace/digit rules.
+Invalid conversion errors include the original repr, and builtin call binding
+preserves argument effects before errors. Unimplemented custom numeric methods
+remain explicit diagnostics. Other `math` APIs are independent capabilities.

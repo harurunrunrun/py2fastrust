@@ -22,7 +22,7 @@ class NativeAsciiOutputTests(unittest.TestCase):
             'class Text:\n def __init__(self,s):self.s=s\n def show(self):return self.s[0],len(self.s)\nt=Text(input())\nprint(t.show())\n',
         )
         for integer in ('i64','i128','bigint'):
-            for source in programs+(('print(float(input()))\n',)if integer!='bigint'else()):
+            for source in programs+('print(float(input()))\n',):
                 with self.subTest(integer=integer,source=source):
                     result=transpile(source,TranspileOptions(integer=integer))
                     self.assertTrue(result.success,result.diagnostics)

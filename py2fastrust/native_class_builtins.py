@@ -54,8 +54,6 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name == "input" and not arguments and not keywords:
         return cell("str")
     if name in {"int","str","bool","float"} and len(arguments) <= 1 and not keywords:
-        if name == "float" and self.integer == "bigint":
-            raise ClassUnsupported(node)
         return cell({"int":"int","str":"str","bool":"bool","float":"float"}[name])
     if name == "len" and len(arguments) == 1 and not keywords:
         return cell("int")
@@ -306,14 +304,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         code='false'if not arguments else self.truth(arguments[0])
         raw_kind='bool'
     elif name == "float":
-        if not arguments:code="0.0_f64"
-        elif domain(arguments[0].kind)in{"int","bool","int_bool"}:code=f"({self.number(arguments[0])}) as f64"
-        elif arguments[0].kind=='float':code=arguments[0].code
-        elif arguments[0].kind=='str':code=self.at(f"native_scalar_float(&{arguments[0].code})",node)
-        elif arguments[0].kind=='bytes':raise ClassUnsupported(node,"float(bytes) needs ASCII byte parsing; that byte-to-float adapter is not implemented here",proof="builtin byte numeric parsing")
-        else:
-            name=_type_name(emitter,arguments[0],node)
-            return _error(emitter,node,wanted,f'format!("TypeError: float() argument must be a string or a real number, not \'{{}}\'",{name})')
+        from .native_float_constructor import frame_value
+        code="0.0_f64"if not arguments else frame_value(self,arguments[0],node)
     elif name == "abs":
         value=arguments[0]
         if domain(value.kind)in{"int","bool","int_bool"}:

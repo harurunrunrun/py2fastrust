@@ -2556,7 +2556,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                        "fn native_parse_bytes_integer(value:&[u8])->Result<Int,String>{Int::parse_ascii(value,10)}"])
         if getattr(model,"formatting_required",False)or any(has_float_payload(shape(value))for value in model.records.values()):
             from .native_scalar import SCALAR_HELPERS
-            pieces.extend([_named_helpers(SCALAR_HELPERS,{"native_float_text","native_float_div","native_float_divmod"}),
+            pieces.extend([_named_helpers(SCALAR_HELPERS,{"native_float_text","native_float_div","native_float_divmod"}|getattr(model,"native_float_parsers",set())),
                            "impl ClassDisplay for f64 {fn class_str(&self)->String{native_float_text(*self)}}"])
     else:
         from .native_scalar import SCALAR_HELPERS

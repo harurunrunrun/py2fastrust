@@ -147,6 +147,8 @@ def select_frames(unit,*,integer="i64"):
     if requires_frames(analysis):reasons+=("captured builtin type predicates",)
     from .native_heap_selection import requires_frames as heap_selection_requires_frames
     if heap_selection_requires_frames(analysis):reasons+=("bounded native heap selections",)
+    from .native_float_constructor import requires_frames as float_requires_frames
+    if float_requires_frames(analysis):reasons+=("captured float argument and signature protocols",)
     from .native_class_extrema import requires_frames as extrema_requires_frames
     if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
     from .native_class_sorting import requires_frames as sorting_requires_frames

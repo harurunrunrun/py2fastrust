@@ -504,3 +504,12 @@ exports retain the same unobserved-symbol behavior. `typing.cast` evaluates
 its arguments normally and returns the original value, without conversion or
 copying mutable payloads. Import binding presence is updated after each actual
 linked import, including `globals()` membership observations.
+
+Builtin `float()` supports zero/default construction, builtin int/bool/binary64,
+text and bytes in every integer mode, including captured constructor aliases
+and typed frames. BigInt integral conversion uses exact rational rounding and
+raises `OverflowError` beyond binary64 range. ASCII mode parses numeric bytes
+without Unicode digit tables; Unicode text mode also accepts Unicode decimal
+digits and whitespace. Bytes retain ASCII-only numeric rules in either mode.
+Invalid input preserves the original text/bytes repr in the error message.
+Custom `__float__` and `__index__` protocols remain positioned diagnostics.
