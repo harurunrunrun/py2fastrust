@@ -95,6 +95,12 @@ or `None`, including ordinary `readline().rstrip("\n")` and binary line readers.
 They preserve receiver/argument order, Unicode versus bytes whitespace, and
 positioned argument errors. Custom bytes-buffer objects need their own adapter.
 
+Frame `str.replace` and `bytes.replace` support old/new values and optional
+counts, including empty patterns, Unicode character boundaries, exact argument
+errors and captured evaluation order. Text accepts the `count` keyword; bytes
+keeps its positional-only signature. Byte matching uses a linear prefix-table
+algorithm, with checked output sizes and no intermediate match-position list.
+
 Typed frame dictionaries and sets have shared native storage, including
 ordinary mutable aliases, dictionary values and class fields. Direct adapters
 cover literals/comprehensions, `dict`/`set` constructors, dictionary subscripts,

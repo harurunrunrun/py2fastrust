@@ -375,7 +375,9 @@ byte cursors without repeated ASCII detection; Unicode whitespace paths scan
 valid character boundaries. Finite text/bytes receiver and optional separator
 alternatives use the same native kernels. Saved builtin bound methods, custom
 `__index__`, bytes-buffer protocols and arbitrary string subclasses still need
-separate adapters.
+separate adapters. Canonical text-method selection also resolves symbolic
+container/tuple field receivers from their exact solved source-expression facts,
+without replacing or rewriting the original allocation path.
 
 Frame `str`/`bytes` `strip`, `lstrip` and `rstrip` bind one optional positional
 `chars` argument. `None` selects the type's whitespace rules; other builtin
@@ -389,6 +391,21 @@ frames. Plain text calls that the static path already supports stay there; bytes
 and optional/error bindings use semantic frame capability selection. Saved
 builtin bound methods, custom bytes-buffer objects and arbitrary string
 subclasses still require separate protocols.
+
+Frame `str.replace`/`bytes.replace` use captured receiver, old/new and count
+values with shared call binding. Both support empty/nonoverlapping patterns,
+zero/negative/boolean counts and checked signed index-width limits after selected
+integer normalization. Text count may be a keyword; bytes arguments remain
+positional. Binding, old/new type checks and count conversion retain Python
+validation order, source frames and full final error messages. Unicode empty
+text patterns insert at code-point boundaries; bytes retain arbitrary values.
+
+Text uses standard native pattern matching. Bytes build a prefix table once,
+scan in O(n+m) work per pass and store no match-position list. Output lengths
+use checked structural arithmetic and fallible capacity reservation before
+copying. Finite builtin receiver/argument alternatives use the same typed
+kernels. Saved builtin method values, custom bytes-buffer/`__index__` objects
+and arbitrary builtin text subclasses still need their own protocols.
 
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing

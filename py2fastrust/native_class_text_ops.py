@@ -25,6 +25,8 @@ def bind(arguments,keywords,default):
 
 
 def requires_frames(unit,analysis):
+    from .native_class_text_replace import requires_frames as replace_requires_frames
+    if replace_requires_frames(unit,analysis):return True
     import ast
     from .native_constraints import MethodValue,value
     from .call_semantics import normalize_call
@@ -33,8 +35,9 @@ def requires_frames(unit,analysis):
         for ordinal,fact in scope.calls.items():
             for identity in fact.identity.alternatives:
                 if not isinstance(identity,MethodValue)or identity.name not in STRIP_NAMES:continue
-                kinds=identity.receiver.alternatives
-                if identity.receiver.unknown or identity.receiver.unbound or not kinds or not kinds<={'str','bytes'}:continue
+                from .native_text_receiver_facts import builtin_text_receiver_kinds
+                kinds=builtin_text_receiver_kinds(unit,scope,nodes.get(ordinal),identity)
+                if not kinds:continue
                 if kinds!={'str'}:return True
                 bound,error=bind(fact.positional,fact.keywords,value('none'))
                 if error:return True
@@ -48,6 +51,9 @@ def requires_frames(unit,analysis):
 
 
 def analyze(model,plan,node,receiver,arguments,keywords):
+    from .native_class_text_replace import analyze as analyze_replace
+    replacement=analyze_replace(model,plan,node,receiver,arguments,keywords)
+    if replacement is not None:return replacement
     from .native_classes import Cell,shape
     name=node.func.attr
     if name not in STRIP_NAMES:return None
@@ -61,6 +67,9 @@ def analyze(model,plan,node,receiver,arguments,keywords):
 
 
 def emit(emitter,node,receiver,arguments,keywords,wanted):
+    from .native_class_text_replace import emit as emit_replace
+    replacement=emit_replace(emitter,node,receiver,arguments,keywords,wanted)
+    if replacement is not None:return replacement
     from .native_classes import Expression,ClassUnsupported,domain
     from .native_unions import project,union_kind
     from .native_class_builtins import _error,_type_name
@@ -102,6 +111,8 @@ fn native_frame_bytes_strip(text:&[u8],characters:Option<&[u8]>,left:bool,right:
 
 
 def runtime(model):
-    if not getattr(model,'text_operation_sites',None):return ''
+    from .native_class_text_replace import runtime as replace_runtime
+    replacement=replace_runtime(model)
+    if not getattr(model,'text_operation_sites',None):return replacement
     from .native_text_methods import HELPERS
-    return HELPERS+'\n'+BYTES_STRIP
+    return HELPERS+'\n'+BYTES_STRIP+'\n'+replacement

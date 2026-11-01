@@ -42,8 +42,9 @@ def requires_frames(unit,analysis):
         for ordinal,fact in scope.calls.items():
             for identity in fact.identity.alternatives:
                 if not isinstance(identity,MethodValue)or identity.name not in {'split','rsplit'}:continue
-                kinds=identity.receiver.alternatives
-                if identity.receiver.unknown or identity.receiver.unbound or not kinds or not kinds<={'str','bytes'}:continue
+                from .native_text_receiver_facts import builtin_text_receiver_kinds
+                kinds=builtin_text_receiver_kinds(unit,scope,nodes.get(ordinal),identity)
+                if not kinds:continue
                 if identity.name=='rsplit'or len(kinds)!=1:return True
                 bound,error=bind(identity.name,fact.positional,fact.keywords,{'sep':value('none'),'maxsplit':value('int')})
                 if error:return True
