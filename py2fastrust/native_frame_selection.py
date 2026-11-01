@@ -149,6 +149,8 @@ def select_frames(unit,*,integer="i64"):
            for site,node in nodes.items()):reasons+=("expanded positional call arguments",)
     from .native_builtin_singletons import requires_frames as singleton_requires_frames
     if singleton_requires_frames(unit,analysis):reasons+=("canonical builtin singleton values",)
+    from .native_exception_values import requires_frames as exception_requires_frames
+    if exception_requires_frames(unit,analysis):reasons+=('typed builtin exception values and raise',)
     from .native_type_checks import requires_frames
     if requires_frames(analysis):reasons+=("captured builtin type predicates",)
     from .native_heap_selection import requires_frames as heap_selection_requires_frames
@@ -169,6 +171,10 @@ def select_frames(unit,*,integer="i64"):
     if split_requires_frames(unit,analysis):reasons+=('bound text/bytes split protocols',)
     from .native_class_text_ops import requires_frames as text_requires_frames
     if text_requires_frames(unit,analysis):reasons+=('bound text/bytes strip protocols',)
+    from .native_text_join import requires_frames as join_requires_frames
+    if join_requires_frames(unit,analysis):reasons+=('typed text/bytes join cursor and validation protocols',)
+    from .native_generator_effects import requires_frames as generator_error_requires_frames
+    if generator_error_requires_frames(unit,analysis):reasons+=('generator body StopIteration error boundary',)
     from .native_formatting import requires_frames as formatting_requires_frames
     if formatting_requires_frames(unit,analysis):reasons+=("typed format fields and canonical formatting calls",)
     from .native_character_builtins import requires_frames as character_requires_frames

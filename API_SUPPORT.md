@@ -41,8 +41,14 @@ Unchanged callers using `atcoder.dsu.DSU`, `atcoder.segtree.SegTree`, and
 `atcoder.lazysegtree.LazySegTree` now also pass standalone differential smoke
 checks in every integer mode, including callbacks and indexed operations.
 These callers are not exhaustive coverage of each API's inputs or callbacks.
-Other ACL APIs still encounter required core-language and builtin gaps; bundled
-source availability is not evidence that those APIs are implemented.
+All 15 executable [upstream examples](https://github.com/not522/ac-library-python/tree/27fdbb71cd0d566bdeb12746db59c9d908c6b5d5/example)
+also have standalone Rust execution coverage in every integer mode, including
+both convolution examples, Modint, maximum flow, minimum-cost flow and suffix
+arrays. Their original sources are imported without edits. This establishes
+example coverage; other API inputs and callbacks can still need additional
+core-language protocols. The integer convolution example uses CRT intermediates
+wider than i64: i64 follows per-operation wrapping, while i128 and BigInt retain
+the Python result for the tested inputs.
 
 F-strings and canonical builtin `format`, `repr`, and `ascii` calls have direct
 frame lowering for supported native values, including captured aliases.
@@ -718,3 +724,43 @@ target stores. Shared payloads keep their original handles. A temporary bottom
 value from an as-yet-unsolved producer defers attribute analysis until the
 shared fixed point; final protocol validation still applies. Mixed iterator
 alternatives and extended starred targets retain their separate pull protocols.
+
+Builtin `str.join` and `bytes.join` accept the registered typed sequence and
+iterator families, including stored map/filter cursors, linked dictionary
+views, and immediate generator expressions. Receiver and arguments are
+captured before iteration. Generic sources collect concrete typed items before
+validating their element types, preserving later iterator/callback errors and
+shared cursor positions. The existing ordinary string collectors and the
+class-frame string-list fast path remain available. Positional/keyword binding
+errors, noniterable inputs and the first invalid element's index/type produce
+Python errors at the original call.
+
+Generator body `StopIteration` becomes `RuntimeError` with its complete
+original direct-cause traceback. Canonical builtin exception classes and
+stored exception instances use the shared typed exception protocol. No type
+error or unsupported operation is hidden by a runtime interpreter fallback.
+
+
+Captured source class references can be used by typed eager/lazy consumers,
+including map callbacks. Their real __init__ signatures bind the already
+captured positional, keyword and default values. Allocation retains the
+captured class object and defining module; aliases and finite class/function
+alternatives dispatch to the appropriate concrete constructor. Zero-length
+sources never call the initializer. Invalid bindings raise Python TypeError
+when the callable is actually invoked. Nominal NamedTuple factories and
+non-None initializer returns require separate constructor protocols and receive
+positioned diagnostics on this captured-callback path.
+
+
+Typed C-iterator pulls preserve exception kind, payload and traceback until
+the actual consumer decides whether `StopIteration` means exhaustion. A
+`next` without a default forwards the original exception; a supplied default,
+`for` and eager collectors clear it. Map/filter callbacks can resume on later
+pulls. Strict map/zip clear source stops before validating lengths and retain
+the callback's own exception. Chain advances past a stopped source; islice and
+pairwise release their exhausted/error state; accumulate preserves its old
+total and source after callback failure. Deferred Python caller frames follow
+the clearing boundary, including recursive callbacks, rather than being
+identified by line/name equality. Builtin C callbacks do not invent Python
+frames. General iterator-object display and lambdas defined inside generator
+expression scopes remain separate positioned capability boundaries.

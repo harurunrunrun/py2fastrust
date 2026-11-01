@@ -47,6 +47,8 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,'_native_exception_class',False):return 'exception_class'
+    if getattr(kind,'_native_exception_value',False):return 'exception_value'
     if getattr(kind,"_native_builtin_singleton",False):return "builtin_singleton"
     if getattr(kind,'_native_cmp_key',False):return 'cmp_key'
     if getattr(kind,'_native_class_deque',False):return 'deque'
@@ -246,7 +248,7 @@ class Environment(dict):
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
-    DATA = {"builtin_singleton", "int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict","dict","set","dict_view"}
+    DATA = {"exception_class","exception_value","builtin_singleton", "int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict","dict","set","dict_view"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -257,6 +259,7 @@ class Model:
         self.trusted_imports = trusted_imports
         self.classes, self.functions = {}, {}
         self.call_edges = {}
+        self.call_edges_by_site = {}
         self.plans = []
         self.node_cells = {}
         # Storage members receive directional value constraints. Their incoming
@@ -307,6 +310,8 @@ class Model:
         self.expanded_calls=ExpandedCalls(self)
         from .native_immediate_generators import Generators
         self.generators=Generators(self)
+        from .native_exception_values import Exceptions
+        self.exceptions=Exceptions(self)
 
     def semantic_graph(self,unit):return SemanticGraph(unit)
 
@@ -617,7 +622,8 @@ class Model:
                 tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.deques.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),metadata_snapshot(self),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())),
-                self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else())
+                self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else(),
+                tuple(tuple(shape(value)for value in record.arguments)for record in self.exceptions.records))
 
     def analyze_body(self,plan,environment):
         if isinstance(plan.node,ast.Lambda):
@@ -691,7 +697,7 @@ class Model:
                 else:
                     raise ClassUnsupported(plan.node)
         self.final = True
-        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)else None
+        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or self.exceptions.raises or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)else None
         self.module.visible_definitions = set()
         self.block(self.module, self.tree.body, dict(self.global_symbols))
         for plan in self.plans[1:]:
@@ -701,6 +707,7 @@ class Model:
                 self.analyze_body(plan,{**global_names, **plan.arguments})
         from .native_class_allocation_facts import publish
         publish(self)
+        self.exceptions.validate()
         from .native_class_storage import validate_instance_graph
         validate_instance_graph(self)
         for owner in self.classes.values():
@@ -747,6 +754,8 @@ class Model:
                 raise ClassUnsupported(node)
             return self.cell(plan, node, literal.kind)
         if isinstance(node, ast.Name):
+            exception=self.exceptions.name(plan,node,environment)
+            if exception is not None:return self.remember(plan,node,exception)
             name = self.resolved_name(plan,node)
             binding=self.namespace.owners.get(self.unit.ordinal(node))if self.unit is not None else None
             global_reference=(binding is not None and self.module_owner(binding.owner))if self.unit is not None else plan is self.module or name not in plan.declared
@@ -981,6 +990,7 @@ class Model:
         else:callee.global_names.update(names)
         callee.reachable = True
         self.call_edges.setdefault(caller.index,set()).add(callee.index)
+        self.call_edges_by_site.setdefault((caller.index,id(node)),set()).add(callee.index)
         visible = set(caller.visible_definitions or ())
         if callee.visible_definitions is None:
             callee.visible_definitions = visible
@@ -1094,6 +1104,9 @@ class Model:
                 self.remember(plan,function,callable_)
                 return self.cell(plan,node,"bytes" if callable_.tag in {"reader_bytes","read_bytes"} else "str")
         if receiver is not None:
+            from .native_text_join import analyze as analyze_join
+            joined=analyze_join(self,plan,node,receiver,arguments,keywords,environment)
+            if joined is not None:return joined
             deque=self.deques.analyze_method(plan,node,receiver,arguments,keywords,environment)
             if deque is not None:return deque
             from .native_class_splits import analyze as analyze_split
@@ -1151,6 +1164,8 @@ class Model:
 
     def attribute_value(self,plan,node,receiver,environment):
         receiver=receiver.root()
+        if any(getattr(kind,'_native_exception_class',False)or getattr(kind,'_native_exception_value',False)for kind in alternatives(shape(receiver))):
+            raise ClassUnsupported(node,'exception attribute '+repr(node.attr)+' needs exception argument, traceback or descriptor metadata; that exception-object attribute protocol is not implemented',types=(('receiver',shape(receiver)),),proof='exception object attribute and metadata protocol')
         if isinstance(receiver.tag,EmptyType)and not self.final:
             from .native_guard_flow import AnalysisPending
             raise AnalysisPending()
@@ -1373,6 +1388,9 @@ class Model:
             elif isinstance(node,ast.Assert):
                 from .native_assertions import analyze
                 analyze(self,plan,node,environment)
+            elif isinstance(node,ast.Raise):
+                self.exceptions.analyze_raise(plan,node,environment)
+                environment=None
             elif isinstance(node,ast.AugAssign):
                 left = self.expression(plan,node.target,environment)
                 self.augmented[(plan.index,id(node))] = left
@@ -1501,6 +1519,8 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,'_native_exception_class',False):return 'ClassExceptionClass'+value.name
+        if getattr(value,'_native_exception_value',False):return 'Rc<ClassExceptionValue'+str(value.record.index)+'>'
         if getattr(value,"_native_builtin_singleton",False):return "NativeNotImplemented"
         if getattr(value,'_native_cmp_key',False):return 'Rc<NativeCmpKey_'+str(value.record.index)+'>'
         if getattr(value,"_native_erased_argument",False):return "()"
@@ -1619,6 +1639,7 @@ class Emitter:
         return Expression("{"+setup+f"let {result}={truth};{result}"+"}","bool")
 
     def truth(self, value, node=None):
+        if getattr(value.kind,'_native_exception_class',False)or getattr(value.kind,'_native_exception_value',False):return 'true'
         if getattr(value.kind,"_native_builtin_singleton",False):
             from .native_builtin_singletons import truth
             return truth(self,value,node)
@@ -1654,6 +1675,9 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        if getattr(value.kind,'_native_exception_class',False)or getattr(value.kind,'_native_exception_value',False):
+            from .native_exception_values import show
+            return show(self,value,node,representation)
         if getattr(value.kind,'_native_named_tuple',False):
             from .native_named_tuples import show
             return show(self,value,node)
@@ -1706,6 +1730,8 @@ class Emitter:
         return result
 
     def expression(self, node):
+        exception=self.model.exceptions.read(self,node)
+        if exception is not None:return exception
         from .native_builtin_singletons import read as read_singleton
         singleton=read_singleton(self,node)
         if singleton is not None:return singleton
@@ -1919,6 +1945,9 @@ class Emitter:
             lambda kind,code:self.comparison(operator,Expression(f"({code}).clone()",kind),right,node))
         if union_kind(right.kind):return project(right.kind,right.code,
             lambda kind,code:self.comparison(operator,left,Expression(f"({code}).clone()",kind),node))
+        from .native_exception_values import comparison as exception_comparison
+        exception=exception_comparison(operator,left,right)
+        if exception is not None:return exception
         if isinstance(operator,(ast.Is,ast.IsNot))and domain(left.kind)==domain(right.kind)=="deque":
             code="Rc::ptr_eq(&"+left.code+",&"+right.code+")"if left.kind==right.kind else"false"
             return "!("+code+")"if isinstance(operator,ast.IsNot)else code
@@ -2103,6 +2132,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_text_join import emit as emit_join
+        joined=emit_join(self,node)
+        if joined is not None:return joined
         from .native_integer_word_maps import emit_call as emit_integer_words
         words=emit_integer_words(self,node)
         if words is not None:return words
@@ -2335,6 +2367,7 @@ class Emitter:
                          if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
+        if isinstance(node,ast.Raise):return self.model.exceptions.emit_raise(self,node)
         from .native_context_managers import control_statement
         control=control_statement(self,node)
         if control is not None:return control
@@ -2750,6 +2783,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(split_runtime(model))
     from .native_class_text_ops import runtime as text_operation_runtime
     pieces.append(text_operation_runtime(model))
+    exception_payloads=model.exceptions.payloads(emitters[0])
+    if exception_payloads:pieces.append(exception_payloads)
     from .native_cmp_keys import runtime as comparison_key_runtime
     pieces.append(comparison_key_runtime(model,emitters[0]))
     from .native_starred_calls import runtime as expanded_runtime
@@ -2769,6 +2804,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=model.finish_runtime(model.generators.runtime("\n".join(pieces)))
     from .native_context_managers import runtime as context_runtime
     result=context_runtime(result,model)
+    from .native_exception_runtime import runtime as exception_runtime
+    result=exception_runtime(result,model)
     from .native_class_gc import runtime as gc_runtime
     result=gc_runtime(result,model)
     from .native_text_policy import apply_text_policy

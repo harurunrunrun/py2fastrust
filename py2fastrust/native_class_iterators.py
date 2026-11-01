@@ -318,11 +318,18 @@ class Iterators:
         fields.append("strict:"+emitter.truth(strict,node))
         return Expression("{"+"".join(before)+f"Rc::new(RefCell::new(ClassIteratorState_{record.index}{{"+",".join(fields)+"}))}",wanted)
 
-    def pull(self,emitter,node,value,active=()):
+    def pull(self,emitter,node,value,active=(),*,stop=None,clear_stop_if=None):
         from .native_classes import Expression
+        from .native_iterator_stop_policy import context,boundary
         handle=emitter.fresh()
-        pulled=self._pull(emitter,node,Expression(handle,value.kind),active)
-        return Expression("{let "+handle+"=&("+value.code+");"+pulled.code+"}",pulled.kind)
+        with context(emitter)as(marker,owner):
+            pulled=self._pull(emitter,node,Expression(handle,value.kind),active)
+        pulled=Expression("{let "+handle+"=&("+value.code+");"+pulled.code+"}",pulled.kind)
+        if stop is None:stop='clear'if owner else'propagate'
+        assert stop in {'clear','propagate'}
+        clear=clear_stop_if if clear_stop_if is not None else stop=='clear'
+        if owner or clear is not False:return boundary(emitter,node,pulled,marker,clear=clear,owner=owner)
+        return pulled
 
     def _pull(self,emitter,node,value,active=()):
         from .native_classes import ClassUnsupported,Expression,shape,domain
@@ -407,7 +414,7 @@ class Iterators:
         code+="'"+label+":{"
         items=[]
         for index,(source,kind)in enumerate(zip(sources,record.input_types)):
-            pulled=self.pull(emitter,node,Expression(source,kind),active+(record.index,))
+            pulled=self.pull(emitter,node,Expression(source,kind),active+(record.index,),stop='propagate',clear_stop_if=strict)
             item=emitter.fresh();items.append(Expression(item,pulled.kind))
             if index:
                 message=f"ValueError: {record.operation}() argument {index+1} is shorter than argument{'s'if index>1 else''} "+("1-"+str(index)if index>1 else"1")
@@ -415,7 +422,7 @@ class Iterators:
             else:
                 checks=[]
                 for other_index,(other,other_kind)in enumerate(zip(sources[1:],record.input_types[1:]),1):
-                    later=self.pull(emitter,node,Expression(other,other_kind),active+(record.index,))
+                    later=self.pull(emitter,node,Expression(other,other_kind),active+(record.index,),stop='clear')
                     message=f"ValueError: {record.operation}() argument {other_index+1} is longer than argument{'s'if other_index>1 else''} "+("1-"+str(other_index)if other_index>1 else"1")
                     checks.append("if ("+later.code+").is_some(){"+emitter.at(f"Err::<(),String>({_string(message)}.to_owned())",node)+";}")
                 absent="if "+strict+"{"+"".join(checks)+"}"
@@ -438,17 +445,10 @@ class Iterators:
         return Expression(code,shape(record.element))
 
     def _callback_result(self,emitter,value):
-        """A callback StopIteration terminates this pull without latching it."""
+        # Raw C pulls preserve the complete exception. Their actual Python
+        # consumer decides whether StopIteration means exhaustion.
         from .native_classes import Expression
-        from .native_class_calls import synchronous
-        result=emitter.fresh();error=emitter.fresh()
-        inside='Ok::<'+emitter.rust_type(value.kind)+',NativeError>('+value.code+')'
-        invocation=('(||{'+inside+'})()'if synchronous(emitter.model,emitter.plan)
-                    else '(async{'+inside+'}).await')
-        code=('match '+invocation+'{Ok('+result+')=>Some('+result+'),Err('+error+')=>{'
-              'if '+error+'.message=="StopIteration"||'+error+'.message.starts_with("StopIteration:"){None}'
-              'else{return Err('+error+');}}}')
-        return Expression(code,value.kind)
+        return Expression('Some('+value.code+')',value.kind)
 
     def _union_source_pull(self,emitter,node,record,kind,source,index,item_kind):
         """One concrete source alternative; no source borrow crosses a callback."""

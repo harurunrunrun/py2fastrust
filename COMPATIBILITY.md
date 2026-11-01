@@ -761,6 +761,25 @@ direct adapter. Other builtin/member/constructor expansion adapters and
 `**mapping` keyword expansion remain unfinished, with specific positioned
 diagnostics.
 
+Explicit `raise` supports canonical `ValueError`, `TypeError`, `RuntimeError`
+and `StopIteration` classes, captured class aliases and stored instances. Each
+constructor keeps its actual typed builtin arguments; mutable list/tuple
+payloads retain sharing. Evaluation order, class identity, instance identity,
+truth, `str`, `repr` and exact predicates for these builtin types use native
+exception carriers. Custom argument display, recursive exception arguments,
+subclass construction and exception metadata attributes remain diagnostics.
+
+Stored exceptions retain logical traceback locations across suppression and
+later raises. Cleanup records implicit context separately from the direct cause
+created by the generator `StopIteration` rule. Current context states are used
+for cycle cuts and display; trace states participate in the existing native
+cycle collector. This does not implement Python frame objects. Combining a
+raised stored exception with `id()` remains a positioned capability boundary
+until complete frame-local lifetime roots are represented. Bare re-raise,
+`raise ... from ...`, `try`/`except` and custom exception inheritance are separate
+capabilities. Generator consumers require their proved exception protocol before
+using the direct-cause conversion.
+
 Named nested functions have canonical lexical definition identities and typed
 per-invocation environments. Returned and sibling functions preserve captured
 list aliases, late writes, `nonlocal` updates/deletion and per-instance mutable
@@ -1484,3 +1503,43 @@ comparisons remain separate capabilities with positioned diagnostics. These
 boundaries do not substitute pointer equality or a generic execution engine for
 Python callbacks. The unchanged ACL lazy-segment-tree practice K example is
 covered by standalone generated Rust in every integer mode.
+
+Builtin `str.join` and `bytes.join` accept the registered typed sequence and
+iterator families, including stored map/filter cursors, linked dictionary
+views, and immediate generator expressions. Receiver and arguments are
+captured before iteration. Generic sources collect concrete typed items before
+validating their element types, preserving later iterator/callback errors and
+shared cursor positions. The existing ordinary string collectors and the
+class-frame string-list fast path remain available. Positional/keyword binding
+errors, noniterable inputs and the first invalid element's index/type produce
+Python errors at the original call.
+
+Generator body `StopIteration` becomes `RuntimeError` with its complete
+original direct-cause traceback. Canonical builtin exception classes and
+stored exception instances use the shared typed exception protocol. No type
+error or unsupported operation is hidden by a runtime interpreter fallback.
+
+
+Captured source class references can be used by typed eager/lazy consumers,
+including map callbacks. Their real __init__ signatures bind the already
+captured positional, keyword and default values. Allocation retains the
+captured class object and defining module; aliases and finite class/function
+alternatives dispatch to the appropriate concrete constructor. Zero-length
+sources never call the initializer. Invalid bindings raise Python TypeError
+when the callable is actually invoked. Nominal NamedTuple factories and
+non-None initializer returns require separate constructor protocols and receive
+positioned diagnostics on this captured-callback path.
+
+
+Typed C-iterator pulls preserve exception kind, payload and traceback until
+the actual consumer decides whether `StopIteration` means exhaustion. A
+`next` without a default forwards the original exception; a supplied default,
+`for` and eager collectors clear it. Map/filter callbacks can resume on later
+pulls. Strict map/zip clear source stops before validating lengths and retain
+the callback's own exception. Chain advances past a stopped source; islice and
+pairwise release their exhausted/error state; accumulate preserves its old
+total and source after callback failure. Deferred Python caller frames follow
+the clearing boundary, including recursive callbacks, rather than being
+identified by line/name equality. Builtin C callbacks do not invent Python
+frames. General iterator-object display and lambdas defined inside generator
+expression scopes remain separate positioned capability boundaries.

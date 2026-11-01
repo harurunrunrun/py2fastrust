@@ -202,7 +202,10 @@ class ItertoolsState:
         item_kind=shape(record.input_types[0].record.element)
         nested=registry.pull(emitter,node,Expression(source,record.input_types[0]),active+(record.index,))
         code="'"+label+':{let Some('+source+')=({'+value.code+'.borrow().source.clone()})else{break \''+label+' None;};'
-        exhausted=value.code+'.borrow_mut().source=None;break \''+label+' None;'
+        cleanup='{let mut state='+value.code+'.borrow_mut();state.source=None;'+('state.previous=None;'if record.tool=='pairwise'else'')+'}'
+        from .native_iterator_stop_policy import cleanup_pull
+        nested=cleanup_pull(emitter,nested,cleanup)
+        exhausted=cleanup+'break \''+label+' None;'
         if record.tool=='pairwise':
             previous=emitter.fresh()
             code+='let '+previous+'={'+value.code+'.borrow().previous.clone()};let '+previous+'=if let Some(value)='+previous+'{value}else{let Some(value)=('+nested.code+')else{'+exhausted+'};'+value.code+'.borrow_mut().previous=Some(value.clone());value};'
@@ -228,7 +231,7 @@ class ItertoolsState:
         for index,source_kind in enumerate(record.input_types):
             cursor=emitter.fresh();raw=emitter.fresh();item=emitter.fresh()
             constructed=registry.construct(emitter,node,Expression(raw,shape(record.input_values[index])),kind=source_kind)
-            pulled=registry.pull(emitter,node,Expression(cursor,source_kind),active+(record.index,))
+            pulled=registry.pull(emitter,node,Expression(cursor,source_kind),active+(record.index,),stop='clear')
             converted=emitter.coerce(Expression(item,pulled.kind),kind,node)
             body='let '+cursor+'={'+value.code+f'.borrow().active_{index}.clone()'+'};let '+cursor+'=if let Some(value)='+cursor+'{value}else{'
             body+='let '+raw+'={let mut state='+value.code+f'.borrow_mut();state.done=true;state.original_{index}.take().unwrap()'+'};let cursor='+constructed.code+';{let mut state='+value.code+f'.borrow_mut();state.done=false;state.active_{index}=Some(cursor.clone());'+'}cursor};'

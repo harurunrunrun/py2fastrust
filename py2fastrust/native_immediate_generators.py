@@ -81,12 +81,19 @@ class Generators:
                 targets.extend(branch.targets)
             else:
                 if targets and all(admitted(target)for target in targets):return True
-        if keyword is not None:return False
         if isinstance(parent.func,ast.Attribute):
             receiver=self.model.records.get((plan.index,id(parent.func.value)))
+            if receiver is not None and shape(receiver)is None and not self.model.final:
+                from .native_guard_flow import AnalysisPending
+                raise AnalysisPending()
             if receiver is not None and shape(receiver)is not None:
                 def accepted(kind):
-                    for adapter in self.model.callable_cells.member_adapters.values():
+                    adapters=(*self.model.callable_cells.member_adapters.values(),*self.model.callable_cells.method_adapters)
+                    for adapter in adapters:
+                        if keyword is not None:
+                            capability=getattr(adapter,'eager_method_keyword',None)
+                            if capability is not None and capability(kind,parent.func.attr,keyword):return True
+                            continue
                         capability=getattr(adapter,'eager_method_arguments',None)
                         positions=None if capability is None else capability(kind,parent.func.attr)
                         if positions is not None and position in positions:return True
@@ -113,6 +120,8 @@ class Generators:
         from .native_classes import Cell
         from .native_class_comprehensions import analyze
         record=value.root().tag.record
+        from .native_generator_effects import ensure_protocol
+        ensure_protocol(self.model,record.node,analysis_only=True)
         def contribute(inside,semantic):
             self.model.contribute(record.element,self.model.expression(plan,semantic.element,inside),semantic.element)
             return record.element
@@ -150,6 +159,8 @@ class Generators:
         from .native_classes import Expression,shape
         from .native_class_comprehensions import Collector,_Iterator,emit
         from .native_class_calls import synchronous
+        from .native_generator_effects import ensure_protocol
+        ensure_protocol(self.model,value.kind.record.node)
         record=value.kind.record;record.consumed=True
         caller_scope=getattr(emitter,'logical_scope',emitter.plan.scope)
         caller_binding=getattr(emitter,'logical_binding_scope',self.model.lexical.scope(emitter.plan))
@@ -194,7 +205,8 @@ class Generators:
                 elif name=='sum':ending=result
                 elif name in {'min','max'}:ending=e.at(f'{result}.ok_or_else(||"ValueError: {name}() iterable argument is empty".to_owned())',node)
                 elif name=='next':
-                    ending=(e.coerce(arguments[1],kind,node)if len(arguments)==2 else e.at(f'Err::<{e.rust_type(kind)},String>("StopIteration".to_owned())',node))+'}'
+                    from .native_exception_values import stop_iteration
+                    ending=(e.coerce(arguments[1],kind,node)if len(arguments)==2 else stop_iteration(e,node,kind))+'}'
                 else:ending=str(name=='all').lower()+'}'
             return f'{stage}=false;'+ending
         with self.context(emitter,'<genexpr>',generator_binding):
@@ -204,9 +216,16 @@ class Generators:
         result=emitter.fresh();guard=emitter.fresh()
         invoke=('(||{Ok::<'+emitter.rust_type(wanted)+',NativeError>('+body+')})()'if synchronous(self.model,emitter.plan)
                 else '(async{Ok::<'+emitter.rust_type(wanted)+',NativeError>('+body+')}).await')
+        stop=(f'error=class_exception_generator_stop(error,{node.lineno},{caller_location});'if self.model.exceptions.used else
+              f'error=NativeError{{message:"RuntimeError: generator raised StopIteration".to_owned(),line:{node.lineno},function:{caller_location},frames:Vec::new()}};')
         catch=(f'{invoke}.map_err(|mut error|{{if {stage}{{'
                f'if error.message=="StopIteration"||error.message.starts_with("StopIteration:"){{error=NativeError{{message:"RuntimeError: generator raised StopIteration".to_owned(),line:{node.lineno},function:{caller_location},frames:Vec::new()}};}}'
                f'else{{error.frames.push(({node.lineno},{caller_location}));}}}}error}})?')
+        if self.model.exceptions.used:
+            original=f'error=NativeError{{message:"RuntimeError: generator raised StopIteration".to_owned(),line:{node.lineno},function:{caller_location},frames:Vec::new()}};'
+            catch=catch.replace(original,stop)
+            from .native_exception_values import is_stop
+            catch=catch.replace('error.message=="StopIteration"||error.message.starts_with("StopIteration:")',is_stop(emitter,'error'))
         return Expression('{'+f'let {guard}=class_generator_enter(&class_scope,{node.lineno},{caller_location})?;let mut {stage}=true;let {result}={catch};{result}'+'}',wanted)
 
     def runtime(self,source):

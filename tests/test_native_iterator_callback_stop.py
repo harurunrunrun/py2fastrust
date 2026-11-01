@@ -97,6 +97,9 @@ class IteratorCallbackStopTests(unittest.TestCase):
             with self.subTest(name=name):self.check(name)
 
     def test_generator_and_strict_zip_protocol_boundaries(self):
-        for name in ('gen_source_map_stop_is_exhaustion',
-                     'generator_body_pep479_is_not_swallowed','zip_strict_detects_stopped_map'):
+        for name in ('gen_source_map_stop_is_exhaustion', 'zip_strict_detects_stopped_map'):
             with self.subTest(name=name):self.check(name)
+
+    def test_generator_body_has_complete_pep479_chain(self):
+        import test_native_explicit_raise as raise_tests
+        raise_tests.NativeRaiseExecutionTests.exercise(self,CASES['generator_body_pep479_is_not_swallowed'],'')

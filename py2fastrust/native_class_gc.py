@@ -91,7 +91,7 @@ def registration(model,owner):
 
 
 def runtime(source,model):
-    if not getattr(model,'gc_classes',()):return source
+    if not getattr(model,'gc_classes',())and not(getattr(model,'exceptions',None)and model.exceptions.records):return source
     from .rust_pruning import _lex
     tokens,_,pairs=_lex(source);edits=[];declarations=0;constructors=0
     for index,token in enumerate(tokens[:-1]):

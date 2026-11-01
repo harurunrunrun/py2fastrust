@@ -69,6 +69,8 @@ class CallSite:
     errors: dict=field(default_factory=dict)
     builtins: dict=field(default_factory=dict)
     members: dict=field(default_factory=dict)
+    constructors: dict=field(default_factory=dict)
+    exception_constructors:dict=field(default_factory=dict)
 
 
 def function_kind(kind):return isinstance(kind,AotFunctionType)
@@ -144,6 +146,8 @@ class CallableCells:
         self.builtin_used=set()
         self.member_used=set()
         self.member_adapters={}
+        from .native_text_join import TextJoinAdapter
+        self.method_adapters=[TextJoinAdapter]
         self.member_cells={}
         self.builtin_cells={}
         self.builtin_sites={}
@@ -237,6 +241,8 @@ class CallableCells:
 
     def candidate(self,plan,node,environment):
         function=node.func
+        from .native_exception_values import NAMES
+        if isinstance(function,ast.Name)and function.id in NAMES and self.model.exceptions.name(plan,function,environment)is not None:return True
         from .native_builtin_singletons import canonical_kind
         if canonical_kind(self.model,plan,function,environment)is not None:return True
         if isinstance(function,ast.Name):
@@ -414,7 +420,17 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
         for branch in alternatives(kind):
             if function_kind(branch):targets.update(branch.definitions)
     from .native_builtin_callables import analyze as analyze_builtin
+    from .native_module_linking import ClassReferenceType
     for branch in alternatives(kind)if kind is not None else():
+        if isinstance(branch,ClassReferenceType):
+            from .native_class_constructor_calls import analyze as analyze_constructor
+            record=analyze_constructor(self,plan,node,branch,arguments,positional,keywords,environment,identity=identity)
+            site.constructors[branch.definition]=record
+            if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
+        if getattr(branch,'_native_exception_class',False):
+            record=self.model.exceptions.construct(plan,node,branch,positional,keywords)
+            site.exception_constructors[branch]=record
+            if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
         if function_kind(branch):
             for target in branch.methods:
                 self.bound_methods.analyze(plan,node,target,arguments,positional,keywords,environment,site)
@@ -531,8 +547,17 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
     def branch(kind,code):
         if union_kind(kind):
             return project(kind,code,lambda child,value:branch(child,f"({value}).clone()"))
+        if getattr(kind,'_native_exception_class',False):
+            record=site.exception_constructors[kind]
+            return emitter.model.exceptions.emit_construct(emitter,node,record,positional,keywords,wanted).code
         if getattr(kind,'_native_cmp_key',False):
             raise ClassUnsupported(node,'calling functools.KeyWrapper outside a registered sorting-key consumer requires exposed wrapper-object construction; this native adapter currently supports captured factories in sorted and list.sort',types=(('callee',kind),),proof='exposed comparison-key object construction')
+        from .native_module_linking import ClassReferenceType
+        if isinstance(kind,ClassReferenceType):
+            from .native_class_constructor_calls import emit as emit_constructor
+            return emit_constructor(emitter,node,site.constructors[kind.definition],
+                                    _Expression(code,kind),positional,keywords,wanted,
+                                    source_call_location=source_call_location)
         if function_kind(kind):
             arms=[]
             for definition in kind.definitions:

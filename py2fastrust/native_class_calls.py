@@ -35,6 +35,9 @@ def synchronous(model,plan):
 
 
 def call(emitter,invocation,callee,node):
+    if getattr(emitter,'iterator_callback_context',None)is not None:
+        from .native_iterator_stop_policy import callback_call
+        return callback_call(emitter,invocation,callee,node)
     from .native import _string
     mode=synchronous(emitter.model,callee)
     if mode:

@@ -61,6 +61,12 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name == "len" and len(arguments) == 1 and not keywords:
         return cell("int")
     if name in {"abs","id"} and len(arguments) == 1 and not keywords:
+        if name=='id':
+            model.exceptions.observe_identity(plan,node)
+            from .native_classes import shape
+            from .native_types import alternatives
+            if any(getattr(kind,'_native_exception_class',False)for kind in alternatives(shape(arguments[0]))):
+                raise ClassUnsupported(node,'id() of a builtin exception class needs a stable class-object address; the typed exception-class carrier preserves class equality and identity predicates but its address protocol is not implemented',proof='stable exception class-object identity address')
         if name=="abs":
             from .native_classes import shape
             from .native_types import alternatives
@@ -86,6 +92,7 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name in {"iter","reversed"} and len(arguments)==1 and not keywords:
         return cell(model.iterators.source(plan,node,arguments[0],operation="reverse"if name=="reversed"else"source"))
     if name == "next" and 1<=len(arguments)<=2 and not keywords:
+        model.exceptions.require(node)
         from .native_class_iterators import iterator_kind
         from .native_types import alternatives
         from .native_classes import shape,Environment
@@ -331,7 +338,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
             name=_type_name(emitter,value,node)
             return _error(emitter,node,wanted,f'format!("TypeError: bad operand type for abs(): \'{{}}\'",{name})')
     elif name == "id":
-        if domain(arguments[0].kind)not in{"object","list","iterator","dict","set","dict_view"}:raise ClassUnsupported(node)
+        if domain(arguments[0].kind)not in{"exception_value","object","list","iterator","dict","set","dict_view"}:raise ClassUnsupported(node)
         code=f"class_from_usize(Rc::as_ptr(&{arguments[0].code}) as usize)"
         raw_kind='int'
     elif name == "range":
@@ -352,9 +359,10 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         if not iterator_kind(arguments[0].kind):
             actual=_type_name(self,arguments[0],node)
             return _error(self,node,wanted,f'format!("TypeError: \'{{}}\' object is not an iterator",{actual})')
-        pulled=self.model.iterators.pull(self,node,arguments[0]);current=self.fresh()
+        pulled=self.model.iterators.pull(self,node,arguments[0],stop='clear'if len(arguments)==2 else'propagate');current=self.fresh()
         present=self.coerce(Expression(current,pulled.kind),wanted,node)
-        absent=self.coerce(arguments[1],wanted,node)if len(arguments)==2 else self.at(f'Err::<{self.rust_type(wanted)},String>("StopIteration".to_owned())',node)
+        from .native_exception_values import stop_iteration
+        absent=self.coerce(arguments[1],wanted,node)if len(arguments)==2 else stop_iteration(self,node,wanted)
         return Expression(f"match {pulled.code}{{Some({current})=>{present},None=>{absent}}}",wanted)
     elif name in {"any","all"}:
         from .native_class_iterators import iterator_kind

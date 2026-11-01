@@ -288,7 +288,7 @@ class LinkedModel(Model):
             for argument in node.keywords:self.expression(plan,argument.value,environment)
             return self.cell(plan,node)
         if known is not None and isinstance(known.root().tag,ClassReferenceType):
-            self.expression(plan,node.func,environment)
+            reference=self.expression(plan,node.func,environment)
             try:normalized=normalize_call(node)
             except CallBindingError as error:raise ClassUnsupported(node,str(error))from None
             arguments=[self.expression(plan,arg.expression,environment)for arg in normalized.positional]
@@ -296,6 +296,9 @@ class LinkedModel(Model):
             owner=next(owner for owner in self.classes.values()if owner.index==known.root().tag.definition)
             result=self.class_namespaces.named_tuples.analyze_call(plan,node,owner,arguments,keywords,environment)
             if result is not None:return result
+            from .native_class_constructor_calls import analyze_invalid_direct
+            invalid=analyze_invalid_direct(self,plan,node,owner,reference,normalized,arguments,keywords,environment)
+            if invalid is not None:return invalid
             owner.used=True
             result=self.cell(plan,node,"object",(self.class_key(owner),))
             constructor=owner.methods.get('__init__')

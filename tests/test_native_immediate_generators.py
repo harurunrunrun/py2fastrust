@@ -100,8 +100,12 @@ class ImmediateGeneratorTests(unittest.TestCase):
             with self.subTest(name=name):self.check(name)
 
     def test_error_locations_and_original_free_cells(self):
-        for name in ('body_error_frames','filter_error_frames','first_source_error_no_generator_frame','free_variable_delete','generator_stop_iteration_conversion'):
+        for name in ('body_error_frames','filter_error_frames','first_source_error_no_generator_frame','free_variable_delete'):
             with self.subTest(name=name):self.check(name)
+
+    def test_generator_stop_has_complete_exception_chain(self):
+        import test_native_explicit_raise as raise_tests
+        raise_tests.NativeRaiseExecutionTests.exercise(self,CASES['generator_stop_iteration_conversion'],'')
 
     def test_recursive_callback_uses_compiled_future(self):
         self.check('recursive_callback_future')

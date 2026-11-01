@@ -71,6 +71,8 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
         return nested(kind.name)
     if name == "ModuleType":return "module"
     if name == "ClassReferenceType":return "type"
+    if getattr(kind,'_native_exception_class',False):return 'exception class '+kind.name
+    if getattr(kind,'_native_exception_value',False):return kind.record.owner.name
     if getattr(kind,"_native_function_reference",False):
         builtins=getattr(kind,"builtins",())
         if builtins:

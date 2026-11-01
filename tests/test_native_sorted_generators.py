@@ -178,10 +178,10 @@ class SortedGenerators(unittest.TestCase):
         self.check('key_error_after_all_items')
 
     def test_body_stopiteration_pep479(self):
-        self.check_unimplemented_raise('body_stopiteration_pep479')
+        self.check_raised_error('body_stopiteration_pep479')
 
     def test_key_stopiteration_propagates(self):
-        self.check_unimplemented_raise('key_stopiteration_propagates')
+        self.check_raised_error('key_stopiteration_propagates')
 
     def test_unused_key_empty(self):
         self.check('unused_key_empty')
@@ -199,15 +199,12 @@ class SortedGenerators(unittest.TestCase):
         self.check('source_creation_precedes_arguments')
 
 
-    def check_unimplemented_raise(self,name):
-        from py2fastrust import transpile, TranspileOptions
-        for mode in ("i64","i128","bigint"):
-            result=transpile(CASES[name],TranspileOptions(integer=mode,license="none"))
-            self.assertFalse(result.success)
-            self.assertTrue(any(d.code=="E006" and "raise" in d.message for d in result.diagnostics),result.diagnostics)
+    def check_raised_error(self,name):
+        import test_native_explicit_raise as raise_tests
+        raise_tests.NativeRaiseExecutionTests.exercise(self,CASES[name],'')
 
     def test_body_builtin_stopiteration_pep479(self):
-        self.check('body_builtin_stopiteration_pep479')
+        self.check_raised_error('body_builtin_stopiteration_pep479')
 
     def test_key_builtin_stopiteration_propagates(self):
         self.check('key_builtin_stopiteration_propagates')
