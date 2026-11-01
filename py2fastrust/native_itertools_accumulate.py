@@ -73,8 +73,8 @@ class AccumulateState:
         for kind in alternatives(shape(record.callback)):
             if kind is None:continue
             if kind=='none':
-                result=registry.model.binary(plan,record.node,ast.Add(),record.element,item,
-                    identity=('accumulate_add',record.index))
+                result=registry.model.binary(plan,node,ast.Add(),record.element,item,
+                    identity=('accumulate_add',record.index),environment=environment)
             else:
                 inside=Environment(environment)
                 metadata=CallArguments((Argument(record.node),Argument(record.node)),())
@@ -89,8 +89,10 @@ class AccumulateState:
 
     @staticmethod
     def may_call(registry,record,seen):
-        from .native_classes import shape
-        return shape(record.callback)!='none'or registry.may_call(record.input_types[0],seen|{record.index})
+        from .native_classes import shape,InstanceType
+        from .native_types import alternatives
+        return (shape(record.callback)!='none'or any(isinstance(kind,InstanceType)for kind in alternatives(shape(record.element)))
+                or registry.may_call(record.input_types[0],seen|{record.index}))
 
     @staticmethod
     def fields(emitter,record):
@@ -114,7 +116,7 @@ class AccumulateState:
         if isinstance(nested.kind,EmptyType):return Expression('{'+code+'match '+item+'{}}}',wanted)
         code+='let ('+previous+','+callback+')={let '+state+'='+value.code+'.borrow();('+state+'.total.clone(),'+state+'.callback.clone())};'
         def branch(kind,code):
-            if kind=='none':return emitter.binary(ast.Add(),Expression(previous+'.clone()',wanted),Expression(item,nested.kind),node,wanted).code
+            if kind=='none':return emitter.binary(ast.Add(),Expression(previous+'.clone()',wanted),Expression(item,nested.kind),node,wanted,identity=('accumulate_add',record.index)).code
             site=record.demands.get((emitter.plan.index,id(node),kind))
             if site is None:raise ClassUnsupported(node,'the deferred accumulate callback has no matching typed demand proof',proof='deferred accumulate callback demand site')
             return emit_values(emitter,node,site,Expression("("+code+").clone()",kind),[Expression(previous+'.clone()',wanted),Expression(item,nested.kind)],[],wanted).code

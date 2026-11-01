@@ -432,6 +432,8 @@ def requires_namespaces(program):
         names={node.name for node in classes}
         parents={id(child):parent for parent in executable_nodes(unit.tree)for child in ast.iter_child_nodes(parent)}
         for owner in classes:
+            from .native_class_operators import SUPPORTED_SLOTS
+            if any(isinstance(member,ast.FunctionDef)and member.name in SUPPORTED_SLOTS for member in owner.body):return True
             if owner.bases or owner.keywords or owner.decorator_list:return True
             if any(isinstance(node,(ast.ClassDef,ast.Assign,ast.AugAssign,ast.Delete))or isinstance(node,ast.AnnAssign)and node.value is not None or isinstance(node,ast.FunctionDef)and node.decorator_list for node in owner.body):return True
         for node in executable_nodes(unit.tree):

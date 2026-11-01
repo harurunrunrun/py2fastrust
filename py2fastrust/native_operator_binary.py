@@ -23,7 +23,7 @@ class OperatorAdapter:
         if keywords:error=f'TypeError: _operator.{identity.name}() takes no keyword arguments'
         elif len(positional)!=2:error=f'TypeError: {identity.name} expected 2 arguments, got {len(positional)}'
         if error:return OperatorCall(factory('none'),error)
-        return OperatorCall(model.binary(plan,node,OPERATIONS[identity.name](),*positional,identity=('operator',identity)))
+        return OperatorCall(model.binary(plan,node,OPERATIONS[identity.name](),*positional,identity=('operator',identity),environment=environment))
 
     @staticmethod
     def emit(emitter,node,identity,record,positional,keywords):
@@ -31,4 +31,4 @@ class OperatorAdapter:
         from .native_classes import Expression,shape
         wanted=shape(record.result)
         if record.error is not None:return Expression(emitter.at('Err::<'+emitter.rust_type(wanted)+',String>('+_string(record.error)+'.to_owned())',node),wanted)
-        return emitter.binary(OPERATIONS[identity.name](),*positional,node,wanted)
+        return emitter.binary(OPERATIONS[identity.name](),*positional,node,wanted,identity=('operator',identity))

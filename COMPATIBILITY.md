@@ -1407,9 +1407,8 @@ cleanup-result truth errors retain the active body exception context.
 
 Mutable builtin-singleton namespace fallback and `builtins.NotImplemented`
 exports remain positioned conversion boundaries. This value carrier is a
-prerequisite for source numeric/reflected operator dispatch; it does not by
-itself enable user-defined numeric special methods. Programs without singleton
-values omit its runtime declaration.
+prerequisite for source numeric/reflected operator dispatch. Programs without
+singleton values omit its runtime declaration.
 
 
 Native frame `for` and `while` loops support exhaustion `else` suites. Normal
@@ -1454,3 +1453,22 @@ target stores. Shared payloads keep their original handles. A temporary bottom
 value from an as-yet-unsolved producer defers attribute analysis until the
 shared fixed point; final protocol validation still applies. Mixed iterator
 alternatives and extended starred targets retain their separate pull protocols.
+
+Plain source classes support direct numeric special-method dispatch for binary,
+reflected and augmented arithmetic, shifts, bitwise operations, unary `+`, `-`
+and `~`, and the six rich comparisons. Calls retain the actual class namespace,
+captured function defaults, original operands and shared mutable payloads.
+`NotImplemented` advances to the next appropriate slot; equal arithmetic types
+skip the reflected slot, while rich comparisons can try both receivers.
+`__ne__` without its own method delegates to `__eq__` and negates its truth value.
+Comparison expressions preserve nonboolean results and short-circuit chains.
+Implicit source callbacks invalidate field caches across loops. Captured
+`operator` binary callables and default `itertools.accumulate` addition use the
+same direct dispatch plan.
+
+Numeric special methods implemented by descriptors, subclass-priority rules,
+custom three-argument `pow`, and container comparisons that invoke user rich
+comparisons remain separate capabilities with positioned diagnostics. These
+boundaries do not substitute pointer equality or a generic execution engine for
+Python callbacks. The unchanged ACL lazy-segment-tree practice K example is
+covered by standalone generated Rust in every integer mode.

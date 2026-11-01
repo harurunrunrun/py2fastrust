@@ -294,6 +294,8 @@ class Model:
         self.mappings=Mappings(self)
         from .native_context_managers import ContextManagers
         self.context_managers=ContextManagers(self)
+        from .native_class_operators import Operators
+        self.operators=Operators(self)
         self.discover()
         from .native_lambda_cells import LambdaCells
         self.lambda_cells=LambdaCells(self)
@@ -584,7 +586,8 @@ class Model:
                 continue
             if registry is not None and registry.class_statement(member):continue
             if not isinstance(member,ast.FunctionDef):raise ClassUnsupported(member)
-            if member.name.startswith("__")and member.name.endswith("__")and member.name not in {"__init__","__enter__","__exit__"}:
+            from .native_class_operators import SUPPORTED_SLOTS
+            if member.name.startswith("__")and member.name.endswith("__")and member.name not in {"__init__","__enter__","__exit__"}|SUPPORTED_SLOTS:
                 protocol="truth-value"if member.name in {"__bool__","__len__"}else"special-method"
                 raise ClassUnsupported(member,f"class {node.name!r} defines {member.name}; native {protocol} protocol dispatch for this override is not implemented",operation=f"special method {node.name+'.'+member.name!r}",proof=f"Python {member.name} protocol dispatch")
             name=self.unit.name_for(member)if self.unit is not None else mangle(member.name,node.name)
@@ -832,7 +835,7 @@ class Model:
         if isinstance(node, ast.BinOp):
             left = self.expression(plan, node.left, environment)
             right = self.expression(plan, node.right, environment)
-            return self.binary(plan, node, node.op, left, right)
+            return self.binary(plan, node, node.op, left, right, environment=environment)
         if isinstance(node,ast.NamedExpr):
             value=self.expression(plan,node.value,environment)
             if self.namespace.owns(plan,node.target)and self.is_module_plan(plan):
@@ -843,7 +846,10 @@ class Model:
             if isinstance(node.op, ast.Not):
                 self.condition(plan,node.operand,environment)
                 return self.cell(plan, node, "bool")
-            value = self.expression(plan, node.operand, environment).root()
+            value = self.expression(plan, node.operand, environment)
+            custom=self.operators.unary(plan,node,node.op,value,environment)
+            if custom is not None:return custom
+            value=value.root()
             if value.tag in {"int","bool","int_bool","float"}:
                 if value.tag == "float" and not isinstance(node.op,(ast.UAdd,ast.USub)):
                     raise ClassUnsupported(node)
@@ -852,15 +858,18 @@ class Model:
                 return self.cell(plan, node)
             raise ClassUnsupported(node)
         if isinstance(node, ast.Compare):
-            self.expression(plan, node.left, environment)
+            left=self.expression(plan,node.left,environment)
+            result=self.cell(plan,node)
             for index,value in enumerate(node.comparators):
-                if index==0:self.expression(plan,value,environment)
-                else:
-                    skipped=Environment(environment)
-                    taken=Environment(environment)
-                    self.expression(plan,value,taken)
-                    self.replace_environment(environment,self.join(skipped,taken,node))
-            return self.cell(plan, node, "bool")
+                target=environment if index==0 else Environment(environment)
+                skipped=Environment(environment)
+                right=self.expression(plan,value,target)
+                compared=self.operators.comparison(plan,node,index,node.ops[index],left,right,target)
+                if compared is None:compared=Cell('bool')
+                self.contribute(result,compared,node)
+                if index>0:self.replace_environment(environment,self.join(skipped,target,node))
+                left=right
+            return result
         if isinstance(node, ast.BoolOp):
             result = self.cell(plan, node)
             for index,value in enumerate(node.values):
@@ -913,7 +922,12 @@ class Model:
             return self.cell(plan,node,"bool")
         return self.expression(plan,node,environment)
 
-    def binary(self, plan, node, operator, left, right, *, identity=None):
+    def binary(self, plan, node, operator, left, right, *, identity=None, environment=None):
+        result=self.operators.binary(plan,node,operator,left,right,environment,identity=identity)
+        if result is not None:return result
+        return self.binary_builtin(plan,node,operator,left,right,identity=identity)
+
+    def binary_builtin(self, plan, node, operator, left, right, *, identity=None):
         cell=lambda tag=None,args=():self.cell(plan,node,tag,args,identity=identity)
         a, b = left.root(), right.root()
         if a.tag is None or b.tag is None:
@@ -1359,7 +1373,7 @@ class Model:
                 left = self.expression(plan,node.target,environment)
                 self.augmented[(plan.index,id(node))] = left
                 right = self.expression(plan,node.value,environment)
-                value = self.binary(plan,node,node.op,left,right)
+                value = self.binary(plan,node,node.op,left,right,environment=environment)
                 if not self.deques.indexes.captured_store(plan,node.target,value):
                     self.target(plan,node.target,value,environment)
             elif isinstance(node,ast.Delete):
@@ -1805,22 +1819,9 @@ class Emitter:
         if isinstance(node,ast.UnaryOp):
             if isinstance(node.op,ast.Not):return self.condition(node)
             setup,value = self.capture(self.expression(node.operand))
-            if value.kind == 'float':
-                raw = Expression(("-"if isinstance(node.op,ast.USub)else"")+value.code,'float')
-            else:
-                number = self.number(value)
-                if isinstance(node.op,ast.UAdd):
-                    code = number
-                elif isinstance(node.op,ast.USub):
-                    code = f"({number}).neg()"if self.model.integer=="bigint"else f"({number}).wrapping_neg()"
-                else:
-                    code = f"({number}).invert()"if self.model.integer=="bigint"else f"!({number})"
-                constant = None
-                if value.constant is not None:
-                    constant = self.numeric.normalize(-int(value.constant) if isinstance(node.op,ast.USub) else
-                                                      ~int(value.constant) if isinstance(node.op,ast.Invert) else int(value.constant))
-                raw = Expression(code,'int',constant)
-            return Expression(f"{{{setup}{self.coerce(raw,wanted,node)}}}",wanted,raw.constant)
+            result=self.model.operators.emit_unary(self,node,node.op,value,wanted)
+            if result is None:result=self.unary_builtin(node.op,value,node,wanted)
+            return Expression("{"+setup+result.code+"}",wanted,result.constant)
         if isinstance(node,ast.IfExp):
             setup,test = self.capture(self.condition(node.test))
             yes = self.coerce(self.expression(node.body),wanted,node.body)
@@ -1838,6 +1839,8 @@ class Emitter:
                 return "{"+setup+"if "+self.truth(value,values[0])+"{"+yes+"}else{"+no+"}}"
             return Expression(combine(node.values),wanted)
         if isinstance(node,ast.Compare):
+            custom=self.model.operators.emit_compare_expression(self,node,wanted)
+            if custom is not None:return custom
             values = [node.left]+node.comparators
             first_setup,first = self.capture(self.expression(values[0]))
             def tail(index,left):
@@ -1856,7 +1859,30 @@ class Emitter:
             return self.encoded(code,value.kind,wanted,node,value.constant)
         raise ClassUnsupported(node)
 
-    def binary(self, operator, left, right, node, wanted):
+    def unary_builtin(self,operator,value,node,wanted):
+        if value.kind == 'float':
+            raw = Expression(("-"if isinstance(operator,ast.USub)else"")+value.code,'float')
+        else:
+            number = self.number(value)
+            if isinstance(operator,ast.UAdd):
+                code = number
+            elif isinstance(operator,ast.USub):
+                code = f"({number}).neg()"if self.model.integer=="bigint"else f"({number}).wrapping_neg()"
+            else:
+                code = f"({number}).invert()"if self.model.integer=="bigint"else f"!({number})"
+            constant = None
+            if value.constant is not None:
+                constant = self.numeric.normalize(-int(value.constant) if isinstance(operator,ast.USub) else
+                                                  ~int(value.constant) if isinstance(operator,ast.Invert) else int(value.constant))
+            raw = Expression(code,'int',constant)
+        return Expression(self.coerce(raw,wanted,node),wanted,raw.constant)
+
+    def binary(self, operator, left, right, node, wanted, *, identity=None):
+        result=self.model.operators.emit_binary(self,operator,left,right,node,wanted,identity=identity)
+        if result is not None:return result
+        return self.binary_builtin(operator,left,right,node,wanted)
+
+    def binary_builtin(self, operator, left, right, node, wanted):
         from .native_primitive_ops import emit,classify
         primitive_tags={"int","bool","int_bool","float","str","bytes","none","function","globals_dict","range","list","tuple"}
         if (union_kind(left.kind)or union_kind(right.kind)or domain(left.kind)in primitive_tags
@@ -1879,6 +1905,10 @@ class Emitter:
         return self.encoded(result.code,raw,wanted,node,result.constant)
 
     def comparison(self, operator, left, right, node):
+        self.model.operators.implicit_comparison_guard(self,operator,left,right,node)
+        return self.comparison_builtin(operator,left,right,node)
+
+    def comparison_builtin(self, operator, left, right, node):
         if getattr(left.kind,"_native_builtin_singleton",False)and left.kind==right.kind and isinstance(operator,(ast.Is,ast.IsNot,ast.Eq,ast.NotEq)):
             return "false"if isinstance(operator,(ast.IsNot,ast.NotEq))else"true"
         if union_kind(left.kind):return project(left.kind,left.code,

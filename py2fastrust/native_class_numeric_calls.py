@@ -69,6 +69,12 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory,ca
     if error:return factory('none')
     kinds=tuple(shape(value)for value in binding.values)
     if None in kinds and not model.final:return factory()
+    if kinds[2]=='none':
+        custom=model.operators.binary(plan,node,ast.Pow(),binding['base'],binding['exp'],environment,identity=('builtin_pow',identity))
+        if custom is not None:
+            result=factory()
+            model.contribute(result,custom,node)
+            return result
     proof=_exponent_literal(node,call_arguments,model.integer)
     outputs=[_plan(choices,proof,model.integer,node)for choices in product(*(alternatives(kind)for kind in kinds))]
     result=factory()
@@ -88,6 +94,8 @@ def emit(emitter,node,identity,arguments,keywords,wanted):
     from .native_unions import project,union_kind
     binding,error=_bind(arguments,tuple(keywords.items())if hasattr(keywords,'items')else keywords,Expression('()','none'))
     if error:return _error(emitter,node,wanted,_string(error)+'.to_owned()')
+    custom=emitter.model.operators.emit_binary(emitter,ast.Pow(),binding['base'],binding['exp'],node,wanted,identity=('builtin_pow',identity))
+    if custom is not None:return custom
     def lower(values):
         for index,value in enumerate(values):
             if union_kind(value.kind):
