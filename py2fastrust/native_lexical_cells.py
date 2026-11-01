@@ -231,9 +231,6 @@ class LexicalCells:
         if nested is None or self.model.module_owner(self.parents[self.scope(nested)]):return False
         binding=self.binding(node)
         if binding.owner!=self.scope(plan):return False
-        if self.definition(nested)in self.repeated_definitions:
-            from .native_classes import ClassUnsupported
-            raise ClassUnsupported(node,'a nested function definition executed repeatedly in one enclosing frame needs distinct function-object/default instances, beyond one lexical environment instance',proof='per-execution nested callable identity and defaults')
         value=self.definition_cells[self.definition(nested)]
         environment[binding.name]=value
         environment.definite.add(binding.name)
@@ -337,6 +334,8 @@ class LexicalCells:
         plan=self.plans.get(self.unit.ordinal(node))if isinstance(node,ast.FunctionDef)else None
         if plan is None or not self.parent_scope(plan):return None
         owner=self.environment(self.parent_scope(plan));environment=self.expression_environment(emitter,owner.scope);code=[]
+        from .native_function_instances import instanced,emit_define
+        if instanced(self,plan):return emit_define(self,emitter,plan,owner,environment)
         for name,expression in plan.defaults.items():
             if name in plan.default_literals:continue
             before,value=emitter.capture(emitter.expression(expression));index=sorted(owner.defaults).index((plan.index,name))
@@ -348,6 +347,10 @@ class LexicalCells:
         from .native_classes import Expression,shape
         parent=self.parent_scope(plan)
         if not parent:return None
+        instance=getattr(emitter,'function_instance_override',None)
+        if instance is not None:
+            index=list(plan.defaults).index(name)
+            return Expression('('+instance+').default_'+str(index)+'.clone()',shape(plan.default_cells[name]))
         owner=self.environments[parent];index=sorted(owner.defaults).index((plan.index,name))
         # During indirect dispatch this must be the captured callee's owner,
         # not an environment belonging to another invocation of the caller.
@@ -385,7 +388,8 @@ class LexicalCells:
 
     def runtime(self,emitter):
         from .native_classes import shape
-        lines=[]
+        from .native_function_instances import instanced,data_type,runtime
+        lines=[runtime(self,emitter)]
         for scope,environment in sorted(self.environments.items()):
             if not environment.plan.reachable:continue
             fields=[];initial=[];parameters=[]
@@ -397,6 +401,10 @@ class LexicalCells:
                 lines.append(f'fn class_lexical_get_{scope}_{index}(owner:&std::rc::Rc<{self.environment_type(scope)}>)->Option<{kind}>{{owner.value_{index}.borrow().clone()}}')
             for definition in sorted(environment.functions):
                 fields.append(f'defined_{definition}:std::cell::Cell<bool>');initial.append(f'defined_{definition}:std::cell::Cell::new(false)')
+                plan=environment.functions[definition]
+                if instanced(self,plan):
+                    fields.append(f'instance_{definition}:std::cell::RefCell<Option<std::rc::Rc<{data_type(self,plan)}>>>')
+                    initial.append(f'instance_{definition}:std::cell::RefCell::new(None)')
             for index,((plan_index,name),cell)in enumerate(sorted(environment.defaults.items())):
                 kind=emitter.rust_type(shape(cell));fields.append(f'default_{index}:std::cell::RefCell<Option<{kind}>>');initial.append(f'default_{index}:std::cell::RefCell::new(None)')
                 lines.append(f'fn class_lexical_default_{scope}_{index}(owner:&std::rc::Rc<{self.environment_type(scope)}>)->{kind}{{owner.default_{index}.borrow().clone().expect("lexical default initialized before callable binding")}}')
@@ -420,6 +428,7 @@ class LexicalCells:
                     else:
                         parent=self.parent_scope(target)
                         if parent:yield("environment",parent)
+                        if definition in self.repeated_definitions:yield('function_defaults',definition)
                 for owned in getattr(kind,'_native_owned_kinds',()):yield from targets(owned)
             elif isinstance(kind,InstanceType):yield('object',kind.name)
             elif isinstance(kind,(NullableType,MaybeType)):yield from targets(kind.value)
@@ -444,6 +453,8 @@ class LexicalCells:
         self.model.iterators.add_lifetime_edges(edges,targets)
         self.model.mappings.add_lifetime_edges(edges,targets)
         self.model.deques.add_lifetime_edges(edges,targets)
+        from .native_function_instances import lifetime_edges
+        lifetime_edges(self,edges,targets)
         done=set();visiting=set()
         def visit(node):
             if node in visiting:

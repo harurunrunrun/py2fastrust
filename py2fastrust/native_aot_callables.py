@@ -333,6 +333,8 @@ class CallableCells:
         return self.reference_pattern(target)if isinstance(target,int)else self.bound_methods.reference_pattern(target)if isinstance(target,BoundMethodTarget)else variant(target)
 
     def lexical_reference_code(self,emitter,plan,owner):
+        from .native_function_instances import instanced,reference
+        if instanced(self.model.lexical,plan):return f'ClassFunctionRef::F{self.definition(plan)}('+reference(self.model.lexical,emitter,plan,owner)+')'
         return f"ClassFunctionRef::F{self.definition(plan)}(({owner}).clone())"
 
     def call_context_setup(self,emitter,target):return ""
@@ -355,8 +357,13 @@ class CallableCells:
                 variants.append(f"F{value}(std::rc::Rc<{self.model.lambda_cells.payload_type(self.plans[value])}>)")
                 matches.append(f"(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(left,right)")
             elif parent:
-                variants.append(f"F{value}(std::rc::Rc<{self.model.lexical.environment_type(parent)}>)")
-                matches.append(f"(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(left,right)")
+                from .native_function_instances import instanced,reference_type
+                if instanced(self.model.lexical,self.plans[value]):
+                    variants.append(f'F{value}('+reference_type(self.model.lexical,self.plans[value])+')')
+                    matches.append(f'(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(&left.data,&right.data)&&std::rc::Rc::ptr_eq(&left.environment,&right.environment)')
+                else:
+                    variants.append(f"F{value}(std::rc::Rc<{self.model.lexical.environment_type(parent)}>)")
+                    matches.append(f"(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(left,right)")
             else:
                 variants.append(f"F{value}");matches.append(f"(Self::F{value},Self::F{value})=>true")
         variants.extend(builtin_variants)
@@ -528,14 +535,17 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
                     default_emitter=emitter.model.emitter(target)
                     parent=emitter.model.lexical.parent_scope(target)
                     is_lambda=isinstance(target.node,ast.Lambda)
+                    from .native_function_instances import instanced
+                    has_instance=instanced(emitter.model.lexical,target)
                     if is_lambda:default_emitter.lambda_instance_override="class_selected_environment"
-                    if parent:default_emitter.lexical_environment_override="class_selected_environment.environment"if is_lambda else"class_selected_environment"
+                    if has_instance:default_emitter.function_instance_override='class_selected_environment.data'
+                    if parent:default_emitter.lexical_environment_override="class_selected_environment.environment"if is_lambda or has_instance else"class_selected_environment"
                     try:
                         from .native_variadic import pack_emission
                         bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target),pack_positional=lambda members:pack_emission(emitter,target,members,node))
                     except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
                     values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
-                    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
+                    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
                     from .native_class_calls import call
                     from .native_source_returns import emit_result
                     result=emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)

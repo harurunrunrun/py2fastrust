@@ -606,3 +606,12 @@ type-predicate object; its constructor protocol is a separate capability.
 The same extended target planner is used in ordinary `for` loops, list/set/
 dictionary comprehensions and consumed generator expressions. Comprehension
 targets retain their lexical scope and do not overwrite enclosing bindings.
+
+Repeated execution of a nested `def` now creates a distinct native function
+identity with its own captured default values. Saved aliases and returned
+functions retain that instance's defaults, including mutable defaults and
+keyword-only parameters, while body free variables keep their shared lexical
+cells. A default-expression failure leaves the previous successful binding
+intact. Default payload ownership participates in cycle checks. Multiple
+distinct definitions of one lexical name and ordinary writes/deletes of that
+name remain separate capabilities.

@@ -67,6 +67,8 @@ class LinkedCallableCells(CallableCells):
     def reference_pattern(self,definition):return f"ClassFunctionRef::F{definition}(..)"
 
     def lexical_reference_code(self,emitter,plan,owner):
+        from .native_function_instances import instanced,reference
+        if instanced(self.model.lexical,plan):return f'ClassFunctionRef::F{self.definition(plan)}('+reference(self.model.lexical,emitter,plan,owner)+','+self.model.module_linker.capture_context(emitter)+')'
         return f"ClassFunctionRef::F{self.definition(plan)}(({owner}).clone(),{self.model.module_linker.capture_context(emitter)})"
 
     def call_context_setup(self,emitter,target):
@@ -83,8 +85,13 @@ class LinkedCallableCells(CallableCells):
                 variants.append(f"F{value}(Rc<{self.model.lambda_cells.payload_type(self.plans[value])}>,ClassModuleRef)")
                 arms.append(f"(Self::F{value}(a,m),Self::F{value}(b,n))=>Rc::ptr_eq(a,b)&&Rc::ptr_eq(m,n)")
             elif parent:
-                variants.append(f"F{value}(Rc<{self.model.lexical.environment_type(parent)}>,ClassModuleRef)")
-                arms.append(f"(Self::F{value}(a,m),Self::F{value}(b,n))=>Rc::ptr_eq(a,b)&&Rc::ptr_eq(m,n)")
+                from .native_function_instances import instanced,reference_type
+                if instanced(self.model.lexical,self.plans[value]):
+                    variants.append(f'F{value}('+reference_type(self.model.lexical,self.plans[value])+',ClassModuleRef)')
+                    arms.append(f'(Self::F{value}(a,m),Self::F{value}(b,n))=>Rc::ptr_eq(&a.data,&b.data)&&Rc::ptr_eq(&a.environment,&b.environment)&&Rc::ptr_eq(m,n)')
+                else:
+                    variants.append(f"F{value}(Rc<{self.model.lexical.environment_type(parent)}>,ClassModuleRef)")
+                    arms.append(f"(Self::F{value}(a,m),Self::F{value}(b,n))=>Rc::ptr_eq(a,b)&&Rc::ptr_eq(m,n)")
             else:
                 variants.append(f"F{value}(ClassModuleRef)")
                 arms.append(f"(Self::F{value}(a),Self::F{value}(b))=>Rc::ptr_eq(a,b)")

@@ -1339,3 +1339,17 @@ their own lexical binding/store callbacks. They retain outer-iterable capture,
 ordered nested clauses and filters, local target lifetimes, late-bound closure
 cells and generator error frames. No synthetic target or rewritten source is
 used. Ordinary `for` targets share the assignment path as well.
+
+Loop-executed nested function definitions use per-execution default data and
+identity. The enclosing lexical binding retains the current data without an
+environment pointer; captured function references carry both that data and
+their lexical environment. This preserves saved old functions, escaped getters
+of the current binding, mutable defaults, positional-only/keyword-only binding,
+variadic arguments, late-bound body cells and `nonlocal` state. All explicit
+defaults evaluate before the current function binding changes.
+
+Default values remain explicit lifetime graph edges: a callable default can
+capture the same owning environment and create a real cycle. Such unproved
+cycles retain the existing positioned cycle-collection diagnostic. This does
+not implement arbitrary function-object attributes, multiple distinct `def`
+nodes for one lexical binding, or rebinding/deleting that binding.
