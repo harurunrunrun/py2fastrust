@@ -58,7 +58,7 @@ def _normalizer(model, plan, environment):
         def _producer(self,node):
             if isinstance(node,ast.Call):
                 invocation=self.invocation(node)
-                if invocation.identity in {BuiltinIdentity("iter"),BuiltinIdentity("filter"),BuiltinIdentity("map"),BuiltinIdentity("zip")}:
+                if invocation.identity in {BuiltinIdentity("iter"),BuiltinIdentity("filter"),BuiltinIdentity("map"),BuiltinIdentity("zip"),BuiltinIdentity("enumerate")}:
                     # The shared typed call binder owns callback capture,
                     # multiple sources and keywords for these stateful values.
                     return ProducerPlan(ProducerKind.VALUE,node,invocation=invocation)

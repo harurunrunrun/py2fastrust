@@ -32,7 +32,7 @@ def emit(emitter, node, arguments):
         if name == 'bool' and tag == 'int_bool':
             return f'matches!(&({value.code}),NativeScalar::Bool(_))'
         if name == 'tuple':return str(tag in {'tuple','tuple_sequence'}).lower()
-        if name in {'map','zip','filter'}:
+        if name in {'map','zip','filter','enumerate'}:
             return str(tag == 'iterator' and value.kind.record.operation == name).lower()
         return str(tag == name).lower()
 

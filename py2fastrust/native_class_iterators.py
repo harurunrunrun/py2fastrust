@@ -29,6 +29,7 @@ class IteratorType:
             return (*record.input_types,shape(record.callback))
         if record.operation=="zip":
             return record.input_types
+        if record.operation=="enumerate":return (record.input_type,)
         if record.operation=="filter":
             return (record.input_type,shape(record.callback))
         return (shape(record.source),)
@@ -185,6 +186,10 @@ class Iterators:
                     metadata,items,[],environment,identity=("iterator_callback",record.index))
                 record.demands[(plan.index,id(node))]=site
                 self._contribute(record.element,site.result,node)
+        elif record.operation=="enumerate":
+            from .native_enumerate import contribute_element
+            item=self.demand(plan,node,Cell(record.input_type),environment,active+(record.index,))
+            contribute_element(self,record,item,node)
         elif record.operation=="filter":
             self.demand(plan,node,Cell(record.input_type),environment,active+(record.index,))
             callback=record.callback
@@ -204,6 +209,7 @@ class Iterators:
         if not iterator_kind(kind)or kind.index in seen:return False
         record=kind.record
         if hasattr(record,"adapter"):return record.adapter.may_call(self,record,seen)
+        if record.operation=="enumerate":return self.may_call(record.input_type,seen|{kind.index})
         return record.operation=="map"or(record.operation=="zip"and any(self.may_call(source,seen|{kind.index})for source in record.input_types))or(record.operation=="filter"and(shape(record.callback)!="none"or self.may_call(record.input_type,seen|{kind.index})))
 
     def effects(self,plan,node):
@@ -282,6 +288,9 @@ class Iterators:
         item_kind=shape(record.element)
         if item_kind is None:raise ClassUnsupported(node,"the iterator's element storage remains unresolved",proof="solved lazy iterator element type")
         if hasattr(record,"adapter"):return record.adapter.pull(self,emitter,node,value,active)
+        if record.operation=="enumerate":
+            from .native_enumerate import pull
+            return pull(self,emitter,node,value,active)
         if record.operation in {"map","zip"}:return self._pull_multiple(emitter,node,value,active)
         if isinstance(item_kind,EmptyType):return Expression("None::<NativeEmpty>",item_kind)
         state=emitter.fresh();item=emitter.fresh()
@@ -450,6 +459,7 @@ class Iterators:
                 fields=",".join(f"source_{index}:ClassIterator_{source.index}"for index,source in enumerate(record.input_types))
                 if record.operation=="map":fields+=f",callback:{emitter.rust_type(shape(record.callback))}"
                 fields+=(","if fields else"")+"strict:bool"
+            elif record.operation=="enumerate":fields=f"source:ClassIterator_{record.input_type.index},index:NativeInt"
             elif record.operation=="filter":
                 fields=f"source:ClassIterator_{record.input_type.index},callback:{emitter.rust_type(shape(record.callback))}"
             else:
@@ -479,8 +489,12 @@ def requires_state(unit,analysis):
     for site,fact in identities.items():
         if fact.unknown or fact.unbound or len(fact.alternatives)!=1:continue
         identity=next(iter(fact.alternatives))
-        if identity not in (BuiltinIdentity("filter"),BuiltinIdentity("iter"),BuiltinIdentity("map"),BuiltinIdentity("zip")):continue
+        if identity not in (BuiltinIdentity("filter"),BuiltinIdentity("iter"),BuiltinIdentity("map"),BuiltinIdentity("zip"),BuiltinIdentity("enumerate")):continue
         node=nodes.get(site);parent=parents.get(id(node))
+        if identity==BuiltinIdentity("enumerate"):
+            if (isinstance(parent,(ast.For,ast.comprehension))and parent.iter is node
+                    and 1<=len(node.args)<=2 and not node.keywords):continue
+            return True
         if (isinstance(parent,ast.Assign)and len(parent.targets)==1
                 and isinstance(parent.targets[0],(ast.Tuple,ast.List))):
             from .native_iterator_selection import immediate_map_unpack

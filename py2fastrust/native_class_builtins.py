@@ -62,9 +62,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         return cell("int")
     if name == "range" and 1 <= len(arguments) <= 3 and not keywords:
         return cell("range")
-    if name == "enumerate" and 1 <= len(arguments) <= 2 and not keywords:
-        index = arguments[1] if len(arguments) == 2 else Cell("int")
-        return cell("enumerate",(arguments[0],index))
+    if name=="enumerate":
+        from .native_enumerate import analyze as analyze_enumerate
+        return analyze_enumerate(model,plan,node,arguments,keywords,environment,factory=cell)
     if name == "filter" and len(arguments)==2 and not keywords:
         result=model.iterators.filter(plan,node,arguments[0],arguments[1])
         return cell(result.root().tag)
@@ -171,7 +171,7 @@ def _type_name(emitter,value,node):
     if tag=="object":return _string(emitter.model.classes[value.kind.name].node.name)
     if tag=="globals_dict":return '"dict"'
     if getattr(value.kind,'_native_class_mapping',False)and value.kind.record.flavor in {'Counter','defaultdict'}:return _string(value.kind.record.flavor)
-    if tag=="iterator"and value.kind.record.operation in {"filter","map","zip"}:
+    if tag=="iterator"and value.kind.record.operation in {"filter","map","zip","enumerate"}:
         return _string(value.kind.record.operation)
     if tag=="iterator"and hasattr(value.kind.record,"tool"):return _string("itertools."+value.kind.record.tool)
     if tag=="tuple_sequence":return '"tuple"'
@@ -204,6 +204,9 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_types import ListType
     self=emitter
     name=identity.name
+    if name=="enumerate":
+        from .native_enumerate import emit as emit_enumerate
+        return emit_enumerate(emitter,node,arguments,keywords,wanted)
     code=None
     if name=="globals":code="ClassGlobalsView(class_scope.globals.clone())"
     elif name in {"input","reader_text","reader_bytes","read_text","read_bytes"}:

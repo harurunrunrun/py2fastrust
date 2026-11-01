@@ -324,3 +324,11 @@ from concrete pool/index state. Runtime `repeat`, zero dimensions, mutable
 element aliases and eager generator inputs are supported. Small proved ranks
 retain Rust tuple field types; other ranks use typed immutable tuple storage.
 General stored generators and the remaining combinatoric APIs remain unfinished.
+
+Typed frame `enumerate` values now have shared concrete cursor state, including
+source aliases, keyword starts, returned iterators, generic `zip`/sorting/extrema
+consumers and class-info queries. Source pulls precede index advancement, so
+reentrant pulls and transient source exhaustion retain Python ordering. Index
+values use the selected integer policy; stored generator sources still require
+general suspension state. Existing ordinary immediate for/comprehension forms
+retain their direct lowering.
