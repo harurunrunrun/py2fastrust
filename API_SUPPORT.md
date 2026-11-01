@@ -482,3 +482,9 @@ for int/bool/float values and captured aliases. Integer rounding retains exact
 integers; square root converts integers once to binary64 with overflow checks.
 NaN, infinities, signed zero and positioned argument errors follow Python 3.14.
 User numeric conversion protocols remain explicit unsupported diagnostics.
+
+
+Canonical `math.log`, `log2` and `log10` support builtin real arguments,
+including huge positive BigInt values without converting them to infinity.
+`log` accepts an optional positional base. Domain errors distinguish integral
+and floating inputs; argument capture and base conversion retain Python order.

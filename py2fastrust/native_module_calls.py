@@ -22,7 +22,7 @@ class BuiltinRef:
 MODULES = {name: ModuleRef(name) for name in ("math", "bisect", "heapq")}
 MEMBERS = {
     "math": {name: BuiltinRef("math",name) for name in
-             ("gcd","lcm","isqrt","factorial","comb","perm","sqrt","floor","ceil","trunc")},
+             ("gcd","lcm","isqrt","factorial","comb","perm","sqrt","floor","ceil","trunc","log","log2","log10")},
     "bisect": {name: BuiltinRef("bisect",name) for name in
                ("bisect","bisect_left","bisect_right","insort","insort_left","insort_right")},
 }

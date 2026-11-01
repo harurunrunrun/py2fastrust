@@ -5,17 +5,19 @@ from .native_unions import project, union_kind
 
 
 INTEGER_NAMES=frozenset({'gcd','lcm','isqrt','factorial','comb','perm'})
-REAL_NAMES=frozenset({'sqrt','floor','ceil','trunc'})
+LOG_NAMES=frozenset({'log','log2','log10'})
+FLOAT_NAMES=frozenset({'sqrt'})|LOG_NAMES
+REAL_NAMES=frozenset({'sqrt','floor','ceil','trunc'})|LOG_NAMES
 NAMES=INTEGER_NAMES|REAL_NAMES
 
-def result_kind(identity):return 'float'if identity.name=='sqrt'else'int'
+def result_kind(identity):return 'float'if identity.name in FLOAT_NAMES else'int'
 
 def requires_frames(analysis,integer):
     if integer!='bigint':return False
     for scope in analysis.scopes.values():
         for fact in scope.calls.values():
             if not any(accepts(identity)and identity.name in REAL_NAMES for identity in fact.identity.alternatives):continue
-            if any(accepts(identity)and identity.name=='sqrt'for identity in fact.identity.alternatives):return True
+            if any(accepts(identity)and identity.name in FLOAT_NAMES for identity in fact.identity.alternatives):return True
             if any(value.unknown or value.unbound or 'float'in value.alternatives for value in fact.positional):return True
     return False
 
@@ -29,8 +31,11 @@ def binding_error(name, arguments, keywords):
     if keywords:
         return f'TypeError: math.{name}() takes no keyword arguments'
     count = len(arguments)
-    if name in {'isqrt','factorial'}|REAL_NAMES and count != 1:
+    if name in ({'isqrt','factorial'}|REAL_NAMES)-{'log'} and count != 1:
         return f'TypeError: math.{name}() takes exactly one argument ({count} given)'
+    if name=='log':
+        if count<1:return f'TypeError: log expected at least 1 argument, got {count}'
+        if count>2:return f'TypeError: log expected at most 2 arguments, got {count}'
     if name == 'comb' and count != 2:
         return f'TypeError: comb expected 2 arguments, got {count}'
     if name == 'perm':
@@ -57,7 +62,7 @@ def analyze(model, plan, node, identity, captured_arg_cells, kw_pairs, environme
                 continue
             if identity.name in REAL_NAMES:
                 if not all(_real_kind(choice)for choice in alternatives(kind)):
-                    protocols={'sqrt':'__float__/__index__','floor':'__floor__/__float__/__index__','ceil':'__ceil__/__float__/__index__','trunc':'__trunc__'}[identity.name]
+                    protocols={'sqrt':'__float__/__index__','floor':'__floor__/__float__/__index__','ceil':'__ceil__/__float__/__index__','trunc':'__trunc__'}.get(identity.name,'__float__/__index__')
                     raise ClassUnsupported(node,'math.'+identity.name+' needs its user '+protocols+' conversion protocol; the native adapter accepts captured builtin numbers and reports errors for closed builtin nonnumbers',types=((f'argument {index+1}',kind),),proof='canonical math real-number protocol')
             elif not all(_index_kind(choice) for choice in alternatives(kind)):
                 raise ClassUnsupported(node, 'this math argument needs the Python __index__ protocol; '
@@ -124,6 +129,20 @@ def _real(generator,value,node,name):
     return generator.at('Err::<'+result+',String>(format!('+_string(message)+','+typename+'))',node)
 
 
+def _log_argument(generator,value,node,operation):
+    if union_kind(value.kind):
+        return project(value.kind,value.code,lambda kind,code:_log_argument(generator,_Expression('('+code+').clone()',kind),node,operation))
+    if value.kind in {'int','bool','int_bool'}:
+        integer=generator.number(value)
+        if not _bits(generator):return generator.at('native_math_log_integer(&('+integer+'),'+str(operation)+')',node)
+        saved=_temporary(generator)
+        failure=generator.at('Err::<f64,String>("ValueError: expected a positive input".to_owned())',node)
+        result=generator.at('native_math_logarithm('+saved+' as f64,'+str(operation)+')',node)
+        return '{let '+saved+'='+integer+';if '+saved+'<=0{'+failure+'}else{'+result+'}}'
+    number=_real(generator,value,node,'sqrt')
+    return generator.at('native_math_logarithm('+number+','+str(operation)+')',node)
+
+
 def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted=None):
     """Do not evaluate a callee or source argument: the caller captured them."""
     if not accepts(identity):
@@ -139,6 +158,14 @@ def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted=Non
     if error is not None:
         result='f64'if raw_kind=='float'else'NativeInt'
         code=generator.at(f'Err::<{result},String>({_string(error)}.into())',node)
+    elif identity.name in LOG_NAMES:
+        operation={'log':0,'log2':1,'log10':2}[identity.name]
+        code=_log_argument(generator,captured_arg_Expressions[0],node,operation)
+        if len(captured_arg_Expressions)==2:
+            numerator,denominator=_temporary(generator),_temporary(generator)
+            base=_log_argument(generator,captured_arg_Expressions[1],node,operation)
+            divide=generator.at('native_float_div('+numerator+','+denominator+')',node)
+            code='{let '+numerator+'='+code+';let '+denominator+'='+base+';'+divide+'}'
     elif identity.name in REAL_NAMES:
         value=_real(generator,captured_arg_Expressions[0],node,identity.name)
         code=generator.at('native_math_sqrt('+value+')',node)if identity.name=='sqrt'else value
@@ -279,4 +306,32 @@ def helpers(integer, names=NAMES):
             pieces.append(f'type MathUnsigned=u{bits};\n'+_FIXED)
     if 'sqrt'in names:
         pieces.append('fn native_math_sqrt(value:f64)->Result<f64,String>{if value<0.0{Err(format!("ValueError: expected a nonnegative input, got {}",native_float_text(value)))}else{Ok(value.sqrt())}}')
+    if set(names)&LOG_NAMES:
+        pieces.append(LOG_HELPERS)
+        if integer=='bigint':pieces.append(LOG_INTEGER_HELPERS)
     return '\n'.join(pieces)
+
+
+LOG_HELPERS=r'''
+fn native_math_logarithm(value:f64,operation:u8)->Result<f64,String>{
+    if value<=0.0{return Err(format!("ValueError: expected a positive input, got {}",native_float_text(value)));}
+    Ok(match operation{0=>value.ln(),1=>value.log2(),_=>value.log10()})
+}
+'''
+
+LOG_INTEGER_HELPERS=r'''
+fn native_math_log_integer(value:&Int,operation:u8)->Result<f64,String>{
+    if value.is_negative()||value.is_zero(){return Err("ValueError: expected a positive input".to_owned());}
+    let mut exponent=value.bit_length();
+    if exponent<=1024{
+        if let Ok(number)=value.ratio(&Int::exact_small(1)){return native_math_logarithm(number,operation);}
+    }
+    let scale=Int::exact_small(1).shl(&Int::from_i128(exponent as i128))?;
+    let mut fraction=value.ratio(&scale)?;
+    if fraction==1.0{
+        fraction=0.5;
+        exponent=exponent.checked_add(1).ok_or_else(||"OverflowError: integer logarithm exponent is too large".to_owned())?;
+    }
+    Ok(native_math_logarithm(fraction,operation)?+native_math_logarithm(2.0,operation)?*(exponent as f64))
+}
+'''

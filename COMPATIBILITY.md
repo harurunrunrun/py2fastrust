@@ -1173,3 +1173,17 @@ Admitted math namespaces preserve proved member rebinding through shared
 module cells. Captured old callables retain their identity, functions read
 the current member, and argument callbacks cannot replace the callee already
 captured for the current call.
+
+Canonical `math.log`, `log2` and `log10` return binary64 values for builtin
+int/bool/float arguments and captured callable alternatives. Integral zero or
+negative arguments keep the integer-domain diagnostic, while floating domain
+errors include round-trip values such as negative zero. NaN, infinity, tiny
+positive floats and log-base zero division retain Python behavior.
+
+Positive BigInt values beyond binary64 range use an exact ratio against a
+power of two to obtain a rounded mantissa and exponent, including carry at
+the upper mantissa boundary. The logarithm identity combines native mantissa
+and exponent terms; guaranteed-overflow direct conversion is skipped above
+1024 bits. Both source arguments evaluate before conversion, then the value
+logarithm precedes optional-base conversion and division. Custom numeric
+conversion protocols remain positioned unsupported diagnostics.
