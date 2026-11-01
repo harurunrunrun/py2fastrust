@@ -313,6 +313,13 @@ and the other entries in the retained inventory below still need direct adapters
 
 ## functools
 
+Canonical `reduce` calls have direct native folds with captured callbacks,
+positional/keyword `initial`, empty/single input behavior, mutable accumulator
+identity, shared iterator sources, and direct eager generator sinks. Missing
+initial values remain distinct from an explicit `None`. Callback errors and
+source exhaustion retain their separate Python meanings. Other entries below
+remain the retained runtime inventory unless documented on the direct path.
+
 | API | Status |
 |---|---|
 | `Placeholder` | Implemented |
@@ -419,3 +426,11 @@ them. A reverse deque cursor checks mutations while active and stays exhausted
 after its last item, matching Python's distinct forward/reverse cursor rules.
 Custom `__reversed__`, sequence fallback methods, and user `__index__` adapters
 remain explicit conversion boundaries.
+
+
+Canonical `operator` callables `add`, `sub`, `mul`, `and_`, `or_`, `xor`, `lshift`,
+`rshift`, `floordiv`, `mod`, and `truediv` share the corresponding typed binary
+operation planners. Captured aliases work as fold callbacks. This does not
+implement in-place operator protocols, user special methods, or the remaining
+`operator` exports. Integral BigInt true division uses exact rational rounding
+to binary64; other missing floating interoperations retain diagnostics.

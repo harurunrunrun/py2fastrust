@@ -534,7 +534,8 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted):
                     values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
                     invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
                     from .native_class_calls import call
-                    result=emitter.coerce(_Expression(call(emitter,invocation,target,node),shape(target.result)),wanted,node)
+                    from .native_source_returns import emit_result
+                    result=emit_result(emitter,node,target,call(emitter,invocation,target,node),wanted)
                 context=provider.call_context_setup(emitter,target)
                 if context:result="{"+context+result+"}"
                 arms.append(provider.call_pattern(definition)+"=>"+result)

@@ -109,6 +109,10 @@ class LinkedModel(Model):
         provider.register_member_adapter('sys',SysAdapter)
         from .native_itertools import ItertoolsAdapter
         provider.register_member_adapter('itertools',ItertoolsAdapter)
+        from .native_functools_reduce import FunctoolsAdapter
+        provider.register_member_adapter('functools',FunctoolsAdapter)
+        from .native_operator_binary import OperatorAdapter
+        provider.register_member_adapter('operator',OperatorAdapter)
         from .native_frame_heapq import HeapAdapter
         provider.register_member_adapter('heapq',HeapAdapter)
         from .native_frame_bisect import BisectAdapter

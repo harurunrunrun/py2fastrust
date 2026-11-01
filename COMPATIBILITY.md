@@ -1101,3 +1101,30 @@ a temporary list for reversal. Forward and reverse deque cursor exhaustion rules
 are intentionally distinct. Ordinary immediate reverse streams retain their
 existing direct lowering. Custom reverse/index protocols require additional
 native adapters and produce positioned diagnostics.
+
+
+`functools.reduce` uses typed source cursors and direct callback invocations.
+It supports captured functions, lambdas, bound methods and registered builtin
+members, optional positional or Python 3.14 keyword `initial`, shared mutable
+accumulators, direct generator sinks, source mutation and partial consumption.
+Source `StopIteration` finishes collection; a callback's `StopIteration`
+propagates, while a generator body's `StopIteration` becomes `RuntimeError`.
+Fresh literal source cardinalities can prove that no callback runs, or that
+only the initial seed reaches a single callback, without changing evaluation
+order. Generic closed accumulator families retain subsequent type changes.
+
+Source-function return summaries use normalized control-flow returns and
+official lexical owners. Proved formal/literal result dependencies retain
+per-call families while the original function executes through its normal ABI.
+Rebound, deleted or captured formals do not get an alias proof. Container fields
+remain shared and reflect mutation through aliases, callbacks and defaults.
+Other unresolved predicates retain conservative result unions; unsupported
+member operations on those unions still produce positioned diagnostics.
+Reached container formals with local binding changes select typed frames before
+lowering; shadowed, copied, scalar-only and unreached bindings keep their
+existing selection behavior.
+
+BigInt integral true division now shares the existing exact integer-ratio
+rounding kernel across direct scalar and frame operations, including overflow,
+subnormal rounding, signed zero and zero denominators. This is not general
+mixed BigInt/binary64 arithmetic support.

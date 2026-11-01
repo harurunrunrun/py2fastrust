@@ -903,6 +903,8 @@ class Model:
                 raise ClassUnsupported(node,"this arithmetic reads finite binding alternatives without a proved per-alternative numeric/string/container operation; runtime dispatch and TypeError paths for those arithmetic combinations are not implemented on this typed frame path",types=(("left",shape(a)),("right",shape(b))),proof="per-alternative arithmetic and error behavior")
             raise ClassUnsupported(node)
         if "float" in {a.tag,b.tag} or isinstance(operator,ast.Div):
+            if self.integer=='bigint'and isinstance(operator,ast.Div)and {a.tag,b.tag}<={'int','bool','int_bool'}:
+                return cell('float')
             if self.integer == "bigint" or not isinstance(operator,(ast.Add,ast.Sub,ast.Mult,ast.Div,ast.FloorDiv,ast.Mod)):
                 raise ClassUnsupported(node)
             return cell("float")
@@ -945,7 +947,8 @@ class Model:
             if not self.namespace.contribute(callee.arguments[name],value,node,force=True):
                 self.contribute(callee.arguments[name], value, node)
         self.namespace.call_effects(caller,callee,environment)
-        return callee.result
+        from .native_source_returns import project_result
+        return project_result(self,caller,node,callee,bound)
 
     def call(self, plan, node, environment):
         expanded=self.expanded_calls.analyze(plan,node,environment)
@@ -1903,7 +1906,8 @@ class Emitter:
         code="{"+"\n".join(setup)+context+call+"}"
         if constructor is not None:
             return self.encoded(code,InstanceType(self.model.class_key(constructor)),self.kind(node),node)
-        return Expression(code,self.kind(node))
+        from .native_source_returns import emit_result
+        return Expression(emit_result(self,node,callee,code,self.kind(node)),self.kind(node))
 
     def parse_words(self, node, count=None):
         words = self.expression(node.args[1])
@@ -2501,6 +2505,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         for kind in model.expanded_calls.kinds():add_kind(kind)
         from .native_class_extrema import kinds as extrema_kinds
         for kind in extrema_kinds(model):add_kind(kind)
+        from .native_owned_kinds import kinds as operation_kinds
+        for kind in operation_kinds(model):add_kind(kind)
         for _,kind in model.namespace.fields():add_kind(kind)
         for _,kind in model.namespace.default_fields():add_kind(kind)
         for value in model.namespace.local_schemas.values():add_kind(shape(value))

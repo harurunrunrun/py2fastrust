@@ -341,6 +341,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             return super().binary(operator,left,right,node)
         first,second = self.temporary(),self.temporary()
         setup = f"let {first}={self.number(left)}; let {second}={self.number(right)};"
+        if isinstance(operator,ast.Div):
+            self.has_extended_scalars=True
+            return _Expression('{'+setup+self.at(first+'.ratio(&'+second+')',node)+'}','float')
         simple = {ast.Add:"add",ast.Sub:"sub",ast.Mult:"mul",ast.BitAnd:"bitand",ast.BitOr:"bitor",ast.BitXor:"bitxor"}
         if type(operator) in simple:
             result = f"{first}.{simple[type(operator)]}(&{second})"
