@@ -406,7 +406,7 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
             for identity in branch.builtins:
                 self.builtin_used.add(identity)
                 value=analyze_builtin(self,plan,node,identity,arguments,positional,keywords,environment,site)
-                if value is not None:self.model.namespace.contribute(result,value,node,force=True)
+                if value is not None and not self.model.namespace.contribute(result,value,node,force=True):self.model.contribute(result,value,node)
             for identity in branch.members:
                 self.member_used.add(identity)
                 adapter=self.member_adapters.get(identity.module)
@@ -415,7 +415,7 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
                 factory=lambda tag=None,args=(),identity=identity:self.model.cell(plan,node,tag,args,identity=identity)
                 record=adapter.analyze(self.model,plan,node,identity,arguments,positional,keywords,environment,factory=factory)
                 site.members[identity]=(adapter,record)
-                self.model.namespace.contribute(result,record.result,node,force=True)
+                if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
     for definition in sorted(targets):
         target=self.plans[definition]
         self.used.add(definition)
