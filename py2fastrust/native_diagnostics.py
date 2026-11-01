@@ -51,6 +51,8 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
         return "collections.deque[" + nested(kind.element) + "]"
     if name == "TupleSequenceType":
         return "tuple[" + nested(kind.element) + ", ...]"
+    if getattr(kind,'_native_named_tuple',False):
+        return kind._native_python_type_name+"["+fields(kind.fields)+"]"
     if name == "TupleType":
         return "tuple[" + fields(kind.fields) + "]"
     if name == "DictType":

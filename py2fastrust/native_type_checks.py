@@ -60,6 +60,8 @@ def emit(emitter, node, arguments):
             def source_match(candidate):
                 if union_kind(candidate.kind):
                     return project(candidate.kind,candidate.code,lambda kind,code:source_match(Expression(code,kind)))
+                if getattr(candidate.kind,'_native_named_tuple',False):
+                    return f'({classes.code}).definition=={candidate.kind.record.owner.index}'
                 if domain(candidate.kind)!='object':return 'false'
                 owner=emitter.model.classes[candidate.kind.name]
                 if not isinstance(owner.node,ast.ClassDef)or owner.node.bases or owner.node.keywords:

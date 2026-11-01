@@ -94,6 +94,7 @@ class Cell:
 
 def shape(cell):
     cell = cell.root()
+    if getattr(cell.tag,'_native_tuple_record',False):return cell.tag.kind(tuple(shape(value)for value in cell.args))
     if cell.tag == "list":return ListType(shape(cell.args[0]))
     if cell.tag == "tuple":return TupleType(tuple(shape(value)for value in cell.args))
     if cell.tag == "tuple_sequence":return TupleSequenceType(shape(cell.args[0]))
@@ -111,6 +112,10 @@ def shape(cell):
 
 def immutable_cell(cell):
     return immutable(shape(cell))
+
+
+def tuple_cell(cell):
+    return cell.root().tag=='tuple'or getattr(cell.root().tag,'_native_tuple_record',False)
 
 
 def merge(left, right, node,*,allow_unresolved=False):
@@ -157,7 +162,7 @@ def merge(left, right, node,*,allow_unresolved=False):
         left.tag,left.args="union",tuple(candidates)
         right.parent=left
         return left
-    if left.tag in {"list", "tuple", "tuple_sequence", "enumerate", "map_int"}:
+    if left.tag in {"list", "tuple", "tuple_sequence", "enumerate", "map_int"}or getattr(left.tag,'_native_tuple_record',False):
         if len(left.args) != len(right.args):
             raise ClassUnsupported(node)
         for a, b in zip(left.args, right.args):
@@ -400,12 +405,14 @@ class Model:
     def flow_copy(cell):
         """Copy value shapes while preserving shared mutable allocation leaves."""
         cell=cell.root()
-        if cell.tag in {"tuple","union","enumerate","map_int"}:
+        if cell.tag in {"tuple","union","enumerate","map_int"}or getattr(cell.tag,'_native_tuple_record',False):
             return Cell(cell.tag,tuple(Model.flow_copy(child)for child in cell.args))
         return Cell(cell.tag,cell.args)
 
     @staticmethod
     def cell_for_kind(kind):
+        if getattr(kind,'_native_named_tuple',False):
+            return Cell(kind.record.tag,tuple(Model.cell_for_kind(value)for value in kind.fields))
         if getattr(kind,"_native_function_reference",False):return Cell("function",kind.targets)
         if getattr(kind,"_native_namespace_view",False):return Cell("globals_dict")
         if isinstance(kind,NullableType):
@@ -554,7 +561,8 @@ class Model:
 
     def discover_class(self,node,key,*,parent=None):
         """Register one original class AST under its canonical definition key."""
-        if node.bases or node.keywords or node.decorator_list or node.type_params:
+        registry=getattr(self,"class_namespaces",None)
+        if node.bases and registry is None or node.keywords or node.decorator_list or node.type_params:
             raise ClassUnsupported(node)
         owner=ClassPlan(node,len(self.classes),canonical_name=key)
         if self.unit is not None:
@@ -563,6 +571,7 @@ class Model:
         self.classes[key]=owner
         registry=getattr(self,"class_namespaces",None)
         if registry is not None:registry.register(owner,parent)
+        if node.bases:registry.named_tuples.plan(owner)
         from .native_annotations import class_body_statement,class_body_effect
         for member in node.body:
             if isinstance(member,ast.Pass)or isinstance(member,ast.Expr)and isinstance(member.value,ast.Constant)and type(member.value.value)is str:
@@ -602,13 +611,16 @@ class Model:
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
                 tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.deques.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
-                      for key,state in sorted(self.loop_feedback.items())))
+                      for key,state in sorted(self.loop_feedback.items())),
+                self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else())
 
     def analyze_body(self,plan,environment):
         if isinstance(plan.node,ast.Lambda):
             self.contribute(plan.result,self.expression(plan,plan.node.body,environment),plan.node.body)
             return None
-        return self.block(plan,plan.node.body,environment)
+        result=self.block(plan,plan.node.body,environment)
+        if hasattr(self,'class_namespaces'):self.class_namespaces.named_tuples.finish_body(plan,result or environment)
+        return result
 
     def infer_until_stable(self):
         from .native_guard_flow import AnalysisPending
@@ -803,7 +815,7 @@ class Model:
                 raise ClassUnsupported(node.slice)
             if owner.tag in {"list","tuple_sequence"}:
                 return self.remember(plan, node, owner.args[0])
-            if owner.tag == "tuple" and isinstance(node.slice, ast.Constant) and type(node.slice.value) is int:
+            if(owner.tag == "tuple"or getattr(owner.tag,'_native_tuple_record',False))and isinstance(node.slice, ast.Constant) and type(node.slice.value) is int:
                 if not -len(owner.args) <= node.slice.value < len(owner.args):
                     raise ClassUnsupported(node)
                 return self.remember(plan, node, owner.args[node.slice.value])
@@ -1120,6 +1132,9 @@ class Model:
 
     def attribute_value(self,plan,node,receiver,environment):
         receiver=receiver.root()
+        if hasattr(self,'class_namespaces'):
+            value=self.class_namespaces.named_tuples.analyze_attribute(plan,node,receiver,environment)
+            if value is not None:return value
         if getattr(shape(receiver),'_native_cmp_key',False):
             raise ClassUnsupported(node,'functools.KeyWrapper attribute '+repr(node.attr)+' requires exposed wrapper-object storage; this native adapter currently supports captured comparison-key factories in sorted and list.sort',types=(('receiver',shape(receiver)),),proof='exposed comparison-key object attributes')
         default=self.mappings.defaultdicts.attribute(plan,node,receiver,environment)
@@ -1163,7 +1178,7 @@ class Model:
         if getattr(value.tag,"_native_class_iterator",False):return self.iterators.item(value.tag)
         if value.tag in {"list","tuple_sequence"}:
             return value.args[0]
-        if value.tag == "tuple":
+        if value.tag == "tuple"or getattr(value.tag,'_native_tuple_record',False):
             result = Cell()
             for item in value.args:
                 self.contribute(result,item,node)
@@ -1187,7 +1202,7 @@ class Model:
             from .native_class_unpacking import analyze
             if analyze(self,plan,node,value,environment):return
             source = value.root()
-            if source.tag == "tuple":
+            if source.tag == "tuple"or getattr(source.tag,'_native_tuple_record',False):
                 if len(source.args) != len(node.elts):
                     raise ClassUnsupported(node)
                 members = source.args
@@ -1506,6 +1521,7 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def coerce(self, value, kind, node):
+        from .native_types import tuple_nominal_compatible
         if getattr(kind,"_native_erased_argument",False):return "{let _="+value.code+";()}"
         if value.kind == kind:return value.code
         if isinstance(value.kind,EmptyType):return f"native_empty({value.code})"
@@ -1521,13 +1537,15 @@ class Emitter:
                 if option=="int_bool"and value.kind in {"int","bool"}
                 or getattr(option,"_native_function_reference",False)and getattr(value.kind,"_native_function_reference",False)and set(value.kind.targets)<=set(option.targets)
                 or isinstance(option,TupleType)and isinstance(value.kind,TupleType)
-                    and len(option.fields)==len(value.kind.fields)),None)
+                    and len(option.fields)==len(value.kind.fields)and tuple_nominal_compatible(option,value.kind)),None)
             if chosen is None:raise ClassUnsupported(node)
             return construct(kind,chosen,self.coerce(value,chosen,node))
         if kind == "int_bool"and value.kind in {"int","bool"}:
             return f"NativeScalar::{'Int' if value.kind == 'int' else 'Bool'}({value.code})"
         if kind == "int"and value.kind in {"bool","int_bool"}:return self.number(value)
         if isinstance(kind,TupleType)and isinstance(value.kind,TupleType)and len(kind.fields)==len(value.kind.fields):
+            if not tuple_nominal_compatible(kind,value.kind):
+                raise ClassUnsupported(node,'value conversion would erase or replace the actual NamedTuple class identity; a semantic tuple-construction adapter is required',proof='preserved nominal tuple identity')
             temporary=self.fresh()
             values=[self.coerce(Expression(f"{temporary}.{i}.clone()",old),new,node)
                     for i,(old,new)in enumerate(zip(value.kind.fields,kind.fields))]
@@ -1600,6 +1618,9 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        if getattr(value.kind,'_native_named_tuple',False):
+            from .native_named_tuples import show
+            return show(self,value,node)
         if getattr(value.kind,'_native_class_deque',False):return self.model.deques.show(self,value,node)
         if getattr(value.kind,'_native_mapping_view',False):return self.model.mappings.views.show(self,value,node)
         if isinstance(value.kind,EmptyType):return f"native_empty::<String>({value.code})"

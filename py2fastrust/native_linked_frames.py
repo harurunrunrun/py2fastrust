@@ -291,6 +291,8 @@ class LinkedModel(Model):
             arguments=[self.expression(plan,arg.expression,environment)for arg in normalized.positional]
             keywords=[(arg.name,self.expression(plan,arg.expression,environment))for arg in normalized.keywords]
             owner=next(owner for owner in self.classes.values()if owner.index==known.root().tag.definition)
+            result=self.class_namespaces.named_tuples.analyze_call(plan,node,owner,arguments,keywords,environment)
+            if result is not None:return result
             owner.used=True
             result=self.cell(plan,node,"object",(self.class_key(owner),))
             constructor=owner.methods.get('__init__')
@@ -363,6 +365,8 @@ class LinkedEmitter(Emitter):
         return super().show(value,node,quoted)
 
     def expression(self,node):
+        value=self.model.class_namespaces.named_tuples.emit_attribute(self,node)
+        if value is not None:return value
         if isinstance(node,ast.Name):
             value=self.model.class_namespaces.emit_name(self,node)
             if value is not None:return value
@@ -534,6 +538,8 @@ class LinkedEmitter(Emitter):
         return Expression(code,wanted)
 
     def call(self,node):
+        record=self.model.class_namespaces.named_tuples.emit_call(self,node)
+        if record is not None:return record
         owner=self.model.module_linker.class_calls.get((self.plan.index,id(node)))
         if owner is not None:
             before,reference=self.capture(self.expression(node.func))
@@ -549,9 +555,11 @@ class LinkedEmitter(Emitter):
             key=self.model.definition_name(node)
             owner=self.model.classes[key]
             index=self.model.namespace.index(key)
+            created=self.fresh()
             value=f"Rc::new(ClassClassReference{{definition:{owner.index},module:class_scope.globals.clone()}})"
             wanted=dict(self.model.namespace.fields())[key]
-            return result+f"class_scope.globals.borrow_mut().value_{index}=Some({self.coerce(Expression(value,ClassReferenceType(owner.index)),wanted,node)});"
+            stored=self.coerce(Expression(created+'.clone()',ClassReferenceType(owner.index)),wanted,node)
+            return result+f"let {created}={value};class_scope.globals.borrow_mut().value_{index}=Some({stored});"+self.model.class_namespaces.named_tuples.emit_retain_definition(self,node,owner,created)
         return result
 
     def assign_name(self,target,value):

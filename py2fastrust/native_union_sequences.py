@@ -40,7 +40,7 @@ def ordering_error(emitter,operator,left,right,node):
 
 
 def analyze_subscript(model,plan,node,owner,index):
-    from .native_classes import Cell,ClassUnsupported,domain,shape
+    from .native_classes import Cell,ClassUnsupported,domain,shape,tuple_cell
     a,b=shape(owner),shape(index)
     if a is None:return None
     if not all(domain(choice)in SEQUENCES|NONINDEXABLE for choice in alternatives(a)):return None
@@ -59,7 +59,7 @@ def analyze_subscript(model,plan,node,owner,index):
     if any(domain(choice)in INTEGRAL for choice in alternatives(b)):
         for value in branches(owner):
             if value.tag in {"list","tuple_sequence"}:inputs.append(value.args[0])
-            elif value.tag=="tuple":
+            elif tuple_cell(value):
                 literal=constant_index(model,node.slice)
                 if literal is not None:
                     if -len(value.args)<=literal<len(value.args):inputs.append(value.args[literal])

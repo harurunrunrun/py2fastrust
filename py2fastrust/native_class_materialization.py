@@ -47,6 +47,8 @@ def emit_tuple(emitter,node,arguments,wanted):
     from .native_classes import Expression
     if not arguments:return Expression('()',wanted)
     source=arguments[0]
+    if getattr(source.kind,'_native_named_tuple',False):
+        return emitter.encoded(source.code,TupleType(source.kind.fields),wanted,node)
     if isinstance(source.kind,(TupleType,TupleSequenceType)):return emitter.encoded(source.code,source.kind,wanted,node)
     from .native_class_iterators import iterator_kind
     if iterator_kind(source.kind):before,iterator='',source

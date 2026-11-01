@@ -9,6 +9,29 @@ NONINDEXABLE=frozenset({'int','bool','int_bool','float','none','function','range
 INVALID_BOUNDS=frozenset({'float','str','bytes','list','tuple','tuple_sequence','function','range'})
 
 
+def fixed_tuple_indices(model,node,length):
+    from .native_union_sequences import constant_index
+    from .native_classes import ClassUnsupported
+    from .literal_semantics import integer_policy
+    policy=integer_policy(0 if model.integer=='bigint'else 64 if model.integer=='i64'else 128)
+    def integer(expression):
+        value=constant_index(model,expression)
+        if value is not None:return value
+        if isinstance(expression,ast.UnaryOp)and isinstance(expression.op,(ast.UAdd,ast.USub)):
+            value=integer(expression.operand)
+            if value is not None:return policy.normalize(-value if isinstance(expression.op,ast.USub)else value)
+        return None
+    values=[]
+    for bound in(node.slice.lower,node.slice.upper,node.slice.step):
+        if bound is None or isinstance(bound,ast.Constant)and bound.value is None:values.append(None);continue
+        value=integer(bound)
+        if value is None:
+            raise ClassUnsupported(bound,'fixed-layout tuple slicing needs literal integral/None bounds until the dynamic tuple materialization adapter is implemented',proof='fixed tuple slice result layout')
+        values.append(value)
+    if values[2]==0:return None
+    return tuple(range(length)[slice(*values)])
+
+
 def requires_frames(unit,analysis):
     from .native_types import TupleSequenceType,ListType,immutable
     nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
@@ -29,7 +52,7 @@ def requires_frames(unit,analysis):
 
 
 def analyze(model,plan,node,environment):
-    from .native_classes import Cell,ClassUnsupported,domain,shape
+    from .native_classes import Cell,ClassUnsupported,domain,shape,tuple_cell
     from .native_union_sequences import branches
     owner=model.expression(plan,node.value,environment)
     for bound in (node.slice.lower,node.slice.upper,node.slice.step):
@@ -45,6 +68,9 @@ def analyze(model,plan,node,environment):
             output=Cell(value.tag,(value.args[0],))
         elif value.tag in {'str','bytes'}:output=Cell(value.tag)
         elif value.tag in NONINDEXABLE:output=Cell('none')
+        elif tuple_cell(value):
+            indices=fixed_tuple_indices(model,node,len(value.args))
+            output=Cell('none')if indices is None else Cell('tuple',tuple(value.args[index]for index in indices))
         elif value.tag is None and not model.final:continue
         else:
             raise ClassUnsupported(node,'slicing this receiver needs its tuple-layout or user __getitem__ slice protocol; the typed slice adapter supports lists, strings, bytes and homogeneous runtime tuples',types=(('receiver',shape(value)),),proof='registered sequence slice storage')
@@ -78,6 +104,14 @@ def _owner(emitter,node,owner,bounds,wanted):
     if union_kind(owner.kind):
         return Expression(project(owner.kind,owner.code,lambda kind,code:_owner(emitter,node,Expression(f'({code}).clone()',kind),bounds,wanted).code),wanted)
     tag=domain(owner.kind)
+    if tag=='tuple':
+        from .native_types import TupleType,tuple_code
+        indices=fixed_tuple_indices(emitter.model,node,len(owner.kind.fields))
+        if indices is None:return _error(emitter,node,wanted,'"ValueError: slice step cannot be zero".to_owned()')
+        setup,source=emitter.capture(owner)
+        raw=TupleType(tuple(owner.kind.fields[index]for index in indices))
+        value=Expression(tuple_code(f'{source.code}.{index}.clone()'for index in indices),raw)
+        return Expression('{'+setup+emitter.coerce(value,wanted,node)+'}',wanted)
     if tag in NONINDEXABLE:
         return _error(emitter,node,wanted,'format!("TypeError: \'{}\' object is not subscriptable",'+_type_name(emitter,owner,node)+')')
     setup,owner=emitter.capture(owner)

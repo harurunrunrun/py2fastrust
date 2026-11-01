@@ -511,6 +511,17 @@ its arguments normally and returns the original value, without conversion or
 copying mutable payloads. Import binding presence is updated after each actual
 linked import, including `globals()` membership observations.
 
+`typing.NamedTuple` supports canonical class syntax, including nested source
+classes and captured factory aliases. Constructors support positional and
+keyword fields, shared trailing defaults and Python binding errors. Records
+retain their nominal type for `isinstance`, field reads, `_fields` and repr,
+while equality, ordering, compatible native hash keys, unpacking and iteration
+follow tuple behavior. Tuple conversion and constant fixed-layout slices return
+plain tuples. Annotations do not request or perform runtime value coercion.
+Functional factories, record identity, source methods, effectful annotation
+metadata, descriptor replacement, expanded constructors and heterogeneous
+named/plain tuple key storage remain explicit unsupported protocols.
+
 Builtin `float()` supports zero/default construction, builtin int/bool/binary64,
 text and bytes in every integer mode, including captured constructor aliases
 and typed frames. BigInt integral conversion uses exact rational rounding and

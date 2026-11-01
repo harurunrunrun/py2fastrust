@@ -198,8 +198,9 @@ class Namespace:
             sequences=[value for value in sources if value.tag=="tuple_sequence"and shape(value)==kind]
             return Cell("tuple_sequence",sequences[0].args if sequences else(self.representation(kind.element,[],node),))
         if isinstance(kind,TupleType):
-            tuples=[value for value in sources if value.tag=="tuple"and shape(value)==kind]
-            return Cell("tuple",tuple(self.representation(field,[value.args[index]for value in tuples],node)
+            tuples=[value for value in sources if(value.tag=="tuple"or getattr(value.tag,'_native_tuple_record',False))and shape(value)==kind]
+            tag=kind.record.tag if getattr(kind,'_native_named_tuple',False)else'tuple'
+            return Cell(tag,tuple(self.representation(field,[value.args[index]for value in tuples],node)
                                       for index,field in enumerate(kind.fields)))
         if isinstance(kind,InstanceType):return Cell("object",(kind.name,))
         return Cell(kind)

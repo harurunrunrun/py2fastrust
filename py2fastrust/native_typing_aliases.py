@@ -58,10 +58,13 @@ class CastCall:
 
 
 class TypingAdapter:
-    NAMES=frozenset({'cast'})
+    NAMES=frozenset({'cast','NamedTuple'})
 
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
+        if identity.name=='NamedTuple':
+            from .native_classes import ClassUnsupported
+            raise ClassUnsupported(node,'functional typing.NamedTuple construction requires dynamic field/factory generation; only canonical class declarations are implemented',proof='runtime named tuple factory construction')
         try:
             bound=SIGNATURE.bind(positional,keywords)
         except CallBindingError as error:

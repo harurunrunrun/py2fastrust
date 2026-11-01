@@ -11,6 +11,7 @@ _INTEGERS = {"int", "bool", "int_bool"}
 def _type_name(value):
     from .native import _Unsupported, _string
     from .native_types import list_type
+    if hasattr(value.kind,'_native_python_type_name'):return _string(value.kind._native_python_type_name)
     if list_type(value.kind)or value.kind=="matrix_int":return _string("list")
     if isinstance(value.kind, (TupleType,TupleSequenceType)):
         return _string("tuple")

@@ -48,6 +48,10 @@ def validate(cell,node,integer,*,field_value=False,seen=frozenset(),model=None):
     from .native_classes import ClassUnsupported,Model
     from .native_types import EmptyType
     cell=cell.root()
+    if getattr(cell.tag,'_native_tuple_record',False):
+        if id(cell)in seen:raise ClassUnsupported(node,'recursive NamedTuple storage requires cycle-aware tuple layout/lifetime support',proof='finite named tuple storage')
+        for child in cell.args:validate(child,node,integer,field_value=field_value,seen=seen|{id(cell)},model=model)
+        return
     if isinstance(cell.tag,EmptyType):return
     if cell.tag in Model.INTRINSICS:return
     if getattr(cell.tag,'_native_class_deque',False):

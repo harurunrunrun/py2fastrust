@@ -197,6 +197,7 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
 def _type_name(emitter,value,node):
     from .native_classes import domain
     from .native import _string
+    if hasattr(value.kind,'_native_python_type_name'):return _string(value.kind._native_python_type_name)
     tag=domain(value.kind)
     if tag=='cmp_key':return '"functools.KeyWrapper"'
     if tag=="int_bool":return f'match {value.code}{{NativeScalar::Int(_)=>"int",NativeScalar::Bool(_)=>"bool"}}'

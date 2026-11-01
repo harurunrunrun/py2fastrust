@@ -40,6 +40,8 @@ class ClassNamespaces:
         self.name_reads={}
         self.attribute_reads={}
         self.instance_reads={}
+        from .native_named_tuples import NamedTuples
+        self.named_tuples=NamedTuples(self)
 
     def key(self,owner,name):
         number=self.unit.module_numbers[owner.module_name]
@@ -105,6 +107,7 @@ class ClassNamespaces:
     def bind_name(self,plan,node,value,environment):
         member=self.local_member(plan,node)
         if member is None:return False
+        self.named_tuples.local_store_guard(member.owner,member.name,node)
         if self.special_name(member.name):
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,f"class-body metadata assignment {member.name!r} requires its compiler/metaclass namespace validation; that metadata protocol is not implemented",proof="class compiler metadata initialization and validation")
@@ -174,12 +177,16 @@ class ClassNamespaces:
         environment.definite.add(name)
 
     def prepare_definition(self,plan,node,environment):
+        if isinstance(node,ast.ClassDef):
+            self.named_tuples.prepare_definition(plan,node,environment)
+            return
         if plan.class_body is None or not isinstance(node,ast.FunctionDef):return
         from .native_class_descriptors import prepare_definition
         member=self.member(plan.class_body,self.model.resolved_name(plan,node))
         prepare_definition(self,plan,node,member,environment)
 
     def emit_prepare_definition(self,emitter,node):
+        if isinstance(node,ast.ClassDef):return self.named_tuples.emit_prepare_definition(emitter,node)
         if emitter.plan.class_body is None or not isinstance(node,ast.FunctionDef):return ""
         from .native_class_descriptors import emit_prepare_definition
         member=self.member(emitter.plan.class_body,self.model.resolved_name(emitter.plan,node))
@@ -237,6 +244,7 @@ class ClassNamespaces:
         records=[]
         for choice in choices:
             member=self.member(self.owners[choice.definition],self.model.resolved_name(plan,node))
+            self.named_tuples.class_member_guard(member.owner,member.name,node)
             self.check_metadata(member,node)
             if member.plan is not None:
                 self.observe_method(member,node)
@@ -255,6 +263,7 @@ class ClassNamespaces:
         if not choices:return False
         for choice in choices:
             member=self.member(self.owners[choice.definition],self.model.resolved_name(plan,node))
+            self.named_tuples.class_member_guard(member.owner,member.name,node,writing=True)
             self.check_metadata(member,node)
             if member.plan is not None:
                 raise ClassUnsupported(node,"rebinding a class method requires runtime descriptor and instance-attribute lookup updates; that mutation protocol is not implemented",proof="mutable class method descriptor lookup")
@@ -284,6 +293,7 @@ class ClassNamespaces:
         if not choices:return False
         for choice in choices:
             member=self.member(self.owners[choice.definition],self.model.resolved_name(plan,node))
+            self.named_tuples.class_member_guard(member.owner,member.name,node,writing=True)
             self.check_metadata(member,node)
             if member.plan is not None:
                 raise ClassUnsupported(node,"deleting a class method requires updating runtime descriptor and instance lookup; that mutation protocol is not implemented",proof="mutable class method descriptor lookup")

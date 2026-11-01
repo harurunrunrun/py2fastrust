@@ -1227,6 +1227,23 @@ its arguments normally and returns the original value, without conversion or
 copying mutable payloads. Import binding presence is updated after each actual
 linked import, including `globals()` membership observations.
 
+Canonical class declarations based on `typing.NamedTuple` use typed tuple
+payloads with nominal record metadata. Nested declarations, captured factory
+aliases, positional/keyword construction, trailing defaults, field reads,
+`_fields`, repr, tuple equality/order, unpacking and iteration are supported.
+Field annotations do not coerce values. Mutable field/default payloads retain
+their shared handles. Constant fixed-layout slices and `tuple(record)` produce
+plain tuples. Constructors retain Python argument/default evaluation order and
+argument-binding errors.
+
+Functional `NamedTuple(...)` factories, user-defined record methods, observable
+annotation evaluation, record identity, field descriptor mutation, dynamically
+sized fixed-tuple slices and expanded record construction remain positioned
+unsupported diagnostics. Heterogeneous named/plain tuple dictionary-key storage
+also remains unsupported; ordinary compatible record keys use structural tuple
+hashing and equality. This support does not replace imported Python algorithms
+with prewritten implementations.
+
 Canonical `float` construction shares one typed conversion adapter across
 ordinary numeric code, saved builtin aliases, callbacks and linked frames.
 Omitted arguments produce positive zero; existing binary64 values retain their

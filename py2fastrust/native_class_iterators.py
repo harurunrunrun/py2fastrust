@@ -110,7 +110,7 @@ class Iterators:
             self.model.contribute(destination,value,node)
 
     def source(self,plan,node,value,identity=None,*,operation="source"):
-        from .native_classes import ClassUnsupported,shape
+        from .native_classes import ClassUnsupported,shape,tuple_cell
         kind=shape(value)
         if iterator_kind(kind)and operation=="source":return kind
         record=self._record(plan,node,operation,identity)
@@ -127,17 +127,17 @@ class Iterators:
             if operation=="reverse":
                 deque_element=self.model.deques.element(shape(choice))
                 if deque_element is not None:self._contribute(record.element,deque_element,node)
-                elif choice.tag in {"list","tuple","tuple_sequence","range","str","bytes"}:
+                elif choice.tag in {"list","tuple","tuple_sequence","range","str","bytes"}or tuple_cell(choice):
                     item=self.model.item(choice,node)
-                    if choice.tag=="tuple"and not choice.args:item=Cell(EMPTY)
+                    if tuple_cell(choice)and not choice.args:item=Cell(EMPTY)
                     self._contribute(record.element,item,node)
                 elif choice.tag in {"int","bool","int_bool","none","float"}:self._contribute(record.element,Cell(EMPTY),node)
                 elif choice.tag is not None:
                     raise ClassUnsupported(node,"reversed() needs a registered reverse cursor for this sequence or its user __reversed__/__len__/__getitem__ protocol; the builtin sequence/deque reverse providers do not implement that user protocol",types=(("source",shape(choice)),),proof="registered reverse iteration protocol")
                 continue
-            if choice.tag in {"list","tuple","tuple_sequence","range","str","bytes"}:
+            if choice.tag in {"list","tuple","tuple_sequence","range","str","bytes"}or tuple_cell(choice):
                 item=self.model.item(choice,node)
-                if choice.tag=="tuple"and not choice.args:
+                if tuple_cell(choice)and not choice.args:
                     # No Python value inhabits the immutable empty tuple.
                     item=Cell(EMPTY)
                 self._contribute(record.element,item,node)

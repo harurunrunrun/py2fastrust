@@ -1,5 +1,5 @@
 """Hashable structural types shared by direct Rust lowering layers."""
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from hashlib import sha256
 
 
@@ -14,6 +14,21 @@ EMPTY=EmptyType()
 @dataclass(frozen=True)
 class TupleType:
     fields: tuple[object, ...]
+
+
+@dataclass(frozen=True)
+class NamedTupleType(TupleType):
+    record: object=field(repr=False)
+    _native_named_tuple=True
+
+    @property
+    def _native_kind_tag(self):
+        return 'named_tuple_'+str(self.record.owner.index)+'_'+str(len(self.fields))+'_'+'_'.join(kind_tag(value)for value in self.fields)+'_end'
+
+    @property
+    def _native_python_type_name(self):return self.record.owner.node.name
+
+    def __repr__(self):return 'NamedTupleType('+repr(self.record.owner.node.name)+','+repr(self.fields)+')'
 
 
 @dataclass(frozen=True)
@@ -137,6 +152,11 @@ def tuple_field(code,index):
     return f"({code}).{index}"
 
 
+def tuple_nominal_compatible(left,right):
+    if not(isinstance(left,NamedTupleType)or isinstance(right,NamedTupleType)):return True
+    return isinstance(left,NamedTupleType)and isinstance(right,NamedTupleType)and left.record is right.record
+
+
 def rust_type(kind):
     return render_type(kind)
 
@@ -223,8 +243,10 @@ def join_types(left,right):
     if left in {"int","bool","int_bool"} and right in {"int","bool","int_bool"}:
         return "int_bool"
     if isinstance(left,TupleType) and isinstance(right,TupleType) and len(left.fields)==len(right.fields):
+        if isinstance(left,NamedTupleType)or isinstance(right,NamedTupleType):
+            if not(isinstance(left,NamedTupleType)and isinstance(right,NamedTupleType)and left.record is right.record):return union_type(left,right)
         fields=tuple(join_types(a,b) for a,b in zip(left.fields,right.fields))
-        return None if None in fields else TupleType(fields)
+        return None if None in fields else NamedTupleType(fields,left.record)if isinstance(left,NamedTupleType)else TupleType(fields)
     if isinstance(left,TupleSequenceType)and isinstance(right,TupleSequenceType):
         # Widening an existing tuple's payload by copying it would change its
         # observable identity. Keep separately typed shared tuple alternatives.
