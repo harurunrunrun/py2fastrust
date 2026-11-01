@@ -1310,3 +1310,13 @@ arbitrary builtin context managers remain explicit conversion boundaries.
 The richer error context layout and rendering helpers are selected only for a
 reached native `with` region. Programs without such a region retain their
 ordinary error layout and generated source bytes.
+
+Typed frame assignment supports extended starred unpacking with prefix,
+remainder and trailing targets, using the original target AST. Canonical
+`map(int, input().split())` creates the ordinary shared integer cursor for a
+starred target; fixed-count eager unpacking remains available for fixed
+targets. Existing iterator aliases share their consumed position. No stores
+at one unpack level occur until that level has captured its items and passed
+the size check. Nested targets then store in Python order. The fresh remainder
+list uses its allocation's solved element representation, so later mutations
+can widen its element kind without copying or retagging the source iterable.

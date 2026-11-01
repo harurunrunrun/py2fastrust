@@ -125,6 +125,8 @@ def select_frames(unit,*,integer="i64"):
     if any(unit.signature_for(nodes[definition]).variadic_positional for definition in reached):reasons+=("positional variadic argument packs",)
     references=prove(unit,analysis,targets)
     if requires_environments(unit,analysis,targets):reasons+=('lexical closure environments',)
+    from .native_class_unpacking import requires_frames as unpack_requires_frames
+    if unpack_requires_frames(unit,analysis):reasons+=('extended assignment unpacking',)
     from .native_lambda_cells import requires_instances
     if requires_instances(unit,analysis,targets):reasons+=("escaping lambda instances",)
     from .native_aot_callables import requires_cells

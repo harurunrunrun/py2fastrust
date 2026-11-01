@@ -145,6 +145,7 @@ class Flow:
 def target_names(target):
     if target[0]=="name":return {target[1]}
     if target[0]=="unpack":return set().union(*(target_names(child) for child in target[1]))
+    if target[0]=='starred':return target_names(target[1])
     return set()
 
 
@@ -189,6 +190,7 @@ class SemanticGraph:
 
     def target(self,node):
         if isinstance(node,ast.Name):return ("name",self.name(node))
+        if isinstance(node,ast.Starred):return ('starred',self.target(node.value),self.site(node))
         if isinstance(node,(ast.Tuple,ast.List)):
             return ("unpack",tuple(self.target(item) for item in node.elts))
         if isinstance(node,ast.Subscript):return ("index",self.expression(node.value),self.expression(node.slice))
@@ -458,7 +460,7 @@ class Solver:
             self.insert(receiver,"key",index);self.insert(receiver,"value",item)
         if categories&{"list","deque"}:self.insert(receiver,"element",item)
 
-    def assign(self,target,item,state):
+    def assign(self,target,item,state,context=None):
         if target[0]=="name":
             incoming={part for part in self.provenance(item).alternatives if isinstance(part,Allocation)and part.category=="list"}
             if incoming:
@@ -471,9 +473,19 @@ class Solver:
                 part=next(iter(item.alternatives))
                 if isinstance(part,TupleValue):fields=part.fields
                 elif isinstance(part,TupleType):fields=tuple(value(kind) for kind in part.fields)
+            star=next((index for index,child in enumerate(target[1])if child[0]=='starred'),None)
             for index,child in enumerate(target[1]):
-                source=fields[index] if fields is not None and index<len(fields) else self.field_values(item,"iteration",index)
-                self.assign(child,source,state)
+                if index==star:
+                    source=value(self.allocation(child[2],'list',context))
+                    if fields is None:self.insert(source,'element',self.field_values(item,'iteration'))
+                    else:
+                        tail=len(target[1])-star-1
+                        for member in fields[star:len(fields)-tail]:self.insert(source,'element',member)
+                    self.assign(child[1],source,state,context)
+                else:
+                    offset=index if star is None or index<star else len(fields)-len(target[1])+index if fields is not None else None
+                    source=fields[offset]if fields is not None and offset is not None and 0<=offset<len(fields)else self.field_values(item,'iteration',offset)
+                    self.assign(child,source,state,context)
 
     def compute(self,operation,operands):
         # Resolve type dependencies, never source values. Keeping a nested
@@ -574,7 +586,7 @@ class Solver:
             inside=state.copy()
             for target,source,filters in args[0]:
                 iterable=self.expression(source,inside,globals,locals,context)
-                self.assign(target,self.field_values(iterable,"iteration"),inside)
+                self.assign(target,self.field_values(iterable,"iteration"),inside,context)
                 for condition in filters:self.expression(condition,inside,globals,locals,context)
             items=tuple(self.expression(child,inside,globals,locals,context) for child in args[1])
             if term.data=="iterator":result=value(IteratorValue(items[0]))
@@ -764,7 +776,7 @@ class Solver:
                         receiver=evaluate(target[1]);index=evaluate(target[2])
                         self.store_index(receiver,index,item,context)
                     elif target[0]=="attribute":evaluate(target[1])
-                    else:self.assign(target,item,state)
+                    else:self.assign(target,item,state,context)
             elif op=="augment":
                 target,operator=operation.data
                 if target[0]=="index":
@@ -779,7 +791,7 @@ class Solver:
                 else:
                     first,second=(evaluate(term) for term in args)
                     self.record_mutation(first,context)
-                    self.assign(target,self.augmented(first,second,operator),state)
+                    self.assign(target,self.augmented(first,second,operator),state,context)
             elif op=="expression":evaluate(args[0])
             elif op=="expression_group":
                 for term in args:evaluate(term)
@@ -805,7 +817,7 @@ class Solver:
                 header=state.copy()
                 for iteration in range(128):
                     inside=header.copy()
-                    if op=="for":self.assign(operation.data,self.field_values(source,"iteration"),inside)
+                    if op=="for":self.assign(operation.data,self.field_values(source,"iteration"),inside,context)
                     else:self.expression(args[0],inside,globals,locals,context)
                     body=self.block(operation.blocks[0],inside,globals,locals,context)
                     joined=merge([state,body.normal,*body.continues])

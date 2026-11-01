@@ -240,7 +240,8 @@ class IteratorProofTests(unittest.TestCase):
 class IteratorExecutionTests(unittest.TestCase):
     def check(self,name):
         source=getattr(self,'cases',CASES)[name];filename='iterator_case.py'
-        cp=subprocess.run([sys.executable,'-I','-S','-c',REFERENCE,source,filename],capture_output=True,text=True,timeout=10)
+        data=getattr(self,'inputs',{}).get(name,'')
+        cp=subprocess.run([sys.executable,'-I','-S','-c',REFERENCE,source,filename],input=data,capture_output=True,text=True,timeout=10)
         failure=json.loads(cp.stderr)if cp.returncode else None
         with tempfile.TemporaryDirectory(prefix='pytors-iterator-')as directory:
             for mode in ('i64','i128','bigint'):
@@ -256,7 +257,7 @@ class IteratorExecutionTests(unittest.TestCase):
                     binary=rust.with_suffix('.opt'if optimized else'.debug')
                     built=subprocess.run(['rustc','--edition=2021','--crate-name','iterator_case',*(['-O']if optimized else[]),str(rust),'-o',str(binary)],capture_output=True,text=True,timeout=120)
                     self.assertEqual(built.returncode,0,built.stderr)
-                    actual=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10,env={**os.environ,'PATH':'/no-python-runtime'})
+                    actual=subprocess.run([str(binary)],input=data,capture_output=True,text=True,timeout=10,env={**os.environ,'PATH':'/no-python-runtime'})
                     with self.subTest(name=name,mode=mode,optimized=optimized):
                         self.assertEqual((actual.returncode,actual.stdout),(cp.returncode,cp.stdout),actual.stderr)
                         if failure:

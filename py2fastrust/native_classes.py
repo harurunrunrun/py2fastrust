@@ -1296,7 +1296,8 @@ class Model:
                         and len(node.value.args)==2 and not node.value.keywords
                         and isinstance(node.value.args[0],ast.Name)
                         and self.builtin_identity(plan,node.value.args[0],environment)==BuiltinIdentity("int")
-                        and len(node.targets)==1 and isinstance(node.targets[0],(ast.Tuple,ast.List))):
+                        and len(node.targets)==1 and isinstance(node.targets[0],(ast.Tuple,ast.List))
+                        and not any(isinstance(item,ast.Starred)for item in node.targets[0].elts)):
                     words = self.expression(plan,node.value.args[1],environment)
                     member = self.item(words,node.value).root()
                     if member.tag in {"str","bytes"}:

@@ -56,6 +56,15 @@ class IteratorRecord:
 def iterator_kind(kind):return isinstance(kind,IteratorType)
 
 
+def default_noniterable(model,kind):
+    if kind in {'int','bool','int_bool','none','float'}or getattr(kind,'_native_function_reference',False):return True
+    from .native_classes import InstanceType
+    if isinstance(kind,InstanceType):
+        owner=model.classes[kind.name]
+        return not owner.node.bases and not {'__iter__','__getitem__'}.intersection(owner.methods)
+    return False
+
+
 def tuple_cursor_required(kind):
     from .native_types import TupleType
     return (isinstance(kind,TupleType)and len(set(kind.fields))>1 and
@@ -82,7 +91,8 @@ class Iterators:
         parents={id(child):parent for parent in ast.walk(tree)for child in ast.iter_child_nodes(parent)}
         parent=parents.get(id(node))
         if isinstance(parent,ast.Assign):
-            return len(parent.targets)==1 and isinstance(parent.targets[0],(ast.Tuple,ast.List))
+            return (len(parent.targets)==1 and isinstance(parent.targets[0],(ast.Tuple,ast.List))
+                    and not any(isinstance(item,ast.Starred)for item in parent.targets[0].elts))
         return (isinstance(parent,ast.Call)and len(parent.args)==1 and not parent.keywords
                 and self.model.builtin_identity(plan,parent.func,environment)==BuiltinIdentity("list"))
 
@@ -135,7 +145,7 @@ class Iterators:
                 self._contribute(record.element,self.model.deques.element(shape(choice)),node)
             elif self.model.mappings.views.element(shape(choice))is not None:
                 self._contribute(record.element,self.model.mappings.views.element(shape(choice)),node)
-            elif choice.tag is not None and all(branch in {"int","bool","int_bool","none","float"}or getattr(branch,"_native_function_reference",False)for branch in alternatives(shape(choice))):
+            elif choice.tag is not None and all(default_noniterable(self.model,branch)for branch in alternatives(shape(choice))):
                 # Construction raises before a noniterable can yield a value.
                 # It must not add a fictitious None to valid source payloads.
                 self._contribute(record.element,Cell(EMPTY),node)

@@ -581,3 +581,11 @@ arbitrary builtin context managers remain explicit conversion boundaries.
 The richer error context layout and rendering helpers are selected only for a
 reached native `with` region. Programs without such a region retain their
 ordinary error layout and generated source bytes.
+
+Extended assignment targets support `first, *rest, last = source`, including
+heterogeneous tuples, shared lazy iterators and nested targets. The remainder
+is a fresh typed list retaining element handles. Each unpack level finishes
+iteration and checks arity before storing any of its targets. Scalar/default
+noniterable inputs retain the runtime unpacking TypeError, and map/zip callback
+errors retain their original source frames. Custom iterator protocols remain
+explicit unsupported diagnostics.
