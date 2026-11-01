@@ -29,6 +29,15 @@ and `str.format`/`str.format_map` remain positioned diagnostics. Unicode format
 widths and fills follow the selected string mode; Unicode data is included and
 attributed only when its helpers remain reachable.
 
+Canonical `ord` calls accept strings containing one Unicode scalar value and
+bytes of length one; invalid lengths raise the corresponding Python `TypeError`.
+`bin`, `oct`, and `hex` accept integral and boolean values in every integer mode,
+with Python signs and prefixes. Saved aliases, callbacks and class fields use
+the same captured-call contract. These operations need no Unicode data tables.
+Custom integer-index protocols, unpaired surrogate string storage, and `chr`
+remain unfinished. Fixed-width input normalization still follows the chosen
+integer mode.
+
 Fixed-name imports now compile supported user modules, pure-Python packages and
 bundled module sources to separate typed namespaces in the same Rust file.
 Original AST, symbol-table, scope and source positions remain attached to each

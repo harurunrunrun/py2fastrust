@@ -13,6 +13,9 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name in {'ord','bin','oct','hex'}:
+        from .native_character_builtins import binding_error as bind_character
+        return bind_character(name,count,keywords)
     if name in {"format","repr","ascii"}:
         if keywords:return f"TypeError: {name}() takes no keyword arguments"
         if name=="format" and not 1<=count<=2:return f"TypeError: format expected {'at least 1'if not count else'at most 2'} argument{'s'if count else''}, got {count}"

@@ -47,6 +47,12 @@ Python AST. Plain fields emit only the needed display helpers. Source-defined
 format/display methods, complex values, and string `format`/`format_map` methods
 still require their own direct protocols.
 
+Canonical `ord`, `bin`, `oct`, and `hex` calls have direct native lowering,
+including saved aliases, callback arguments and class fields. `ord` accepts
+single-character strings and single-byte bytes. Radix calls accept integers and
+booleans, including signed minima and BigInt magnitudes. Custom `__index__`
+objects and `chr` still require their native protocols.
+
 Builtin `divmod` supports captured integral/boolean calls in every integer mode,
 binary64 pairs in every mode, and mixed integer/binary64 calls in fixed-width
 modes. It shares quotient/remainder kernels with the arithmetic operators.

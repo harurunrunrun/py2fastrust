@@ -1485,7 +1485,8 @@ class Emitter:
 
     def capture(self, value):
         name = self.fresh()
-        return f"let {name}={value.code};",Expression(name,value.kind,value.constant)
+        annotation=":Vec<u8>"if value.kind=="bytes"else""
+        return f"let {name}{annotation}={value.code};",Expression(name,value.kind,value.constant)
 
     def scalar(self, value):
         return value

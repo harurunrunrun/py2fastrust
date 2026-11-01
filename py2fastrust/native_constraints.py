@@ -669,6 +669,7 @@ class Solver:
             return UNKNOWN
         name=identity.name
         if name in {"int","float","str","bool","bytes"}:return value(name)
+        if name in {"bin","oct","hex"}:return value("str")
         if name=="abs" and args:return self.compute("unary:UAdd",(args[0],))
         if name in {"len","pow","ord","hash","sum"}:
             if name=="sum":return value(Computed("sum",(self.field_values(args[0],"iteration"),args[1] if len(args)>1 else dict(keywords).get("start",value("int"))))) if args else UNKNOWN

@@ -153,5 +153,7 @@ def select_frames(unit):
     if text_requires_frames(unit,analysis):reasons+=('bound text/bytes strip protocols',)
     from .native_formatting import requires_frames as formatting_requires_frames
     if formatting_requires_frames(unit,analysis):reasons+=("typed format fields and canonical formatting calls",)
+    from .native_character_builtins import requires_frames as character_requires_frames
+    if character_requires_frames(analysis):reasons+=('character codes and integer radix output',)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)
