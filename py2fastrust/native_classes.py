@@ -1136,6 +1136,9 @@ class Model:
 
     def attribute_value(self,plan,node,receiver,environment):
         receiver=receiver.root()
+        if isinstance(receiver.tag,EmptyType)and not self.final:
+            from .native_guard_flow import AnalysisPending
+            raise AnalysisPending()
         if hasattr(self,'class_namespaces'):
             value=self.class_namespaces.named_tuples.analyze_attribute(plan,node,receiver,environment)
             if value is not None:return value

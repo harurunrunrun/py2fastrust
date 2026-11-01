@@ -42,6 +42,11 @@ def analyze(model, plan, target, value, environment,*,bind_target=None):
     from .native_types import EMPTY
     from .native_unions import union_kind
     from .native_class_iterators import default_noniterable
+    from .native_finite_tuple_unpacking import analyze as analyze_finite
+    finite=analyze_finite(model,plan,target,value,environment,bind_target=bind_target)
+    if finite is not None:
+        _sites(model)[(plan.index,id(target))]=finite
+        return True
     def bind(node,item):
         if bind_target is not None:bind_target(node,item)
         else:model.target(plan,node,item,environment)
@@ -88,6 +93,9 @@ def emit(emitter, target, value,*,assign_target=None):
     record=_sites(emitter.model).get((emitter.plan.index,id(target)))
     if record is None:
         return None
+    if getattr(record,'_finite_tuple_unpack',False):
+        from .native_finite_tuple_unpacking import emit as emit_finite
+        return emit_finite(emitter,target,value,record,assign_target=assign_target)
     setup, source = emitter.capture(value)
     expected=len(target.elts)
     if record.fields is not None:

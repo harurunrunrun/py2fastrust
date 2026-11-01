@@ -1428,3 +1428,13 @@ their actual length, element comparison errors and first-candidate identity;
 comparison does not re-evaluate operands or later chained-comparison values.
 Floating NaN, custom element comparison and mutable element ordering still need
 their own identity-aware adapters and retain positioned diagnostics.
+
+
+Exact assignment unpacking of finite fixed-tuple alternatives on typed frames
+retains each field's position and representation, including optional tuple
+sources. Non-iterable and wrong-arity alternatives raise before storing any
+target at that level; valid alternatives capture all members before ordered
+target stores. Shared payloads keep their original handles. A temporary bottom
+value from an as-yet-unsolved producer defers attribute analysis until the
+shared fixed point; final protocol validation still applies. Mixed iterator
+alternatives and extended starred targets retain their separate pull protocols.
