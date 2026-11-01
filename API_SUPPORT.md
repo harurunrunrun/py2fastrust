@@ -133,6 +133,11 @@ in the configured ASCII/Unicode mode; bytes yield integers. Captured immutable
 owners survive local or field rebinding during the loop. Ordinary static text
 loops retain their existing path.
 
+Frame `str`/`bytes` `startswith` and `endswith` support clipped positional
+bounds, individual patterns and fixed or runtime tuples of patterns. Tuple
+matching stops at the first match, including lazy errors for later invalid
+members. Queries borrow the selected native window without copying its text.
+
 Typed frame dictionaries and sets have shared native storage, including
 ordinary mutable aliases, dictionary values and class fields. Direct adapters
 cover literals/comprehensions, `dict`/`set` constructors, dictionary subscripts,

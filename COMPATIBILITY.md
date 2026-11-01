@@ -467,6 +467,17 @@ byte sources yield integers. The existing inline one-character text carrier
 avoids a heap allocation for each yielded character. This capability does not
 force otherwise static text loops onto frames.
 
+Frame `str`/`bytes` `startswith` and `endswith` use cached native windows and
+borrowed prefix/suffix comparisons. They support positional int/bool/None
+start/end bounds, selected-width clipping, empty patterns/windows, finite
+receiver alternatives, and fixed or runtime tuples of candidate patterns.
+Bounds are validated before patterns. Tuple members are checked in order and
+matching stops on the first success, so a later invalid member raises only
+when reached. Integer byte needles are rejected for these methods. Original
+receiver and argument evaluation order and exact tested Python binding/type
+errors are retained. Custom index/buffer objects and saved builtin methods
+remain separate protocols; source user methods keep their own identities.
+
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing
 tuple's identity, and shares the empty tuple. Fixed and runtime tuple query

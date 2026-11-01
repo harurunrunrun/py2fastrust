@@ -1,9 +1,9 @@
-"""Native text/byte search with clipped bounds and shared byte-pattern cursors."""
+"""Native bounded text queries and shared byte-pattern cursors."""
 from dataclasses import dataclass
 from .call_semantics import FunctionSignature
 from .native_types import alternatives
 
-NAMES=frozenset({'find','rfind','index','rindex','count'})
+NAMES=frozenset({'find','rfind','index','rindex','count','startswith','endswith'})
 SIGNATURE=FunctionSignature.declaration(('sub','start','end'),positional_only=('sub','start','end'),default_names=('start','end'))
 
 
@@ -47,7 +47,7 @@ def analyze(model,plan,node,receiver,arguments,keywords):
     kinds=alternatives(shape(receiver))
     if not kinds or not all(kind in {'str','bytes'}for kind in kinds):return None
     _sites(model)[(plan.index,id(node))]=SearchSite(node.func.attr,tuple(kinds))
-    return model.cell(plan,node,'int')
+    return model.cell(plan,node,'bool'if node.func.attr in {'startswith','endswith'}else'int')
 
 
 def bind(kind,name,arguments,keywords,default):
@@ -86,7 +86,12 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
     site=_sites(emitter.model).get((emitter.plan.index,id(node)))
     if site is None:return None
     reverse=site.name in {'rfind','rindex'};raising=site.name in {'index','rindex'}
+    tailmatch=site.name in {'startswith','endswith'}
     def finish(kind,owner,needle,start,stop):
+        if tailmatch:
+            function='native_frame_text_tailmatch'if kind=='str'else'native_frame_bytes_tailmatch'
+            result=emitter.at(function+'(&('+owner+'),'+needle+','+start+','+stop+','+str(site.name=='endswith').lower()+')',node)
+            return result
         if site.name=='count':
             function='native_text_count'if kind=='str'else'native_frame_bytes_count'
             result=emitter.at(function+'(&('+owner+'),'+needle+','+start+','+stop+')',node)
@@ -106,6 +111,34 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
             before='let '+start+':Option<i128>='+bound(emitter,node,values['start'],'start')+';let '+stop+':Option<i128>='+bound(emitter,node,values['end'],'end')+';'
             return before,start,stop
         pattern=values['sub']
+        if tailmatch:
+            before,start,stop=bounds()
+            def checked_pattern(pattern_kind,pattern_text,inside_tuple=False):
+                if union_kind(pattern_kind):
+                    return project(pattern_kind,pattern_text,lambda k,t:checked_pattern(k,t,inside_tuple))
+                tag=domain(pattern_kind)
+                if not inside_tuple and tag=='tuple':
+                    result='false'
+                    for index,element in reversed(list(enumerate(pattern_kind.fields))):
+                        current=checked_pattern(element,'('+pattern_text+').'+str(index)+'.clone()',True)
+                        result='if '+current+'{true}else{'+result+'}'
+                    return '{'+result+'}'
+                if not inside_tuple and tag=='tuple_sequence':
+                    item,result=emitter.fresh(),emitter.fresh()
+                    predicate=checked_pattern(pattern_kind.element,item+'.clone()',True)
+                    return '{let mut '+result+'=false;for '+item+' in ('+pattern_text+').iter(){if '+predicate+'{'+result+'=true;break;}}'+result+'}'
+                if pattern_kind==kind:
+                    return finish(kind,text,'&('+pattern_text+')',start,stop)
+                if kind=='bytes'and tag=='object':
+                    raise ClassUnsupported(node,'this byte prefix/suffix pattern needs a user buffer protocol; the native adapter accepts builtin bytes or tuples of builtin bytes',types=(('pattern',pattern_kind),),proof='prefix/suffix builtin buffer representation')
+                typename=_type_name(emitter,Expression(pattern_text,pattern_kind),node)
+                if inside_tuple:
+                    message=('"TypeError: tuple for '+site.name+' must only contain str, not {}"'if kind=='str'else'"TypeError: a bytes-like object is required, not \'{}\'"')
+                else:
+                    message='"TypeError: '+site.name+' first arg must be '+kind+' or a tuple of '+kind+', not {}"'
+                return _error(emitter,node,'bool','format!('+message+','+typename+')').code
+            code=checked_pattern(pattern.kind,pattern.code)
+            return emitter.coerce(Expression('{'+before+code+'}','bool'),wanted,node)
         def pattern_branch(pattern_kind,pattern_text,start=None,stop=None):
             if kind=='str':
                 if pattern_kind!='str':
@@ -129,6 +162,10 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
 
 
 HELPERS=r'''
+fn native_frame_text_tailmatch(text:&NativeText,pattern:&str,start:Option<i128>,stop:Option<i128>,suffix:bool)->Result<bool,String>{
+    let Some(window)=native_text_window(text,start,stop)?else{return Ok(false);};
+    Ok(if suffix{window.ends_with(pattern)}else{window.starts_with(pattern)})
+}
 fn native_frame_text_search(text:&NativeText,pattern:&str,start:Option<i128>,stop:Option<i128>,reverse:bool)->Result<Option<usize>,String>{
     let Some(window)=native_text_window(text,start,stop)?else{return Ok(None);};
     let found=if reverse{window.rfind(pattern)}else{window.find(pattern)};
@@ -144,6 +181,11 @@ fn native_frame_byte_window(length:usize,start:Option<i128>,stop:Option<i128>)->
     let stop=stop.map(bound).unwrap_or(length).min(length);
     if start>length||start>stop{return None;}
     Some((start as usize,stop as usize))
+}
+fn native_frame_bytes_tailmatch(text:&[u8],pattern:&[u8],start:Option<i128>,stop:Option<i128>,suffix:bool)->Result<bool,String>{
+    let Some((start,stop))=native_frame_byte_window(text.len(),start,stop)else{return Ok(false);};
+    let window=&text[start..stop];
+    Ok(if suffix{window.ends_with(pattern)}else{window.starts_with(pattern)})
 }
 fn native_frame_bytes_search(text:&[u8],pattern:&[u8],start:Option<i128>,stop:Option<i128>)->Result<Option<usize>,String>{
     let Some((start,stop))=native_frame_byte_window(text.len(),start,stop)else{return Ok(None);};
