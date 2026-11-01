@@ -24,6 +24,8 @@ class IteratorType:
     def _native_owned_kinds(self):
         from .native_classes import shape
         record=self.record
+        if record.operation=="map":
+            return (*record.input_types,shape(record.callback))
         if record.operation=="filter":
             return (record.input_type,shape(record.callback))
         return (shape(record.source),)
@@ -39,6 +41,7 @@ class IteratorRecord:
     element:object
     callback:object=None
     input_type:object=None
+    input_types:tuple=()
     demands:dict=field(default_factory=dict)
     emitted:bool=False
 
@@ -58,12 +61,23 @@ class Iterators:
     def owns(self,kind):
         return iterator_kind(kind)and 0<=kind.index<len(self.records)and self.records[kind.index]is kind.record
 
-    def _record(self,plan,node,operation):
+    def immediate_integer_map(self,plan,node,environment):
+        """Retain eager word parsing only for consumers with no saved cursor."""
+        from .references import BuiltinIdentity
+        tree=getattr(getattr(plan,"source_unit",None),"tree",self.model.tree)
+        parents={id(child):parent for parent in ast.walk(tree)for child in ast.iter_child_nodes(parent)}
+        parent=parents.get(id(node))
+        if isinstance(parent,ast.Assign):
+            return len(parent.targets)==1 and isinstance(parent.targets[0],(ast.Tuple,ast.List))
+        return (isinstance(parent,ast.Call)and len(parent.args)==1 and not parent.keywords
+                and self.model.builtin_identity(plan,parent.func,environment)==BuiltinIdentity("list"))
+
+    def _record(self,plan,node,operation,identity=None):
         from .native_classes import Cell
-        key=plan.index,id(node),operation
+        key=plan.index,id(node),operation,identity
         if key not in self.sites:
             record=IteratorRecord(len(self.records),operation,node,plan,Cell(),Cell())
-            if operation=="filter":record.callback=Cell()
+            if operation in {"filter","map"}:record.callback=Cell()
             self.sites[key]=record;self.records.append(record)
         return self.sites[key]
 
@@ -71,17 +85,21 @@ class Iterators:
         if not self.model.namespace.contribute(destination,value,node,force=True):
             self.model.contribute(destination,value,node)
 
-    def source(self,plan,node,value):
+    def source(self,plan,node,value,identity=None):
         from .native_classes import ClassUnsupported,shape
         kind=shape(value)
         if iterator_kind(kind):return kind
-        record=self._record(plan,node,"source")
+        record=self._record(plan,node,"source",identity)
         self._contribute(record.source,value,node)
         root=record.source.root()
         from .native_classes import Cell
-        choices=root.args if root.tag=="union"else(root,)
-        for choice in choices:
+        choices=list(root.args)if root.tag=="union"else[root]
+        while choices:
+            choice=choices.pop()
             choice=choice.root()
+            if choice.tag=="union":
+                choices.extend(choice.args)
+                continue
             if choice.tag in {"list","tuple","range","str","bytes"}:
                 item=self.model.item(choice,node)
                 if choice.tag=="tuple"and not choice.args:
@@ -104,6 +122,17 @@ class Iterators:
         self._contribute(record.element,record.input_type.record.element,node)
         return Cell(record.kind)
 
+    def map(self,plan,node,callback,sources):
+        from .native_classes import Cell
+        record=self._record(plan,node,"map")
+        self._contribute(record.callback,callback,node)
+        record.input_types=tuple(self.source(plan,node,source,("map",index))
+                                for index,source in enumerate(sources))
+        if any(isinstance(self.model.item(Cell(kind),node).root().tag,EmptyType)
+               for kind in record.input_types):
+            self._contribute(record.element,Cell(EMPTY),node)
+        return Cell(record.kind)
+
     def item(self,kind):return kind.record.element
 
     def demand(self,plan,node,value,environment,active=()):
@@ -114,7 +143,18 @@ class Iterators:
         record=kind.record
         if record.index in active:
             raise ClassUnsupported(node,"recursive lazy iterator source ownership needs a recursive typed pull adapter; the finite source graph is not established",proof="finite iterator source graph")
-        if record.operation=="filter":
+        if record.operation=="map":
+            items=[self.demand(plan,node,Cell(source),environment,active+(record.index,))
+                   for source in record.input_types]
+            if all(item.root().tag is not None for item in items)and not any(
+                    isinstance(shape(item),EmptyType)for item in items):
+                from .native_aot_callables import analyze_values
+                metadata=CallArguments(tuple(Argument(record.node)for _ in items),())
+                site=analyze_values(self.model.callable_cells,plan,node,record.callback,
+                    metadata,items,[],environment,identity=("iterator_callback",record.index))
+                record.demands[(plan.index,id(node))]=site
+                self._contribute(record.element,site.result,node)
+        elif record.operation=="filter":
             self.demand(plan,node,Cell(record.input_type),environment,active+(record.index,))
             callback=record.callback
             from .native_types import alternatives
@@ -132,7 +172,7 @@ class Iterators:
         from .native_classes import shape
         if not iterator_kind(kind)or kind.index in seen:return False
         record=kind.record
-        return record.operation=="filter"and(shape(record.callback)!="none"or self.may_call(record.input_type,seen|{kind.index}))
+        return record.operation=="map"or(record.operation=="filter"and(shape(record.callback)!="none"or self.may_call(record.input_type,seen|{kind.index})))
 
     def effects(self,plan,node):
         return any((plan.index,id(node))in record.demands for record in self.records)
@@ -146,12 +186,13 @@ class Iterators:
         from .native_classes import shape
         return tuple((record.operation,shape(record.source),shape(record.element),
                       shape(record.callback)if record.callback is not None else None,
-                      None if record.input_type is None else record.input_type.index)
+                      None if record.input_type is None else record.input_type.index,
+                      tuple(source.index for source in record.input_types))
                      for record in self.records)
 
     def construct(self,emitter,node,source,*,kind=None):
         from .native_classes import Expression,ClassUnsupported,shape,domain
-        kind=kind or self.sites[(emitter.plan.index,id(node),"source")].kind
+        kind=kind or self.sites[(emitter.plan.index,id(node),"source",None)].kind
         if iterator_kind(source.kind):return source
         record=kind.record;record.emitted=True
         tag=domain(source.kind)
@@ -178,6 +219,16 @@ class Iterators:
         inner=self.construct(emitter,record.node,source,kind=record.input_type)
         return Expression(f"Rc::new(RefCell::new(ClassIteratorState_{record.index}{{source:{inner.code},callback:{callback.code},exhausted:false}}))",wanted)
 
+    def emit_map(self,emitter,node,callback,sources,strict,wanted):
+        from .native_classes import Expression
+        record=wanted.record;record.emitted=True
+        before=[];fields=[]
+        for index,(source,kind)in enumerate(zip(sources,record.input_types)):
+            setup,value=emitter.capture(self.construct(emitter,node,source,kind=kind))
+            before.append(setup);fields.append(f"source_{index}:{value.code}")
+        fields.extend(("callback:"+callback.code,"strict:"+emitter.truth(strict)))
+        return Expression("{"+"".join(before)+f"Rc::new(RefCell::new(ClassIteratorState_{record.index}{{"+",".join(fields)+"}))}",wanted)
+
     def pull(self,emitter,node,value,active=()):
         from .native_classes import ClassUnsupported,Expression,shape,domain
         kind=value.kind
@@ -186,6 +237,7 @@ class Iterators:
         if record.index in active:raise ClassUnsupported(node,"recursive iterator source pull is not yet representable",proof="finite iterator source graph")
         item_kind=shape(record.element)
         if item_kind is None:raise ClassUnsupported(node,"the iterator's element storage remains unresolved",proof="solved lazy iterator element type")
+        if record.operation=="map":return self._pull_map(emitter,node,value,active)
         if isinstance(item_kind,EmptyType):return Expression("None::<NativeEmpty>",item_kind)
         state=emitter.fresh();item=emitter.fresh()
         if record.operation=="filter":
@@ -228,6 +280,43 @@ class Iterators:
                 return Expression(code,item_kind)
         else:return Expression("None::<"+emitter.rust_type(item_kind)+">",item_kind)
         return Expression(begin+f"let {item}={current};if {item}.is_some(){{{state}.index+=1;}}else{{{state}.source=None;}}{item}"+"}",item_kind)
+
+    def _pull_map(self,emitter,node,value,active):
+        from .native_classes import Expression,shape,ClassUnsupported
+        from .native_aot_callables import emit_values
+        from .native import _string
+        record=value.kind.record
+        state=emitter.fresh();callback=emitter.fresh();strict=emitter.fresh()
+        sources=[emitter.fresh()for _ in record.input_types]
+        capture=",".join([callback,strict]+sources)
+        stored=",".join([state+".callback.clone()",state+".strict"]+
+                        [f"{state}.source_{index}.clone()"for index in range(len(sources))])
+        code="{let ("+capture+")={let "+state+"="+value.code+".borrow();("+stored+")};"
+        label="map_pull_"+emitter.fresh()
+        code+="'"+label+":{"
+        items=[]
+        for index,(source,kind)in enumerate(zip(sources,record.input_types)):
+            pulled=self.pull(emitter,node,Expression(source,kind),active+(record.index,))
+            item=emitter.fresh();items.append(Expression(item,pulled.kind))
+            if index:
+                message=f"ValueError: map() argument {index+1} is shorter than argument{'s'if index>1 else''} "+("1-"+str(index)if index>1 else"1")
+                absent="if "+strict+"{"+emitter.at(f"Err::<(),String>({_string(message)}.to_owned())",node)+";}"
+            else:
+                checks=[]
+                for other_index,(other,other_kind)in enumerate(zip(sources[1:],record.input_types[1:]),1):
+                    later=self.pull(emitter,node,Expression(other,other_kind),active+(record.index,))
+                    message=f"ValueError: map() argument {other_index+1} is longer than argument{'s'if other_index>1 else''} "+("1-"+str(other_index)if other_index>1 else"1")
+                    checks.append("if ("+later.code+").is_some(){"+emitter.at(f"Err::<(),String>({_string(message)}.to_owned())",node)+";}")
+                absent="if "+strict+"{"+"".join(checks)+"}"
+            code+="let Some("+item+")=("+pulled.code+")else{"+absent+"break '"+label+" None;};"
+        if isinstance(shape(record.element),EmptyType):
+            empty=next(item for item in items if isinstance(item.kind,EmptyType))
+            return Expression(code+"match "+empty.code+"{}}}",shape(record.element))
+        site=record.demands.get((emitter.plan.index,id(node)))
+        if site is None:raise ClassUnsupported(node,"the deferred map callback has no matching typed demand proof",proof="deferred callable demand site")
+        result=emit_values(emitter,node,site,Expression(callback,shape(record.callback)),items,[],shape(record.element))
+        code+="Some("+result.code+")}}"
+        return Expression(code,shape(record.element))
 
     def _union_source_pull(self,emitter,node,record,kind,source,index,item_kind):
         """One concrete source alternative; no source borrow crosses a callback."""
@@ -281,7 +370,10 @@ class Iterators:
         # Every family has a concrete payload; aliases clone only the Rc handle.
         for record in self.records:
             if not record.emitted:continue
-            if record.operation=="filter":
+            if record.operation=="map":
+                fields=",".join(f"source_{index}:ClassIterator_{source.index}"for index,source in enumerate(record.input_types))
+                fields+=f",callback:{emitter.rust_type(shape(record.callback))},strict:bool"
+            elif record.operation=="filter":
                 fields=f"source:ClassIterator_{record.input_type.index},callback:{emitter.rust_type(shape(record.callback))},exhausted:bool"
             else:
                 kind=shape(record.source);tag=domain(kind)
@@ -309,8 +401,12 @@ def requires_state(unit,analysis):
     for site,fact in identities.items():
         if fact.unknown or fact.unbound or len(fact.alternatives)!=1:continue
         identity=next(iter(fact.alternatives))
-        if identity not in (BuiltinIdentity("filter"),BuiltinIdentity("iter")):continue
+        if identity not in (BuiltinIdentity("filter"),BuiltinIdentity("iter"),BuiltinIdentity("map")):continue
         node=nodes.get(site);parent=parents.get(id(node))
+        if (isinstance(parent,ast.Assign)and len(parent.targets)==1
+                and isinstance(parent.targets[0],(ast.Tuple,ast.List))):
+            from .native_iterator_selection import immediate_map_unpack
+            if immediate_map_unpack(unit,analysis,node,identity):continue
         if isinstance(parent,ast.For)and parent.iter is node:continue
         if isinstance(parent,ast.comprehension)and parent.iter is node:continue
         if isinstance(parent,ast.Call):
@@ -318,5 +414,9 @@ def requires_state(unit,analysis):
             if caller is not None and not caller.unknown and not caller.unbound and len(caller.alternatives)==1:
                 target=next(iter(caller.alternatives))
                 if isinstance(target,BuiltinIdentity)and target.name in direct:continue
+                from .native_stream_plans import _CONSUMERS
+                from .native_iterator_selection import immediate_map_unpack
+                if (isinstance(target,BuiltinIdentity)and target.name in _CONSUMERS
+                        and immediate_map_unpack(unit,analysis,node,identity)):continue
         return True
     return False

@@ -106,7 +106,7 @@ def immutable_cell(cell):
     return immutable(shape(cell))
 
 
-def merge(left, right, node):
+def merge(left, right, node,*,allow_unresolved=False):
     left, right = left.root(), right.root()
     if left is right:
         return left
@@ -139,7 +139,7 @@ def merge(left, right, node):
         from .native_class_storage import shared_element
         # ListType is an owned Vec in ordinary lowering, but the class ABI
         # stores it as a shared ClassList handle. Prove that actual ABI here.
-        if not shared_element(shape(left))or not shared_element(shape(right)):raise ClassUnsupported(node)
+        if not shared_element(shape(left),allow_unresolved=allow_unresolved)or not shared_element(shape(right),allow_unresolved=allow_unresolved):raise ClassUnsupported(node)
         # Keep constructor payloads separate from the outer joined ABI. Mutable
         # allocation shapes are never widened into a union by this solver.
         candidates=[]
@@ -154,7 +154,7 @@ def merge(left, right, node):
         if len(left.args) != len(right.args):
             raise ClassUnsupported(node)
         for a, b in zip(left.args, right.args):
-            merge(a, b, node)
+            merge(a, b, node,allow_unresolved=allow_unresolved)
     elif left.args != right.args:
         raise ClassUnsupported(node)
     right.parent = left
@@ -362,7 +362,7 @@ class Model:
         result = self.node_cells.setdefault(key, Cell())
         if tag is not None:
             self.constructors.setdefault(key,Cell(tag,tuple(args)))
-            merge(result, Cell(tag, tuple(args)), node)
+            merge(result, Cell(tag, tuple(args)), node,allow_unresolved=not self.final)
         if identity is None:self.records[key] = result
         if tag == "list":
             site=self.unit.ordinal(node) if self.unit is not None else id(node)
@@ -409,8 +409,8 @@ class Model:
                 self.value_constraints.insert(constraint_value(allocation),"element",constraint_value(kind))
             else:self.value_constraints.constrain(variable,constraint_value(kind))
             resolved=self.value_constraints.kind(constraint_value(variable))
-            return merge(destination,self.cell_for_kind(resolved),node)
-        return merge(destination,self.flow_copy(source),node)
+            return merge(destination,self.cell_for_kind(resolved),node,allow_unresolved=not self.final)
+        return merge(destination,self.flow_copy(source),node,allow_unresolved=not self.final)
 
     def remember(self, plan, node, result):
         self.records[(plan.index, id(node))] = result
@@ -933,12 +933,14 @@ class Model:
             return self.cell(plan,node,"bool")
         if (isinstance(function,ast.Name) and self.builtin_identity(plan,function,environment)==BuiltinIdentity("map")
                 and len(node.args) == 2 and not node.keywords and isinstance(node.args[0],ast.Name)
-                and self.builtin_identity(plan,node.args[0],environment)==BuiltinIdentity("int")):
+                and self.builtin_identity(plan,node.args[0],environment)==BuiltinIdentity("int")
+                and self.iterators.immediate_integer_map(plan,node,environment)):
             words = self.expression(plan,node.args[1],environment)
             member = self.item(words,node).root()
-            if member.tag not in {None,"str","bytes"}:
-                raise ClassUnsupported(node)
-            return self.cell(plan,node,"map_int",(words,))
+            if member.tag in {"str","bytes"}:
+                return self.cell(plan,node,"map_int",(words,))
+            if member.tag is None and not self.final:
+                return self.cell(plan,node)
         receiver = None
         if isinstance(function,ast.Attribute):
             receiver=self.callable_cells.receivers.get((plan.index,id(node)))
@@ -987,6 +989,10 @@ class Model:
                 from .native_sequence_plans import sequence_method
                 method=sequence_method(shape(receiver),function.attr)
                 if method is not None:
+                    if method.name=="sort":
+                        from .native_class_sorting import analyze_method
+                        self.sequence_calls[(plan.index,id(node))]=method
+                        return analyze_method(self,plan,node,receiver,arguments,keywords,environment)
                     try:
                         defaults={name:Cell("none"if value is None else"bool"if type(value)is bool else"int")
                                   for name,value in method.defaults}
@@ -1075,6 +1081,8 @@ class Model:
         if isinstance(node,ast.Name):
             return self.bind_name(plan,node,value,environment)
         if isinstance(node,(ast.Tuple,ast.List)):
+            from .native_class_unpacking import analyze
+            if analyze(self,plan,node,value,environment):return
             source = value.root()
             if source.tag == "tuple":
                 if len(source.args) != len(node.elts):
@@ -1182,12 +1190,17 @@ class Model:
                 if (isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name)
                         and self.builtin_identity(plan,node.value.func,environment)==BuiltinIdentity("map")
                         and len(node.value.args)==2 and not node.value.keywords
-                        and self.builtin_identity(plan,node.value.args[0],environment)==BuiltinIdentity("int")):
+                        and isinstance(node.value.args[0],ast.Name)
+                        and self.builtin_identity(plan,node.value.args[0],environment)==BuiltinIdentity("int")
+                        and len(node.targets)==1 and isinstance(node.targets[0],(ast.Tuple,ast.List))):
                     words = self.expression(plan,node.value.args[1],environment)
                     member = self.item(words,node.value).root()
-                    if member.tag not in {"str","bytes",None}:
-                        raise ClassUnsupported(node.value)
-                    value = self.cell(plan,node.value,"map_int",(words,))
+                    if member.tag in {"str","bytes"}:
+                        value = self.cell(plan,node.value,"map_int",(words,))
+                    elif member.tag is None and not self.final:
+                        value = self.cell(plan,node.value)
+                    else:
+                        value = self.expression(plan,node.value,environment)
                 else:
                     value = self.expression(plan,node.value,environment)
                 for target in node.targets:
@@ -1769,6 +1782,9 @@ class Emitter:
         return f"{{{before}{call}}}"
 
     def sequence_call(self,node,method):
+        if method.name=="sort":
+            from .native_class_sorting import emit_method
+            return emit_method(self,node)
         from .native_sequence_storage import capture_shared
         from .native_sequence_methods import lower
         emitter=self
@@ -1827,8 +1843,6 @@ class Emitter:
                 return self.call_user(node,method,receiver)
         else:
             receiver = None
-        if isinstance(function,ast.Name) and function.id == "map":
-            raise ClassUnsupported(node)
         if (isinstance(function,ast.Name) and function.id == "list" and len(node.args)==1
                 and domain(self.kind(node.args[0])) == "map_int"):
             values = self.parse_words(node.args[0])
@@ -1907,6 +1921,9 @@ class Emitter:
         if isinstance(target,ast.Name):
             return self.assign_name(target,value)
         if isinstance(target,(ast.Tuple,ast.List)):
+            from .native_class_unpacking import emit
+            unpacked=emit(self,target,value)
+            if unpacked is not None:return unpacked
             setup,source = self.capture(value)
             if domain(source.kind)=="tuple":
                 pieces = [self.assign(node,Expression(f"{source.code}.{i}.clone()",kind))

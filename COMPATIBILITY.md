@@ -41,7 +41,10 @@ and proved integer projections share a parser for `map`, generators, and eager
 comprehensions. Lazy unpacking converts exactly the first excess item before
 raising a cardinality error, while eager comprehensions finish before unpacking.
 Producer conversion errors and consumer cardinality errors retain their own
-source frames. General dynamic callable values and conflicting core-name
+source frames. Exact builtin list/tuple unpacking reports the complete sequence
+length in Python 3.14's excess-value error. Lazy producers inspect only the
+first excess item and retain the error without a full-length claim.
+General dynamic callable values and conflicting core-name
 rebinding still require direct implementation.
 
 `set(iterable)` and set comprehensions consume the same typed streams in every
@@ -447,17 +450,25 @@ captured default values. Lexical captures and list-comprehension targets use
 shared cells, preserving late binding, nested comprehension lifetimes and
 first-iterable evaluation order. Official free-symbol information selects the
 environment actually retained by a lambda. Named functions and lambdas share
-the same finite callable carrier and direct Rust dispatch. Generic callbacks
-for `sort`, `sorted` and `map` on the class/frame path, imported lambda
-lifetimes, reflection and cycle collection remain required work.
+the same finite callable carrier and direct Rust dispatch. Imported lambda
+lifetimes, reflection and cycle collection remain
+required work.
 
-The typed frame path represents builtin `iter` and `filter` with per-site typed
+The typed frame path represents builtin `iter`, `filter` and `map` with per-site typed
 state and captured callbacks. `next`, loops, `list`, `sum`, `min`, `max`, `any`
 and `all` consume the shared cursor lazily; aliases observe the same exhaustion
 state. List iteration releases each borrow before invoking a callback. Text
 cursors advance linearly in the selected ASCII or Unicode model. These states
 contain only their proved source and callback types, with direct Rust calls;
 arbitrary user iterator protocols and general generators remain required work.
+
+`map` accepts multiple sources and the Python 3.14 `strict` keyword. It pulls
+sources from left to right and stops at the shortest; later calls retain any
+consumption that occurred before the shorter source ended. Strict length
+mismatches and deferred callback/signature errors retain the original source
+frames. The callback uses the same captured-value calling convention as a
+normal compiled call. The ordinary immediate integer-word parsing path remains
+available when no cursor is saved.
 
 Class values, method signatures, fields, and list elements use the shared
 scalar, `TupleType`, `ListType`, `MaybeType`, `NullableType`, and `UnionType`
@@ -524,9 +535,18 @@ owned vectors and shared class-scope handles: `append`, list-to-list `extend`,
 fields, and checked row indices are captured before explicit arguments; contents
 are borrowed afterward. A callback replacing a class field therefore does not
 change the already selected list. Owned row projections retain conservative
-parent mutation checks. Class sorting currently requires `key=None`; ordinary
-sorting retains its proved callable-key path. General iterables for `extend`,
-class key callbacks, and identity-sensitive float search remain required work.
+parent mutation checks. Class sorting supports proved captured callable keys
+through the same compiled-call ABI, including saved bound methods. General
+iterables for `extend`, custom ordering, and identity-sensitive float search
+remain required work.
+
+On typed compiled frames, `sorted` materializes its input before converting
+`reverse` or diagnosing unsupported keywords, then evaluates a captured key
+once per element. `list.sort` exposes the temporary empty receiver during key
+calls, restores its detached storage on errors, and reports mutations after
+key/comparison success. Shared element handles preserve object identity. Stable
+native sorting supports integer/boolean, text/bytes and proved structural keys;
+floating NaN comparison schedules and custom ordering still need lowering.
 
 Ordinary class lowering currently supports concrete typed instance fields,
 constructors, fixed method lookup, tuple results, instance/list aliases, and

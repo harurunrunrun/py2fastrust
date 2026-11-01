@@ -513,7 +513,8 @@ def stream(g,node,environment,planner,*,value=None):
     read = capture(g,node,value,environment)
     owner,setup = read.owner,read.setup
     fields = ((value.kind.element,"@.clone()",True),)
-    return planner.leaf(setup,f"let {cursor}={owner}.iter();",cursor,fields,owners,length=value.length)
+    return planner.leaf(setup,f"let {cursor}={owner}.iter();",cursor,fields,owners,length=value.length,
+                        unpack_length=("",f"{owner}.len()"))
 
 from .native_constraint_lowering import MAP_HELPERS
 HELPERS+=MAP_HELPERS

@@ -47,6 +47,13 @@ lowering with the payload, storage and evaluation-order limits documented in
 | `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts | `merge`, `nlargest`, `nsmallest`, custom/fallible comparisons, floating tuple identity |
 | `bisect` | `bisect`, `bisect_left`, `bisect_right`, `insort`, `insort_left`, `insort_right` with checked bounds and `key=None` | Callable keys, arbitrary sequence protocols, custom/fallible comparisons |
 
+The frame path also stores typed `iter`, `filter` and multi-source `map`
+objects, including `map(..., strict=...)`, captured callbacks, shared cursor
+aliases, and list/reduction consumers. Builtin list, fixed tuple, range, text
+and byte sources have adapters. Custom iteration protocols and cyclic ownership
+still require implementation; this does not establish complete builtin object
+compatibility.
+
 Module/function aliases use resolved identities. General starred calls and
 the remaining module APIs still need implementation. The tables below describe
 the retained runtime inventory, not additional direct coverage.
@@ -230,3 +237,5 @@ Unlisted `sys` APIs are unsupported.
 | `types.UnionType` | The same type as `typing.Union` in Python 3.14 |
 | `string.templatelib` | `Template`, `Interpolation`, `convert`; t-string values, expression text, conversion, and `format_spec` are retained for consumers to format |
 | `typing` | `TypeVar`, `ParamSpec`, `TypeVarTuple`, `TypeAliasType`, `Generic`, `Unpack`, `Union`, `ForwardRef`, `NoDefault`, `ParamSpecArgs`/`ParamSpecKwargs`, `get_args`/`get_origin`; the whole module is not supported |
+
+Typed frame sorting supports `sorted(iterable, *, key=None, reverse=False)` and exact builtin `list.sort(*, key=None, reverse=False)` with captured source functions, closures, lambdas, builtin adapters and bound source methods as keys. Keys run once per input element before ordering; reverse sorting remains stable. Integer/boolean, text/bytes, and finite tuple/list key shapes use native comparisons while retaining element references. Floating NaN ordering and custom rich-comparison protocols remain required unfinished work.

@@ -27,6 +27,7 @@ where I:IntoIterator,F:FnMut(I::Item)->Result<NativeInt,NativeError>,C:FnMut(Str
     }
     Ok(values)
 }
+#[derive(Clone,Copy)]
 struct NativeWords<'a> {text:&'a str,separator:Option<&'a str>,cursor:usize,remaining:isize,done:bool}
 impl<'a> NativeWords<'a> {
     fn new(text:&'a str,separator:Option<&'a str>,maximum:i128)->Result<Self,String> {
@@ -65,6 +66,7 @@ impl<'a> Iterator for NativeWords<'a> {
         Some(&self.text[start..self.cursor])
     }
 }
+#[derive(Clone,Copy)]
 struct NativeByteWords<'a> {text:&'a[u8],separator:Option<&'a[u8]>,cursor:usize,remaining:isize,done:bool}
 impl<'a> NativeByteWords<'a> {
     fn new(text:&'a[u8],separator:Option<&'a[u8]>,maximum:i128)->Result<Self,String> {
@@ -207,5 +209,7 @@ def lower(g,plan,environment,planner):
     lines.append(f"let {cursor}={call};")
     field="NativeText::from(@)" if kind=="str" else "@.to_vec()"
     result=planner.leaf("\n".join(lines),"",cursor,((kind,field,True),))
+    snapshot=g.temporary()
+    result.unpack_length=(f"let {snapshot}={cursor}.clone();",f"{snapshot}.count()")
     result.words=WordSource(kind,buffer,cursor,method)
     return result

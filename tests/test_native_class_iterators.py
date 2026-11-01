@@ -239,14 +239,14 @@ class IteratorProofTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class IteratorExecutionTests(unittest.TestCase):
     def check(self,name):
-        source=CASES[name];filename='iterator_case.py'
+        source=getattr(self,'cases',CASES)[name];filename='iterator_case.py'
         cp=subprocess.run([sys.executable,'-I','-S','-c',REFERENCE,source,filename],capture_output=True,text=True,timeout=10)
         failure=json.loads(cp.stderr)if cp.returncode else None
         with tempfile.TemporaryDirectory(prefix='pytors-iterator-')as directory:
             for mode in ('i64','i128','bigint'):
                 with patch('py2fastrust.codegen.generate',side_effect=AssertionError('VM backend used')):
                     result=transpile(source,TranspileOptions(integer=mode,filename=filename,license='none',
-                        string_mode='unicode'if name in {'unicode_text_cursor','unicode_union_sources'}else'ascii'))
+                        string_mode='unicode'if name.startswith('unicode')else'ascii'))
                 self.assertTrue(result.success,result.diagnostics)
                 self.assertEqual(result.backend,'native')
                 self.assertLess(len(result.rust_source.encode()),512*1024)

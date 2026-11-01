@@ -274,7 +274,7 @@ def try_statement(generator,node,environment):
             elif isinstance(target,(ast.Tuple,ast.List)) and all(isinstance(item,ast.Name) for item in target.elts):
                 if len(target.elts)!=len(value.kind.fields):
                     message=(f"ValueError: not enough values to unpack (expected {len(target.elts)}, got {len(value.kind.fields)})"
-                             if len(target.elts)>len(value.kind.fields) else f"ValueError: too many values to unpack (expected {len(target.elts)})")
+                             if len(target.elts)>len(value.kind.fields) else f"ValueError: too many values to unpack (expected {len(target.elts)}, got {len(value.kind.fields)})")
                     lines.append(generator.at(f'Err::<(),String>(String::from({_string(message)}))',node)+";")
                     # Bind placeholders solely to keep statically unreachable
                     # Rust uses well typed; the prior error always exits.

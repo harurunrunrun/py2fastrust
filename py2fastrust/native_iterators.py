@@ -100,6 +100,7 @@ class Stream:
     integer_words: object = None
     range_capture: object = None
     binding_checks: tuple = ()
+    unpack_length: tuple[str,str] | None = None
 
     def construct(self):
         return self.setup + "\n" + self.begin
@@ -136,7 +137,7 @@ class Planner:
         self.snapshot_strings = frozenset(snapshot_strings)
 
     def leaf(self, setup, begin, iterator, fields, owners=(), eager=False, tupled=False,
-             length=None, nonempty=False):
+             length=None, nonempty=False, unpack_length=None):
         """Build one loop; fields describe borrowed or owning iterator items."""
         g = self.g
         fields = tuple(ItemField.from_field(field) for field in fields)
@@ -162,7 +163,8 @@ class Planner:
             return f"{label}for {item} in {iterator} {{\n{prefix}\n{action}\n}}"
 
         return Stream(setup, begin, tuple(values), frozenset(owners), emit, eager, tupled,
-                      iterator, tuple(fields), length, nonempty or length is not None and length > 0)
+                      iterator, tuple(fields), length, nonempty or length is not None and length > 0,
+                      unpack_length=unpack_length)
 
     def stream(self, node, environment, *, allow_set=False):
         try:
@@ -186,6 +188,7 @@ class Planner:
                 # position. Consumers may retain an order-insensitive proof.
                 result = self.lower(plan.sources[0],environment,allow_set=allow_set)
                 result.eager = True
+                result.unpack_length = None
                 return result
             if plan.kind is ProducerKind.RANGE:
                 range_code=g.range_iterator(plan, environment)
@@ -227,7 +230,8 @@ class Planner:
             code = ", ".join(_owned(g, value, kind) for value in values)
             setup = f"let {owner}: [{rust_type(kind)}; {len(values)}] = [{code}];"
             return self.leaf(setup, f"let {cursor} = {owner}.into_iter();", cursor,
-                             ((kind, "@", True),), length=len(values))
+                             ((kind, "@", True),), length=len(values),
+                             unpack_length=("",str(len(values))))
         from .native_key_containers import stream as keyed_stream
         keyed=keyed_stream(g,node,environment,self,allow_set)
         if keyed is not None:return keyed
@@ -244,7 +248,8 @@ class Planner:
             owner,cursor=g.temporary(),g.temporary()
             setup=f"let {owner}=({value.code}).clone();"
             begin=f"let {cursor}={owner}.iter();"
-            return self.leaf(setup,begin,cursor,((value.kind.element,"(*@)",False),),length=value.length)
+            return self.leaf(setup,begin,cursor,((value.kind.element,"(*@)",False),),length=value.length,
+                             unpack_length=("",f"{owner}.len()"))
         if isinstance(value.kind,TupleType):
             owner,cursor = g.temporary(),g.temporary()
             values = [_Expression(tuple_field(owner,index),kind,owned=False)
@@ -252,7 +257,8 @@ class Planner:
             kind = g.scalar_kind(values) if values else "int"
             setup = f"let {owner}={value.code};"
             setup += f"\nlet {cursor}=[" + ",".join(g.coerce(field,kind) for field in values) + "].into_iter();"
-            return self.leaf(setup,"",cursor,((kind,"@",True),),length=len(values))
+            return self.leaf(setup,"",cursor,((kind,"@",True),),length=len(values),
+                             unpack_length=("",str(len(values))))
         if value.kind == "str":
             owner, cursor = g.temporary(), g.temporary()
             named = (isinstance(node, ast.Name) and isinstance(environment.get(node.id), _Binding)
@@ -294,7 +300,8 @@ class Planner:
             fields = (("list_int", "@", False),) if value.kind == "matrix_int" else ((element, "*@", False),)
         return self.leaf(setup, begin, cursor, fields, owners,
                          tupled=bool(view and view[1] == "items"), length=value.length,
-                         nonempty=value.nonempty)
+                         nonempty=value.nonempty,
+                         unpack_length=("",f"{owner}.len()")if value.kind in {"list_int","matrix_int"}else None)
 
     def target_values(self,target,stream):
         g = self.g

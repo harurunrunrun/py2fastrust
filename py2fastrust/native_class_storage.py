@@ -9,13 +9,14 @@ from .native import _Expression
 from .native_types import ListType,TupleType,NullableType,UnionType,immutable,reference_cloneable
 
 
-def shared_element(kind):
+def shared_element(kind,*,allow_unresolved=False):
     """Kinds whose Clone implementation preserves Python element identity."""
+    if kind is None:return allow_unresolved
     if reference_cloneable(kind):return True
-    if isinstance(kind,ListType):return shared_element(kind.element)
-    if isinstance(kind,TupleType):return all(shared_element(field)for field in kind.fields)
-    if isinstance(kind,NullableType):return shared_element(kind.value)
-    if isinstance(kind,UnionType):return all(shared_element(value)for value in kind.alternatives)
+    if isinstance(kind,ListType):return shared_element(kind.element,allow_unresolved=allow_unresolved)
+    if isinstance(kind,TupleType):return all(shared_element(field,allow_unresolved=allow_unresolved)for field in kind.fields)
+    if isinstance(kind,NullableType):return shared_element(kind.value,allow_unresolved=allow_unresolved)
+    if isinstance(kind,UnionType):return all(shared_element(value,allow_unresolved=allow_unresolved)for value in kind.alternatives)
     from .native_classes import InstanceType
     return isinstance(kind,InstanceType)
 

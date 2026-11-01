@@ -12,7 +12,7 @@ from .native import _Binding, _Expression, _ListInfo, _Unsupported
 HELPERS = r'''
 fn native_big_unpack_length(length:usize, expected:usize)->Result<(),String> {
     if length<expected{return Err(format!("ValueError: not enough values to unpack (expected {}, got {})",expected,length));}
-    if length>expected{return Err(format!("ValueError: too many values to unpack (expected {})",expected));}
+    if length>expected{return Err(format!("ValueError: too many values to unpack (expected {}, got {})",expected,length));}
     Ok(())
 }
 fn native_big_list_reserve(values:&mut Vec<Int>, additional:usize)->Result<(),String> {

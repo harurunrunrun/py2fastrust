@@ -79,12 +79,18 @@ def try_statement(g,node,environment):
     result,item=g.temporary(),g.temporary()
     count=len(plan.target.elts)
     message=f"ValueError: too many values to unpack (expected {count})"
-    overflow=g.at(f"Err::<(),String>(String::from({_string(message)}))",node)
+    length_setup=""
+    error=f"String::from({_string(message)})"
+    if source.unpack_length is not None:
+        length_setup,actual_length=source.unpack_length
+        error=f'format!("ValueError: too many values to unpack (expected {count}, got {{}})",{actual_length})'
+    overflow=g.at(f"Err::<(),String>({error})",node)
     push=g.at(f"native_typed_push(&mut {result},{item})",node)
     action=(f"let {item}={_owned(g,value,value.kind)};\n"
             f"if {result}.len()=={count} {{{overflow};}}\n{push};")
     body=source.emit(action,TraceContext(g.scope_name(),g.expression_trace_id),g.line_code(node))
-    lines=[source.construct(),f"let mut {result}:Vec<{rust_type(value.kind)}>=Vec::new();",body,
+    construct=source.setup+"\n"+length_setup+"\n"+source.begin
+    lines=[construct,f"let mut {result}:Vec<{rust_type(value.kind)}>=Vec::new();",body,
            _check(g,f"{result}.len()",count,node)]
     iterator=g.temporary()
     lines.append(f"let mut {iterator}={result}.into_iter();")

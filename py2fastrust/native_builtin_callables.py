@@ -17,6 +17,10 @@ def binding_error(identity,arguments):
     if name=="print":
         unknown=next((item.name for item in keywords if item.name not in {"sep","end","file","flush"}),None)
         return f"TypeError: {unknown!r} is an invalid keyword argument for print()"if unknown else None
+    if name=="map":
+        if count<2:return "TypeError: map() must have at least two arguments."
+        unknown=next((item.name for item in keywords if item.name!="strict"),None)
+        if unknown is not None:return f"TypeError: map() got an unexpected keyword argument {unknown!r}"
     if name in {"filter","iter","next","any","all"}:
         if keywords:return f"TypeError: {name}() takes no keyword arguments"
         if name=="filter"and count!=2:return f"TypeError: filter expected 2 arguments, got {count}"

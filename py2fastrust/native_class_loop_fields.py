@@ -21,6 +21,8 @@ def key(emitter,node):
 
 def _may_call_source(emitter,node):
     """Resolve a call's effects through the same proof/carrier as emission."""
+    sorting=getattr(emitter.model,"sorting_sites",{}).get((emitter.plan.index,id(node)))
+    if sorting is not None and sorting.callback is not None:return True
     from .native_frame_references import call_target
     if call_target(emitter.model,emitter.plan,node)is not None:return True
     site=emitter.model.callable_cells.sites.get((emitter.plan.index,id(node)))

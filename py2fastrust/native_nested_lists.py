@@ -277,8 +277,10 @@ def stream(g,node,value,planner):
     owner,cursor=g.temporary(),g.temporary()
     # Each next owns one immutable value or shared row reference. No contents
     # borrow spans the Python loop body; list mutation remains observable.
+    length=g.temporary()
     return planner.leaf(f"let {owner}={value.code};",f"let {cursor}=native_shared_iter({owner});",cursor,
-                        ((value.kind.element,"@",True),))
+                        ((value.kind.element,"@",True),),
+                        unpack_length=(f"let {length}={owner}.borrow().len();",length))
 
 
 def _list_shape(kind):

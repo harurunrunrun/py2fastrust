@@ -7,7 +7,7 @@ import ast
 from .references import BuiltinIdentity
 
 SUPPORTED=frozenset({"input","print","int","str","bool","float","len","abs","id","globals",
-                     "range","list","sum","min","max","map","enumerate","filter","iter","next","any","all","pow"})
+                     "range","list","sum","min","max","map","enumerate","filter","iter","next","any","all","pow","sorted"})
 
 
 def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=None,call_arguments=None):
@@ -15,6 +15,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='sorted':
+        from .native_class_sorting import analyze_builtin
+        return analyze_builtin(model,plan,node,arguments,keywords,environment,factory=cell)
     if name=='pow':
         from .native_class_numeric_calls import analyze as analyze_numeric
         return analyze_numeric(model,plan,node,identity,arguments,keywords,environment,factory=cell,call_arguments=call_arguments)
@@ -52,6 +55,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name == "filter" and len(arguments)==2 and not keywords:
         result=model.iterators.filter(plan,node,arguments[0],arguments[1])
         return cell(result.root().tag)
+    if name == "map" and len(arguments)>=2 and all(key=="strict"for key,_ in keywords):
+        result=model.iterators.map(plan,node,arguments[0],arguments[1:])
+        return cell(result.root().tag)
     if name == "iter" and len(arguments)==1 and not keywords:
         return cell(model.iterators.source(plan,node,arguments[0]))
     if name == "next" and 1<=len(arguments)<=2 and not keywords:
@@ -71,8 +77,6 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
             source=Cell(model.iterators.source(plan,node,source))
         model.iterators.demand(plan,node,source,environment)
         return cell("bool")
-    if name == "map" and len(node.args) == 2 and not keywords:
-        raise ClassUnsupported(node)
     if name == "list" and len(arguments) <= 1 and not keywords:
         result = cell("list",(Cell(),))
         if arguments:
@@ -101,6 +105,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
 def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_classes import Expression
     from .native_unions import project,union_kind
+    if identity.name=='sorted':
+        from .native_class_sorting import emit_builtin
+        return emit_builtin(emitter,node,arguments,keywords,wanted)
     if identity.name=='pow':
         from .native_class_numeric_calls import emit as emit_numeric
         return emit_numeric(emitter,node,identity,arguments,keywords,wanted)
@@ -247,6 +254,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         code=self.at("class_range("+",".join(values)+")",node)
     elif name == "filter":
         return self.model.iterators.emit_filter(self,node,arguments[0],arguments[1],wanted)
+    elif name == "map":
+        return self.model.iterators.emit_map(self,node,arguments[0],arguments[1:],keywords.get("strict",Expression("false","bool",False)),wanted)
     elif name == "iter":
         return self.model.iterators.construct(self,node,arguments[0],kind=wanted)
     elif name == "next":

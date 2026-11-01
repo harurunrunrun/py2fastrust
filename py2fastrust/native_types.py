@@ -174,6 +174,7 @@ def render_type(kind, leaf_override=None):
 
 
 def kind_tag(kind):
+    if kind is None:return "unresolved"
     if isinstance(kind,EmptyType):return "empty"
     if hasattr(kind,"_native_kind_tag"):return kind._native_kind_tag
     if is_maybe(kind):

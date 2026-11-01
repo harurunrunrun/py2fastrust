@@ -249,9 +249,15 @@ class CallableCells:
             if self.spelling(name)in self.model.namespace.builtin_names and name not in self.model.functions:
                 # A local/parameter binding never falls back to builtins. A
                 # module binding still needs a builtin carrier after deletion.
-                if self.model.module_owner(self.owner(plan,function)):return name in self.mutable_names
+                module_owned=self.model.module_owner(self.owner(plan,function))
+                if module_owned and name in self.mutable_names:return True
                 from .references import BuiltinIdentity
-                if isinstance(self.model.builtin_identity(plan,function,environment),BuiltinIdentity):return False
+                identity=self.model.builtin_identity(plan,function,environment)
+                if isinstance(identity,BuiltinIdentity):
+                    from .native_builtin_callables import binding_error
+                    try:return binding_error(identity,normalize_call(node))is not None
+                    except CallBindingError:return True
+                if module_owned:return False
             return True
         if isinstance(function,ast.Attribute):
             owner=self.receivers.get((plan.index,id(node)))

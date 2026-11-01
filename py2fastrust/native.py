@@ -303,7 +303,7 @@ fn native_set(values: &mut [NativeInt], index: NativeInt, value: NativeInt) -> R
 }
 fn native_unpack_length(length: usize, count: usize) -> Result<(), String> {
     if length < count { Err(format!("ValueError: not enough values to unpack (expected {}, got {})", count, length)) }
-    else if length > count { Err(format!("ValueError: too many values to unpack (expected {})", count)) }
+    else if length > count { Err(format!("ValueError: too many values to unpack (expected {}, got {})", count, length)) }
     else { Ok(()) }
 }
 

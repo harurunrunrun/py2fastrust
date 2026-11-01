@@ -132,7 +132,7 @@ fn class_list_concat<T:Clone>(values:&ClassList<T>,other:&ClassList<T>)->ClassLi
 fn class_unpack<T:Clone>(values:&ClassList<T>,count:usize)->Result<Vec<T>,String> {
     let values=values.borrow();
     if values.len()<count{return Err(format!("ValueError: not enough values to unpack (expected {count}, got {})",values.len()));}
-    if values.len()>count{return Err(format!("ValueError: too many values to unpack (expected {count})"));}
+    if values.len()>count{return Err(format!("ValueError: too many values to unpack (expected {count}, got {})",values.len()));}
     Ok(values.clone())
 }
 
