@@ -759,6 +759,11 @@ class _Generator:
             bound=call_plan.capture(lambda expression,parameter:argument_value(expression),defaults=function.defaults)
         except CallBindingError:
             raise _Unsupported from None
+        result=self.invoke_user_values(node,function,bound,environment,reference_node=node.func)
+        return _Expression("{ " + " ".join(lines) + f" {result.code} }}", result.kind)
+
+    def invoke_user_values(self,node,function,bound,environment,*,reference_node):
+        """Invoke one static source target from already evaluated descriptors."""
         arguments, kinds = [], []
         from .native_types import SharedListType
         for parameter,value in zip(bound.parameters,bound.values):
@@ -780,8 +785,8 @@ class _Generator:
             self.function.dependencies.add(function.node)
             self.function.required.update(variant.required)
             self.function.absent_globals.update(variant.absent_globals)
-            if node.func.id not in self.function.local_names:
-                self.function.required.add(node.func.id)
+            if isinstance(reference_node,ast.Name)and reference_node.id not in self.function.local_names:
+                self.function.required.add(reference_node.id)
         if self.function_input:
             arguments.append("&mut native_input")
         arguments.append("&mut native_output")
@@ -789,7 +794,20 @@ class _Generator:
         call = f"{variant.rust_name}({', '.join(arguments)})"
         trace = f"{self.expression_trace_id}(error)" if self.expression_trace_id is not None else "error"
         call += f".map_err(|mut error| {{ error.frames.push(({line}, {scope})); {trace} }})?"
-        return _Expression("{ " + " ".join(lines) + f" {call} }}", variant.return_kind)
+        return _Expression(call,variant.return_kind)
+
+    def user_call_values(self,node,function,values,environment,*,reference_node):
+        """Bind captured callback items without constructing a Python Call AST."""
+        signature=getattr(function,'signature',None)or FunctionSignature.declaration(
+            function.positional,positional_only=function.posonly,keyword_only=function.kwonly,default_names=function.defaults)
+        from .native_types import SharedListType
+        captured=[]
+        for value in values:
+            code=value.code if value.owned or list_type(value.kind)and not isinstance(value.kind,SharedListType)else self.coerce(value,value.kind)
+            captured.append(_Expression(code,value.kind,owned=value.owned))
+        try:bound=signature.bind(captured,defaults=function.defaults)
+        except CallBindingError as error:raise _Unsupported(str(error),node=node,proof='captured static source callback signature')from None
+        return self.invoke_user_values(node,function,bound,environment,reference_node=reference_node)
 
     def deque_constructor(self, node, environment):
         from .native_deques import constructor

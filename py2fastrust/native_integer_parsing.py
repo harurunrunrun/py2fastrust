@@ -27,11 +27,20 @@ def parse_input(generator,input_node,conversion_node):
 
 def parse_value(generator, value, node):
     """Choose one descriptive operand projection; the caller proved int identity."""
-    if not generator.bits:
-        return None
     enable(generator)
-    if value.kind == "str" and value.char_code is not None:
-        return generator.at(f"native_parse_integer_codepoint({value.char_code})", node)
+    if value.kind == "str":
+        generator.has_tuples=True
+        name=generator.temporary()
+        if generator.bits and value.char_code is not None:
+            parsed=f"native_parse_integer_codepoint({name})"
+            representation=f"native_tuple_repr_codepoint({name})"
+            original=value.char_code
+        else:
+            parsed=f"native_io_parse_text(&{name})"
+            representation=f"native_tuple_repr_str(&({name}))"
+            original=value.code
+        parsed+='.map_err(|_|format!("ValueError: invalid literal for int() with base 10: {:.200}",'+representation+'))'
+        return '{let '+name+'='+original+';'+generator.at(parsed,node)+'}'
     parser = "native_io_parse_text" if value.kind == "str" else "native_io_parse_bytes"
     return generator.at(f"{parser}(&({value.code}))", node)
 

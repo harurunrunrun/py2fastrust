@@ -34,6 +34,10 @@ fn native_tuple_repr_str(value:&str)->String {
     }}
     result.push(quote);result
 }
+#[cold]
+fn native_tuple_repr_codepoint(code:u32)->String {
+    native_tuple_repr_str(&char::from_u32(code).unwrap().to_string())
+}
 '''
 
 

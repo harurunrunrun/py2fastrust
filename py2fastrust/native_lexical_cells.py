@@ -143,6 +143,15 @@ class LexicalCells:
                 if name in plan.default_literals:continue
                 environment.defaults[(plan.index,name)]=plan.default_cells[name]
                 self.model.namespace.defaults.pop((plan.index,name),None)
+        def generator_qualification(scope):
+            parent=self.parents[scope]
+            while parent is not None and self.unit.scopes[parent].kind=='comprehension':parent=self.parents[parent]
+            if parent is None or self.model.module_owner(parent):return '<genexpr>'
+            if parent in self.model.lambda_cells.generator_scopes:
+                return generator_qualification(parent)+'.<genexpr>'
+            prefix=qualify(self.scope_plans[parent])
+            separator='.<locals>.'if self.unit.scopes[parent].kind=='function'else'.'
+            return prefix+separator+'<genexpr>'
         def qualify(plan):
             cached=getattr(plan,'qualified_name',None)
             if cached is not None:return cached
@@ -150,6 +159,7 @@ class LexicalCells:
             while parent is not None and self.unit.scopes[parent].kind=="comprehension":parent=self.parents[parent]
             name=getattr(plan.node,'name','<lambda>')
             if plan.owner is not None:result=plan.owner.node.name+'.'+name
+            elif parent in self.model.lambda_cells.generator_scopes:result=generator_qualification(parent)+'.'+name
             elif parent is not None and not self.model.module_owner(parent):result=qualify(self.scope_plans[parent])+'.<locals>.'+name
             else:result=name
             plan.qualified_name=result

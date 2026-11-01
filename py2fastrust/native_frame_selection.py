@@ -104,6 +104,8 @@ def select_frames(unit,*,integer="i64"):
     if any(isinstance(node,ast.ClassDef)for node in ast.walk(unit.tree)):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
     analysis=analyze(unit)
+    from .native_callback_analysis import supplement
+    analysis=supplement(unit,analysis,integer)
     identities={}
     for (caller,_),facts in analysis.scopes.items():
         for site,fact in facts.calls.items():

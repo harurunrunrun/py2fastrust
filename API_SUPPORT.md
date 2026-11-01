@@ -774,8 +774,19 @@ pairwise release their exhausted/error state; accumulate preserves its old
 total and source after callback failure. Deferred Python caller frames follow
 the clearing boundary, including recursive callbacks, rather than being
 identified by line/name equality. Builtin C callbacks do not invent Python
-frames. General iterator-object display and lambdas defined inside generator
-expression scopes remain separate positioned capability boundaries.
+frames. General iterator-object and source-function-object display remain
+separate positioned capability boundaries.
+
+
+Lambdas defined in immediately consumed generator expressions retain their
+official lexical scope, target cells and fresh function identity. Escaping
+lambdas share the generator's late-bound cells, while defaults are captured
+at each original lambda evaluation. Nested generators and enclosing source
+functions keep their own typed parent environments. Generator scopes are
+selected from original AST/symbol identities, without synthesized callable
+ASTs or an instruction stream. Runtime binding errors use the original
+`<genexpr>` qualification. Stored generator suspension and unsupported function
+object introspection remain separate capabilities.
 
 Builtin list traversal retains the original object while observing later
 append/extend, element stores/deletion, clear, reversal and sorting. Alias,

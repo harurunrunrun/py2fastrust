@@ -627,6 +627,7 @@ class Model:
 
     def analyze_body(self,plan,environment):
         if isinstance(plan.node,ast.Lambda):
+            environment=Environment(environment)
             self.contribute(plan.result,self.expression(plan,plan.node.body,environment),plan.node.body)
             return None
         result=self.block(plan,plan.node.body,environment)

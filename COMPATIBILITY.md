@@ -1554,8 +1554,30 @@ pairwise release their exhausted/error state; accumulate preserves its old
 total and source after callback failure. Deferred Python caller frames follow
 the clearing boundary, including recursive callbacks, rather than being
 identified by line/name equality. Builtin C callbacks do not invent Python
-frames. General iterator-object display and lambdas defined inside generator
-expression scopes remain separate positioned capability boundaries.
+frames. General iterator-object and source-function-object display remain
+separate positioned capability boundaries.
+
+
+Lambdas defined in immediately consumed generator expressions retain their
+official lexical scope, target cells and fresh function identity. Escaping
+lambdas share the generator's late-bound cells, while defaults are captured
+at each original lambda evaluation. Nested generators and enclosing source
+functions keep their own typed parent environments. Generator scopes are
+selected from original AST/symbol identities, without synthesized callable
+ASTs or an instruction stream. Runtime binding errors use the original
+`<genexpr>` qualification. Stored generator suspension and unsupported function
+object introspection remain separate capabilities.
+
+Immediate canonical map/filter callbacks use captured original-node descriptors
+when the shared solver proves their scalar/immutable item, default and result
+representations and existing effect/ownership rules admit ordinary code. Lambda
+defaults run once before iterable construction, including empty input; callback
+bodies remain lazy. Source-function and canonical math callbacks use the same
+captured-value invocation protocol. Unproved captures, mutable defaults, possible
+StopIteration and float identity use typed callable storage selected before
+emission. These ordinary callbacks emit Rust loops without function-object
+allocation or fabricated Python Call/Name AST nodes. Float-valued map input to
+sum remains a positioned unsupported consumer capability.
 
 Live ordinary list loops retain source identity with per-pull borrows when
 mutation or source binding changes require it. The allocation solver propagates

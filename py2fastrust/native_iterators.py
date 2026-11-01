@@ -7,7 +7,7 @@ containers defer iteration until all arguments have been evaluated.
 
 import ast
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from .native import _Binding, _DequeInfo, _Expression, _MaybeInfo, _Unsupported, _string
@@ -79,7 +79,7 @@ def stream_item(g,source,*,borrowed=False):
         return _Expression(tuple_code(fields),kind)
     if len(source.values) != 1:
         raise _Unsupported
-    return source.values[0]
+    return replace(source.values[0],owned=False) if borrowed else source.values[0]
 
 
 @dataclass
@@ -260,6 +260,11 @@ class Planner:
             setup += f"\nlet {cursor}=[" + ",".join(g.coerce(field,kind) for field in values) + "].into_iter();"
             return self.leaf(setup,"",cursor,((kind,"@",True),),length=len(values),
                              unpack_length=("",str(len(values))))
+        if value.kind == "bytes":
+            owner,cursor=g.temporary(),g.temporary()
+            item="(@ as NativeInt)"if g.bits else"Int::from_i128(@ as i128)"
+            return self.leaf(f"let {owner}={value.code};",f"let {cursor}={owner}.into_iter();",cursor,
+                             (("int",item,True),),length=value.length)
         if value.kind == "str":
             owner, cursor = g.temporary(), g.temporary()
             named = (isinstance(node, ast.Name) and isinstance(environment.get(node.id), _Binding)
@@ -451,75 +456,59 @@ class Planner:
 
     def map_stream(self, plan, environment):
         node=plan.node
-        callback=plan.binding.binding["function"].expression
+        callback_node=plan.binding.binding["function"].expression
         g = self.g
+        from .native_captured_callbacks import prepare,invoke
+        setup,callback=prepare(g,callback_node,plan.callback,environment)
         source = self.lower(plan.sources[0], environment)
         if isinstance(plan.callback,BuiltinIdentity)and plan.callback.name=="int"and source.words is not None:
             from .native_words import integer_map
-            return integer_map(g,source,self,node)
+            result=integer_map(g,source,self,node)
+            result.setup="\n".join(setup)+result.setup
+            return result
         source_value = stream_item(g,source)
-        argument = "\0iterator_" + g.temporary()
-        inside = environment.copy()
-        from .native_characters import local_binding
-        inside[argument] = local_binding(source_value) or _Binding(source_value.code, g.binding(source_value))
-        call = ast.copy_location(ast.Call(func=callback, args=[ast.Name(id=argument, ctx=ast.Load())], keywords=[]), node)
-        ast.fix_missing_locations(call)
         scope = DeferredScope(g.temporary(), g.temporary())
         trace_id = g.temporary()
         g.iterating_lists.extend(source.owners)
         try:
             with _scope(g, scope, trace_id):
-                from .native_builtin_values import unary
-                value = unary(g,plan.callback,source_value,node) if isinstance(plan.callback,BuiltinIdentity) else g.expression(call,inside)
+                value = invoke(g,callback,source_value,environment,node)
         finally:
-            if source.owners:
-                del g.iterating_lists[-len(source.owners):]
+            if source.owners:del g.iterating_lists[-len(source.owners):]
         from .native_characters import capture
         captured, output = capture(g,value)
-
         def emit(action, caller_scope, line, continue_label=None):
             prefix = _deferred_prefix(scope, trace_id, caller_scope, line)
             return prefix + source.emit(captured+"\n"+action, caller_scope, line, continue_label)
-
-        return Stream(source.construct(), "", (output,), source.owners, emit,
+        return Stream("\n".join(setup)+"\n"+source.construct(), "", (output,), source.owners, emit,
                       True, length=source.length, nonempty=source.nonempty)
 
     def filter_stream(self, plan, environment):
         node=plan.node
-        callback=plan.binding.binding["function"].expression
+        callback_node=plan.binding.binding["function"].expression
         g = self.g
+        from .native_captured_callbacks import prepare,invoke
+        absent=isinstance(callback_node,ast.Constant)and callback_node.value is None
+        setup,callback=((),None)if absent else prepare(g,callback_node,plan.callback,environment)
         source = self.lower(plan.sources[0], environment)
-        if not source.tupled and len(source.values) != 1:
-            raise _Unsupported
+        if not source.tupled and len(source.values) != 1:raise _Unsupported
         scope = DeferredScope(g.temporary(), g.temporary())
         trace_id = g.temporary()
-        if isinstance(callback, ast.Constant) and callback.value is None:
+        if absent:
             test = str(bool(source.values)).lower() if source.tupled else g.truth(source.values[0])
-        elif getattr(plan.callback,"_native_reference",False):
+        else:
             source_value = stream_item(g,source,borrowed=True)
-            argument = "\0iterator_" + g.temporary()
-            inside = environment.copy()
-            from .native_characters import local_binding
-            inside[argument] = local_binding(source_value) or _Binding(source_value.code, g.binding(source_value))
-            call = ast.copy_location(ast.Call(func=callback, args=[ast.Name(id=argument, ctx=ast.Load())], keywords=[]), node)
-            ast.fix_missing_locations(call)
             g.iterating_lists.extend(source.owners)
             try:
                 with _scope(g, scope, trace_id):
-                    from .native_builtin_values import unary
-                    value = unary(g,plan.callback,source_value,node) if isinstance(plan.callback,BuiltinIdentity) else g.expression(call,inside)
+                    value=invoke(g,callback,source_value,environment,node)
                     test = g.truth(value)
             finally:
-                if source.owners:
-                    del g.iterating_lists[-len(source.owners):]
-        else:
-            raise _Unsupported
-
+                if source.owners:del g.iterating_lists[-len(source.owners):]
         def emit(action, caller_scope, line, continue_label=None):
             prefix = _deferred_prefix(scope, trace_id, caller_scope, line)
             return prefix + source.emit(f"if {test} {{\n{action}\n}}", caller_scope, line, continue_label)
-
-        return Stream(source.construct(), "", source.values, source.owners, emit,
+        return Stream("\n".join(setup)+"\n"+source.construct(), "", source.values, source.owners, emit,
                       True, source.tupled, length=0 if source.length == 0 else None)
 
     def enumerate_stream(self, plan, environment):

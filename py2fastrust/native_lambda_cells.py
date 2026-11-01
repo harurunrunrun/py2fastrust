@@ -35,6 +35,8 @@ def inline_definitions(unit,analysis):
                    and identity.receiver.alternatives
                    and all(isinstance(item,Allocation)and item.category=='list'for item in identity.receiver.alternatives))
         if all(eager(identity)for identity in fact.alternatives):result.add(ordinal)
+    from .native_callback_analysis import inline_callbacks
+    result.update(inline_callbacks(unit,analysis))
     return frozenset(result)
 
 
@@ -45,6 +47,9 @@ def requires_instances(unit,analysis,targets):
     entered={definition for definition,kinds in analysis.scopes if definition is not None}
     entered.update(definition for definitions in targets.values()for definition in definitions)
     scopes={0}|{unit.scope_for(nodes[definition]).ordinal for definition in entered}
+    recorded={site for facts in analysis.scopes.values()for site in set(facts.values)|set(facts.expressions)}
+    scopes.update(unit.scope_for(node).ordinal for ordinal,node in nodes.items()
+                  if isinstance(node,ast.GeneratorExp)and ordinal in recorded)
     inline=inline_definitions(unit,analysis)
     # A directly invoked original Lambda enters its official body scope even
     # when the shared ordinary-function solver has no function-value fact yet.
@@ -70,6 +75,8 @@ class LambdaCells:
         self.model=model
         self.plans={}
         self.active=set()
+        self.generator_scopes=({model.unit.scope_for(node).ordinal for node in model.iter_nodes()
+                                if isinstance(node,ast.GeneratorExp)}if model.unit is not None else set())
 
     def is_lambda(self,plan):return isinstance(plan.node,ast.Lambda)
 
@@ -83,9 +90,11 @@ class LambdaCells:
     def register_scope(self,lexical,scope):
         if scope in lexical.scope_plans:return True
         metadata=self.model.unit.scopes[scope]
-        if metadata.kind!='comprehension':return False
+        if metadata.kind!='comprehension'and scope not in self.generator_scopes:return False
         if not self.register_scope(lexical,metadata.parent):return False
-        # A logical inlined scope has cells, but no synthesized callable plan.
+        # Immediate generators have official function scopes, while their
+        # original body/target cells use this shared logical environment.
+        # Neither syntax introduces a synthesized callable plan.
         lexical.scope_plans[scope]=lexical.scope_plans[metadata.parent]
         lexical.parents[scope]=metadata.parent
         return True

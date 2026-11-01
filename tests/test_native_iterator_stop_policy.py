@@ -308,9 +308,6 @@ def _test(source,stdin,digest):
         self.exercise(source,stdin)
     return method
 GUARDED = {
-    'continue_next_as_lambda_callback_has_real_frame': 'lexical frame ancestry',
-    'frames_python_lambda_next_generator_cause': 'lexical frame ancestry',
-    'frames_same_line_distinct_lambda_frames': 'lexical frame ancestry',
     'frames_direct_builtin_filter_next_callback': 'IteratorType',
 }
 class IteratorStopPrerequisiteBoundaries(unittest.TestCase):
