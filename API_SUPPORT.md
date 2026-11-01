@@ -80,7 +80,7 @@ lowering with the payload, storage and evaluation-order limits documented in
 
 | Module | Direct APIs | Remaining requirements |
 |---|---|---|
-| `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts | `merge`, `nlargest`, `nsmallest`, custom/fallible comparisons, floating tuple identity |
+| `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts; `nlargest`/`nsmallest` with captured keys | `merge`, custom rich comparisons, floating decorated tuple identity |
 | `bisect` | `bisect`, `bisect_left`, `bisect_right`, `insort`, `insort_left`, `insort_right` with checked bounds and captured `key` callbacks | Arbitrary sequence protocols, custom/fallible comparisons |
 
 Canonical heap/bisection imports also work in typed class, closure and linked
@@ -94,6 +94,14 @@ computes the new item key once, then retains the original inserted object.
 Callbacks run without a list borrow and preserve live element mutations.
 Custom index/sequence/ordering protocols and native-member
 starred calls remain positioned diagnostics.
+
+`nlargest` and `nsmallest` retain O(k) scored entries for bounded selection and
+use O(n log k) work, followed by ordering at most k retained entries. Count one
+uses a live source; a count at least a proved builtin length snapshots input
+before calling keys. Source functions, closures, lambdas, builtin references and
+bound methods preserve callback order and original mutable payload identities.
+Counts currently require builtin integers/bools; floating/custom count and
+identity-aware floating key comparisons remain positioned diagnostics.
 
 The frame path also stores typed `iter`, `filter`, multi-source `map` and `zip`
 objects, including the `strict` keyword, captured callbacks, shared cursor

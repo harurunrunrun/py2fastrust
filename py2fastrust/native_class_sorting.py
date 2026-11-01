@@ -113,11 +113,11 @@ def _ordering(emitter,left,right,node):
             result=f'if {equal}{{{result}}}else{{{_ordering(emitter,x,y,node)}}}'
         return '{'+result+'}'
     if isinstance(a,ListType)and isinstance(b,ListType):
-        x,y,first,second,result=(emitter.fresh()for _ in range(5))
+        x,y,first,second,result,owner_a,owner_b=(emitter.fresh()for _ in range(7))
         lx=Expression(x+'.clone()',a.element);ry=Expression(y+'.clone()',b.element)
         equal=emitter.comparison(ast.Eq(),lx,ry,node)
         nested=_ordering(emitter,lx,ry,node)
-        return ('{'+f'let {first}=({left.code}).borrow();let {second}=({right.code}).borrow();'
+        return ('{'+f'let {owner_a}=({left.code}).clone();let {owner_b}=({right.code}).clone();let {first}={owner_a}.borrow();let {second}={owner_b}.borrow();'
             f'let mut {result}=Ok({first}.len().cmp(&{second}.len()));'
             f'for ({x},{y})in {first}.iter().zip({second}.iter()){{if !({equal}){{{result}={nested};break;}}}}{result}'+'}')
     if domain(a)=='object'or domain(b)=='object':

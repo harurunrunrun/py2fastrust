@@ -29,6 +29,8 @@ def binding_error(name,count,keywords):
 
 class HeapAdapter:
     NAMES=frozenset(NAMES)
+    EAGER_ARGUMENTS={"nlargest":frozenset({1}),"nsmallest":frozenset({1})}
+    EAGER_KEYWORDS={"nlargest":frozenset({"iterable"}),"nsmallest":frozenset({"iterable"})}
 
     @staticmethod
     def analyze(model,plan,node,identity,call_arguments,arguments,keywords,environment,*,factory):
@@ -36,6 +38,9 @@ class HeapAdapter:
         from .native_types import alternatives
         from .call_semantics import FunctionSignature
         from .native_union_sequences import branches
+        if identity.name in {"nlargest","nsmallest"}:
+            from .native_heap_selection import analyze
+            return analyze(model,plan,node,identity,call_arguments,arguments,keywords,environment,factory=factory)
         operation=identity.name.removesuffix('_max')
         if operation not in CORE:
             raise ClassUnsupported(node,'heapq.'+identity.name+' needs its lazy multi-source/key selection adapter; this member adapter currently implements the core min/max heap mutations',proof='heap stream/key selection protocol')
@@ -68,6 +73,9 @@ class HeapAdapter:
         from .native_class_builtins import _type_name,_error
         from .native_heapq import _comparator
         from .native import _string
+        if identity.name in {"nlargest","nsmallest"}:
+            from .native_heap_selection import emit
+            return emit(emitter,node,identity,record,arguments,keywords)
         wanted=shape(record.result)
         if record.error:return _error(emitter,node,wanted,_string(record.error)+'.to_owned()')
         operation=identity.name.removesuffix('_max')

@@ -407,10 +407,13 @@ class Iterators:
             code+="let Some("+item+")=("+pulled.code+")else{"+absent+"break '"+label+" None;};"
         if any(isinstance(item.kind,EmptyType)for item in items):
             empty=next(item for item in items if isinstance(item.kind,EmptyType))
-            return Expression(code+"match "+empty.code+"{}}}",shape(record.element))
+            result=emitter.fresh();wanted=shape(record.element)
+            return Expression("{let "+result+":Option<"+emitter.rust_type(wanted)+">="+code+"match "+empty.code+"{}}};"+result+"}",wanted)
         if record.operation=="zip":
-            fields=[emitter.coerce(item,wanted,node)for item,wanted in zip(items,shape(record.element).fields)]
-            result=Expression("("+",".join(fields)+(","if len(fields)==1 else"")+")",shape(record.element))
+            from .native_types import TupleType
+            raw=TupleType(tuple(item.kind for item in items))
+            fields=[item.code for item in items]
+            result=emitter.encoded("("+",".join(fields)+(","if len(fields)==1 else"")+")",raw,shape(record.element),node)
         else:
             site=record.demands.get((emitter.plan.index,id(node)))
             if site is None:raise ClassUnsupported(node,"the deferred map callback has no matching typed demand proof",proof="deferred callable demand site")

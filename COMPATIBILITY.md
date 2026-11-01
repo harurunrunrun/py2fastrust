@@ -639,7 +639,23 @@ typed list. Supported payloads include immutable integer/bool, text/bytes and
 tuple values. Bare floats use Python's strict `<` comparison in every integer mode,
 including NaNs. Shared list handles preserve caller/row aliases and capture
 the receiver before later arguments run. Floating tuple identity, custom or
-fallible comparisons, `merge`, `nlargest`, and `nsmallest` remain unfinished.
+fallible comparisons and `merge` remain unfinished.
+
+`heapq.nlargest` and `nsmallest` use the shared typed iterable and callback
+adapters, including immediate generator expressions, saved cursors, class fields
+and captured keys. Stable ties retain the original input order and object
+identity. Count one skips the length shortcut and consumes live input. Otherwise
+a count at least a known builtin length snapshots all elements before evaluating
+keys. The bounded route retains O(k) entries, evaluates the first k keys before
+heap construction, then interleaves each source pull with its key and a checked
+heap update. Only retained entries are sorted at the end. Nonpositive counts
+construct/validate iteration without pulling values; a checked overflowing range
+length still raises before this route, matching Python. User callbacks execute
+without source/heap borrows. Errors retain exact original-program/callback
+frames and messages; CPython standard-library implementation frames are not
+fabricated. Integer/bool counts and supported structural builtin ordering are
+implemented. Custom count/index/ordering protocols and floating decorated key
+identity/NaN ordering remain precise conversion diagnostics.
 
 The six `bisect`/`insort` names use the same list storage adapter, including
 read-only function parameters, shared rows, empty lists, and immutable scalar
