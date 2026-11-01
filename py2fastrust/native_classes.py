@@ -47,6 +47,7 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,'_native_class_deque',False):return 'deque'
     if getattr(kind,'_native_mapping_view',False):return 'dict_view'
     if getattr(kind,"_native_class_mapping",False):return kind.record.category
     if getattr(kind,"_native_class_generator",False):return "generator"
@@ -280,6 +281,8 @@ class Model:
         self.global_written_names=frozenset(binding.name for binding in unit.bindings
             if self.module_owner(binding.owner) and binding.role not in {"load","parameter"})if unit is not None else frozenset()
         self.namespace=self.create_namespace()
+        from .native_class_deques import Deques
+        self.deques=Deques(self)
         from .native_class_mappings import Mappings
         self.mappings=Mappings(self)
         self.discover()
@@ -576,7 +579,7 @@ class Model:
         from .native_class_extrema import snapshot as extrema_snapshot
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
-                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),
+                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.deques.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())))
 
@@ -622,6 +625,7 @@ class Model:
         self.namespace.default_uninhabited()
         self.lexical.default_uninhabited()
         self.mappings.default_uninhabited()
+        self.deques.default_uninhabited()
         for owner in self.classes.values():
             for value in owner.fields.values():
                 if value.cell.root().tag is None and not value.written:
@@ -668,6 +672,7 @@ class Model:
                 self.storage(plan.result, plan.node)
                 for value in plan.arguments.values():
                     self.storage(value, plan.node)
+        for record in self.deques.records:self.deques.validate(record.kind,record.node,frozenset())
         for record in self.mappings.records:self.mappings.validate(record.kind,record.node,frozenset())
         for record in self.mappings.views.records:self.mappings.views.validate(record.kind,record.node,frozenset())
         for name in self.namespace.active:self.storage(self.namespace.cells[name],self.tree)
@@ -1021,6 +1026,8 @@ class Model:
                 self.remember(plan,function,callable_)
                 return self.cell(plan,node,"bytes" if callable_.tag in {"reader_bytes","read_bytes"} else "str")
         if receiver is not None:
+            deque=self.deques.analyze_method(plan,node,receiver,arguments,keywords,environment)
+            if deque is not None:return deque
             mapped=self.mappings.analyze_method(plan,node,receiver,arguments,keywords,environment)
             if mapped is not None:return mapped
             if receiver.tag == "object":
@@ -1076,6 +1083,8 @@ class Model:
         receiver=receiver.root()
         default=self.mappings.defaultdicts.attribute(plan,node,receiver,environment)
         if default is not None:return default
+        deque=self.deques.analyze_attribute(plan,node,receiver)
+        if deque is not None:return deque
         from .native_annotations import metadata_access
         metadata_access(node,shape(receiver))
         bound=self.callable_cells.bound_methods.value(plan,node,receiver,environment)
@@ -1381,6 +1390,7 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,'_native_class_deque',False):return self.model.deques.rust_type(self,value)
         if getattr(value,'_native_mapping_view',False):return self.model.mappings.views.rust_type(value)
         if getattr(value,"_native_class_mapping",False):return self.model.mappings.rust_type(value)
         if getattr(value,"_native_class_generator",False):return f"ClassIterator_{value.record.outer.index}"
@@ -1489,6 +1499,7 @@ class Emitter:
         return Expression("{"+setup+f"let {result}={truth};{result}"+"}","bool")
 
     def truth(self, value):
+        if getattr(value.kind,'_native_class_deque',False):return self.model.deques.truth(self,value)
         if getattr(value.kind,'_native_mapping_view',False):return self.model.mappings.views.truth(self,value)
         if isinstance(value.kind,EmptyType):return f"native_empty::<bool>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
@@ -1520,6 +1531,7 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        if getattr(value.kind,'_native_class_deque',False):return self.model.deques.show(self,value,node)
         if getattr(value.kind,'_native_mapping_view',False):return self.model.mappings.views.show(self,value,node)
         if isinstance(value.kind,EmptyType):return f"native_empty::<String>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
@@ -1624,6 +1636,8 @@ class Emitter:
                 receiver=self.expression(node.value)
                 return Expression("{let _="+receiver.code+";()}",wanted)
             receiver = self.expression(node.value)
+            if domain(receiver.kind)=="deque"or union_kind(receiver.kind)and any(domain(part)=="deque"for part in alternatives(receiver.kind)):
+                return self.model.deques.emit_attribute(self,node,receiver,wanted)
             if domain(receiver.kind) != "object":
                 raise ClassUnsupported(node)
             owner = self.model.classes[receiver.kind.name]
@@ -1743,6 +1757,9 @@ class Emitter:
             lambda kind,code:self.comparison(operator,Expression(f"({code}).clone()",kind),right,node))
         if union_kind(right.kind):return project(right.kind,right.code,
             lambda kind,code:self.comparison(operator,left,Expression(f"({code}).clone()",kind),node))
+        if isinstance(operator,(ast.Is,ast.IsNot))and domain(left.kind)==domain(right.kind)=="deque":
+            code="Rc::ptr_eq(&"+left.code+",&"+right.code+")"if left.kind==right.kind else"false"
+            return "!("+code+")"if isinstance(operator,ast.IsNot)else code
         mapped=self.model.mappings.comparison(self,operator,left,right,node)
         if mapped is not None:return mapped
         from .native_globals_view import comparison as globals_comparison
@@ -1922,6 +1939,8 @@ class Emitter:
     def call(self, node):
         expanded=self.model.expanded_calls.emit(self,node)
         if expanded is not None:return expanded
+        deque=self.model.deques.emit_method(self,node)
+        if deque is not None:return deque
         mapped=self.model.mappings.emit_method(self,node)
         if mapped is not None:return mapped
         from .native_aot_callables import emit_call
@@ -2424,6 +2443,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         layouts=_class_layouts(model,emitters[0])
         layouts=model.iterators.runtime(emitters[0])+"\n"+layouts
         layouts=model.mappings.runtime(emitters[0])+"\n"+layouts
+        layouts=model.deques.runtime()+"\n"+layouts
         unions={}
         kind_closure=set()
         empty_required=False
@@ -2445,6 +2465,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
             if record.emitted:
                 add_kind(record.kind)
                 add_kind(shape(record.element))
+        for record in model.deques.records:add_kind(record.kind)
         for record in model.mappings.records:
             add_kind(shape(record.key));add_kind(shape(record.value))
         for kind in model.expanded_calls.kinds():add_kind(kind)

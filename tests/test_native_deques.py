@@ -177,9 +177,11 @@ print(q)
             for marker in('enum Value','enum Op','struct Runtime','fn step('):
                 self.assertNotIn(marker,result.rust_source)
 
+    def test_shared_integer_alias_preserves_original_mutation(self):
+        self.exercise('from collections import deque\nq=deque([1])\nr=q\nr.append(2)\n',('',))
+
     def test_existing_alias_and_iteration_mutation_boundaries_stay_explicit(self):
         for source in(
-            'from collections import deque\nq=deque([1])\nr=q\nr.append(2)\n',
             'from collections import deque\nq=deque([1,2])\nfor x in q:\n q.append(3)\n',
             'from collections import deque\nq=deque([1,2])\nq.extend(iter(q))\n',
             'from collections import deque\nq=deque([1,2])\nprint(q.count(1.0))\n',

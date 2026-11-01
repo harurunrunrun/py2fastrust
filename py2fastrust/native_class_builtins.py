@@ -238,7 +238,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     elif name == "len":
         value=arguments[0]
         if domain(value.kind)=='dict_view':length=self.model.mappings.views.length(self,value)
-        elif domain(value.kind)in {"list","dict","set"}:length=f"{value.code}.borrow().len()"
+        elif domain(value.kind)in {"list","dict","set","deque"}:length=f"{value.code}.borrow().len()"
         elif domain(value.kind)=="str":
             length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"codepoint_len()")
         elif domain(value.kind)in {"bytes","tuple_sequence"}:length=f"{value.code}.len()"

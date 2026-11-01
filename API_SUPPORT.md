@@ -84,6 +84,13 @@ materialization/reduction consumers, including `tuple(iterable)`. Key families
 and the remaining deletion, view-operation and custom-protocol limits are documented in
 [COMPATIBILITY.md](COMPATIBILITY.md).
 
+Canonical `collections.deque` constructors have a shared typed frame carrier for
+function arguments/results, class fields and mutable aliases. Constructor
+iterables/bounds, append/appendleft, pop/popleft, clear/copy, len/bool, maxlen,
+identity and display are supported. Mutable child handles survive shallow copy.
+The frame cursor, extend/index/search protocols and saved builtin method aliases
+still need implementation; ordinary unique-owner deque paths remain available.
+
 Canonical `collections.Counter` imports have a typed frame adapter, including
 saved constructor aliases, integer-count iterable/mapping constructors, missing
 zero reads, `get`, `copy`, `update`, `subtract`, `most_common`, `total`, and live

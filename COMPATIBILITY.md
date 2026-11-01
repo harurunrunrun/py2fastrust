@@ -256,12 +256,19 @@ independent deque with the same bound. Plain print arguments retain mutable
 identity until later arguments finish; starred arguments capture their expanded
 values at their own evaluation point.
 
-This adapter currently requires a proved unique deque owner and identity-safe
-immutable elements. General mutable aliases, mutation during active iteration,
-deque function arguments, mutable element storage, floating/custom search
-protocols, deque
-subclasses, arithmetic operators, and the remaining general object protocols are
-still required work. Unsupported cases remain positioned diagnostics; no VM or
+Ordinary unique-owner programs keep their direct deque path. Typed frames also
+store shared deque handles across function arguments/results, object fields and
+aliases. This frame adapter supports constructor iterables and nullable maxlen,
+append/appendleft, pop/popleft, clear, shallow copy, len/bool, readonly maxlen,
+identity and display. Shallow copies preserve mutable child handles. Later
+argument effects cannot replace the already captured receiver. Zero maxlen still
+consumes constructor source effects, and invalid bounds are checked before pulling
+the source. Live frame deque iteration and its mutation checks, extend/self-extension,
+indexed operations, stored builtin method aliases, search/ordering protocols,
+deque subclasses and arithmetic remain separate requirements. Floating/custom
+search protocols and general aliases outside this admitted frame slice still
+need their respective adapters. Shared deque ownership uses the same acyclic
+lifetime proof as native closures and mappings. Unsupported cases remain positioned diagnostics; no VM or
 implicit Python execution supplies these operations.
 
 Proved immutable tuple keys use structurally typed Rust sets and dictionaries

@@ -11,7 +11,7 @@ def needs_linked_members(program):
         for imported in unit.imports:
             if imported.origin not in {'builtin','vendored'}:continue
             if imported.module in LINKED_MODULES:return True
-            if imported.module in FRAME_MODULES:
+            if imported.module in FRAME_MODULES or(imported.module=='collections'and('deque'in imported.names or not imported.names)):
                 from .native_frame_selection import select_frames
                 from .native import _Unsupported,_direct_diagnostic
                 from .native_constraints import ConstraintFailure

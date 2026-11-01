@@ -85,16 +85,11 @@ class NativeTypedDequeTests(unittest.TestCase):
     def test_bounded_insert_error(self):
         self.exercise('from collections import deque\nq=deque([(1,2)],maxlen=1)\nprint("before",end="|")\nq.insert(0,(3,4))\n',('',))
 
-    def test_unproved_mutable_payloads_and_aliases_remain_explicit(self):
-        from py2fastrust import transpile,TranspileOptions
-        sources=('from collections import deque\nq=deque([[1]])\nprint(q)\n',
-                 'from collections import deque\nq=deque([(1,2)])\nalias=q\nq.append((3,4))\nprint(alias)\n',
-                 'from collections import deque\ndef take(q):return q.popleft()\nq=deque([(1,2)])\nprint(take(q),q)\n')
-        for source in sources:
-            for mode in ('i64','i128','bigint'):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,'E006')
+    def test_shared_mutable_payloads_aliases_and_function_arguments(self):
+        for source in('from collections import deque\nq=deque([[1]])\nprint(q)\n',
+                       'from collections import deque\nq=deque([(1,2)])\nalias=q\nq.append((3,4))\nprint(alias)\n',
+                       'from collections import deque\ndef take(q):return q.popleft()\nq=deque([(1,2)])\nprint(take(q),q)\n'):
+            self.exercise(source,('',))
 
     def test_homogeneous_tuple_payload(self):
         self.exercise('from collections import deque\nq=deque([tuple(map(int,input().split())),tuple(range(3))])\nprint(q,q[0],q.count(tuple(range(3))))\nq.extend([tuple(range(2))])\nprint(q.popleft(),list(q))\n',('\n','0 1 2\n','8 9\n'))

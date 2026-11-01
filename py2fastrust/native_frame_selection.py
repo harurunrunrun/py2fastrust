@@ -132,6 +132,8 @@ def select_frames(unit):
     from .native_class_capabilities import shared_tuple_storage,mapping_handles
     if shared_tuple_storage(analysis):reasons+=("shared mutable tuple storage",)
     if mapping_handles(unit,analysis):reasons+=("native mapping identity/key storage",)
+    from .native_class_deques import requires_frames as deque_requires_frames
+    if deque_requires_frames(unit,analysis):reasons+=("shared deque identity and element storage",)
     from .native_class_iterators import requires_state
     if requires_state(unit,analysis):reasons+=("stored lazy builtin iterators",)
     from .native_starred_calls import requires_expansion

@@ -400,7 +400,8 @@ class LexicalCells:
         from .native_classes import ClassUnsupported,InstanceType,shape
         from .native_types import ListType,TupleType,TupleSequenceType,NullableType,MaybeType,UnionType
         def targets(kind):
-            if getattr(kind,'_native_mapping_view',False):yield('mapping_view',kind.index)
+            if getattr(kind,'_native_class_deque',False):yield('deque',kind.index)
+            elif getattr(kind,'_native_mapping_view',False):yield('mapping_view',kind.index)
             elif getattr(kind,'_native_class_iterator',False):yield('iterator',kind.index)
             elif getattr(kind,'_native_class_mapping',False):yield('mapping',kind.index)
             elif getattr(kind,'_native_function_reference',False):
@@ -431,6 +432,7 @@ class LexicalCells:
         self.model.lambda_cells.add_lifetime_edges(edges,targets)
         self.model.iterators.add_lifetime_edges(edges,targets)
         self.model.mappings.add_lifetime_edges(edges,targets)
+        self.model.deques.add_lifetime_edges(edges,targets)
         done=set();visiting=set()
         def visit(node):
             if node in visiting:
