@@ -513,3 +513,11 @@ without Unicode digit tables; Unicode text mode also accepts Unicode decimal
 digits and whitespace. Bytes retain ASCII-only numeric rules in either mode.
 Invalid input preserves the original text/bytes repr in the error message.
 Custom `__float__` and `__index__` protocols remain positioned diagnostics.
+
+Linked native instances support `isinstance(value, source_class)` through their
+captured class-definition references. Saved class/builtin aliases, finite class
+arguments and nested classinfo tuples preserve short-circuit behavior, including
+invalid later members. Matching uses actual class-object identity, including
+same-named classes from different modules. Source inheritance and metaclass
+instance-check protocols still require their own registered adapters. This does
+not implement finite class-constructor unions or new class-object admission.

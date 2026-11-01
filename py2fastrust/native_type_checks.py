@@ -1,4 +1,5 @@
 """Builtin primitive type predicates over captured values and finite tags."""
+import ast
 from .references import BuiltinIdentity
 
 
@@ -54,6 +55,21 @@ def emit(emitter, node, arguments):
             return ('{let ' + owner + '=' + classes.code + ';loop{let mut matched=false;'
                     'for ' + member + ' in ' + owner + '.as_slice().iter().cloned(){'
                     'if ' + branch + '{matched=true;break;}}break matched;}}')
+        from .native_module_linking import ClassReferenceType
+        if isinstance(classes.kind,ClassReferenceType):
+            def source_match(candidate):
+                if union_kind(candidate.kind):
+                    return project(candidate.kind,candidate.code,lambda kind,code:source_match(Expression(code,kind)))
+                if domain(candidate.kind)!='object':return 'false'
+                owner=emitter.model.classes[candidate.kind.name]
+                if not isinstance(owner.node,ast.ClassDef)or owner.node.bases or owner.node.keywords:
+                    from .native_classes import ClassUnsupported
+                    raise ClassUnsupported(node,'source-class isinstance needs inheritance/metaclass instance-check dispatch for this class; that protocol is not implemented',types=(('instance',candidate.kind),),proof='source class inheritance and instance-check protocol')
+                if not hasattr(emitter.model,'module_linker'):
+                    from .native_classes import ClassUnsupported
+                    raise ClassUnsupported(node,'source-class isinstance needs the retained class-definition reference in a linked native instance',proof='source class object identity')
+                return 'Rc::ptr_eq(&('+candidate.code+').borrow().class_definition,&('+classes.code+'))'
+            return source_match(value)
         if function_kind(classes.kind):
             arms = [f'{variant(identity)}=>{builtin_match(value, identity.name)}'
                     for identity in classes.kind.builtins if identity.name in TYPE_NAMES]
