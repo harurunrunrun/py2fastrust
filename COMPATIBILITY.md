@@ -449,6 +449,16 @@ Native user methods named find/index remain ordinary source calls. Custom
 `__index__`/buffer objects, saved builtin methods and arbitrary text subclasses
 still require their own protocols.
 
+Frame `str.count` and `bytes.count` share the search binding and clipped-bound
+protocol, with nonoverlapping matches and Python empty-pattern behavior. Text
+counts use the selected character model; bytes accept integer needles from 0
+through 255. Text validates its pattern before bounds, while bytes validate
+bounds first. Shared byte-pattern cursors scan without a match-position list.
+Canonical simple text calls retain the existing static adapter; bytes, nullable
+bounds and argument errors select typed frames. User methods named `count`
+retain their source identity. Custom `__index__` and buffer objects remain
+positioned unsupported protocol diagnostics.
+
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing
 tuple's identity, and shares the empty tuple. Fixed and runtime tuple query

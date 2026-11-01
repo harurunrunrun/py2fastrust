@@ -122,6 +122,11 @@ code-point indices through the existing cached boundary table; ASCII uses byte
 offsets. Byte searches use linear forward/reverse prefix matching and stop at
 the first match in the requested direction.
 
+Frame `str.count` and `bytes.count` support nonoverlapping occurrences, optional
+clipped start/end bounds, empty patterns and integer byte needles. Counts reuse
+cached Unicode windows or ASCII byte scans; multi-byte patterns use a linear
+prefix matcher. Existing simple text-count and input-parsing paths remain static.
+
 Typed frame dictionaries and sets have shared native storage, including
 ordinary mutable aliases, dictionary values and class fields. Direct adapters
 cover literals/comprehensions, `dict`/`set` constructors, dictionary subscripts,

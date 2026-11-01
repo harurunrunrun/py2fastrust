@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from .call_semantics import FunctionSignature
 from .native_types import alternatives
 
-NAMES=frozenset({'find','rfind','index','rindex'})
+NAMES=frozenset({'find','rfind','index','rindex','count'})
 SIGNATURE=FunctionSignature.declaration(('sub','start','end'),positional_only=('sub','start','end'),default_names=('start','end'))
 
 
@@ -23,10 +23,22 @@ def requires_frames(unit,analysis):
     from .native_constraints import MethodValue
     from .native_text_receiver_facts import builtin_text_receiver_kinds
     nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
-    return any(isinstance(identity,MethodValue)and identity.name in NAMES
-               and builtin_text_receiver_kinds(unit,scope,nodes.get(ordinal),identity)
-               for scope in analysis.scopes.values()for ordinal,fact in scope.calls.items()
-               for identity in fact.identity.alternatives)
+    for scope in analysis.scopes.values():
+        for ordinal,fact in scope.calls.items():
+            for identity in fact.identity.alternatives:
+                if not isinstance(identity,MethodValue)or identity.name not in NAMES:continue
+                node=nodes.get(ordinal)
+                kinds=builtin_text_receiver_kinds(unit,scope,node,identity)
+                if not kinds:continue
+                if identity.name!='count'or kinds!={'str'}:return True
+                if not isinstance(node,ast.Call)or not isinstance(node.func,ast.Attribute):return True
+                if node.keywords or not 1<=len(node.args)<=3:return True
+                if scope.expressions.get(unit.ordinal(node.args[0]))!='str':return True
+                for argument in node.args[1:]:
+                    kind=scope.expressions.get(unit.ordinal(argument))
+                    if kind=='none'and isinstance(argument,ast.Constant)and argument.value is None:continue
+                    if kind not in {'int','bool','int_bool'}:return True
+    return False
 
 
 def analyze(model,plan,node,receiver,arguments,keywords):
@@ -75,6 +87,10 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
     if site is None:return None
     reverse=site.name in {'rfind','rindex'};raising=site.name in {'index','rindex'}
     def finish(kind,owner,needle,start,stop):
+        if site.name=='count':
+            function='native_text_count'if kind=='str'else'native_frame_bytes_count'
+            result=emitter.at(function+'(&('+owner+'),'+needle+','+start+','+stop+')',node)
+            return emitter.coerce(Expression('class_from_usize('+result+')','int'),wanted,node)
         function='native_frame_text_search'if kind=='str'else'native_frame_bytes_rsearch'if reverse else'native_frame_bytes_search'
         found,index=(emitter.fresh()for _ in range(2))
         result=emitter.at(function+'(&('+owner+'),'+needle+','+start+','+stop+(','+str(reverse).lower()if kind=='str'else'')+')',node)
@@ -141,6 +157,14 @@ fn native_frame_bytes_search(text:&[u8],pattern:&[u8],start:Option<i128>,stop:Op
         Some(offset)=>start.checked_add(offset).map(Some).ok_or_else(||"OverflowError: search result offset is too large".to_owned()),
         None=>Ok(None),
     }
+}
+fn native_frame_bytes_count(text:&[u8],pattern:&[u8],start:Option<i128>,stop:Option<i128>)->Result<usize,String>{
+    let Some((start,stop))=native_frame_byte_window(text.len(),start,stop)else{return Ok(0);};
+    if pattern.is_empty(){return (stop-start).checked_add(1).ok_or_else(||"OverflowError: byte count is too large".to_owned());}
+    if pattern.len()>stop-start{return Ok(0);}
+    if pattern.len()==1{return Ok(text[start..stop].iter().filter(|byte|**byte==pattern[0]).count());}
+    let prefix=native_byte_pattern_prefix(pattern)?;
+    Ok(NativeBytePatternMatches{text:&text[start..stop],pattern,prefix:&prefix,cursor:0,matched:0}.count())
 }
 fn native_frame_byte_reverse_prefix(pattern:&[u8])->Result<Vec<usize>,String>{
     let mut prefix=Vec::new();
