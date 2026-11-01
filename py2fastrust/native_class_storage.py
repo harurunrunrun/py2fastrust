@@ -49,6 +49,7 @@ def validate(cell,node,integer,*,field_value=False,seen=frozenset(),model=None):
     from .native_types import EmptyType
     cell=cell.root()
     if isinstance(cell.tag,EmptyType):return
+    if cell.tag in Model.INTRINSICS:return
     if getattr(cell.tag,'_native_class_deque',False):
         model.deques.validate(cell.tag,node,seen)
         return

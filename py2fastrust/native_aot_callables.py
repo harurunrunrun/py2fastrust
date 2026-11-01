@@ -247,6 +247,7 @@ class CallableCells:
                 return False
             if name in self.model.classes and self.model.module_owner(self.owner(plan,function)):return False
             current=environment.get(name)
+            if current is None:current=self.model.lexical.read(plan,function,environment)
             if current is not None and current.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
                 # These captured standard-stream methods already have a
                 # canonical intrinsic call adapter and typed read result.

@@ -384,6 +384,16 @@ Unlisted `sys` APIs are unsupported.
 
 Typed frame sorting supports `sorted(iterable, *, key=None, reverse=False)` and exact builtin `list.sort(*, key=None, reverse=False)` with captured source functions, closures, lambdas, builtin adapters and bound source methods as keys. Keys run once per input element before ordering; reverse sorting remains stable. Integer/boolean, text/bytes, and finite tuple/list key shapes use native comparisons while retaining element references. Floating NaN ordering and custom rich-comparison protocols remain required unfinished work.
 
+Canonical `sorted` and captured aliases consume nonescaping generator expressions
+directly into their final sorting buffer. The outer iterator is captured before
+later arguments, all elements are collected before key callbacks, and element
+references remain shared. Generator-body stopping uses PEP 479; key callback
+exceptions propagate from the collector.
+Canonical standard-stream aliases can be retained in lexical cells; their
+distinct static identities need no runtime payload, while cell presence still
+tracks initialization. Rebinding a captured reader to a different standard
+stream operation remains an explicit callable-protocol diagnostic.
+
 Canonical eager native-member capabilities also admit original generator
 expressions to `Counter` construction and its sealed `update`/`subtract` methods.
 The shared generator collector writes directly into count storage; it preserves

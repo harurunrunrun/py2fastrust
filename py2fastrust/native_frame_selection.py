@@ -145,6 +145,8 @@ def select_frames(unit,*,integer="i64"):
     if requires_frames(analysis):reasons+=("captured builtin type predicates",)
     from .native_class_extrema import requires_frames as extrema_requires_frames
     if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
+    from .native_class_sorting import requires_frames as sorting_requires_frames
+    if sorting_requires_frames(unit,analysis):reasons+=('direct sorted generator collection',)
     from .native_class_divmod import requires_frames as divmod_requires_frames
     if divmod_requires_frames(analysis):reasons+=('captured quotient/remainder builtin',)
     from .native_class_splits import requires_frames as split_requires_frames

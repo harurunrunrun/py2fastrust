@@ -14,6 +14,17 @@ class SortSite:
     error:str|None=None
 
 
+def requires_frames(unit,analysis):
+    from .references import BuiltinIdentity
+    nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
+    for facts in analysis.scopes.values():
+        for site,call in facts.calls.items():
+            if BuiltinIdentity('sorted')not in call.identity.alternatives:continue
+            node=nodes.get(site)
+            if isinstance(node,ast.Call)and any(isinstance(argument,ast.GeneratorExp)for argument in node.args):return True
+    return False
+
+
 def _sites(model):
     if not hasattr(model,'sorting_sites'):model.sorting_sites={}
     return model.sorting_sites
@@ -37,10 +48,15 @@ def _analyze(model,plan,node,source,key,environment,*,method,error=None):
     kind=None
     if method:element=source.root().args[0]
     else:
-        element=model.mappings.sorted_element(source,key,node)
-        if element is None:
-            kind=model.iterators.source(plan,node,source)
-            element=model.iterators.demand(plan,node,Cell(kind),environment)
+        from .native_immediate_generators import GeneratorType
+        if isinstance(shape(source),GeneratorType):
+            kind=shape(source)
+            element=model.generators.demand(plan,node,source,environment)
+        else:
+            element=model.mappings.sorted_element(source,key,node)
+            if element is None:
+                kind=model.iterators.source(plan,node,source)
+                element=model.iterators.demand(plan,node,Cell(kind),environment)
     site=SortSite(key,element,source_kind=kind,error=error)
     _sites(model)[(plan.index,id(node))]=site
     if not error and not isinstance(shape(element),EmptyType)and any(value!='none'for value in alternatives(shape(key))):
@@ -153,7 +169,14 @@ def emit_builtin(emitter,node,arguments,keywords,wanted):
     element=shape(site.element)
     from .native_classes import domain
     from .native_class_mappings import mapping_kind
-    if all(mapping_kind(kind)for kind in alternatives(arguments[0].kind)):
+    from .native_immediate_generators import GeneratorType
+    if isinstance(arguments[0].kind,GeneratorType):
+        def append(e,item):
+            reserve=e.at(f'{values}.try_reserve(1).map_err(|_|"MemoryError: cannot allocate list".to_owned())',node)
+            return reserve+';'+f'{values}.push({e.coerce(item,element,node)});'
+        consumed=emitter.model.generators.consume(emitter,node,'sorted',arguments[0],[],{},'none',append_item=append)
+        materialize=f'let mut {values}=Vec::<{emitter.rust_type(element)}>::new();'+consumed.code+';'
+    elif all(mapping_kind(kind)for kind in alternatives(arguments[0].kind)):
         materialize=f'let mut {values}='+emitter.model.mappings.sorted_values(emitter,node,arguments[0],element)+';'
     elif domain(arguments[0].kind)=='list'and arguments[0].kind.element==element:
         materialize=f'let mut {values}={arguments[0].code}.borrow().clone();'

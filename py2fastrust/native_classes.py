@@ -1028,9 +1028,11 @@ class Model:
                 from .native_class_builtins import analyze
                 result=analyze(self,plan,node,identity,arguments,keywords,environment)
                 if result is not None:return result
-        if isinstance(function,ast.Name) and self.resolved_name(plan,function) in environment:
-            callable_ = environment[self.resolved_name(plan,function)].root()
-            if callable_.tag in {"reader_text","reader_bytes","read_text","read_bytes"} and not arguments and not keywords:
+        if isinstance(function,ast.Name):
+            callable_ = environment.get(self.resolved_name(plan,function))
+            if callable_ is None:callable_=self.lexical.read(plan,function,environment)
+            if callable_ is not None and callable_.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"} and not arguments and not keywords:
+                callable_=callable_.root()
                 self.remember(plan,function,callable_)
                 return self.cell(plan,node,"bytes" if callable_.tag in {"reader_bytes","read_bytes"} else "str")
         if receiver is not None:
@@ -1417,7 +1419,8 @@ class Emitter:
         if isinstance(value,InstanceType):return f"ClassHandle_{self.model.classes[value.name].index}"
         if isinstance(value,ListType):return f"ClassList<{recurse(value.element)}>"
         if value=="range":return "ClassRange"
-        if isinstance(value,StreamType)or isinstance(value,str)and value in self.model.INTRINSICS:
+        if isinstance(value,str)and value in self.model.INTRINSICS:return '()'
+        if isinstance(value,StreamType):
             raise ClassUnsupported(self.plan.node)
         return None
 

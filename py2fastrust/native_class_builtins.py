@@ -164,15 +164,15 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         return emit_tuple(emitter,node,arguments,wanted)
     if identity.name in {'dict','set'}:
         return emitter.model.mappings.emit_builtin(emitter,node,identity.name,arguments,keywords,wanted)
+    if identity.name=='sorted':
+        from .native_class_sorting import emit_builtin
+        return emit_builtin(emitter,node,arguments,keywords,wanted)
     if arguments and getattr(arguments[0].kind,'_native_class_generator',False):
         from .native_immediate_generators import CONSUMERS
         if identity.name in CONSUMERS:return emitter.model.generators.consume(emitter,node,identity.name,arguments[0],arguments,keywords,wanted)
     if identity.name == 'isinstance':
         from .native_type_checks import emit as emit_type_check
         return emit_type_check(emitter,node,arguments)
-    if identity.name=='sorted':
-        from .native_class_sorting import emit_builtin
-        return emit_builtin(emitter,node,arguments,keywords,wanted)
     if identity.name=='divmod':
         from .native_class_divmod import emit as emit_divmod
         return emit_divmod(emitter,node,arguments,keywords,wanted)

@@ -6,7 +6,7 @@ from dataclasses import dataclass,field
 from .references import BuiltinIdentity
 from .native_types import alternatives
 
-CONSUMERS=frozenset({'sum','list','any','all','min','max','next'})
+CONSUMERS=frozenset({'sum','list','any','all','min','max','next','sorted'})
 
 
 @dataclass(frozen=True)
