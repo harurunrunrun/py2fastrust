@@ -761,6 +761,8 @@ class Model:
             index = self.expression(plan, node.slice, environment).root()
             captured=self.subscript_item(plan,node,owner,index,environment)
             if captured is not None:return captured
+            indexed=self.deques.indexes.analyze_read(plan,node,owner,index)
+            if indexed is not None:return indexed
             mapped=self.mappings.analyze_item(plan,node,owner,index,environment)
             if mapped is not None:return mapped
             from .native_union_sequences import analyze_subscript
@@ -1168,6 +1170,7 @@ class Model:
         if isinstance(node,ast.Subscript) and not isinstance(node.slice,ast.Slice):
             owner = self.expression(plan,node.value,environment).root()
             index=self.expression(plan,node.slice,environment)
+            if self.deques.indexes.analyze_store(plan,node,owner,index,value):return
             if self.mappings.analyze_store(plan,node,owner,index,value,environment):return
             if owner.tag == "list":
                 self.contribute(owner.args[0],value,node)
@@ -1284,7 +1287,8 @@ class Model:
                 self.augmented[(plan.index,id(node))] = left
                 right = self.expression(plan,node.value,environment)
                 value = self.binary(plan,node,node.op,left,right)
-                self.target(plan,node.target,value,environment)
+                if not self.deques.indexes.captured_store(plan,node.target,value):
+                    self.target(plan,node.target,value,environment)
             elif isinstance(node,ast.Delete):
                 from .native_annotations import metadata_target
                 from .native_class_deletion import analyze
@@ -1653,6 +1657,9 @@ class Emitter:
             if getattr(owner.kind,"_native_class_mapping",False)or union_kind(owner.kind)and any(getattr(part,"_native_class_mapping",False)for part in alternatives(owner.kind)):
                 value=self.model.mappings.emit_get(self,node,owner,index,wanted)
                 return Expression('{'+setup+index_setup+value.code+'}',wanted)
+            if all(domain(kind)=="deque"for kind in alternatives(owner.kind)):
+                value=self.model.deques.indexes.emit(self,node,owner,index,wanted)
+                return Expression("{"+setup+index_setup+value.code+"}",wanted)
             from .native_union_sequences import emit_subscript
             indexed=emit_subscript(self,node,owner,index,wanted)
             if indexed is not None:return Expression("{"+setup+index_setup+indexed.code+"}",wanted)
@@ -2087,6 +2094,8 @@ class Emitter:
             more,index=self.capture(self.expression(target.slice))
             if all(getattr(kind,"_native_class_mapping",False)for kind in alternatives(owner.kind)):
                 return setup+more,("mapping",owner,index,self.kind(target))
+            if all(domain(kind)=="deque"for kind in alternatives(owner.kind)):
+                return setup+more,("deque_index",owner,index,self.kind(target))
             if domain(owner.kind)!="list":raise ClassUnsupported(target)
             return setup+more,("index",owner,index,owner.kind.element)
         raise ClassUnsupported(target)
@@ -2109,6 +2118,8 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=="deque_index":
+            return self.model.deques.indexes.emit(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]=='default_factory':
             return Expression(self.model.mappings.defaultdicts.emit_attribute(self,node,reference[1],kind or reference[2]),kind or reference[2])
         if reference[0]=="mapping":
@@ -2136,6 +2147,8 @@ class Emitter:
         return Expression(self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node),kind)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=="deque_index":
+            return self.model.deques.indexes.emit(self,node,reference[1],reference[2],"none",value).code+";"
         if reference[0]=='default_factory':return self.model.mappings.defaultdicts.emit_attribute_store(self,node,reference[1],value)
         if reference[0]=="mapping":
             return self.model.mappings.emit_store(self,node,reference[1],reference[2],value)

@@ -1,4 +1,4 @@
-"""Delete concrete instance slots without changing shared object identity.
+"""Delete concrete instance slots and registered indexed deque storage.
 
 The outer Option represents attribute presence. An inner Option may be the
 actual Python value None and does not change the deletion presence test.
@@ -15,6 +15,7 @@ def analyze(model,plan,target,environment):
             if not analyze(model,plan,child,environment):
                 if not model.lexical.delete(plan,child,environment):model.namespace.delete(plan,child,environment)
         return True
+    if isinstance(target,ast.Subscript):return model.deques.indexes.analyze_delete(plan,target,environment)
     if not isinstance(target,ast.Attribute):return False
     from .native_classes import ClassUnsupported,shape
     receiver=model.expression(plan,target.value,environment).root()
@@ -45,6 +46,7 @@ def lower(emitter,target):
                       if emitter.model.lexical.field_for(child)is not None else delete(emitter,child))
             pieces.append(code)
         return ''.join(pieces)
+    if isinstance(target,ast.Subscript):return emitter.model.deques.indexes.emit_delete(emitter,target)
     if not isinstance(target,ast.Attribute):return None
     from .native import _string
     setup,reference=emitter.reference(target)

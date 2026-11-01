@@ -41,7 +41,10 @@ class DequeSite:
     source_type:object=None
 
 class Deques:
-    def __init__(self,model):self.model=model;self.records=[];self.allocations={};self.sites={}
+    def __init__(self,model):
+        self.model=model;self.records=[];self.allocations={};self.sites={}
+        from .native_class_deque_indexing import Indexes
+        self.indexes=Indexes(self)
     def owns(self,kind):return isinstance(kind,DequeType)and kind.index<len(self.records)and self.records[kind.index]is kind.record
     def snapshot(self):
         from .native_classes import shape

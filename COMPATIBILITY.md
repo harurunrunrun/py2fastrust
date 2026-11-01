@@ -260,11 +260,14 @@ Ordinary unique-owner programs keep their direct deque path. Typed frames also
 store shared deque handles across function arguments/results, object fields and
 aliases. This frame adapter supports constructor iterables and nullable maxlen,
 append/appendleft, pop/popleft, clear, shallow copy, len/bool, readonly maxlen,
-identity and display. Shallow copies preserve mutable child handles. Later
-argument effects cannot replace the already captured receiver. Zero maxlen still
+identity, integer-indexed reads/writes/deletion and display. Indexed augmented
+assignment loads before the RHS and retains the captured owner/raw index for
+the store, including a length change or global rebinding during the RHS. Bounds
+and index conversion errors retain their Python ordering. Shallow copies preserve
+mutable child handles. Later argument effects cannot replace the already captured receiver. Zero maxlen still
 consumes constructor source effects, and invalid bounds are checked before pulling
 the source. Live frame deque iteration and its mutation checks, extend/self-extension,
-indexed operations, stored builtin method aliases, search/ordering protocols,
+custom index conversion, stored builtin method aliases, search/ordering protocols,
 deque subclasses and arithmetic remain separate requirements. Floating/custom
 search protocols and general aliases outside this admitted frame slice still
 need their respective adapters. Shared deque ownership uses the same acyclic
