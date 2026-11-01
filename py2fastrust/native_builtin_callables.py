@@ -13,6 +13,9 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name in {'exit','quit'}:
+        from .native_exit import binding_error as bind_exit
+        return bind_exit(identity,count,[(item.name,None)for item in keywords])
     if name=='int':
         from .native_integer_base import binding_error as bind_integer_base
         return bind_integer_base(count,(item.name for item in keywords))
@@ -64,7 +67,9 @@ def analyze(provider,plan,node,identity,arguments,positional,keywords,environmen
     from .native_class_builtins import analyze as analyze_operation
     factory=lambda tag=None,args=():provider.model.cell(plan,node,tag,args,identity=identity)
     failure=binding_error(identity,arguments)
-    if failure:result=factory("none")
+    if failure:
+        from .native_types import EMPTY
+        result=factory(EMPTY if identity.name in {'exit','quit'}else'none')
     else:
         result=analyze_operation(provider.model,plan,node,identity,positional,keywords,environment,factory=factory,call_arguments=arguments)
         if result is None:

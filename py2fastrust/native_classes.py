@@ -691,7 +691,7 @@ class Model:
                 else:
                     raise ClassUnsupported(plan.node)
         self.final = True
-        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)else None
+        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)else None
         self.module.visible_definitions = set()
         self.block(self.module, self.tree.body, dict(self.global_symbols))
         for plan in self.plans[1:]:
@@ -1334,6 +1334,10 @@ class Model:
                 continue
             if isinstance(node,ast.Expr):
                 self.expression(plan,node.value,environment)
+                from .native_exit import never_returns
+                if never_returns(self,plan,node.value):
+                    self.native_abrupt_calls_used=True
+                    environment=None
             elif isinstance(node,ast.Assign):
                 from .native_annotations import metadata_target
                 for target in node.targets:metadata_target(self,plan,target,environment)
@@ -2771,6 +2775,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=apply_text_policy(result,string_mode)
     from .native_cached_text import apply_cached_text
     result=apply_cached_text(result,string_mode,class_repr=model.string_repr_required)
+    from .native_exit import runtime as exit_runtime
+    result=exit_runtime(result,model)
     if prune_output:
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)

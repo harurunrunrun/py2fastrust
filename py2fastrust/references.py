@@ -12,7 +12,7 @@ from dataclasses import dataclass
 CORE_BUILTINS=frozenset({
     "abs","all","any","ascii","bin","bool","bytearray","bytes","callable","chr",
     "classmethod","compile","complex","delattr","dict","dir","divmod","enumerate",
-    "eval","exec","filter","float","format","frozenset","getattr","globals","hasattr",
+    "eval","exec","exit","quit","filter","float","format","frozenset","getattr","globals","hasattr",
     "hash","hex","id","input","int","isinstance","issubclass","iter","len","list",
     "locals","map","max","memoryview","min","next","object","oct","open","ord",
     "pow","print","property","range","repr","reversed","round","set","setattr",

@@ -18,7 +18,7 @@ from .frontend import Binding,Symbol
 
 _TOKENS=(ast.operator,ast.unaryop,ast.boolop,ast.cmpop,ast.expr_context)
 _MODULE_INITIAL_NAMES=frozenset({'__name__','__doc__','__package__','__loader__','__spec__','__file__','__cached__','__builtins__','__annotations__','__path__'})
-_DEFAULT_BUILTINS=(frozenset(vars(builtins))|{"__debug__"})-_MODULE_INITIAL_NAMES
+_DEFAULT_BUILTINS=(frozenset(vars(builtins))|{"__debug__","exit","quit"})-_MODULE_INITIAL_NAMES
 UNIMPLEMENTED_IMPORT_METADATA=frozenset({'__spec__','__loader__','__cached__','__path__'})
 ANNOTATION_METADATA=frozenset({'__annotations__','__annotate__'})
 
@@ -475,7 +475,8 @@ def needs_linking(program,*,integer="i64"):
     builtin_namespace=any(module.name=='builtins'and module.origin=='builtin'for module in program.modules)
     native_adapters=native_adapter_module_names(program)
     reached_with=any(isinstance(node,ast.With)for unit in program.units if unit.name not in native_adapters for node in ast.walk(unit.tree))
-    return reached_with or requires_namespaces(program)or needs_linked_members(program,integer=integer)or builtin_namespace or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
+    from .native_exit import requires_linking as exit_requires_linking
+    return reached_with or requires_namespaces(program)or needs_linked_members(program,integer=integer)or builtin_namespace or exit_requires_linking(program)or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
                for module in program.modules)
 
 

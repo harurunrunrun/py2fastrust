@@ -13,7 +13,7 @@ def emit(emitter,value,node):
     for identity in value.kind.builtins:
         if identity.name not in SUPPORTED:
             raise ClassUnsupported(node,'this captured builtin needs its canonical object representation metadata',types=(('value',value.kind),),proof='builtin object display metadata')
-        text=("<class '"+identity.name+"'>"if identity.name in TYPE_NAMES else'<built-in function '+identity.name+'>')
+        text=('Use '+identity.name+'() or Ctrl-D (i.e. EOF) to exit'if identity.name in {'exit','quit'}else"<class '"+identity.name+"'>"if identity.name in TYPE_NAMES else'<built-in function '+identity.name+'>')
         arms.append(variant(identity)+'=>'+_string(text)+'.to_owned()')
     for identity in value.kind.members:
         adapter=emitter.model.callable_cells.member_adapters.get(identity.module)

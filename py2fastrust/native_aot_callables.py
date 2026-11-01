@@ -262,6 +262,8 @@ class CallableCells:
                 from .references import BuiltinIdentity
                 identity=self.model.builtin_identity(plan,function,environment)
                 if isinstance(identity,BuiltinIdentity):
+                    from .native_exit import is_exit
+                    if is_exit(identity):return True
                     from .native_builtin_callables import binding_error
                     try:return binding_error(identity,normalize_call(node))is not None
                     except CallBindingError:return True

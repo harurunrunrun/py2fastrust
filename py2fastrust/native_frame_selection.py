@@ -120,6 +120,8 @@ def select_frames(unit,*,integer="i64"):
     from .native_frame_references import prove
     from .native_lexical_cells import requires_environments
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
+    from .native_exit import requires_frames as exit_requires_frames
+    if exit_requires_frames(analysis):reasons+=('native process termination unwinding',)
     nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
     reached={definition for definitions in targets.values()for definition in definitions}
     if any(unit.signature_for(nodes[definition]).variadic_positional for definition in reached):reasons+=("positional variadic argument packs",)

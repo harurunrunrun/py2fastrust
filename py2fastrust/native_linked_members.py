@@ -23,11 +23,14 @@ class MathAdapter:
 
 
 class SysAdapter:
-    NAMES=frozenset({'setrecursionlimit','getrecursionlimit'})
+    NAMES=frozenset({'exit','setrecursionlimit','getrecursionlimit'})
 
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
         from .native_classes import ClassUnsupported,shape
+        if identity.name=='exit':
+            from .native_exit import analyze,binding_error
+            return MemberCall(analyze(model,plan,node,identity,positional,keywords,factory=factory),binding_error(identity,len(positional),keywords))
         count=1 if identity.name=='setrecursionlimit'else 0
         error=None
         if keywords:
@@ -46,6 +49,9 @@ class SysAdapter:
         from .native import _string
         from .native_classes import Expression,shape
         kind=shape(record.result)
+        if identity.name=='exit':
+            from .native_exit import emit
+            return emit(emitter,node,identity,positional,keywords,kind)
         if record.error is not None:
             return Expression(emitter.at(f'Err::<{emitter.rust_type(kind)},String>({_string(record.error)}.into())',node),kind)
         if identity.name=='getrecursionlimit':

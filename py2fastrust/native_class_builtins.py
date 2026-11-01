@@ -6,7 +6,7 @@ and the adapter never traverses/evaluates argument ASTs a second time.
 import ast
 from .references import BuiltinIdentity
 
-SUPPORTED=frozenset({"classmethod","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bool","float","len","abs","id","globals","isinstance",
+SUPPORTED=frozenset({"exit","quit","classmethod","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bool","float","len","abs","id","globals","isinstance",
                      "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
 
 
@@ -15,6 +15,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name in {'exit','quit'}:
+        from .native_exit import analyze as analyze_exit
+        return analyze_exit(model,plan,node,identity,arguments,keywords,factory=cell)
     if name=='int':
         from .native_integer_base import analyze as analyze_integer_base
         explicit=analyze_integer_base(model,plan,node,arguments,keywords,factory=cell)
@@ -145,6 +148,9 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_classes import Expression
     from .native_unions import project,union_kind
     from .native_builtin_singletons import has_singleton
+    if identity.name in {'exit','quit'}:
+        from .native_exit import emit as emit_exit
+        return emit_exit(emitter,node,identity,arguments,list(keywords.items()),wanted)
     if identity.name=="print"and "flush"in keywords and has_singleton(keywords["flush"].kind):
         checked=emitter.fresh()
         converted=emitter.truth(keywords["flush"],node)
@@ -221,7 +227,7 @@ def _type_name(emitter,value,node):
         arms.extend(f'{emitter.model.callable_cells.bound_methods.reference_pattern(target)}=>"method"'for target in value.kind.methods)
         for identity in value.kind.builtins:
             from .native_type_checks import TYPE_NAMES
-            name="type"if identity.name in TYPE_NAMES else"builtin_function_or_method"
+            name="Quitter"if identity.name in {'exit','quit'}else"type"if identity.name in TYPE_NAMES else"builtin_function_or_method"
             arms.append(f'{variant(identity)}=>{_string(name)}')
         for identity in value.kind.members:
             adapter=emitter.model.callable_cells.member_adapters.get(identity.module)

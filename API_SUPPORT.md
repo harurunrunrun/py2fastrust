@@ -397,6 +397,17 @@ The special functions in `math` do not always match CPython's `libm` results bit
 
 ## sys
 
+Native `sys.exit(status=None)` and site-provided `exit(code=None)` / `quit(code=None)`
+support direct calls, captured aliases and source-function arguments. Termination
+unwinds native frames and context managers before returning the process status.
+Suppression by `__exit__` resumes execution. Site exit helpers close the shared
+standard input; `sys.exit` leaves it open. Builtin scalar and container payloads
+retain their shared values until final display. Deferred user-defined payload
+display and observation of context-manager exception objects remain unsupported.
+Integer statuses use Python's signed-64 conversion before platform status truncation;
+values outside that range produce status 255 on POSIX. Source arithmetic still
+uses the selected i64, i128 or BigInt policy.
+
 | API | Status |
 |---|---|
 | `stdin`, `stdout`, `stderr` | Mutable standard streams; text/binary-buffer I/O, `fileno`, `isatty`, text `encoding`/`errors` |
