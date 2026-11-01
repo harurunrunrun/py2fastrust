@@ -48,7 +48,6 @@ def classify(operator,left,right,integer):
         if "float"in {a,b}or isinstance(operator,ast.Div):
             if "float"in {a,b}and isinstance(operator,(ast.LShift,ast.RShift)+BITWISE):return PrimitivePlan(error="binary")
             if not isinstance(operator,FLOAT):return PrimitivePlan(protocol="binary64 power/numeric operation")
-            if integer=="bigint"and not(isinstance(operator,ast.Div)and {a,b}<=INTEGRAL):return PrimitivePlan(protocol="BigInt/binary64 numeric interoperation")
             return PrimitivePlan("float")
         if isinstance(operator,INTEGER):
             if isinstance(operator,BITWISE)and {a,b}<={"bool","int_bool"}:

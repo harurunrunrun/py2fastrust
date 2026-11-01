@@ -1145,3 +1145,12 @@ BigInt integral true division now shares the existing exact integer-ratio
 rounding kernel across direct scalar and frame operations, including overflow,
 subnormal rounding, signed zero and zero denominators. This is not general
 mixed BigInt/binary64 arithmetic support.
+
+BigInt mode supports native binary64 arithmetic for builtin int/bool/float
+operands, including finite alternatives, NaN, infinities, signed zero,
+subnormals and Python division errors. Mixed integral operands are rounded
+once through `Int.ratio(1)` and reject conversion overflow. Both operand
+expressions evaluate before primitive numeric conversion begins. Integral
+true division keeps its existing exact-ratio implementation, while otherwise
+integral programs keep their static selection. Floating power/complex results
+and custom numeric conversion protocols remain separate adapters.

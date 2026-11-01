@@ -453,3 +453,9 @@ operation planners. Captured aliases work as fold callbacks. This does not
 implement in-place operator protocols, user special methods, or the remaining
 `operator` exports. Integral BigInt true division uses exact rational rounding
 to binary64; other missing floating interoperations retain diagnostics.
+
+BigInt numeric expressions support direct binary64 addition, subtraction,
+multiplication, true/floor division and remainder when a float operand is
+present. Integral operands convert once through the exact `Int.ratio` helper,
+with overflow errors instead of silent infinity. Pure integral true division
+retains its existing exact-ratio path.

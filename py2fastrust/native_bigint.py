@@ -339,6 +339,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         if (isinstance(operator,(ast.BitAnd,ast.BitOr,ast.BitXor)) and "int_bool" in (left.kind,right.kind)
                 and left.kind in {"bool","int_bool"} and right.kind in {"bool","int_bool"}):
             return super().binary(operator,left,right,node)
+        from .native_bigint_reals import binary as real_binary
+        real=real_binary(self,operator,left,right,node)
+        if real is not None:return real
         first,second = self.temporary(),self.temporary()
         setup = f"let {first}={self.number(left)}; let {second}={self.number(right)};"
         if isinstance(operator,ast.Div):
@@ -528,7 +531,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     if generator.has_extended_scalars:
         from .native_scalar import SCALAR_HELPERS
         from .rust_pruning import select_named_rust_items
-        result.append(select_named_rust_items(SCALAR_HELPERS,{"native_float_text"}))
+        result.append(select_named_rust_items(SCALAR_HELPERS,{"native_float_text","native_float_div","native_float_divmod"}))
     if generator.has_deques:
         from .native_deques import HELPERS as DEQUE_HELPERS
         result.append(DEQUE_HELPERS)
