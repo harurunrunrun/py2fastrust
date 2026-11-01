@@ -125,11 +125,10 @@ def _ordering(g,left,right,operator,node):
     if not isinstance(a,TupleSequenceType)and not isinstance(b,TupleSequenceType):return ordering(g,left,right,operator,node)
     if not _scalar(a)or not _scalar(b):raise _Unsupported('tuple ordering requires proved identity-safe built-in element comparisons',node=node,types=(('left',a),('right',b)),proof='tuple element ordering')
     symbol=ORDERING[type(operator)]
-    strict=ast.Lt()if isinstance(operator,(ast.Lt,ast.LtE))else ast.Gt()
     if isinstance(a,TupleSequenceType)and isinstance(b,TupleSequenceType):
         x,y,result=g.temporary(),g.temporary(),g.temporary()
         lhs=_Expression(f'(*{x})',a.element,owned=False);rhs=_Expression(f'(*{y})',b.element,owned=False)
-        equal=scalar_equal(g,lhs,rhs);test=ordering(g,lhs,rhs,strict,node)
+        equal=scalar_equal(g,lhs,rhs);test=ordering(g,lhs,rhs,operator,node)
         return (f'{{let mut {result}=None;for({x},{y})in ({left.code}).iter().zip(({right.code}).iter())'
                 f'{{if !({equal}){{{result}=Some({test});break;}}}}'
                 f'{result}.unwrap_or_else(||({left.code}).len(){symbol}({right.code}).len())}}')
@@ -137,13 +136,18 @@ def _ordering(g,left,right,operator,node):
         tail=f'({left.code}).len(){symbol}{len(b.fields)}'
         for index,kind in reversed(list(enumerate(b.fields))):
             lhs=_Expression(f'({left.code}).as_slice()[{index}]',a.element,owned=False);rhs=_Expression(f'({right.code}).{index}',kind,owned=False)
-            equal=scalar_equal(g,lhs,rhs);test=ordering(g,lhs,rhs,strict,node)
+            equal=scalar_equal(g,lhs,rhs);test=ordering(g,lhs,rhs,operator,node)
             short='true'if isinstance(operator,(ast.Lt,ast.LtE))else'false'
             tail=f'if ({left.code}).len()<={index}{{{short}}}else if {equal}{{{tail}}}else{{{test}}}'
         return '{'+tail+'}'
     if isinstance(a,TupleType)and isinstance(b,TupleSequenceType):
-        reverse={ast.Lt:ast.Gt,ast.LtE:ast.GtE,ast.Gt:ast.Lt,ast.GtE:ast.LtE}[type(operator)]
-        return _ordering(g,right,left,reverse(),node)
+        tail=f'{len(a.fields)}{symbol}({right.code}).len()'
+        for index,kind in reversed(list(enumerate(a.fields))):
+            lhs=_Expression(f'({left.code}).{index}',kind,owned=False);rhs=_Expression(f'({right.code}).as_slice()[{index}]',b.element,owned=False)
+            equal=scalar_equal(g,lhs,rhs);test=ordering(g,lhs,rhs,operator,node)
+            short='false'if isinstance(operator,(ast.Lt,ast.LtE))else'true'
+            tail=f'if ({right.code}).len()<={index}{{{short}}}else if {equal}{{{tail}}}else{{{test}}}'
+        return '{'+tail+'}'
     from .native_comparisons import _unsupported_pair
     return _unsupported_pair(g,left,right,operator,node)
 

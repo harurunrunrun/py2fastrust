@@ -22,11 +22,11 @@ class NativeTupleKeyTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def differential(self,source,inputs=("",),modes=("i64","i128","bigint"),profiles=(False,True),wrapping=False,strings="ascii"):
+    def differential(self,source,inputs=("",),modes=("i64","i128","bigint"),profiles=(False,True),wrapping=False,strings="ascii",optimize=True):
         references=[subprocess.run([sys.executable,"-I","-c",source],input=data,capture_output=True,text=True,timeout=5) for data in inputs]
         for mode in modes:
             expected=[execute(source,mode,data) for data in inputs] if wrapping else references
-            result=transpile(source,TranspileOptions(integer=mode,filename="keys.py",string_mode=strings))
+            result=transpile(source,TranspileOptions(integer=mode,filename="keys.py",string_mode=strings,optimize=optimize))
             self.assertTrue(result.success,result.diagnostics)
             self.assertEqual(result.backend,"native")
             self.assertLess(len(result.rust_source.encode()),512*1024)
@@ -154,11 +154,14 @@ for key,value in D.items():
             source=f"S={{{key}}}\nD={{{key}:7}}\nT=S.copy()\nE=D.copy()\nprint(len(S),len(T),{key} in T,D[{key}],E[{key}])\n"
             self.differential(source,profiles=(True,))
 
-    def test_integer_tuple_no_optimize_retains_unicode_data_notice_when_selected(self):
-        result=transpile("value=(1,2)\nprint(value)\n",TranspileOptions(integer="i64",optimize=False,string_mode="unicode"))
+    def test_integer_tuple_no_optimize_omits_unused_unicode_data_and_notice(self):
+        source="value=(1,2)\nprint(value)\n"
+        result=transpile(source,TranspileOptions(integer="i64",optimize=False,string_mode="unicode"))
         self.assertTrue(result.success,result.diagnostics)
-        self.assertIn("const NATIVE_TUPLE_PRINTABLE",result.rust_source)
-        self.assertIn("UNICODE LICENSE V3",result.rust_source)
+        self.assertNotIn("const NATIVE_TUPLE_PRINTABLE",result.rust_source)
+        self.assertNotIn("const TEXT_PRINTABLE",result.rust_source)
+        self.assertNotIn("UNICODE LICENSE V3",result.rust_source)
+        self.differential(source,strings="unicode",optimize=False)
 
     def test_integer_tuple_no_optimize_omits_unicode_data_in_default_ascii_mode(self):
         result=transpile("value=(1,2)\nprint(value)\n",TranspileOptions(integer="i64",optimize=False))
@@ -187,11 +190,17 @@ for key,value in D.items():
             cases.append(str(len(pairs))+"\n"+"".join(f"{a} {b}\n" for a,b in pairs))
         self.differential(source,cases,profiles=(True,))
 
-    def test_mutable_aliases_fields_unknown_shapes_and_observable_set_order_reject(self):
-        programs=["D={(1,2):7}\nE=D\nE[(1,2)]=9\n",
-                  "S=T={(1,2)}\nS.add((3,4))\n",
-                  "D={(1,2):[]}\nprint(len(D))\n",
-                  "A=[]\nS={(A,)}\nprint(len(S))\n",
+    def test_shared_tuple_key_dictionary_alias_is_supported(self):
+        self.differential("D={(1,2):7}\nE=D\nE[(1,2)]=9\n")
+
+    def test_shared_tuple_key_set_alias_is_supported(self):
+        self.differential("S=T={(1,2)}\nS.add((3,4))\n")
+
+    def test_tuple_keys_support_mutable_dictionary_values(self):
+        self.differential("D={(1,2):[]}\nprint(len(D))\n")
+
+    def test_unproved_tuple_key_protocols_remain_explicit(self):
+        programs=["A=[]\nS={(A,)}\nprint(len(S))\n",
                   "D={(1,2):7}\nD[('x',2)]=8\n",
                   "S={(1,2)}\nfor key in S:\n print(key)\n",
                   "D={(1,2):7}\nfor key in D:\n D[key]=8\n"]

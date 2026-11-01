@@ -1418,3 +1418,13 @@ fields without invoking Python callbacks. Geometric collection thresholds avoid
 repeated full scans while a live graph grows. Container-, callable- and
 closure-mediated cycles, custom finalizers, weak references and resurrection
 remain explicit unsupported protocols; this is not general arena/container GC.
+
+
+Shared runtime tuples on typed frames support lexicographic `<`, `<=`, `>` and
+`>=`, tuple membership, and stable sorting with proved identity-safe builtin
+immutable elements. `min`/`max`, stored callbacks and tuple-producing sort keys
+use the same captured-value protocols. Fixed/runtime tuple alternatives keep
+their actual length, element comparison errors and first-candidate identity;
+comparison does not re-evaluate operands or later chained-comparison values.
+Floating NaN, custom element comparison and mutable element ordering still need
+their own identity-aware adapters and retain positioned diagnostics.

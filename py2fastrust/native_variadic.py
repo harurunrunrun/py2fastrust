@@ -67,8 +67,12 @@ def comparison(emitter, operator, left, right, node):
         else:
             code = "false"
         return f"!({code})" if isinstance(operator, ast.IsNot) else code
+    if isinstance(operator,(ast.Lt,ast.LtE,ast.Gt,ast.GtE)):
+        return ordered(emitter,operator,left,right,node)
+    if isinstance(operator,(ast.In,ast.NotIn)):
+        return membership(emitter,operator,left,right,node)
     if not isinstance(operator, (ast.Eq, ast.NotEq)):
-        raise ClassUnsupported(node, "shared runtime tuple ordering/membership needs its per-element comparison protocol on typed frames", proof="shared tuple comparison protocol")
+        raise ClassUnsupported(node, "this shared runtime tuple comparison operator has no registered native adapter", proof="shared tuple comparison operator")
     if has_float_payload(a) or has_float_payload(b):
         raise ClassUnsupported(node, "tuple equality with floating payloads needs Python element identity, including repeated NaN objects", proof="floating tuple element identity")
     def equal(x, y):
@@ -86,6 +90,80 @@ def comparison(emitter, operator, left, right, node):
         return comparison(emitter, operator, right, left, node)
     else:code = "false"
     return f"!({code})" if isinstance(operator, ast.NotEq) else "(" + code + ")"
+
+
+
+def ordered(emitter,operator,left,right,node):
+    # Reuse the ordinary kernel on already captured values, with frame-owned
+    # temporaries and error locations. No source expression is evaluated here.
+    from types import SimpleNamespace
+    from .native_tuple_sequences import _ordering
+    from .native_comparisons import ORDERING
+    tuples=(TupleType,TupleSequenceType)
+    if isinstance(left.kind,tuples)and isinstance(right.kind,tuples)and any(
+            isinstance(value.kind,TupleSequenceType)and isinstance(value.kind.element,EmptyType)
+            for value in (left,right)):
+        length=lambda value:str(len(value.kind.fields))+'_usize'if isinstance(value.kind,TupleType)else'('+value.code+').len()'
+        return length(left)+ORDERING[type(operator)]+length(right)
+    adapter=SimpleNamespace(temporary=emitter.fresh,number=emitter.number,at=emitter.at,
+        bits=0 if emitter.model.integer=='bigint'else 128 if emitter.model.integer=='i128'else 64)
+    return _ordering(adapter,left,right,operator,node)
+
+
+def membership(emitter,operator,left,right,node):
+    from .native_classes import Expression,ClassUnsupported
+    from .native_tuples import _scalar
+    if not isinstance(right.kind,(TupleType,TupleSequenceType)):return None
+    fields=right.kind.fields if isinstance(right.kind,TupleType)else(right.kind.element,)
+    if not _scalar(left.kind)or any(not isinstance(field,EmptyType)and not _scalar(field)for field in fields):
+        raise ClassUnsupported(node,'tuple membership needs Python identity-aware element equality; floating NaN and custom/mutable payload equality are not implemented by this native adapter',types=(('item',left.kind),('container',right.kind)),proof='identity-safe tuple element equality')
+    if isinstance(right.kind,TupleSequenceType):
+        if isinstance(right.kind.element,EmptyType):code='false'
+        else:
+            item=emitter.fresh()
+            test=emitter.comparison(ast.Eq(),left,Expression(item+'.clone()',right.kind.element),node)
+            code=f'({right.code}).iter().any(|{item}|{test})'
+    else:
+        tests=[emitter.comparison(ast.Eq(),left,Expression(f'({right.code}).{index}.clone()',kind),node)for index,kind in enumerate(fields)]
+        code='||'.join('('+test+')'for test in tests)or'false'
+    return '!('+code+')'if isinstance(operator,ast.NotIn)else'('+code+')'
+
+
+
+def sorted_order(emitter,left,right,node,compare):
+    from .native_classes import Expression,ClassUnsupported
+    from .native_tuples import _scalar
+    a,b=left.kind,right.kind
+    if any(isinstance(kind,TupleSequenceType)and isinstance(kind.element,EmptyType)for kind in (a,b)):
+        length=lambda value:str(len(value.kind.fields))+'_usize'if isinstance(value.kind,TupleType)else'('+value.code+').len()'
+        return 'Ok(('+length(left)+').cmp(&('+length(right)+')))'
+    if any(not _scalar(kind)for kind in (a,b)):
+        raise ClassUnsupported(node,'sorting these runtime tuple keys requires identity-aware floating/custom element comparison; this adapter proves only builtin immutable element equality and ordering',types=(('left key',a),('right key',b)),proof='identity-safe runtime tuple sort comparison')
+    if isinstance(a,TupleType):
+        # Compare in the original direction, including mixed-type error names.
+        tail=f'Ok({len(a.fields)}_usize.cmp(&({right.code}).len()))'
+        for index,kind in reversed(list(enumerate(a.fields))):
+            x=Expression(f'({left.code}).{index}.clone()',kind)
+            y=Expression(f'({right.code}).as_slice()[{index}].clone()',b.element)
+            equal=emitter.comparison(ast.Eq(),x,y,node)
+            tail=f'if ({right.code}).len()<={index}{{Ok(std::cmp::Ordering::Greater)}}else if {equal}{{{tail}}}else{{{compare(emitter,x,y,node)}}}'
+        return '{'+tail+'}'
+    if isinstance(b,TupleType):
+        tail=f'Ok(({left.code}).len().cmp(&{len(b.fields)}_usize))'
+        for index,kind in reversed(list(enumerate(b.fields))):
+            x=Expression(f'({left.code}).as_slice()[{index}].clone()',a.element)
+            y=Expression(f'({right.code}).{index}.clone()',kind)
+            equal=emitter.comparison(ast.Eq(),x,y,node)
+            tail=f'if ({left.code}).len()<={index}{{Ok(std::cmp::Ordering::Less)}}else if {equal}{{{tail}}}else{{{compare(emitter,x,y,node)}}}'
+        return '{'+tail+'}'
+    result=f'Ok(({left.code}).len().cmp(&({right.code}).len()))'
+    if any(isinstance(kind.element,EmptyType)for kind in (a,b)):return result
+    x,y,saved=(emitter.fresh()for _ in range(3))
+    lhs=Expression(x+'.clone()',a.element);rhs=Expression(y+'.clone()',b.element)
+    equal=emitter.comparison(ast.Eq(),lhs,rhs,node)
+    nested=compare(emitter,lhs,rhs,node)
+    return ('{'+f'let mut {saved}={result};for({x},{y})in({left.code}).iter().zip(({right.code}).iter()){{'
+            f'if !({equal}){{{saved}={nested};break;}}}}{saved}'+'}')
 
 
 def runtime(model):

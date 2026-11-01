@@ -115,6 +115,10 @@ def _ordering(emitter,left,right,node):
     if a in {'int','bool','int_bool'}and b in {'int','bool','int_bool'}:
         return f'Ok(({emitter.number(left)}).cmp(&({emitter.number(right)})))'
     if a==b and a in {'str','bytes'}:return f'Ok(({left.code}).cmp(&({right.code})))'
+    from .native_types import TupleSequenceType
+    if isinstance(a,(TupleType,TupleSequenceType))and isinstance(b,(TupleType,TupleSequenceType))and(isinstance(a,TupleSequenceType)or isinstance(b,TupleSequenceType)):
+        from .native_variadic import sorted_order
+        return sorted_order(emitter,left,right,node,_ordering)
     if isinstance(a,TupleType)and isinstance(b,TupleType):
         result=f'Ok({len(a.fields)}_usize.cmp(&{len(b.fields)}_usize))'
         for index in reversed(range(min(len(a.fields),len(b.fields)))):

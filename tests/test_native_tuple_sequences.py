@@ -12,8 +12,8 @@ from py2fastrust import transpile,TranspileOptions
 
 
 class NativeTupleSequenceBoundaryTests(unittest.TestCase):
-    def test_mutable_payload_and_unproved_sort_protocols_are_explicit(self):
-        sources=["t=tuple([[1]])\n", "rows=[tuple([1.0]),tuple([2.0])]\nrows.sort()\n", "rows=[tuple([1,'a']),tuple([2,'b'])]\nrows.sort()\n"]
+    def test_unproved_sort_protocols_are_explicit(self):
+        sources=["rows=[tuple([1.0]),tuple([2.0])]\nrows.sort()\n", "rows=[tuple([1,'a']),tuple([2,'b'])]\nrows.sort()\n"]
         for source in sources:
             for mode in ('i64','i128','bigint'):
                 with self.subTest(source=source,mode=mode):
@@ -51,6 +51,9 @@ class NativeTupleSequenceTests(unittest.TestCase):
                         if expected.returncode:
                             self.assertEqual(actual.stderr.splitlines()[-1].split(':')[0],expected.stderr.splitlines()[-1].split(':')[0])
                             if error_frame:self.assertIn('in '+error_frame,actual.stderr)
+
+    def test_mutable_payload_tuple_construction_is_supported(self):
+        self.compare("t=tuple([[1]])\n")
 
     def test_dynamic_input_tuple_index_length_truth_repr_and_iteration(self):
         self.compare('''t=tuple(map(int,input().split()))
