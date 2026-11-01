@@ -160,6 +160,9 @@ def integer_map(g,source,planner,node,*,frame=None,inline=False):
         parser="native_parse_integer(@)"
     else:
         parser="Int::parse(@,10)"
+    if word.kind=='str':
+        g.has_tuples=True
+        parser+='.map_err(|_|format!("ValueError: invalid literal for int() with base 10: {:.200}",native_tuple_repr_str(@)))'
     if inline:
         scope,trace=g.scope_name(),g.expression_trace_id
     elif frame is not None:

@@ -88,7 +88,7 @@ def maximum(emitter,node,value):
     return project(value.kind,value.code,branch)if union_kind(value.kind)else branch(value.kind,value.code)
 
 
-def emit(emitter,node,receiver,arguments,keywords,wanted):
+def emit(emitter,node,receiver,arguments,keywords,wanted,*,collector=None):
     from .native_classes import Expression,ClassUnsupported,domain
     from .native_class_builtins import _error,_type_name
     from .native_unions import union_kind,project
@@ -109,6 +109,7 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
             factory=('NativeReverseWords'if reverse else'NativeWords')if kind=='str'else('NativeReverseByteWords'if reverse else'NativeByteWords')
             sep_code='None'if sep_kind=='none'else'Some(('+sep+').as_str())'if kind=='str'else'Some(('+sep+').as_slice())'
             cursor=emitter.at(factory+'::new(&('+text+'),'+sep_code+','+limit+' as i128)',node)
+            if collector is not None:return collector(kind,text,cursor,reverse)
             part,values=(emitter.fresh()for _ in range(2))
             item=Expression('NativeText::from('+part+')'if kind=='str'else part+'.to_vec()',kind)
             converted=emitter.coerce(item,wanted.element,node)

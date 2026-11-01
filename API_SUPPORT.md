@@ -102,6 +102,16 @@ and byte sources have adapters. Custom iteration protocols and cyclic ownership
 still require implementation; this does not establish complete builtin object
 compatibility.
 
+After type/call analysis proves canonical `int`, a direct `map` source from
+builtin text/bytes `split` or `rsplit` retains the immutable input and an eager
+word-position snapshot. Pulls parse borrowed word slices, avoiding per-word
+string allocations while preserving delayed conversion errors and shared map
+cursors. Captured callback aliases, separator/maxsplit effects and Unicode
+character boundaries retain their ordinary semantics. Saved mutable word lists
+use their live list cursor. Ordinary integer-word collectors report the original
+invalid literal with its base and Python representation through a cold error
+path.
+
 Frame `str.split`/`rsplit` and `bytes.split`/`rsplit` accept optional `sep` and
 `maxsplit`, including keywords, `None` whitespace splitting and checked signed
 index-size bounds. Borrowed cursors preserve receiver/argument evaluation order

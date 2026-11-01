@@ -21,8 +21,8 @@ class NativeBigIntListTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def compile(self, source, release=True):
-        result = transpile(source, TranspileOptions(integer="bigint", filename="arrays.py"))
+    def compile(self, source, release=True, *, string_mode="ascii"):
+        result = transpile(source, TranspileOptions(integer="bigint", filename="arrays.py", string_mode=string_mode))
         self.assertTrue(result.success, result.diagnostics)
         self.assertEqual(result.backend, "native")
         rust = result.rust_source
@@ -50,9 +50,9 @@ class NativeBigIntListTests(unittest.TestCase):
                              expected.stderr.splitlines()[-1].split(":")[0])
         return actual
 
-    def differential(self, source, inputs=("",), profiles=(True,)):
+    def differential(self, source, inputs=("",), profiles=(True,), *, string_mode="ascii"):
         for release in profiles:
-            binary = self.compile(source, release)
+            binary = self.compile(source, release, string_mode=string_mode)
             for data in inputs:
                 with self.subTest(release=release, data=data):
                     self.compare(binary, source, data)
@@ -60,7 +60,19 @@ class NativeBigIntListTests(unittest.TestCase):
     def test_map_input_empty_unicode_invalid_and_large_values(self):
         source = "A=list(map(int,input().split()))\nprint(len(A),sum(A),sum(A,10**100))\nprint(*A)\n"
         self.differential(source, ["\n", "-1 0 7\n", f"{10**170} {-10**140}\n",
-                                   "4\u001c5\u20036\n", "1 invalid 3\n", ""], (False, True))
+                                   "4\u001c5\u20036\n", "1 invalid 3\n", ""], (False, True), string_mode="unicode")
+
+    def test_default_ascii_map_rejects_nonascii_input(self):
+        source = "A=list(map(int,input().split()))\nprint(len(A),sum(A),sum(A,10**100))\nprint(*A)\n"
+        for release in (False, True):
+            with self.subTest(release=release):
+                binary = self.compile(source, release)
+                self.compare(binary, source, "4 5 6\n")
+                actual = subprocess.run([str(binary)], input="4\u001c5\u20036\n",
+                                        capture_output=True, text=True, timeout=5,
+                                        env={"PATH": "/python-is-unavailable", "PYTHONPATH": "/unavailable"})
+                self.assertEqual((actual.returncode, actual.stdout), (1, ""))
+                self.assertIn("UnicodeDecodeError:", actual.stderr)
 
     def test_mutations_copy_repetition_sort_and_immutable_element_reads(self):
         source = '''A=[10**100,-7,8]
@@ -218,14 +230,21 @@ print(*A)
                          for _ in range(rng.randrange(0,25))) + "\n" for _ in range(45)]
         self.differential(source, data)
 
-    def test_unproved_aliases_mutation_during_iteration_and_unbound_reads_reject(self):
+    def test_shared_aliases_and_rebindings_execute_with_python_side_effects(self):
         programs = ["A=[1]\nB=A\nB.append(2)\nprint(*A)\n",
                     "A=B=[1]\nA.append(2)\n",
-                    "A=[1]\nfor a in A:\n A.append(a)\n",
-                    "A=[1]\nfor a in A:\n A[0]=2\n",
-                    "A=[1]\nfor a in A:\n A=[2]\n",
                     "A=[1]\nfor a in A:\n A,b=[2],3\n",
                     "def change(A):\n A.append(2)\nA=[1]\nchange(A)\n"]
+        for index, source in enumerate(programs):
+            with self.subTest(source=source):
+                self.differential(source, profiles=(False, True))
+                if index:
+                    self.differential(source + "print(A)\n", profiles=(False, True))
+
+    def test_unproved_live_iteration_mutations_reject(self):
+        programs = ["A=[1]\nfor a in A:\n A.append(a)\n",
+                    "A=[1]\nfor a in A:\n A[0]=2\n",
+                    "A=[1]\nfor a in A:\n A=[2]\n"]
         for source in programs:
             with self.subTest(source=source):
                 result = transpile(source, TranspileOptions(integer="bigint", filename="unproved.py"))

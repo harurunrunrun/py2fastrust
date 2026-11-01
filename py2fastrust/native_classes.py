@@ -1965,6 +1965,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_integer_word_maps import emit_call as emit_integer_words
+        words=emit_integer_words(self,node)
+        if words is not None:return words
         expanded=self.model.expanded_calls.emit(self,node)
         if expanded is not None:return expanded
         deque=self.model.deques.emit_method(self,node)
@@ -2473,6 +2476,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         model=factory(tree,filename,integer,trusted_imports,unit=unit,string_mode=string_mode)
         model.frame_selection=frame_selection
         model.run()
+        from .native_integer_word_maps import prepare as prepare_integer_words
+        prepare_integer_words(model)
         from .native_class_calls import classify,synchronous,runtime as call_runtime
         classify(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
