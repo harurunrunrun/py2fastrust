@@ -143,5 +143,7 @@ def select_frames(unit):
     if requires_frames(analysis):reasons+=("captured builtin type predicates",)
     from .native_class_extrema import requires_frames as extrema_requires_frames
     if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
+    from .native_class_divmod import requires_frames as divmod_requires_frames
+    if divmod_requires_frames(analysis):reasons+=('captured quotient/remainder builtin',)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

@@ -529,6 +529,16 @@ captured defaults without reevaluating their Python expressions. Class input
 aliases retain a bound flag, so reading an unset alias reports its Python
 name error before performing input or copying another alias.
 
+Canonical builtin `divmod(a, b)` uses the shared quotient/remainder kernel on
+frames, including saved builtin aliases, passed callables and class fields.
+Integral and boolean inputs return an integer pair in every integer mode;
+fixed-width normalization follows the same rules as `//` and `%`. Negative
+operands retain floor division and divisor-signed remainders. Binary64 pairs
+work in every integer mode, including signed zero, and fixed-width modes also
+accept mixed integral/binary64 inputs. Explicit argument effects precede binding
+and operand errors. Mixed BigInt/binary64 conversion, raw fixed-tuple identity
+and user `__divmod__`/`__rdivmod__` dispatch remain positioned boundaries.
+
 Captured builtin `pow(base, exp, mod)` calls on typed frames support integral
 arguments in every integer mode, including negative exponents with modular
 inverses, signed moduli, keyword binding and Python arithmetic/binding errors.

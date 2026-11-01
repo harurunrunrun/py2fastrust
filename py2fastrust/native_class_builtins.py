@@ -6,7 +6,7 @@ and the adapter never traverses/evaluates argument ASTs a second time.
 import ast
 from .references import BuiltinIdentity
 
-SUPPORTED=frozenset({"input","print","int","str","bool","float","len","abs","id","globals","isinstance",
+SUPPORTED=frozenset({"divmod","input","print","int","str","bool","float","len","abs","id","globals","isinstance",
                      "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","next","any","all","pow","sorted","dict","set"})
 
 
@@ -15,6 +15,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='divmod':
+        from .native_class_divmod import analyze as analyze_divmod
+        return analyze_divmod(model,plan,node,arguments,keywords,factory=cell)
     if name=='tuple':
         from .native_class_materialization import analyze_tuple
         return analyze_tuple(model,plan,node,arguments,keywords,environment,cell)
@@ -137,6 +140,9 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     if identity.name=='sorted':
         from .native_class_sorting import emit_builtin
         return emit_builtin(emitter,node,arguments,keywords,wanted)
+    if identity.name=='divmod':
+        from .native_class_divmod import emit as emit_divmod
+        return emit_divmod(emitter,node,arguments,keywords,wanted)
     if identity.name=='pow':
         from .native_class_numeric_calls import emit as emit_numeric
         return emit_numeric(emitter,node,identity,arguments,keywords,wanted)

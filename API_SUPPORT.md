@@ -38,6 +38,11 @@ These callers are not exhaustive coverage of each API's inputs or callbacks.
 Other ACL APIs still encounter required core-language and builtin gaps; bundled
 source availability is not evidence that those APIs are implemented.
 
+Builtin `divmod` supports captured integral/boolean calls in every integer mode,
+binary64 pairs in every mode, and mixed integer/binary64 calls in fixed-width
+modes. It shares quotient/remainder kernels with the arithmetic operators.
+Mixed BigInt/binary64 and custom operand special methods remain unfinished.
+
 Builtin `pow` has direct captured/frame lowering for integral three-argument
 calls, including modular inverses, signed moduli and keyword binding. Supported
 two-argument integral calls require a proved nonnegative literal exponent.
