@@ -407,6 +407,12 @@ The special functions in `math` do not always match CPython's `libm` results bit
 `Counter.fromkeys` raises `NotImplementedError`, as it does in CPython.
 `ChainMap`, `UserDict`, `UserList`, and `UserString` are not included.
 
+Canonical `sum` accepts positional or keyword `start` through direct calls,
+captured aliases and source-function arguments. Signature errors preserve the
+evaluation of every explicit argument, including eager generator construction,
+and do not consume a rejected iterable. This binding uses the same supported
+numeric and iteration protocols as positional calls.
+
 ## sys
 
 Native `sys.exit(status=None)` and site-provided `exit(code=None)` / `quit(code=None)`

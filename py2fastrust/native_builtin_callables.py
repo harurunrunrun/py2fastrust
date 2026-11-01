@@ -13,6 +13,9 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name=='sum':
+        from .native_sum_binding import error
+        return error(count,(item.name for item in keywords))
     if name in {'exit','quit'}:
         from .native_exit import binding_error as bind_exit
         return bind_exit(identity,count,[(item.name,None)for item in keywords])

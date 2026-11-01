@@ -122,6 +122,8 @@ def select_frames(unit,*,integer="i64"):
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
     from .native_exit import requires_frames as exit_requires_frames
     if exit_requires_frames(analysis):reasons+=('native process termination unwinding',)
+    from .native_sum_binding import requires_frames as sum_requires_frames
+    if sum_requires_frames(analysis):reasons+=('canonical sum binding errors',)
     nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
     reached={definition for definitions in targets.values()for definition in definitions}
     if any(unit.signature_for(nodes[definition]).variadic_positional for definition in reached):reasons+=("positional variadic argument packs",)

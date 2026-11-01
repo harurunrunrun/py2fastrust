@@ -15,6 +15,13 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='sum':
+        from .native_sum_binding import bind
+        arguments,failure=bind(arguments,keywords,Cell('int'))
+        if failure:
+            from .native_types import EMPTY
+            return cell(EMPTY)
+        keywords=[]
     if name in {'exit','quit'}:
         from .native_exit import analyze as analyze_exit
         return analyze_exit(model,plan,node,identity,arguments,keywords,factory=cell)
@@ -155,6 +162,13 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_classes import Expression
     from .native_unions import project,union_kind
     from .native_builtin_singletons import has_singleton
+    if identity.name=='sum':
+        from .native_sum_binding import bind
+        arguments,failure=bind(arguments,list(keywords.items()),Expression(emitter.literal(0),'int',0))
+        if failure:
+            from .native import _string
+            return _error(emitter,node,wanted,_string(failure)+'.to_owned()')
+        keywords={}
     if identity.name in {'exit','quit'}:
         from .native_exit import emit as emit_exit
         return emit_exit(emitter,node,identity,arguments,list(keywords.items()),wanted)
