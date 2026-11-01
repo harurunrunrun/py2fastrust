@@ -160,7 +160,8 @@ class BridgeTests(unittest.TestCase):
     def test_missing_native_feature_reasons_and_source_details_survive_transport(self):
         cases=(
             ('def f(**items):return len(items)\nprint(f(a=1))\n',{},('signature','items','packing')),
-            ('s=input()\nprint(s.replace("<img src=x>","x"))\n',{},("call 's.replace'",'receiver=str','<img src=x>')),
+            # Runtime-named imports are outside the fixed-name import contract.
+            ('module=input()\n__import__(module+"<img src=x>")\n',{},("call '__import__'",'argument 1=str','<img src=x>')),
         )
         for source,options,tokens in cases:
             with self.subTest(source=source):
@@ -170,6 +171,31 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual((diagnostic['filename'],diagnostic['code']),('main.py','E006'))
                 self.assertIn('Source:',diagnostic['message'])
                 for token in tokens:self.assertIn(token,diagnostic['message'])
+
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_text_replacement_with_markup_executes_through_the_bridge(self):
+        source='s=input()\nprint(s.replace("<img src=x>","x"))\n'
+        data='<img src=x> keep <img src=x>\n'
+        expected=subprocess.run([sys.executable,'-I','-B','-S','-c',source],
+                                input=data,text=True,capture_output=True,timeout=10)
+        self.assertEqual((expected.returncode,expected.stdout,expected.stderr),(0,'x keep x\n',''))
+        with tempfile.TemporaryDirectory(prefix='pytors-bridge-replace-')as directory:
+            for mode in ('i64','i128','bigint'):
+                result=self.assert_api_parity(source,integer=mode,license='none')
+                self.assertEqual(result['diagnostics'],[])
+                self.assertIsNotNone(result['rust_source'])
+                self.assertLess(len(result['rust_source'].encode()),512*1024)
+                path=Path(directory)/(mode+'.rs');path.write_text(result['rust_source'])
+                for release in (False,True):
+                    with self.subTest(integer=mode,release=release):
+                        binary=path.with_suffix('.release'if release else'.debug')
+                        built=subprocess.run(['rustc','--crate-name','bridge_replace','--edition=2021',
+                            *(['-O']if release else[]),str(path),'-o',str(binary)],text=True,capture_output=True,timeout=120)
+                        self.assertEqual(built.returncode,0,built.stderr)
+                        actual=subprocess.run([str(binary)],input=data,text=True,capture_output=True,timeout=10,
+                            env={**os.environ,'PATH':'/no-python-runtime','PYTHONPATH':'/unavailable'})
+                        self.assertEqual((actual.returncode,actual.stdout,actual.stderr),
+                                         (expected.returncode,expected.stdout,expected.stderr))
 
     def test_supported_native_programs_preserve_bridge_api_parity(self):
         for source,options in SUPPORTED_NATIVE_PROGRAMS:

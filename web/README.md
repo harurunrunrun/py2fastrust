@@ -74,6 +74,7 @@ build exports a Git commit and builds the converter wheel from that snapshot:
 
 ```sh
 python tools/build_web.py --output dist/web
+python tools/check_web.py --site dist/web
 ```
 
 The build rejects an incomplete wheel, hashes every package resource, and records
@@ -118,8 +119,16 @@ diagnostic/parity mismatches, and Rust build/runtime failures still fail verific
 
 In the repository's **Settings → Pages**, select **GitHub Actions** as the build
 source. Push the reviewed commits to `main` or run the **browser converter**
-workflow manually. The workflow verifies the package, UI, and real browser before
-uploading the exact build and deploying it. Pull requests run verification
-without deploying. The expected project URL is
+workflow manually. The workflow builds and initializes the packaged wheel in a dedicated `build`
+job, then uploads that exact site artifact. This initialization checks asset and
+package hashes, packaged Python syntax, resources, and the actual bridge's
+AST/symbol-table/compiler checks. It does not convert submitted examples.
+
+UI, conversion, parity, Rust, and real-browser checks run in the independent
+`verify` job. Failures remain visible and fail that job, but `deploy` depends
+only on a successful `build`. A verification failure can therefore leave the
+workflow red while the latest healthy site is published. A broken package or
+failed build still prevents publication. Pull requests build and verify without
+deploying. The expected project URL is
 `https://harurunrunrun.github.io/py2fastrust/`; publication depends on the repository
-Pages settings and a successful workflow. No site is published by a local build.
+Pages settings and successful build/deployment jobs. No site is published by a local build.
