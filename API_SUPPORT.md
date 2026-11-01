@@ -547,3 +547,18 @@ indices, Unicode text slices use cached codepoint offsets, and unused slice
 helpers are omitted. User `__index__` and `__getitem__` slice protocols and fixed
 heterogeneous-tuple slicing remain positioned capability diagnostics. Pending
 index types are deferred until the type-analysis fixed point is reached.
+
+Canonical `@classmethod` decorators use the shared typed class namespace. The
+decorator can be captured through a builtin alias or a source call only when its
+resolved value is exactly the canonical builtin. Decorator expressions execute
+before default expressions. Class and instance attribute reads create fresh
+bound method objects retaining the actual class reference and the stored source
+function; saved methods preserve that class after name rebinding. Fixed,
+positional-only, keyword-only and variadic positional signatures, callback
+passing and positional expansion use the shared native call binder. Bound method
+identity and equality follow the retained function and class identities.
+
+Arbitrary decorator replacement, stacked descriptor composition, raw class-body
+`classmethod` descriptor values, classmethod constructor overrides and mutable
+method-slot replacement remain positioned conversion errors. Inheritance,
+metaclass and descriptor metadata support is not implied by this subset.

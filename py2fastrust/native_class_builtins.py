@@ -6,7 +6,7 @@ and the adapter never traverses/evaluates argument ASTs a second time.
 import ast
 from .references import BuiltinIdentity
 
-SUPPORTED=frozenset({"ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bool","float","len","abs","id","globals","isinstance",
+SUPPORTED=frozenset({"classmethod","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bool","float","len","abs","id","globals","isinstance",
                      "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
 
 

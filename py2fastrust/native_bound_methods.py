@@ -65,6 +65,11 @@ class BoundMethods:
         code=variant(target)+'(std::rc::Rc::new(ClassBoundMethod'+str(target.definition)+'{'+fields+'}))'
         return Expression('{'+setup+code+'}',AotFunctionType.from_targets((target,)))
 
+    @staticmethod
+    def receiver_kind(target):
+        from .native_classes import InstanceType
+        return getattr(target,"_native_receiver_kind",InstanceType(target.owner))
+
     def analyze(self,plan,node,target,arguments,positional,keywords,environment,site):
         from .native_aot_callables import binding_error
         from .native_classes import Cell
@@ -75,11 +80,13 @@ class BoundMethods:
             site.errors[target]=binding_error(method,arguments,error,implicit_count=1)
             return
         site.targets[target]=binding
-        result=self.model.bind_captured(plan,node,method,[Cell('object',(target.owner,))]+positional,keywords,environment)
+        result=self.model.bind_captured(plan,node,method,[self.model.cell_for_kind(self.receiver_kind(target))]+positional,keywords,environment)
         if not self.model.namespace.contribute(site.result,result,node,force=True):self.model.contribute(site.result,result,node)
 
     def emit(self,emitter,node,target,site,positional,keywords,wanted,error):
         from .native_classes import Expression,ClassUnsupported,InstanceType,shape
+        from .native_class_descriptors import ClassMethodTarget,emit_bound
+        if isinstance(target,ClassMethodTarget):return emit_bound(self.provider,emitter,node,target,site,positional,keywords,wanted,error)
         if target in site.errors:return error(site.errors[target])
         method=self.provider.plans[target.definition]
         receiver=Expression('class_selected_method.receiver.clone()',InstanceType(target.owner))
@@ -102,6 +109,11 @@ class BoundMethods:
     def runtime_parts(self):
         declarations=[];variants=[];equals=[];identical=[]
         for target in sorted(self.used,key=lambda value:value.definition):
+            from .native_class_descriptors import ClassMethodTarget,runtime_bound
+            if isinstance(target,ClassMethodTarget):
+                declaration,variant,equal,identity=runtime_bound(target)
+                declarations.append(declaration);variants.append(variant);equals.append(equal);identical.append(identity)
+                continue
             owner=self.model.classes[target.owner]
             tag='D'+str(target.definition)
             fields='receiver:ClassHandle_'+str(owner.index)

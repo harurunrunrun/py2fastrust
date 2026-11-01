@@ -73,6 +73,7 @@ class ExpandedTarget:
     implicit: int = 0
     owner: str | None = None
     possible: bool = True
+    method: object = None
 
 
 @dataclass
@@ -199,7 +200,7 @@ class ExpandedCalls:
                     provider.bound_methods.used.add(method)
                     target = provider.plans[method.definition]
                     site.targets[method] = self._analyze_target(plan, node, target, segments,
-                        site.keywords, environment, implicit=1, owner=method.owner)
+                        site.keywords, environment, implicit=1, owner=method.owner, method=method)
                     if site.targets[method].possible:
                         self._contribute(site.result, target.result, node)
                 for identity in kind.builtins:
@@ -226,7 +227,7 @@ class ExpandedCalls:
             self._contribute(site.result, Cell("none"), node)
         return self.model.remember(plan, node, site.result)
 
-    def _analyze_target(self, caller, node, target, segments, keywords, environment, *, implicit=0, owner=None):
+    def _analyze_target(self, caller, node, target, segments, keywords, environment, *, implicit=0, owner=None, method=None):
         from .native_classes import Cell
         signature = target.signature
         supplied = dict(keywords)
@@ -243,12 +244,12 @@ class ExpandedCalls:
         for index, name in enumerate(signature.positional):
             if name in supplied and minimum > index:possible = False
             if name not in supplied and name not in defaults and maximum is not None and maximum <= index:possible = False
-        record = ExpandedTarget(target, implicit, owner, possible)
+        record = ExpandedTarget(target, implicit, owner, possible, method)
         if not possible:return record
         self.model.activate_frame(caller, node, target, environment)
         candidates = {name: [] for name in signature.parameters}
         if implicit:
-            receiver = Cell("object", (owner,))
+            receiver = self.model.cell_for_kind(self.model.callable_cells.bound_methods.receiver_kind(method))
             if signature.positional:candidates[signature.positional[0]].append(receiver)
             elif signature.variadic_positional:candidates[signature.variadic_positional].append(receiver)
         low = high = implicit
@@ -378,7 +379,9 @@ class ExpandedCalls:
             for method in callee.kind.methods:
                 record = site.targets[method]
                 code = self._emit_target(emitter, node, record, vector, element, keywords, wanted)
-                if hasattr(self.model, "module_linker"):
+                from .native_class_descriptors import ClassMethodTarget,wrap_expanded
+                if isinstance(method,ClassMethodTarget):code=wrap_expanded(provider,emitter,method,code)
+                elif hasattr(self.model, "module_linker"):
                     code = "{" + self.model.module_linker.call_context(emitter, "class_selected_method.module.clone()") + code + "}"
                 arms.append(provider.bound_methods.call_pattern(method) + "=>" + code)
             for identity in callee.kind.builtins:
@@ -464,7 +467,7 @@ class ExpandedCalls:
         for index, parameter in enumerate(signature.positional):
             kind = shape(target.arguments[parameter])
             if index < record.implicit:
-                value = Expression("class_selected_method.receiver.clone()", InstanceType(record.owner))
+                value = Expression("class_selected_method.receiver.clone()", self.model.callable_cells.bound_methods.receiver_kind(record.method))
                 arguments.append(emitter.coerce(value, kind, node));continue
             position = index - record.implicit
             present = narrow_binding(emitter, node, element, kind, f"{vector}[{position}].clone()").code
@@ -479,7 +482,7 @@ class ExpandedCalls:
             skip = max(0, len(signature.positional) - record.implicit)
             rest = f"{vector}.into_iter().skip({skip}).map(|{value}|{converted}).collect::<Vec<{emitter.rust_type(kind)}>>()"
             if record.implicit and not signature.positional:
-                receiver = emitter.coerce(Expression("class_selected_method.receiver.clone()", InstanceType(record.owner)), kind, node)
+                receiver = emitter.coerce(Expression("class_selected_method.receiver.clone()", self.model.callable_cells.bound_methods.receiver_kind(record.method)), kind, node)
                 rest = "{" + f"let mut values=vec![{receiver}];values.extend({rest});values" + "}"
             arguments.append("NativeTuple::from_vec(" + rest + ")")
         for parameter in signature.keyword_only:

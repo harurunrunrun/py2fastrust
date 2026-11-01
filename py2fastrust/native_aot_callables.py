@@ -50,7 +50,7 @@ class AotFunctionType:
     @property
     def _native_owned_kinds(self):
         from .native_classes import InstanceType
-        return tuple(InstanceType(target.owner)for target in self.methods)
+        return tuple(kind for target in self.methods for kind in getattr(target,"_native_owned_kinds",(InstanceType(target.owner),)))
 
     @classmethod
     def from_targets(cls,targets):

@@ -131,6 +131,9 @@ class ClassNamespaces:
             raise ClassUnsupported(node,f"class-body metadata reference {node.id!r} requires the compiler-initialized class namespace and its metadata lookup protocol; that protocol is not implemented",proof="class compiler metadata initialization and lookup")
         member=self.local_member(plan,node)
         if member is None:return None
+        if member.plan is not None and member.descriptor!="function":
+            from .native_classes import ClassUnsupported
+            raise ClassUnsupported(node,"reading this descriptor as a bare class-body value needs its raw descriptor-object carrier; class and instance attribute binding are supported, but storing the undecorated classmethod descriptor is not implemented",proof="raw class-body descriptor object identity")
         self.field(member,node)
         if member.plan is not None:self.observe_method(member,node)
         local=environment.get(member.name)
