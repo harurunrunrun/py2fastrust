@@ -134,6 +134,22 @@ print("before",end="|")
 a[0][-1]+=a[0].pop()
 ''',('',))
 
+    def test_deletion_bounds_use_assignment_error_with_original_frame(self):
+        self.exercise('''rows=[[1]]
+del rows[0][2]
+''',('',))
+
+    def test_deletion_checks_length_after_index_side_effects(self):
+        self.exercise('''rows=[[1,0]]
+print("before",end="|")
+del rows[0][rows[0].pop()]
+print(rows)
+''',('',))
+        self.exercise('''rows=[[4,1]]
+print("before",end="|")
+del rows[0][rows[0].pop()]
+''',('',))
+
     def test_branch_and_loop_reference_carriers(self):
         self.exercise('''a=[[1],[2]]
 if int(input()):

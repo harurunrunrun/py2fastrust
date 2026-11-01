@@ -261,7 +261,7 @@ def try_statement(g,node,environment):
             right=g.expression(node.value,environment)
             value=g.binary(node.op,_Expression(old,owner.kind.element),right,node)
             lines.append(f"let {item}={value.code};")
-    position=g.temporary();checked=_index(g,index,f"{handle}.borrow().len()",target,assignment=not isinstance(node,ast.Delete))
+    position=g.temporary();checked=_index(g,index,f"{handle}.borrow().len()",target,assignment=True)
     lines.append(f"let {position}={checked};")
     if isinstance(node,ast.Delete):lines.append(f"{handle}.borrow_mut().remove({position});")
     else:
