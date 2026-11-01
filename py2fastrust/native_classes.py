@@ -611,10 +611,12 @@ class Model:
         return self.block(plan,plan.node.body,environment)
 
     def infer_until_stable(self):
+        from .native_guard_flow import AnalysisPending
         for _ in range(96):
             before = self.snapshot()
             self.module.visible_definitions = set()
-            self.block(self.module, self.tree.body, dict(self.global_symbols))
+            try:self.block(self.module, self.tree.body, dict(self.global_symbols))
+            except AnalysisPending:pass
             for plan in self.plans[1:]:
                 if not plan.reachable:
                     continue
@@ -623,7 +625,8 @@ class Model:
                 self.lexical.seed_arguments(plan)
                 for name, value in plan.arguments.items():
                     self.canonical_local(plan, name, value)
-                remaining = self.analyze_body(plan,environment)
+                try:remaining = self.analyze_body(plan,environment)
+                except AnalysisPending:continue
                 if remaining is not None:
                     merge(plan.result, Cell("none"), plan.node)
             from .native_class_allocation_facts import publish
@@ -671,6 +674,7 @@ class Model:
                 else:
                     raise ClassUnsupported(plan.node)
         self.final = True
+        self.reached_statements=set()if hasattr(self,'type_guard_cells')else None
         self.module.visible_definitions = set()
         self.block(self.module, self.tree.body, dict(self.global_symbols))
         for plan in self.plans[1:]:
@@ -1258,6 +1262,8 @@ class Model:
         for node in statements:
             if environment is None:
                 break
+            if self.final and self.reached_statements is not None:
+                self.reached_statements.add((plan.index,id(node)))
             if isinstance(node,(ast.Import,ast.ImportFrom))and self.import_statement(plan,node,environment):
                 continue
             if isinstance(node,(ast.ClassDef,ast.FunctionDef)):
@@ -1339,7 +1345,10 @@ class Model:
                 environment=self.context_managers.analyze(plan,node,environment)
             elif isinstance(node,ast.If):
                 self.condition(plan,node.test,environment)
-                environment = self.join(self.block(plan,node.body,environment),self.block(plan,node.orelse,environment),node)
+                from .native_guard_flow import branches
+                narrowed=branches(self,plan,node.test,environment)
+                yes,no=(environment,environment)if narrowed is None else narrowed
+                environment = self.join(None if yes is None else self.block(plan,node.body,yes),None if no is None else self.block(plan,node.orelse,no),node)
             elif isinstance(node,(ast.For,ast.While)):
                 if node.orelse:
                     raise ClassUnsupported(node)
@@ -2224,7 +2233,9 @@ class Emitter:
         return self.at(setter,node)+";"
 
     def statements(self, values):
-        return "\n".join(self.statement(value)for value in values)
+        reached=getattr(self.model,'reached_statements',None)
+        return "\n".join(self.statement(value)for value in values
+                         if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
         from .native_context_managers import control_statement
@@ -2305,6 +2316,9 @@ class Emitter:
             return f"return Ok({self.coerce(value,shape(self.plan.result),node)});"
         if isinstance(node,ast.If):
             setup,test=self.capture(self.condition(node.test))
+            from .native_guard_flow import emit
+            selected=emit(self,node,setup,test)
+            if selected is not None:return selected
             return setup+f"if {self.truth(test)}{{\n{self.statements(node.body)}\n}}else{{\n{self.statements(node.orelse)}\n}}"
         if isinstance(node,ast.While):
             label=self.fresh()

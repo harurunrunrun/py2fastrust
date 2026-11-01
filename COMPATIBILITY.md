@@ -1320,3 +1320,16 @@ at one unpack level occur until that level has captured its items and passed
 the size check. Nested targets then store in Python order. The fresh remainder
 list uses its allocation's solved element representation, so later mutations
 can widen its element kind without copying or retagging the source iterable.
+
+Canonical `isinstance` guards refine finite local alternatives for builtin
+types and plain source-class identities. Saved canonical predicates/types and
+literal tuples of type names are supported; same-spelling user functions do
+not receive builtin assumptions. Guard argument/callee evaluation remains in
+source order. Analysis waits for unresolved producers before entering guarded
+arms, and unreachable arms do not contribute false call/return/storage types.
+Read-only captured bindings retain point types in their owning function while
+their closure storage keeps the complete shared ABI. Descendant rebinding,
+arbitrary classinfo expressions and global subjects retain conservative facts.
+Loop joins still retain a possible zero-trip entry, so some post-loop operations
+remain explicit capability diagnostics. Builtin `bytes` is also available as a
+type-predicate object; its constructor protocol is a separate capability.

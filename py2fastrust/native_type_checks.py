@@ -3,7 +3,7 @@ import ast
 from .references import BuiltinIdentity
 
 
-TYPE_NAMES = frozenset({'classmethod', 'int', 'bool', 'float', 'str', 'list', 'range',
+TYPE_NAMES = frozenset({'classmethod', 'int', 'bool', 'float', 'str', 'bytes', 'list', 'range',
                         'tuple', 'dict', 'set', 'map', 'zip', 'filter', 'enumerate', 'reversed'})
 
 

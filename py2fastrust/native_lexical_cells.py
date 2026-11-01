@@ -203,6 +203,9 @@ class LexicalCells:
             self.model.contribute(schema,value,node)
         self.active.add(owner.scope)
         environment[name]=schema
+        from .native_guard_flow import lexical_store
+        point=lexical_store(self.model,plan,node,value,owner.scope,name)
+        if point is not None:environment[name]=point
         environment.definite.add(name)
         self.model.canonical_local(plan,name,schema)
         self.model.remember(plan,node,schema)
@@ -213,6 +216,9 @@ class LexicalCells:
         if field is None:return None
         owner,name,schema=field
         self.active.add(owner.scope)
+        from .native_guard_flow import lexical_point
+        point=lexical_point(self.model,plan,node,environment,owner.scope,name)
+        if point is not None:return point
         return schema
 
     def snapshot(self):
@@ -300,6 +306,9 @@ class LexicalCells:
         owner=self.expression_environment(emitter,environment.scope)
         code=f'class_lexical_get_{environment.scope}_{index}(&({owner})).ok_or_else(||{_string(self.error_message(emitter,node))}.to_owned())'
         value=Expression(emitter.at(code,node),shape(schema))
+        if(emitter.plan.index,id(node))in getattr(self.model,'guarded_lexical_reads',()):
+            from .native_class_globals import narrow_binding
+            return narrow_binding(emitter,node,value.kind,wanted,value.code)
         return Expression(emitter.coerce(value,wanted,node),wanted)
 
     def emit_store(self,emitter,node,value):

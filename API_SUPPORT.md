@@ -589,3 +589,16 @@ iteration and checks arity before storing any of its targets. Scalar/default
 noniterable inputs retain the runtime unpacking TypeError, and map/zip callback
 errors retain their original source frames. Custom iterator protocols remain
 explicit unsupported diagnostics.
+
+Canonical `isinstance` guards refine finite local alternatives for builtin
+types and plain source-class identities. Saved canonical predicates/types and
+literal tuples of type names are supported; same-spelling user functions do
+not receive builtin assumptions. Guard argument/callee evaluation remains in
+source order. Analysis waits for unresolved producers before entering guarded
+arms, and unreachable arms do not contribute false call/return/storage types.
+Read-only captured bindings retain point types in their owning function while
+their closure storage keeps the complete shared ABI. Descendant rebinding,
+arbitrary classinfo expressions and global subjects retain conservative facts.
+Loop joins still retain a possible zero-trip entry, so some post-loop operations
+remain explicit capability diagnostics. Builtin `bytes` is also available as a
+type-predicate object; its constructor protocol is a separate capability.
