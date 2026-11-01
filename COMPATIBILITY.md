@@ -1421,6 +1421,18 @@ a pending break. Literal true/false while conditions omit unreachable suites
 without resolving their contents. These loops compile to typed Rust control
 flow, without a bytecode interpreter or generic execution loop.
 
+Method acquisition on finite plain-instance alternatives, including optional
+receivers and multiple source classes, uses the same native bound-method carrier
+as a single receiver. Lookup captures the original receiver once before call
+arguments. Missing attributes on `None` and other closed receiver types raise
+`AttributeError` at the attribute expression, before any arguments execute.
+Saved aliases retain method identity, receiver mutation and shared return values;
+each new attribute read creates a fresh method object. Calls retain ordinary
+signature/default binding and can pass these methods to existing typed iterator
+consumers. Mixed data/method attributes, builtin descriptor families and
+nonfunction descriptors across finite receivers remain positioned capability
+diagnostics.
+
 Direct cycles among plain source-class instances use a native trial-deletion
 collector when every field of the cyclic classes contains builtin scalar values,
 `None`, direct instance handles or finite alternatives of those kinds. Ordinary

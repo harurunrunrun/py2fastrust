@@ -272,6 +272,7 @@ class CallableCells:
             if owner is None:owner=self.model.records.get((plan.index,id(function.value)))
             if owner is None:return False
             owner=owner.root()
+            if self.bound_methods.finite_candidate(plan,function,owner):return True
             if owner.tag=="object":
                 method=self.model.classes[owner.args[0]].methods.get(self.model.resolved_name(plan,function))
                 if method is not None and method.signature.variadic_positional:

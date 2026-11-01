@@ -19,6 +19,11 @@ class BoundMethodTarget:
     def _native_kind_tag(self):return 'bound_method_'+str(self.definition)
 
 
+@dataclass
+class FiniteMethodRead:
+    targets:dict
+
+
 def is_bound_target(target):return isinstance(target,BoundMethodTarget)
 
 
@@ -35,8 +40,51 @@ class BoundMethods:
     @property
     def linked(self):return hasattr(self.model,'module_linker')
 
+    def finite_candidate(self,plan,node,receiver):
+        from .native_classes import InstanceType,shape
+        from .native_types import alternatives
+        from .native_unions import union_kind
+        kind=shape(receiver)
+        if not union_kind(kind):return False
+        name=self.model.resolved_name(plan,node)
+        return any(isinstance(part,InstanceType)and name in self.model.classes[part.name].methods
+                   for part in alternatives(kind))
+
+    def finite_value(self,plan,node,receiver):
+        from .native_classes import InstanceType,ClassUnsupported,shape,domain
+        from .native_types import alternatives,ListType,SharedListType,TupleType,TupleSequenceType
+        from .native_finite_attributes import BUILTIN_TYPES
+        if not self.finite_candidate(plan,node,receiver):return None
+        name=self.model.resolved_name(plan,node);targets={}
+        for kind in alternatives(shape(receiver)):
+            if isinstance(kind,InstanceType):
+                owner=self.model.classes[kind.name];method=owner.methods.get(name)
+                registry=getattr(self.model,'class_namespaces',None)
+                member=registry.members.get((owner.index,name))if registry is not None else None
+                if method is not None:
+                    if member is not None and member.descriptor!='function':
+                        raise ClassUnsupported(node,'method acquisition across finite receivers includes a nonfunction descriptor; per-alternative descriptor binding is not implemented',types=(('receiver',kind),),proof='finite method descriptor binding')
+                    target=BoundMethodTarget(self.provider.definition(method),kind.name)
+                    self.used.add(target);targets[kind]=target
+                elif name in owner.fields or member is not None:
+                    raise ClassUnsupported(node,'method acquisition across finite receivers includes an instance or class data attribute; preserving its stored value together with bound-method alternatives needs a mixed attribute-value adapter',types=(('receiver',kind),),proof='finite data and method attribute lookup')
+                else:targets[kind]=None
+            else:
+                if not(isinstance(kind,str)or type(kind)in{ListType,SharedListType,TupleType,TupleSequenceType}):
+                    raise ClassUnsupported(node,'method acquisition across this receiver alternative needs a registered descriptor or missing-attribute lookup adapter',types=(('receiver',kind),),proof='closed finite receiver attribute lookup')
+                builtin=BUILTIN_TYPES.get(domain(kind))
+                if builtin is None:
+                    raise ClassUnsupported(node,'method acquisition across this builtin receiver needs its attribute lookup adapter',types=(('receiver',kind),),proof='closed builtin receiver attribute lookup')
+                if hasattr(builtin,node.attr):
+                    raise ClassUnsupported(node,'method acquisition across finite receivers includes builtin attribute '+repr(node.attr)+'; that builtin descriptor adapter is not registered for this method family',types=(('receiver',kind),),proof='finite builtin method descriptor binding')
+                targets[kind]=None
+        self.sites[(plan.index,id(node))]=FiniteMethodRead(targets)
+        return self.model.remember(plan,node,self.model.cell(plan,node,'function',tuple(target for target in targets.values()if target is not None)))
+
     def value(self,plan,node,receiver,environment):
         from .native_classes import Cell,ClassUnsupported,shape
+        finite=self.finite_value(plan,node,receiver)
+        if finite is not None:return finite
         receiver=receiver.root()
         if receiver.tag!='object':
             from .native_types import alternatives
@@ -57,6 +105,26 @@ class BoundMethods:
         target=self.sites.get((emitter.plan.index,id(node)))
         if target is None:return None
         setup,receiver=emitter.capture(emitter.expression(node.value))
+        if isinstance(target,FiniteMethodRead):
+            from .native_unions import project
+            from .native_class_builtins import _type_name,_error
+            from .native import _string
+            wanted=emitter.kind(node)
+            attribute=self.model.display_name(self.model.resolved_name(emitter.plan,node))
+            def branch(kind,code):
+                selected=target.targets[kind]
+                current=Expression('('+code+').clone()',kind)
+                if selected is None:
+                    message='format!('+_string("AttributeError: '{}' object has no attribute "+repr(attribute))+','+_type_name(emitter,current,node)+')'
+                    return _error(emitter,node,wanted,message).code
+                bound=self.expression(emitter,selected,current)
+                return emitter.coerce(bound,wanted,node)
+            return Expression('{'+setup+project(receiver.kind,receiver.code,branch)+'}',wanted)
+        return self.expression(emitter,target,receiver,setup=setup)
+
+    def expression(self,emitter,target,receiver,*,setup=''):
+        from .native_aot_callables import AotFunctionType
+        from .native_classes import Expression
         fields='receiver:'+receiver.code
         if self.linked:
             context=emitter.fresh()
