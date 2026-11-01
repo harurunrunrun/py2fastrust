@@ -28,6 +28,9 @@ The original bundled `atcoder.fenwicktree.FenwickTree` constructor, `add` and
 `sum`, `atcoder.scc.SCCGraph` construction/edge insertion/components, and
 `atcoder.twosat.TwoSAT` construction/clauses/satisfiability/answers have standalone
 differential execution coverage in all integer modes.
+The unchanged bundled `atcoder.math` caller for `pow_mod`, `inv_mod`, `crt`, and
+`floor_sum` also has standalone smoke coverage in all integer modes. This does
+not establish exhaustive numerical coverage of those APIs.
 Other ACL APIs still encounter required core-language and builtin gaps; bundled
 source availability is not evidence that those APIs are implemented.
 
@@ -47,8 +50,8 @@ lowering with the payload, storage and evaluation-order limits documented in
 | `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts | `merge`, `nlargest`, `nsmallest`, custom/fallible comparisons, floating tuple identity |
 | `bisect` | `bisect`, `bisect_left`, `bisect_right`, `insort`, `insort_left`, `insort_right` with checked bounds and `key=None` | Callable keys, arbitrary sequence protocols, custom/fallible comparisons |
 
-The frame path also stores typed `iter`, `filter` and multi-source `map`
-objects, including `map(..., strict=...)`, captured callbacks, shared cursor
+The frame path also stores typed `iter`, `filter`, multi-source `map` and `zip`
+objects, including the `strict` keyword, captured callbacks, shared cursor
 aliases, and list/reduction consumers. Builtin list, fixed tuple, range, text
 and byte sources have adapters. Custom iteration protocols and cyclic ownership
 still require implementation; this does not establish complete builtin object

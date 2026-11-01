@@ -7,7 +7,7 @@ import ast
 from .references import BuiltinIdentity
 
 SUPPORTED=frozenset({"input","print","int","str","bool","float","len","abs","id","globals",
-                     "range","list","sum","min","max","map","enumerate","filter","iter","next","any","all","pow","sorted"})
+                     "range","list","sum","min","max","map","zip","enumerate","filter","iter","next","any","all","pow","sorted"})
 
 
 def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=None,call_arguments=None):
@@ -57,6 +57,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         return cell(result.root().tag)
     if name == "map" and len(arguments)>=2 and all(key=="strict"for key,_ in keywords):
         result=model.iterators.map(plan,node,arguments[0],arguments[1:])
+        return cell(result.root().tag)
+    if name == "zip" and all(key=="strict"for key,_ in keywords):
+        result=model.iterators.zip(plan,node,arguments)
         return cell(result.root().tag)
     if name == "iter" and len(arguments)==1 and not keywords:
         return cell(model.iterators.source(plan,node,arguments[0]))
@@ -135,12 +138,14 @@ def _type_name(emitter,value,node):
     if tag=="int_bool":return f'match {value.code}{{NativeScalar::Int(_)=>"int",NativeScalar::Bool(_)=>"bool"}}'
     if tag=="object":return _string(emitter.model.classes[value.kind.name].node.name)
     if tag=="globals_dict":return '"dict"'
+    if tag=="iterator"and value.kind.record.operation in {"filter","map","zip"}:
+        return _string(value.kind.record.operation)
     if tag=="function":
         from .native_aot_callables import variant
         arms=[f'{emitter.model.callable_cells.reference_pattern(definition)}=>"function"'for definition in value.kind.definitions]
         arms.extend(f'{emitter.model.callable_cells.bound_methods.reference_pattern(target)}=>"method"'for target in value.kind.methods)
         for identity in value.kind.builtins:
-            name="type"if identity.name in {"int","bool","float","str","list","range","map","enumerate"}else"builtin_function_or_method"
+            name="type"if identity.name in {"int","bool","float","str","list","range","map","zip","enumerate"}else"builtin_function_or_method"
             arms.append(f'{variant(identity)}=>{_string(name)}')
         for identity in value.kind.members:
             arms.append(f'{variant(identity)}=>"builtin_function_or_method"')
@@ -256,6 +261,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         return self.model.iterators.emit_filter(self,node,arguments[0],arguments[1],wanted)
     elif name == "map":
         return self.model.iterators.emit_map(self,node,arguments[0],arguments[1:],keywords.get("strict",Expression("false","bool",False)),wanted)
+    elif name == "zip":
+        return self.model.iterators.emit_multiple(self,node,arguments,keywords.get("strict",Expression("false","bool",False)),wanted)
     elif name == "iter":
         return self.model.iterators.construct(self,node,arguments[0],kind=wanted)
     elif name == "next":

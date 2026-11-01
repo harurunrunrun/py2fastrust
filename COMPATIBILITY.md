@@ -454,13 +454,14 @@ the same finite callable carrier and direct Rust dispatch. Imported lambda
 lifetimes, reflection and cycle collection remain
 required work.
 
-The typed frame path represents builtin `iter`, `filter` and `map` with per-site typed
-state and captured callbacks. `next`, loops, `list`, `sum`, `min`, `max`, `any`
-and `all` consume the shared cursor lazily; aliases observe the same exhaustion
-state. List iteration releases each borrow before invoking a callback. Text
-cursors advance linearly in the selected ASCII or Unicode model. These states
-contain only their proved source and callback types, with direct Rust calls;
-arbitrary user iterator protocols and general generators remain required work.
+Stored `iter`, `filter`, `map` and `zip` values on the frame path have concrete Rust
+cursor and callback payloads. Aliases share their cursor and exhaustion state;
+callbacks run only when a consumer requests an element. Builtin list, fixed
+tuple, range, text and byte sources use typed adapters, including finite source
+alternatives. Unicode text advances a byte cursor by each character's UTF-8
+length. Source borrows finish before callbacks, so source mutation and recursive
+pulls retain Python's evaluation order. These adapters do not interpret Python
+instructions.
 
 `map` accepts multiple sources and the Python 3.14 `strict` keyword. It pulls
 sources from left to right and stops at the shortest; later calls retain any
@@ -469,6 +470,15 @@ mismatches and deferred callback/signature errors retain the original source
 frames. The callback uses the same captured-value calling convention as a
 normal compiled call. The ordinary immediate integer-word parsing path remains
 available when no cursor is saved.
+
+`zip` shares the ordered multi-source cursor kernel, including zero/one/many
+sources, the `strict` keyword, aliased inputs and partial consumption before
+shorter-source termination. Its results preserve the shared handles of mutable
+elements. Finite iterator alternatives propagate deferred element requirements
+to each possible source; callbacks retain their original defining scope and
+arguments. Existing immediate sorting, set construction and unpacking consumers
+retain their ordinary direct path when no stored cursor is needed. General
+tuple-object identity and arbitrary iterator protocols remain separate work.
 
 Class values, method signatures, fields, and list elements use the shared
 scalar, `TupleType`, `ListType`, `MaybeType`, `NullableType`, and `UnionType`

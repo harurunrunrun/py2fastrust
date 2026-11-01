@@ -9,7 +9,7 @@ import ast
 from dataclasses import dataclass, field
 
 from .call_semantics import CallBindingError
-from .native_stream_plans import Normalizer, ProducerKind
+from .native_stream_plans import Normalizer, ProducerKind, ProducerPlan
 from .native_types import ListType, TupleType
 from .references import BuiltinIdentity
 
@@ -49,8 +49,21 @@ def _normalizer(model, plan, environment):
     class Context:
         def expression(self,node,values):
             return _Expression("",shape(model.expression(plan,node,values)))
-    return Normalizer(Context(),environment,
-        resolver=lambda node:model.builtin_identity(plan,node,environment))
+    def resolve(node):
+        if not isinstance(node,(ast.Name,ast.Attribute)):
+            from .references import UnknownReference
+            return UnknownReference(None,"this callable expression uses the captured-value adapter")
+        return model.builtin_identity(plan,node,environment)
+    class FrameNormalizer(Normalizer):
+        def _producer(self,node):
+            if isinstance(node,ast.Call):
+                invocation=self.invocation(node)
+                if invocation.identity in {BuiltinIdentity("iter"),BuiltinIdentity("filter"),BuiltinIdentity("map"),BuiltinIdentity("zip")}:
+                    # The shared typed call binder owns callback capture,
+                    # multiple sources and keywords for these stateful values.
+                    return ProducerPlan(ProducerKind.VALUE,node,invocation=invocation)
+            return super()._producer(node)
+    return FrameNormalizer(Context(),environment,resolver=resolve)
 
 
 def _bind(model, plan, target, item, environment, record):
@@ -156,6 +169,11 @@ def _prepare(emitter, producer):
     """Capture one iterator once; the next expression pulls exactly one item."""
     from .native_classes import ClassUnsupported, Expression, domain, shape
     node=producer.node
+    from .native_class_iterators import iterator_kind
+    if iterator_kind(emitter.kind(node)):
+        setup,source=emitter.capture(emitter.expression(node))
+        value=emitter.model.iterators.pull(emitter,node,source)
+        return _Iterator(setup,value.kind,value.code)
     if producer.kind is ProducerKind.ENUMERATE:
         binding=producer.binding.binding
         source=_prepare(emitter,producer.sources[0])
