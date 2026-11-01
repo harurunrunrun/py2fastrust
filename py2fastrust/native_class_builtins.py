@@ -15,6 +15,10 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='int':
+        from .native_integer_base import analyze as analyze_integer_base
+        explicit=analyze_integer_base(model,plan,node,arguments,keywords,factory=cell)
+        if explicit is not None:return explicit
     if name in {"format","repr","ascii"}:return cell("str")
     if name in {'ord','bin','oct','hex'}:
         from .native_character_builtins import analyze as analyze_character
@@ -142,6 +146,10 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
 def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
     from .native_classes import Expression
     from .native_unions import project,union_kind
+    if identity.name=='int':
+        from .native_integer_base import emit as emit_integer_base
+        explicit=emit_integer_base(emitter,node,arguments,keywords,wanted)
+        if explicit is not None:return explicit
     if identity.name in {'ord','bin','oct','hex'}:
         from .native_character_builtins import emit as emit_character
         return emit_character(emitter,node,identity.name,arguments,keywords,wanted)

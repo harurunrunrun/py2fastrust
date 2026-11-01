@@ -38,6 +38,15 @@ Custom integer-index protocols, unpaired surrogate string storage, and `chr`
 remain unfinished. Fixed-width input normalization still follows the chosen
 integer mode.
 
+Explicit-base `int(text, base)` and `int(text, base=...)` calls have direct
+lowering for builtin strings and bytes, including saved aliases, class fields
+and multi-source `map` callbacks. Bases 0 and 2 through 36 support signs,
+prefixes and underscores; invalid bases and literals retain Python errors.
+Fixed-width results wrap at the selected width. ASCII parsing scans bytes;
+Unicode mode uses the pinned decimal-digit and whitespace tables. Custom base
+`__index__` objects, bytearray/buffer storage and CPython conversion
+digit limits remain unfinished.
+
 Fixed-name imports now compile supported user modules, pure-Python packages and
 bundled module sources to separate typed namespaces in the same Rust file.
 Original AST, symbol-table, scope and source positions remain attached to each

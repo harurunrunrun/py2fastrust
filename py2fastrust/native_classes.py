@@ -2557,6 +2557,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(empty_runtime(model,empty_required))
     from .native_formatting import runtime as format_runtime
     pieces.append(format_runtime(model))
+    from .native_integer_base import runtime as integer_base_runtime
+    pieces.append(integer_base_runtime(model))
     from .native_class_splits import runtime as split_runtime
     pieces.append(split_runtime(model))
     from .native_class_text_ops import runtime as text_operation_runtime

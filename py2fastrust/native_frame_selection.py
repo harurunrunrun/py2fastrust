@@ -155,5 +155,7 @@ def select_frames(unit):
     if formatting_requires_frames(unit,analysis):reasons+=("typed format fields and canonical formatting calls",)
     from .native_character_builtins import requires_frames as character_requires_frames
     if character_requires_frames(analysis):reasons+=('character codes and integer radix output',)
+    from .native_integer_base import requires_frames as integer_base_requires_frames
+    if integer_base_requires_frames(analysis):reasons+=('explicit-base captured integer conversion',)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

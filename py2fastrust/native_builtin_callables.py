@@ -13,6 +13,9 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name=='int':
+        from .native_integer_base import binding_error as bind_integer_base
+        return bind_integer_base(count,(item.name for item in keywords))
     if name in {'ord','bin','oct','hex'}:
         from .native_character_builtins import binding_error as bind_character
         return bind_character(name,count,keywords)
