@@ -35,6 +35,8 @@ class Namespace:
         self.join_cells={}
         self.flow_inputs={}
         self.named_values={}
+        self.module_points={}
+        self.globals_observed=False
         self.builtin_names=frozenset(vars(builtins))|{"__debug__"}
         self.implicit_names=frozenset({"__file__","__package__","__loader__","__spec__","__doc__","__cached__","__annotations__"})
 
@@ -80,10 +82,13 @@ class Namespace:
         return True
 
     def local_value(self,plan,node,value):
-        from .native_classes import Cell
+        from .native_classes import Cell,shape
+        from .native_types import reference_cloneable
         name=self.model.resolved_name(plan,node)
         key=plan.index,name
-        if not self.is_flow(value)and key not in self.local_schemas:return value
+        kind=shape(value)
+        if not complete(kind):return value
+        if not self.is_flow(value)and key not in self.local_schemas and not reference_cloneable(kind):return value
         point=plan.index,id(node)
         result=self.local_values.setdefault(point,Cell())
         self.contribute(result,value,node,force=True)
@@ -145,15 +150,15 @@ class Namespace:
         function_binding=provider is not None and name in provider.function_bindings
         return ((name not in model.functions or function_binding)and name not in model.classes
                 and name not in model.global_symbols and name not in {"__name__","__builtins__"}|self.implicit_names
-                and (name not in self.builtin_names or name in model.global_written_names))
+                and (model.display_name(name)not in self.builtin_names or name in model.global_written_names))
 
     def owns(self,plan,node):
         name=self.model.resolved_name(plan,node)
         if not self.eligible(name):return False
         if self.model.unit is not None:
             binding=self.owners.get(self.model.unit.ordinal(node))
-            return binding is not None and binding.owner==0
-        return plan is self.model.module or name not in plan.declared
+            return binding is not None and self.model.module_owner(binding.owner)
+        return self.model.is_module_plan(plan) or name not in plan.declared
 
     def detached(self,cell):
         """Never merge an allocation or argument into a module-binding cell."""
@@ -175,7 +180,8 @@ class Namespace:
     def representation(self,kind,sources,node):
         from .native_classes import Cell,InstanceType,shape
         sources=self.flattened(sources)
-        if getattr(kind,"_native_function_reference",False):return Cell("function",kind.definitions)
+        if getattr(kind,"_native_function_reference",False):return Cell("function",kind.targets)
+        if getattr(kind,"_native_namespace_view",False):return Cell("globals_dict")
         if isinstance(kind,NullableType):
             return Cell("union",(Cell("none"),self.representation(kind.value,sources,node)))
         if isinstance(kind,UnionType):
@@ -211,18 +217,59 @@ class Namespace:
     def read(self,plan,node,environment=None):
         if not self.owns(plan,node):return None
         name=self.model.resolved_name(plan,node)
-        if plan is self.model.module and name not in self.active and (environment is None or name in environment):return None
+        if self.model.is_module_plan(plan) and name not in self.active and (environment is None or name in environment):return None
         self.active.add(name)
-        return self.refresh(name,node)
+        schema=self.refresh(name,node)
+        if self.model.unit is not None and self.model.is_module_plan(plan) and environment is not None and name in environment:
+            return environment[name]
+        return schema
+
+    def module_point(self,node,value):
+        from .native_classes import Cell
+        point=self.module_points.setdefault(id(node),Cell())
+        self.contribute(point,value,node,force=True)
+        return point
+
+    def import_event(self,plan,node,environment=None):
+        """Record canonical binding availability at the real import statement."""
+        names=set()
+        if self.model.unit is not None:
+            for child in ast.walk(node):
+                binding=self.owners.get(self.model.unit.ordinal(child))
+                if binding is not None and binding.role=="import"and self.model.module_owner(binding.owner):names.add(binding.name)
+        elif isinstance(node,ast.Import):names={item.asname or item.name.split('.')[0]for item in node.names}
+        if plan.visible_definitions is not None:plan.visible_definitions.update(names)
+        if environment is not None:environment.definite.update(names)
+
+    def call_effects(self,caller,callee,environment):
+        """Invalidate current module facts for canonical transitive writes."""
+        if not self.model.is_module_plan(caller)or self.model.unit is None:return
+        unit=self.model.unit
+        scopes={unit.scope_for(plan.node).ordinal:plan.index for plan in self.model.plans[1:]}
+        writes={}
+        for binding in unit.bindings:
+            if not self.model.module_owner(binding.owner)or binding.role in {"load","parameter","definition"}:continue
+            scope=binding.scope
+            while scope is not None and unit.scopes[scope].kind=="comprehension":scope=unit.scopes[scope].parent
+            if scope in scopes:writes.setdefault(scopes[scope],set()).add(binding.name)
+        pending=[callee.index];seen=set()
+        while pending:
+            current=pending.pop()
+            if current in seen:continue
+            seen.add(current);pending.extend(self.model.call_edges.get(current,()))
+            for name in writes.get(current,()):
+                environment[name]=self.refresh(name,callee.node)
+                environment.definite.discard(name)
 
     def assign(self,plan,node,value,environment):
         if not self.owns(plan,node):return False
         name=self.model.resolved_name(plan,node)
         site=self.model.unit.ordinal(node)if self.model.unit is not None else id(node)
         self.incoming.setdefault(name,{})[site]=value
-        if plan is self.model.module and name not in self.active:return False
+        if self.model.is_module_plan(plan) and name not in self.active:return False
         self.active.add(name)
-        environment[name]=self.refresh(name,node)
+        schema=self.refresh(name,node)
+        environment[name]=self.module_point(node,value)if self.model.unit is not None and self.model.is_module_plan(plan) else schema
         environment.definite.add(name)
         self.model.remember(plan,node,self.cells[name])
         return True
@@ -233,7 +280,7 @@ class Namespace:
             raise ClassUnsupported(node,"this delete needs attribute/item binding deletion; only canonical lexical name deletion is implemented here",proof="lexical binding ownership")
         name=self.model.resolved_name(plan,node)
         if not self.owns(plan,node):
-            if plan is self.model.module or name not in plan.declared:
+            if self.model.is_module_plan(plan) or name not in plan.declared:
                 raise ClassUnsupported(node,"this delete needs a nonlocal/free binding cell; lexical closure deletion is not implemented",proof="local/module binding ownership")
             schema=self.local_schemas.setdefault((plan.index,name),Cell())
             values=[environment[name]]if name in environment else plan.locals.get(name,[])
@@ -246,7 +293,8 @@ class Namespace:
             return
         self.active.add(name)
         self.model.remember(plan,node,self.refresh(name,node))
-        environment[name]=self.cells[name]
+        if self.model.is_module_plan(plan):environment.pop(name,None)
+        else:environment[name]=self.cells[name]
         environment.definite.discard(name)
 
     def default_uninhabited(self):
@@ -258,14 +306,14 @@ class Namespace:
         lexical=getattr(self.model,"lexical",None)
         if lexical is not None and isinstance(node,ast.FunctionDef):
             target=lexical.plans.get(self.model.unit.ordinal(node))
-            if target is not None and lexical.parents[lexical.scope(target)]!=0:return(target,)
+            if target is not None and not self.model.module_owner(lexical.parents[lexical.scope(target)]):return(target,)
         if caller.class_body is not None:
             return (caller.class_body.methods[self.model.resolved_name(caller,node)],)
-        return (self.model.functions[node.name],)
+        return (self.model.functions[self.model.definition_name(node)],)
 
     def define(self,caller,node,environment):
         if isinstance(node,ast.ClassDef):
-            body=self.model.classes[node.name].body_plan
+            body=self.model.classes[self.model.definition_name(node)].body_plan
             if body is not None:self.model.bind_call(caller,node,body,[],[],environment)
             return
         for plan in self.defined_plans(caller,node):
@@ -283,12 +331,17 @@ class Namespace:
                         if resolved not in environment:self.active.add(resolved)
                 value=self.model.expression(caller,expression,environment)
                 self.model.contribute(plan.default_cells[name],value,expression)
+        provider=getattr(self.model,"callable_cells",None)
+        key=self.model.definition_name(node)
+        if self.model.is_module_plan(caller) and provider is not None and key in provider.function_bindings:
+            environment[key]=self.module_point(node,provider.definition_cells[key])
+            environment.definite.add(key)
 
     def snapshot(self):
         from .native_classes import shape
         return (tuple((name,shape(self.cells[name]))for name in sorted(self.active)),
                 tuple((key,shape(cell))for key,cell in sorted(self.defaults.items())),
-                tuple((key,shape(cell))for key,cell in sorted(self.local_schemas.items())))
+                tuple((key,shape(cell))for key,cell in sorted(self.local_schemas.items())),self.globals_observed)
 
     def fields(self):
         from .native_classes import shape
@@ -315,10 +368,11 @@ def define(emitter,node):
     code=[]
     namespace=emitter.model.namespace
     if isinstance(node,ast.ClassDef):
-        body=emitter.model.classes[node.name].body_plan
-        if body is None:return ""
+        body=emitter.model.classes[emitter.model.definition_name(node)].body_plan
+        from .native_globals_view import store
+        if body is None:return store(emitter,node)
         from .native_class_calls import call
-        return call(emitter,f'class_function_{body.index}(class_scope.clone())',body,node)+";"
+        return call(emitter,f'class_function_{body.index}(class_scope.clone())',body,node)+";"+store(emitter,node)
     fields=sorted(namespace.defaults)
     for plan in namespace.defined_plans(emitter.plan,node):
         for name,expression in plan.defaults.items():
@@ -329,6 +383,8 @@ def define(emitter,node):
             code.append(before+f'class_scope.globals.borrow_mut().default_{index}=Some({emitter.coerce(value,shape(plan.default_cells[name]),expression)});')
     provider=getattr(emitter.model,"callable_cells",None)
     if provider is not None:code.append(provider.definition_emission(emitter,node))
+    from .native_globals_view import store
+    code.append(store(emitter,node))
     return "".join(code)
 
 
@@ -338,7 +394,8 @@ def read(emitter,node,wanted):
     name=emitter.model.resolved_name(emitter.plan,node)
     if name not in namespace.active or not namespace.owns(emitter.plan,node):return None
     index=namespace.index(name)
-    return Expression(emitter.at(f"class_global_get_{index}(&class_scope)",node),wanted)
+    loaded=emitter.at(f"class_global_get_{index}(&class_scope)",node)
+    return narrow_binding(emitter,node,dict(namespace.fields())[name],wanted,loaded)
 
 
 def local_read(emitter,node,wanted):
@@ -350,15 +407,21 @@ def local_read(emitter,node,wanted):
     stored=namespace.local_kind(emitter.plan,name)
     if stored is None:return None
     slot=emitter.slot(name,stored)
-    error="NameError"if emitter.plan is emitter.model.module else"UnboundLocalError"
-    message=(f"name '{name}' is not defined"if error=="NameError"else
-             f"cannot access local variable '{name}' where it is not associated with a value")
+    error="NameError"if emitter.model.is_module_plan(emitter.plan) else"UnboundLocalError"
+    message=(f"name '{emitter.model.display_name(name)}' is not defined"if error=="NameError"else
+             f"cannot access local variable '{emitter.model.display_name(name)}' where it is not associated with a value")
     loaded=emitter.at(f"{slot}.clone().ok_or_else(||{_string(error+': '+message)}.to_owned())",node)
+    return narrow_binding(emitter,node,stored,wanted,loaded)
+
+
+def narrow_binding(emitter,node,stored,wanted,loaded):
+    from .native_classes import Expression
+    from .native_unions import project,union_kind
     def narrow(kind,code):
         if kind==wanted:return code
         if getattr(kind,"_native_function_reference",False)and getattr(wanted,"_native_function_reference",False):
-            if set(kind.definitions)<=set(wanted.definitions):return code
-            cases="|".join(f"ClassFunctionRef::F{definition}"for definition in wanted.definitions)
+            if set(kind.targets)<=set(wanted.targets):return code
+            cases="|".join(emitter.model.callable_cells.target_pattern(target)for target in wanted.targets)
             return f'match {code}{{value@({cases})=>value,_=>unreachable!("local callable contradicts solved control flow")}}'
         if union_kind(kind):
             return project(kind,code,lambda branch,value:narrow(branch,f"({value}).clone()"))
@@ -395,27 +458,46 @@ def delete(emitter,node):
     if not namespace.owns(emitter.plan,node):
         stored=namespace.local_kind(emitter.plan,name)
         slot=emitter.slot(name,stored)
-        message=_string(f"UnboundLocalError: cannot access local variable '{name}' where it is not associated with a value")
+        message=_string(f"UnboundLocalError: cannot access local variable '{emitter.model.display_name(name)}' where it is not associated with a value")
         code=f'if {slot}.take().is_none(){{Err({message}.to_owned())}}else{{Ok(())}}'
         return emitter.at(code,node)+";"
     index=namespace.index(name)
-    message=_string(f"NameError: name '{name}' is not defined")
+    message=_string(f"NameError: name '{emitter.model.display_name(name)}' is not defined")
     code=f'if class_scope.globals.borrow_mut().value_{index}.take().is_none(){{Err({message}.to_owned())}}else{{Ok(())}}'
-    return emitter.at(code,node)+";"
+    from .native_globals_view import store
+    return emitter.at(code,node)+";"+store(emitter,node,present=False)
 
 
 def runtime(source,model,emitter):
     from .native import _string
     fields=model.namespace.fields()
     defaults=model.namespace.default_fields()
-    if not fields and not defaults:return source
+    observed=model.namespace.globals_observed
+    if not fields and not defaults and not observed:return source
     members=",".join(f"{prefix}_{index}:Option<{emitter.rust_type(kind)}>"for prefix,items in (("value",fields),("default",defaults))for index,(_,kind)in enumerate(items))
     initialized=",".join(f"{prefix}_{index}:None"for prefix,items in (("value",fields),("default",defaults))for index in range(len(items)))
+    if observed:
+        from .native_globals_view import names
+        all_names,initial=names(model.namespace)
+        members+=(","if members else"")+f"present:[bool;{len(all_names)}]"
+        initialized+=(","if initialized else"")+"present:["+','.join(str(name in initial).lower()for name in all_names)+"]"
     declaration=f"struct ClassGlobals{{{members}}}\n"
+    from .native_globals_view import runtime as globals_runtime
+    declaration+=globals_runtime(model.namespace)
     for index,(name,kind)in enumerate(fields):
-        error=_string(f"NameError: name '{name}' is not defined")
-        declaration+=(f"fn class_global_get_{index}(scope:&ClassScope)->Result<{emitter.rust_type(kind)},String>{{"
-                      f"scope.globals.borrow().value_{index}.clone().ok_or_else(||{error}.to_owned())}}\n")
+        error=_string(f"NameError: name '{model.display_name(name)}' is not defined")
+        if name in model.callable_cells.fallback_names:
+            from .native_classes import Expression,shape
+            from .native_aot_callables import variant
+            custom=getattr(model.namespace,"fallback_runtime",lambda *_:None)(emitter,name,kind)
+            if custom is not None:loaded=custom
+            else:
+                builtin=model.callable_cells.builtin_cells[name]
+                from .references import BuiltinIdentity
+                fallback=emitter.coerce(Expression(variant(BuiltinIdentity(model.callable_cells.spelling(name))),shape(builtin)),kind,model.module.node)
+                loaded=f"Ok(scope.globals.borrow().value_{index}.clone().unwrap_or_else(||{fallback}))"
+        else:loaded=f"scope.globals.borrow().value_{index}.clone().ok_or_else(||{error}.to_owned())"
+        declaration+=(f"fn class_global_get_{index}(scope:&ClassScope)->Result<{emitter.rust_type(kind)},String>{{{loaded}}}\n")
     for index,(_,kind)in enumerate(defaults):
         declaration+=(f"fn class_default_get_{index}(scope:&ClassScope)->{emitter.rust_type(kind)}{{"
                       f'scope.globals.borrow().default_{index}.clone().expect("definition-time default must be initialized")}}\n')

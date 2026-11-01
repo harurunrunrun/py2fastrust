@@ -87,12 +87,21 @@ print(lower(a,2),lower([],5))
 '''
         self.compare(source)
 
-    def test_module_shadowing_and_unproved_writes_are_not_substituted(self):
+    def test_module_precedence_and_unproved_writes_are_not_substituted(self):
         with tempfile.TemporaryDirectory(prefix="pytors-native-module-")as directory:
             root=Path(directory)
             (root/"math.py").write_text("def isqrt(n):return 123\n")
-            result=transpile("import math\nprint(math.isqrt(9))\n",TranspileOptions(module_paths=(root,)))
-            self.assertFalse(result.success)
+            from py2fastrust.module_catalog import TARGET_BUILTIN_MODULES
+            from py2fastrust.frontend import build_program
+            source="import math\nprint(math.isqrt(9))\n"
+            program=build_program(source,str(root/'main.py'),(root,))
+            if 'math'in TARGET_BUILTIN_MODULES:
+                self.assertEqual(program.module('math').origin,'builtin')
+                from test_builtin_module_precedence import compare_native_files
+                compare_native_files(self,{'main.py':source,'math.py':"def isqrt(n):return 123\n"})
+            else:
+                self.assertEqual(program.module('math').origin,'user')
+                self.assertNotIn('math',program.native_imports)
         for source in ["import math\nmath.gcd=lambda a,b:7\nprint(math.gcd(1,2))\n"]:
             for mode in ("i64","i128","bigint"):
                 result=transpile(source,TranspileOptions(integer=mode))

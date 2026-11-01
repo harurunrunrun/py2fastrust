@@ -182,7 +182,6 @@ print(accumulate(int(input()),int(input()),int(input())))
 
     def test_unsupported_callable_protocols_have_positioned_diagnostics(self):
         programs = [
-            "offset=3\ndef f(x): return x+offset\nprint(f(2))",
             "def f(x): return x\nprint(f.__defaults__)",
             "def f(x): return x\nprint(f())",
             "def f(x): return x\nprint(f(1,2))",
@@ -214,6 +213,10 @@ print(accumulate(int(input()),int(input()),int(input())))
         result = transpile(source, TranspileOptions())
         self.assertTrue(result.success)
         self.assertEqual(result.backend, "native")
+
+    def test_readonly_module_data_is_available_to_the_called_function(self):
+        source="offset=3\ndef f(x): return x+offset\nprint(f(2))"
+        self.differential(source,modes=("i64","i128","bigint"))
 
     def test_call_before_later_definition_preserves_name_error_frames(self):
         source="def first(x): return later(x)\nprint(first(1))\ndef later(x): return x"

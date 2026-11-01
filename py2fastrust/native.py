@@ -1043,10 +1043,8 @@ class _Generator:
             if name == "int" and len(node.args) == 1:
                 argument = node.args[0]
                 if isinstance(argument, ast.Call) and isinstance(argument.func, ast.Name) and argument.func.id == "input" and not argument.args and not argument.keywords:
-                    from .native_integer_parsing import enable
-                    enable(self)
-                    self.has_input = True
-                    return _Expression(self.at("native_input.integer(&mut native_output)", argument), "int")
+                    from .native_integer_parsing import parse_input
+                    return parse_input(self,argument,node)
                 value = self.expression(argument, environment)
                 return _Expression(self.number(value), "int", value.constant)
             if name == "abs" and len(node.args) == 1:
@@ -1125,6 +1123,9 @@ class _Generator:
         raise _Unsupported
 
     def binary(self, operator, left, right, node):
+        from .native_primitive_ops import emit_plain
+        finite=emit_plain(self,operator,left,right,node)
+        if finite is not None:return finite
         from .native_list_operations import binary
         sequence=binary(self,operator,left,right,node)
         if sequence is not None:return sequence
@@ -1360,6 +1361,9 @@ class _Generator:
         return finish_loop(self,node,entry,header,context,body,remaining,nonempty,may_repeat,zero)
 
     def statement(self, node, environment):
+        from .native_annotations import try_statement as annotation_statement
+        annotated=annotation_statement(self,node,environment)
+        if annotated is not None:return annotated
         from .native_nested_lists import try_statement as shared_statement
         shared=shared_statement(self,node,environment)
         if shared is not None:return shared
@@ -1829,12 +1833,11 @@ def _function_plans(tree, table, bits, generator_type=_Generator, unit=None):
             raise _Unsupported("decorator calls can replace the function object at definition time; native decorated-callable storage is not implemented",node=node.decorator_list[0],operation=f"decorator of function {node.name!r}")
         if node.type_params:
             raise _Unsupported("generic type-parameter objects and lazy bound/default evaluation are not implemented for native functions",node=node,operation=f"generic function definition {node.name!r}")
-        if node.returns is not None or any(argument.annotation is not None for argument in arguments):
-            raise _Unsupported("lazy function-annotation objects and their namespace evaluation are not implemented on this native function path",node=node,operation=f"annotations of function {node.name!r}")
         for parameter,label in ((parameters.vararg,"positional"),(parameters.kwarg,"keyword")):
             if parameter is not None:
                 raise _Unsupported(f"variadic {label} arguments require packing and binding {'a tuple'if label=='positional'else'a dictionary'} for {parameter.arg!r}; that native call-frame storage is not implemented",node=parameter,operation=f"signature of function {node.name!r}")
-        suspended=next((value for value in ast.walk(node)if isinstance(value,(ast.Yield,ast.YieldFrom,ast.Await,ast.AsyncFor,ast.AsyncWith))),None)
+        from .native_annotations import executable_nodes
+        suspended=next((value for value in executable_nodes(node)if isinstance(value,(ast.Yield,ast.YieldFrom,ast.Await,ast.AsyncFor,ast.AsyncWith))),None)
         if suspended is not None:
             raise _Unsupported("this suspension requires a resumable native generator/coroutine frame; function suspension is not implemented on this path",node=suspended)
 
@@ -1936,7 +1939,8 @@ class _Specializations:
                 value = value.value
             return isinstance(value, ast.Name) and value.id in names
 
-        for value in ast.walk(node):
+        from .native_annotations import executable_nodes
+        for value in executable_nodes(node):
             if isinstance(value, (ast.Name, ast.Subscript, ast.Attribute)):
                 if isinstance(value.ctx, (ast.Store, ast.Del)) and rooted(value):
                     raise _Unsupported("this function argument borrows its caller's container for reads, but the function writes or deletes through that argument; shared mutable argument storage and alias-preserving call effects are not implemented on this ordinary-function path",node=value,proof="mutable function-argument identity and caller-visible effects")
@@ -2093,7 +2097,8 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         tree, table = unit.tree, unit.table
         # Legacy spelling-based calls need a namespace proof. Canonical call
         # families resolve the actual binding at each source position.
-        for node in ast.walk(tree):
+        from .native_annotations import executable_nodes
+        for node in executable_nodes(tree):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in ScalarGenerator.BUILTINS-{"input"}-CANONICAL_REBINDABLES:
                 raise _Unsupported(f"rebinding builtin name {node.id!r} invalidates existing static callable identities; native rebinding/versioning for this builtin is not implemented",node=node,operation=f"assignment to builtin {node.id!r}",proof="callable identity after rebinding")
         bits = 64 if integer == "i64" else 128
@@ -2107,7 +2112,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
                             constructors.setdefault(name, _DequeConstructor(name))
         statements, wrapper = _main_wrapper(tree)
         functions = {} if wrapper else _function_plans(tree, table, bits, ScalarGenerator, unit=unit)
-        function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node, ast.Name) and node.id == "input" for node in ast.walk(tree)))
+        function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node, ast.Name) and node.id == "input" for node in executable_nodes(tree)))
         specializations = _Specializations(bits, functions, constructors, function_input, ScalarGenerator,
                                           string_mode=string_mode)
         specializations.trusted_imports = trusted_imports

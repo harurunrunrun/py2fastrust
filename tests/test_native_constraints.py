@@ -78,7 +78,7 @@ class ConstraintModelTests(unittest.TestCase):
         source='print(1)\nfor i in range(2):print(i)\n'
         unit=build_program(source,"failure.py").main
         for mode in ("i64","i128","bigint"):
-            with patch('py2fastrust.native_constraints.analyze',side_effect=ConstraintFailure(unit.tree.body[1])):
+            with patch('py2fastrust.native_frame_selection.analyze',side_effect=ConstraintFailure(unit.tree.body[1])):
                 result=transpile(source,TranspileOptions(integer=mode,filename="failure.py"))
             self.assertFalse(result.success)
             self.assertIsNone(result.rust_source)

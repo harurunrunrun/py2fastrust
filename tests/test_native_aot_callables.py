@@ -408,16 +408,17 @@ def final_error(stderr):
 
 @unittest.skipUnless(shutil.which("rustc"),"rustc is required")
 class NativeCallableCellTests(unittest.TestCase):
+    cases=CASES
     setUpClass=classmethod(helpers.NativeLambdaCallbackTests.setUpClass.__func__)
     tearDownClass=classmethod(helpers.NativeLambdaCallbackTests.tearDownClass.__func__)
 
     def exercise(self,name,*,prune=True):
-        source,inputs=CASES[name]
+        source,inputs=self.cases[name]
         # Capture CP outcomes before the converter sees this ordinary source.
         expected=[subprocess.run([sys.executable,"-I","-S","-c",source],input=data,
                   text=True,capture_output=True,timeout=15)for data in inputs]
         for mode in ("i64","i128","bigint"):
-            result=transpile(source,TranspileOptions(integer=mode,optimize=prune,filename="callables.py"))
+            result=transpile(source,TranspileOptions(integer=mode,optimize=prune,filename=getattr(self,"filename","callables.py")))
             self.assertTrue(result.success,result.diagnostics)
             self.assertEqual(result.backend,"native")
             if prune:self.assertLess(len(result.rust_source.encode()),512*1024)
@@ -523,19 +524,11 @@ class NativeCallableCellTests(unittest.TestCase):
         for name in ("effectful_receiver_callable_field","function_reference_list_pop_dispatch"):
             self.exercise(name)
 
-    def test_builtin_capture_is_an_explicit_required_boundary(self):
-        source,_=CASES["conditional_source_definition_builtin"]
-        for mode in ("i64","i128","bigint"):
-            result=transpile(source,TranspileOptions(integer=mode,filename="callables.py"))
-            self.assertFalse(result.success)
-            self.assertTrue(any("builtin"in str(diagnostic)and"definition"in str(diagnostic)for diagnostic in result.diagnostics),result.diagnostics)
+    def test_builtin_capture_preserves_pre_definition_identity(self):
+        self.exercise("conditional_source_definition_builtin")
 
-    def test_ambiguous_integer_identity_is_an_explicit_required_boundary(self):
-        source,_=CASES["definition_mixed_with_integer"]
-        for mode in ("i64","i128","bigint"):
-            result=transpile(source,TranspileOptions(integer=mode,filename="callables.py"))
-            self.assertFalse(result.success)
-            self.assertTrue(any("comparison 'is'"in str(diagnostic)for diagnostic in result.diagnostics),result.diagnostics)
+    def test_module_point_types_distinguish_function_from_integer_identity(self):
+        self.exercise("definition_mixed_with_integer")
 
     def test_reference_cloneability_does_not_imply_object_immutability(self):
         from py2fastrust.native_aot_callables import AotFunctionType

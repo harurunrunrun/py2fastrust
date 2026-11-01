@@ -36,12 +36,14 @@ def _may_call_source(emitter,node):
 
 def candidates(emitter,node):
     from .native_classes import domain
+    if isinstance(node,ast.For)and(emitter.model.iterators.may_call(emitter.kind(node.iter))or emitter.model.iterators.effects(emitter.plan,node)):return {}
     roots=[node.test,*node.body]if isinstance(node,ast.While)else[node.target,*node.body]
     nodes=[child for root in roots for child in ast.walk(root)]
     if any(isinstance(child,(ast.Lambda,ast.ListComp,ast.SetComp,ast.DictComp,ast.GeneratorExp,ast.FunctionDef,ast.ClassDef))for child in nodes):return {}
     if any(isinstance(child,ast.Attribute)and isinstance(child.ctx,(ast.Store,ast.Del))for child in nodes):return {}
     for child in nodes:
         if not isinstance(child,ast.Call):continue
+        if emitter.model.iterators.effects(emitter.plan,child):return {}
         if _may_call_source(emitter,child):return {}
         function=child.func
         if isinstance(function,ast.Name):

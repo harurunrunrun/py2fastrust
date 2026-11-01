@@ -13,6 +13,18 @@ def enable(generator):
         generator.has_fixed_parsing = True
 
 
+def parse_input(generator,input_node,conversion_node):
+    """Read once, then parse once, retaining the two original error locations."""
+    from .native import _Expression
+    enable(generator)
+    generator.has_input=generator.has_tuples=True
+    name=generator.temporary()
+    read=generator.at('native_input.line(&mut native_output)',input_node)
+    parsed=f'native_parse_integer({name})'if generator.bits else f'Int::parse({name},10)'
+    parsed+='.map_err(|_|format!("ValueError: invalid literal for int() with base 10: {:.200}",native_tuple_repr_str('+name+')))'
+    return _Expression('{let '+name+'='+read+';'+generator.at(parsed,conversion_node)+'}','int')
+
+
 def parse_value(generator, value, node):
     """Choose one descriptive operand projection; the caller proved int identity."""
     if not generator.bits:

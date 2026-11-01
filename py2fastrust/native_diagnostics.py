@@ -28,7 +28,7 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
     if isinstance(kind, str):
         return {"none": "None", "int_bool": "int | bool", "list_int": "list[int]",
                 "matrix_int": "list[list[int]]", "dict_int": "dict[int, int]",
-                "set_int": "set[int]", "deque_int": "collections.deque[int]"}.get(kind, kind)
+                "set_int": "set[int]", "deque_int": "collections.deque[int]"}.get(kind, getattr(kind,"display_name",kind))
     seen = _seen | {id(kind)}
     def nested(value):
         return kind_name(value, seen, _depth + 1)
@@ -59,9 +59,19 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
     if name == "EmptyType":
         return "unresolved container element"
     if name == "InstanceType":
-        return kind.name
+        return nested(kind.name)
+    if name == "ModuleType":return "module"
+    if name == "ClassReferenceType":return "type"
     if getattr(kind,"_native_function_reference",False):
+        builtins=getattr(kind,"builtins",())
+        if builtins:
+            names=", ".join(value.name for value in builtins[:6])+("..."if len(builtins)>6 else"")
+            return ("function | "if getattr(kind,"definitions",())else"")+"builtin "+names
+        members=getattr(kind,"members",())
+        if members:return ("function | "if getattr(kind,"definitions",())else"")+", ".join(value.module+"."+value.name for value in members[:6])
         return "function"
+    if getattr(kind,"_native_namespace_view",False):
+        return "module globals dictionary"
     # The class planner still has readonly Cell views alongside canonical kinds.
     # Follow parent pointers without changing its union-find state.
     if name == "Cell":
@@ -80,7 +90,7 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
             return fields(args, " | ")
         if tag == "object":
             instance = args[0]
-            return instance if isinstance(instance, str) else getattr(
+            return nested(instance) if isinstance(instance, str) else getattr(
                 getattr(instance, "node", None), "name", getattr(instance, "name", "class instance"))
         return kind_name(tag, seen, _depth + 1)
     return "unresolved " + name
@@ -312,7 +322,7 @@ def _reason(error, node, kinds):
     if isinstance(node,ast.Raise):
         return "native Python-exception object construction or re-raising state is not implemented for this raise"
     if isinstance(node,ast.Assert):
-        return "native AssertionError construction and conditional exception routing are not implemented for this assertion"
+        return "this assertion needs a truth, message-representation or exception protocol without a compatible implementation for the resolved operands"
     if isinstance(node, ast.ImportFrom):
         return "the imported names do not have a compatible direct Rust module/member adapter on the selected path"
     if isinstance(node, ast.Import):

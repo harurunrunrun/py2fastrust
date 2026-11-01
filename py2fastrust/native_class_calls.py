@@ -39,11 +39,11 @@ def call(emitter,invocation,callee,node):
     mode=synchronous(emitter.model,callee)
     if mode:
         return (f"class_sync_call(&class_scope,||{invocation},"
-                f"{node.lineno},{_string(emitter.plan.scope)})?")
+                f"{node.lineno},{emitter.location_code()})?")
     if synchronous(emitter.model,emitter.plan):
         raise RuntimeError("a synchronous native function has an unrecorded asynchronous callee")
     return (f"class_call(class_scope.clone(),{invocation},"
-            f"{node.lineno},{_string(emitter.plan.scope)}).await?")
+            f"{node.lineno},{emitter.location_code()}).await?")
 
 
 def runtime(source,model):

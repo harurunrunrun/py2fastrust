@@ -300,8 +300,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             if name in {"int","bool"} and len(node.args) == 1:
                 argument = node.args[0]
                 if name == "int" and isinstance(argument,ast.Call) and isinstance(argument.func,ast.Name) and argument.func.id == "input" and not argument.args and not argument.keywords:
-                    self.has_input = True
-                    return _Expression(self.at("native_input.integer(&mut native_output)",argument),"int")
+                    from .native_integer_parsing import parse_input
+                    return parse_input(self,argument,node)
                 if name == "int" and isinstance(argument,ast.Constant) and type(argument.value) is str:
                     return _Expression(self.at(f"Int::parse({_string(argument.value)},10)",node),"int")
                 value = self.expression(argument,environment)
@@ -325,6 +325,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         raise _Unsupported
 
     def binary(self, operator, left, right, node):
+        from .native_primitive_ops import emit_plain
+        finite=emit_plain(self,operator,left,right,node)
+        if finite is not None:return finite
         text = self.text_binary(operator, left, right, node)
         if text is not None:
             return text
@@ -381,6 +384,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         return super().finish_loop(node,entry,header,context,body,remaining,nonempty,may_repeat,zero)
 
     def statement(self, node, environment):
+        from .native_annotations import try_statement as annotation_statement
+        annotated=annotation_statement(self,node,environment)
+        if annotated is not None:return annotated
         from .native_nested_lists import try_statement as shared_statement
         shared=shared_statement(self,node,environment)
         if shared is not None:return shared
@@ -445,6 +451,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None,trusted_imports=frozenset(),unit=None,
                         string_mode="ascii",type_analysis=None):
     """Return a complete direct-Rust program only after a full scalar proof."""
+    from .native_annotations import executable_nodes
     from .frontend import build_program, native_namespace_diagnostic
     from .diagnostics import CompilationError
     try:
@@ -465,11 +472,11 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     trusted_imports = unit.native_imports
     try:
         tree, table = unit.tree, unit.table
-        for node in ast.walk(tree):
+        for node in executable_nodes(tree):
             if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store) and node.id in BigIntGenerator.BUILTINS-{"input"}-CANONICAL_REBINDABLES:
                 raise _Unsupported
         functions = _function_plans(tree,table,0,BigIntGenerator,unit=unit)
-        function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node,ast.Name) and node.id == "input" for node in ast.walk(tree)))
+        function_input = bool(functions) and ("sys" in trusted_imports or any(isinstance(node,ast.Name) and node.id == "input" for node in executable_nodes(tree)))
         specializations = _Specializations(0,functions,{},function_input,BigIntGenerator,string_mode=string_mode)
         specializations.trusted_imports=trusted_imports
         specializations.source_unit=unit

@@ -13,10 +13,32 @@ def integer_from_float(g, value, node):
         operation = f'Int::from_f64({value.code})'
     return _Expression(g.at(operation, node), 'int')
 
+UNARY_BUILTINS=frozenset({"int","bool","abs","str","len"})
+
+
+def unary_capability(identity,kind):
+    """The operand representations implemented by this scalar adapter."""
+    if not isinstance(identity,BuiltinIdentity):return False
+    name=identity.name
+    if name=="bool":
+        from .native_types import (EmptyType,TupleType,TupleSequenceType,ListType,DequeType,
+                                   UnionType,NullableType,alternatives)
+        if isinstance(kind,(UnionType,NullableType)):
+            return all(unary_capability(identity,part)for part in alternatives(kind))
+        return(isinstance(kind,(EmptyType,TupleType,TupleSequenceType,ListType,DequeType))
+               or getattr(kind,"_key_container",False)
+               or kind in {"int","bool","int_bool","float","str","bytes","none",
+                           "list_int","dict_int","set_int","matrix_int","deque_int"})
+    if name=="int":return kind in {"int","bool","int_bool","float","str","bytes"}
+    if name=="abs":return kind in {"int","bool","int_bool"}
+    if name=="str":return kind in {"int","bool","int_bool","str"}
+    if name=="len":return kind in {"str","bytes","list_int","matrix_int","dict_int","set_int","deque_int"}
+    return False
 
 def unary(g, identity, value, node):
     if not isinstance(identity, BuiltinIdentity):
         return None
+    if not unary_capability(identity,value.kind):raise _Unsupported
     name=identity.name
     if name == "bool":
         return _Expression(g.truth(value),"bool")
@@ -59,7 +81,7 @@ def try_expression(g,node,environment):
     if not isinstance(node,ast.Call):return None
     from .references import callable_reference
     identity=callable_reference(g,node.func,environment)
-    if not isinstance(identity,BuiltinIdentity) or identity.name not in {"int","bool","abs","str","len"}:
+    if not isinstance(identity,BuiltinIdentity) or identity.name not in UNARY_BUILTINS:
         return None
     if isinstance(node.func,ast.Name) and node.func.id==identity.name:
         return None

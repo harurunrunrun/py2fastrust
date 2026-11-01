@@ -174,21 +174,18 @@ print(json.dumps({"success":result.success,"parses":parse.call_count,"forbidden"
         self.assertEqual(len(program.main.imports),2)
         self.assertNotIn("__future__",program.native_imports)
 
-    def test_local_module_shadowing_never_grants_native_trust(self):
+    def test_builtin_sys_precedes_sources_and_keeps_dependents_trusted(self):
         with tempfile.TemporaryDirectory(prefix="pytors-frontend-shadow-")as directory:
             root=Path(directory)
             (root/"sys.py").write_text("value=9\n")
             program=build_program("import sys\n",str(root/"main.py"),(root,))
-            self.assertEqual(program.module("sys").origin,"user")
-            self.assertNotIn("sys",program.native_imports)
-            result=transpile("import sys\nread=sys.stdin.readline\nprint(read())\n",TranspileOptions(filename=str(root/"main.py"),module_paths=(root,)))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,"E006")
-            # A standard module depending on a shadowed module is also unsafe
-            # to replace with a builtin helper that skips those user effects.
+            self.assertEqual(program.module("sys").origin,"builtin")
+            self.assertIn("sys",program.native_imports)
+            from test_builtin_module_precedence import compare_native_files
+            compare_native_files(self,{'main.py':"import sys\nread=sys.stdin.readline\nprint(read())\n",'sys.py':"value=9\n"},'hello\n')
             dependent=build_program("from collections import deque\n",str(root/"main.py"),(root,))
             self.assertEqual(dependent.module("collections").origin,"vendored")
-            self.assertNotIn("collections",dependent.native_imports)
+            self.assertIn("collections",dependent.native_imports)
 
     def test_recursive_packages_relative_imports_and_cycles(self):
         with tempfile.TemporaryDirectory(prefix="pytors-frontend-package-")as directory:

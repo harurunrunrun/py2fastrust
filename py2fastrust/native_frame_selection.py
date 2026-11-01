@@ -81,7 +81,23 @@ def _semantic_requirements(unit,analysis,targets):
                  and execution_scope(slot.definition_scope)in reached
                  for definition,signature in signatures if definition not in inline
                  for slot in signature.defaults)
-    return (('module binding writes',)if writes else())+(('definition-time defaults',)if defaults else())
+    # Ordinary specialization retains only static callable/module references.
+    # A reached source function reading actual module data needs the already
+    # implemented typed namespace frame, including read-only data cells.
+    bindings={binding.node:binding for binding in unit.bindings}
+    stored={binding.name for binding in unit.bindings if binding.owner==0 and binding.role in {'store','delete'}}
+    reads=False
+    for (definition,kinds),facts in analysis.scopes.items():
+        if definition is None or definition not in reached_definitions:continue
+        for site,value in facts.values.items():
+            binding=bindings.get(site)
+            if binding is None or binding.role!='load'or binding.owner!=0 or binding.name not in stored:continue
+            if value.unknown or value.unbound or not value.alternatives or any(
+                    not isinstance(part,FunctionValue)and not getattr(part,'_native_reference',False)
+                    for part in value.alternatives):
+                reads=True;break
+        if reads:break
+    return (('module binding writes',)if writes else())+(('definition-time defaults',)if defaults else())+(('module data binding reads',)if reads else())
 
 
 def select_frames(unit):
@@ -110,5 +126,9 @@ def select_frames(unit):
     if requires_instances(unit,analysis,targets):reasons+=("escaping lambda instances",)
     from .native_aot_callables import requires_cells
     if requires_cells(unit,analysis,references):reasons+=("first-class AOT function references",)
+    from .native_class_capabilities import shared_tuple_storage
+    if shared_tuple_storage(analysis):reasons+=("shared mutable tuple storage",)
+    from .native_class_iterators import requires_state
+    if requires_state(unit,analysis):reasons+=("stored lazy builtin iterators",)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

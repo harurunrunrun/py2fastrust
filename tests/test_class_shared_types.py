@@ -259,19 +259,26 @@ print(n in box.values)
                 self.assertFalse(result.success)
                 self.assertEqual(result.diagnostics[0].code,"E006")
 
-    def test_uncertain_mutable_handle_join_is_explicit(self):
-        # Allocation-flow solver integration is required before nullable handles.
-        from py2fastrust import transpile
+    def test_nullable_mutable_handle_results_preserve_aliases(self):
         source='''class Box:
  def choose(self,flag):
   if flag:return [1]
   return None
 print(Box().choose(True))
 '''
-        with patch("py2fastrust.codegen.generate",side_effect=AssertionError("fallback")):
-            result=transpile(source)
-        self.assertFalse(result.success)
-        self.assertEqual(result.diagnostics[0].code,"E006")
+        self.compare(source)
+        self.compare('''class Box:
+ def __init__(self):self.values=[1]
+ def choose(self,flag):
+  if flag:return self.values
+  return None
+box=Box()
+a=box.choose(True)
+b=box.choose(False)
+print(a,b,a is box.values,b is None)
+box.values.append(2)
+print(a,box.values)
+''')
 
 
 if __name__=="__main__":unittest.main()

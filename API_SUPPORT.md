@@ -17,6 +17,25 @@ the named methods described in
 `sys.stdin`/`sys.stdin.buffer` `read`/`readline`, including statically captured
 reader aliases and local imports. This does not establish direct coverage of
 the other `sys` APIs listed in the retained inventory below.
+Linked module references also adapt `sys.setrecursionlimit` and
+`sys.getrecursionlimit`, including saved references. Replacing the standard
+stream objects requires an unimplemented stream-object protocol and is rejected.
+
+The direct linker bundles fixed-name user modules, packages and automatically
+resolved `atcoder` source modules while retaining each original AST and scope.
+An imported API compiles only when its own operations have direct lowering.
+The original bundled `atcoder.fenwicktree.FenwickTree` constructor, `add` and
+`sum`, `atcoder.scc.SCCGraph` construction/edge insertion/components, and
+`atcoder.twosat.TwoSAT` construction/clauses/satisfiability/answers have standalone
+differential execution coverage in all integer modes.
+Other ACL APIs still encounter required core-language and builtin gaps; bundled
+source availability is not evidence that those APIs are implemented.
+
+Builtin `pow` has direct captured/frame lowering for integral three-argument
+calls, including modular inverses, signed moduli and keyword binding. Supported
+two-argument integral calls require a proved nonnegative literal exponent.
+Dynamic/negative two-argument and floating/complex power protocols remain
+unfinished; see [COMPATIBILITY.md](COMPATIBILITY.md).
 
 Resolved integer calls to `math.gcd`, `lcm`, `isqrt`, `factorial`, `comb`, and
 `perm` also have direct helpers. The following list APIs have direct typed

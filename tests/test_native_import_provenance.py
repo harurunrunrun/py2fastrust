@@ -12,16 +12,17 @@ class NativeImportProvenanceTests(unittest.TestCase):
         compiler.compile("import sys\nimport math\n")
         self.assertEqual(compiler.native_imports, {"__future__", "sys", "math"})
 
-    def test_local_module_shadows_standard_module_without_native_trust(self):
+    def test_real_builtin_priority_and_ordinary_source_provenance(self):
         with tempfile.TemporaryDirectory(prefix="pytors-native-import-") as directory:
             root = Path(directory)
             (root / "sys.py").write_text("value=7\n")
             (root / "collections.py").write_text("value=8\n")
             compiler = Compiler(str(root / "main.py"), (root,), ())
             compiler.compile("import sys\nimport collections\n")
-            self.assertNotIn("sys", compiler.native_imports)
+            self.assertIn("sys", compiler.native_imports)
             self.assertNotIn("collections", compiler.native_imports)
-            self.assertTrue({"sys", "collections"} <= set(compiler.module_ids))
+            self.assertNotIn("sys",compiler.module_ids)
+            self.assertIn("collections",compiler.module_ids)
 
     def test_vendored_module_provenance_is_still_recorded(self):
         compiler = Compiler("main.py", (), ())

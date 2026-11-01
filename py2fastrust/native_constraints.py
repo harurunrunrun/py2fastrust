@@ -50,6 +50,11 @@ class ShapeConstraint:
 
 @dataclass(frozen=True)
 class Allocation:
+    """A MAY-alias heap-site summary, never proof of one runtime object.
+
+    Repeated executions of one lexical allocation can denote distinct Python
+    objects. Consumers must preserve runtime identity and incoming references.
+    """
     site: tuple
     category: str
 
@@ -230,6 +235,14 @@ class SemanticGraph:
     def statement(self,node):
         site=self.site(node)
         if isinstance(node,ast.Assign):return Operation(site,"assign",(self.expression(node.value),),data=tuple(self.target(target) for target in node.targets))
+        if isinstance(node,ast.AnnAssign):
+            if node.value is not None:return Operation(site,"assign",(self.expression(node.value),),data=(self.target(node.target),))
+            from .native_annotations import target_inputs
+            return Operation(site,"expression_group",tuple(self.expression(expression)for expression in target_inputs(node.target)))
+        if isinstance(node,ast.Assert):
+            terms=(self.expression(node.test),)
+            if node.msg is not None:terms+=(self.expression(node.msg),)
+            return Operation(site,"assert",terms)
         if isinstance(node,ast.AugAssign):return Operation(site,"augment",(self.expression(node.target),self.expression(node.value)),data=(self.target(node.target),type(node.op).__name__))
         if isinstance(node,ast.Delete):return Operation(site,"delete",data=tuple(self.target(target)for target in node.targets))
         if isinstance(node,ast.Expr):return Operation(site,"expression",(self.expression(node.value),))
@@ -323,12 +336,17 @@ class Solver:
         self.resets={}
         self.calls={}
         self.shared_references=set()
+        self.allocation_contexts={}
+        self.incoming_sources={}
 
     def constrain(self,variable,item):
         self.variables[variable]=self.variables.get(variable,BOTTOM).join(item)
 
+    def allocation_context(self,context):
+        return self.allocation_contexts.get(context,context)
+
     def allocation(self,site,category,context):
-        key=(context,site)
+        key=(self.allocation_context(context),site)
         result=Allocation(key,category)
         self.allocations[key]=result
         return result
@@ -404,11 +422,31 @@ class Solver:
             return first
         return self.compute("binary:"+operator,(first,second))
 
+    def incoming_allocations(self,context):
+        """Reachable caller storage, including children inserted during a call."""
+        pending=list(self.incoming_sources.get(context,()))
+        seen=set();allocations=set()
+        while pending:
+            item=pending.pop()
+            for part in self.provenance(item).alternatives:
+                if id(part)in seen:continue
+                seen.add(id(part))
+                if isinstance(part,Allocation):
+                    allocations.add(part)
+                    fields=("element",)if part.category in {"list","tuple_sequence","deque"}else("key",)if part.category=="set"else("key","value")
+                    pending.extend(self.field(part,name)for name in fields)
+                elif isinstance(part,TupleValue):pending.extend(part.fields)
+                elif isinstance(part,IteratorValue):pending.append(part.item)
+                elif isinstance(part,FunctionValue):pending.extend(item for _,item in part.defaults)
+                elif isinstance(part,MethodValue):pending.append(part.receiver)
+        return allocations
+
     def record_mutation(self,receiver,context):
         """Preserve caller-owned list identity across a proved mutable call."""
         if context is None or context[0]is None:return
+        incoming=self.incoming_allocations(context)
         for part in self.provenance(receiver).alternatives:
-            if isinstance(part,Allocation)and part.category=="list"and part.site[0]!=context:
+            if isinstance(part,Allocation)and part.category=="list"and(part in incoming or part.site[0]!=self.allocation_context(context)):
                 self.shared_references.add(part)
 
     def store_index(self,receiver,index,item,context=None):
@@ -539,7 +577,7 @@ class Solver:
         return result
 
     def call(self,identity,args,keywords,term,state,globals,locals,context):
-        if isinstance(identity,FunctionValue):return self.function(identity,args,keywords,state if context[0] is None else globals)
+        if isinstance(identity,FunctionValue):return self.function(identity,args,keywords,state if context[0] is None else globals,context,term.site)
         if isinstance(identity,DequeConstructor):
             result=value(self.allocation(term.site,"deque",context))
             if args:self.insert(result,"element",self.field_values(args[0],"iteration"))
@@ -665,7 +703,7 @@ class Solver:
             return result
         return UNKNOWN
 
-    def function(self,identity,args,keywords,globals):
+    def function(self,identity,args,keywords,globals,caller_context=None,call_site=None):
         definition=self.graph.functions[identity.definition]
         try:bound=definition.signature.bind(args,keywords,dict(identity.defaults))
         except CallBindingError:return UNKNOWN
@@ -675,17 +713,28 @@ class Solver:
         # needs object provenance: same-typed calls may read/write distinct
         # allocations and may return a reference to their particular argument.
         identities=tuple(self.provenance(item)for item in bound.values)
-        context=(definition.site,kinds,global_key,identities)
+        # Heap sites use the lexical invocation path, never the argument
+        # allocation graph. A loop can feed a fresh result into the same call
+        # without recursively embedding all earlier arguments in new heap IDs.
+        parent=self.allocation_context(caller_context)
+        path=parent[2]if parent is not None and len(parent)==3 else()
+        allocation_context=(definition.site,kinds,path+((definition.site,call_site),))
+        # Provenance still distinguishes summaries that return/mutate actual
+        # caller references; site abstraction denotes MAY alias, not identity.
+        context=(definition.site,kinds,global_key,identities,allocation_context)
         if context in self.cache:return self.cache[context]
         if definition.site in self.active or len(self.active)>=128:return UNKNOWN
+        self.allocation_contexts[context]=allocation_context
+        self.incoming_sources[context]=tuple(bound.values)+tuple(globals.values())
         self.active.add(definition.site);self.contexts[context]=(definition.site,kinds)
         state=dict(zip(bound.parameters,bound.values))
         flow=self.block(definition.body,state,globals,definition.signature.local_names,context)
         result=flow.returns.join(value("none")) if flow.normal is not None else flow.returns
         # A returned caller reference outlives this function frame. New local
         # allocations can still move out as uniquely owned vectors.
+        incoming=self.incoming_allocations(context)
         self.shared_references.update(part for part in self.provenance(result).alternatives
-            if isinstance(part,Allocation)and part.category=="list"and part.site[0]!=context)
+            if isinstance(part,Allocation)and part.category=="list"and(part in incoming or part.site[0]!=self.allocation_context(context)))
         self.active.remove(definition.site);self.cache[context]=result
         return result
 
@@ -702,6 +751,7 @@ class Solver:
                     if target[0]=="index":
                         receiver=evaluate(target[1]);index=evaluate(target[2])
                         self.store_index(receiver,index,item,context)
+                    elif target[0]=="attribute":evaluate(target[1])
                     else:self.assign(target,item,state)
             elif op=="augment":
                 target,operator=operation.data
@@ -719,6 +769,13 @@ class Solver:
                     self.record_mutation(first,context)
                     self.assign(target,self.augmented(first,second,operator),state)
             elif op=="expression":evaluate(args[0])
+            elif op=="expression_group":
+                for term in args:evaluate(term)
+            elif op=="assert":
+                evaluate(args[0])
+                from .native_assertions import literal_truth
+                if len(args)>1 and literal_truth(self.graph.nodes[operation.site].test)is not True:
+                    self.expression(args[1],state.copy(),globals,locals,context)
             elif op=="delete":
                 def delete(target):
                     if target[0]=='name':state[target[1]]=MISSING
@@ -915,7 +972,7 @@ class Solver:
             if layout!=kind:storage.setdefault(key(context),{})[site]=layout
             if site not in target:target[site]=kind
             elif target[site] is not None:target[site]=None if kind is None else join_types(target[site],kind)
-            if any(isinstance(part,Allocation) and part.site==(context,site) for part in item.alternatives):
+            if any(isinstance(part,Allocation) and part.site==(self.allocation_context(context),site) for part in item.alternatives):
                 allocations.setdefault(key(context),{})[site]=target[site]
         for (context,site),state in self.headers.items():
             target=headers.setdefault(key(context),{}).setdefault(site,{})

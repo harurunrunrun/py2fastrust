@@ -252,20 +252,13 @@ class NativeClassGlobalTests(unittest.TestCase):
                 self.assertTrue(result.success,result.diagnostics)
                 self.assertNotIn("ClassGlobals",result.rust_source)
 
-    def test_rebound_builtin_call_has_a_concrete_boundary(self):
+    def test_rebound_builtin_call_raises_the_python_type_error(self):
         source="len=3\nclass Box:\n def read(self):return len([1])\nprint(Box().read())\n"
-        result=transpile(source)
-        self.assertFalse(result.success)
-        self.assertIn("module-owned writes",result.diagnostics[0].message)
-        self.assertIn("callable identity",result.diagnostics[0].message)
+        self.exercise(source)
 
-    def test_finite_arithmetic_alternatives_name_the_missing_proof(self):
+    def test_finite_arithmetic_alternatives_raise_the_python_type_error(self):
         source="VALUE=3\nclass Box:\n def read(self):return VALUE+1\nVALUE='text'\nprint(Box().read())\n"
-        result=transpile(source)
-        self.assertFalse(result.success)
-        self.assertIn("per-alternative",result.diagnostics[0].message)
-        self.assertIn("int",result.diagnostics[0].message)
-        self.assertIn("str",result.diagnostics[0].message)
+        self.exercise(source)
 
     def test_implicit_namespace_values_never_become_phantom_name_errors(self):
         result=transpile("class Box:\n def read(self):return __file__\nprint(Box().read())\n")

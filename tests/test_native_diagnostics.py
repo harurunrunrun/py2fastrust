@@ -35,8 +35,6 @@ class NativeDiagnosticTests(unittest.TestCase):
         sources=(
             ('def f(*items):return sum(items)\nprint(f(1))\n',('signature','items','packing','tuple')),
             ('def f(**items):return 1\nprint(f(a=1))\n',('signature','items','packing','dictionary')),
-            ('def outer(x):\n def inner():return x\n return inner\nf=outer(3)\nprint(f())\n',('nested function','inner','closure','lifetime')),
-            ('def outer(x):\n def inner():return x\n return inner\nprint(outer(3)())\n',("call 'outer(3)'",'computed callee','callable-object/closure')),
         )
         for mode in ('i64','i128','bigint'):
             for source,tokens in sources:
@@ -83,6 +81,10 @@ class NativeDiagnosticTests(unittest.TestCase):
         source='values=[1]\nalias=values\nalias.append(2)\nprint(values)\n'
         self.positive(source)
         self.positive('n=int(input())\nx=[1] if n else None\nprint(x)\n',('0\n','1\n'))
+
+    def test_original_returned_and_computed_closure_sources_are_positive(self):
+        self.positive('def outer(x):\n def inner():return x\n return inner\nf=outer(3)\nprint(f())\n')
+        self.positive('def outer(x):\n def inner():return x\n return inner\nprint(outer(3)())\n')
 
     def test_definition_time_defaults_are_positive(self):
         self.positive('def f(x=[]):return len(x)\nprint(f())\n')

@@ -79,7 +79,7 @@ def _member(owner,name):
 
 def resolve_static_callable(node,environment,*,local_names=(),global_environment=None,
                             global_bound_names=None,name_for=None,private_owner=None,
-                            function_scope=False,core_builtins=None):
+                            function_scope=False,core_builtins=None,builtin_spelling=None):
     """Return a static identity, or an explicit unbound/unknown result.
 
     A function's global_bound_names is a complete presence mask, including
@@ -109,7 +109,8 @@ def resolve_static_callable(node,environment,*,local_names=(),global_environment
                 return UnknownReference(name,"global name is shadowed by a non-static binding")
             if function_scope and global_bound_names is None:
                 return UnknownReference(name,"global namespace presence is unproved")
-            if name in allowed and name in _BUILTINS:return _BUILTINS[name]
+            spelling=name if builtin_spelling is None else builtin_spelling(name)
+            if spelling in allowed and spelling in _BUILTINS:return _BUILTINS[spelling]
             return UnboundReference(name,False)
         if isinstance(value,ast.Attribute):
             owner=resolve(value.value)

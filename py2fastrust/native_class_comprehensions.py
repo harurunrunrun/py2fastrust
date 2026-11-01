@@ -123,7 +123,7 @@ def analyze(model, plan, node, environment):
                 raise ClassUnsupported(clause.source.expression,str(error),proof="typed comprehension iterable")from None
             value=model.expression(plan,source.node,inside)
         sources.append(source)
-        _bind(model,plan,clause.target,model.item(value,source.node),inside,record)
+        _bind(model,plan,clause.target,model.iterators.demand(plan,source.node,value,inside),inside,record)
         for condition in clause.filters:model.condition(plan,condition,inside)
     record.sources=tuple(sources)
     result=model.cell(plan,node,"list",(Cell(),))
@@ -181,6 +181,9 @@ def _prepare(emitter, producer):
         return _Iterator(source.setup,"int",code)
     setup,source=emitter.capture(emitter.expression(node))
     tag=domain(source.kind)
+    if tag=="iterator":
+        value=emitter.model.iterators.pull(emitter,node,source)
+        return _Iterator(setup,value.kind,value.code)
     if tag=="list":
         index,current=emitter.fresh(),emitter.fresh()
         setup+=f"let mut {index}=0_usize;"

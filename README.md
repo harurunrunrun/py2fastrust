@@ -109,12 +109,27 @@ captured `read`/`readline` aliases and local imports inside ordinary functions.
 Text and byte reads retain their different newline, EOF, whitespace, and
 integer-parsing rules. Both use the same buffered input stream.
 
-General fixed-name imports, pure-Python packages, and `--include-module` remain
-required work for direct Rust generation. Their existing internal runtime code
-is retained, but the public API does not select it. `--module-path` and
-`--include-module` remain recognized options; an unimplemented direct import or
-explicit module bundle produces a diagnostic instead of being ignored.
+Fixed-name imports bundle user modules and pure-Python packages into the single
+Rust file when their operations have direct lowering. Original ASTs and scopes
+stay separate. Imports initialize namespaces at their original execution point,
+cache partial modules during circular imports, and preserve aliases, shared
+values, and functions' defining namespaces. This includes function-local and
+relative imports; generated programs do not read Python files at runtime.
+Bundled `atcoder` modules are resolved automatically, without installing a host
+Python package. Their algorithms still require supported language operations;
+this is not a claim that every AtCoder Library module already compiles.
+
+`--include-module` remains a recognized but unsupported option: runtime
+`compile`/`eval`/`exec` and their access to prebundled modules still require
+implementation. Requests receive a diagnostic even when ordinary static imports
+are present. Unsupported operations in imported modules also produce positioned
+diagnostics; the retained internal interpreter is never selected.
 The input file's directory remains the default module search path.
+Actual builtin modules take precedence over that path. Their catalog is the
+intersection of supported module adapters with `sys.builtin_module_names` from
+the CPython 3.14 build running the converter, including Pyodide. Other standard
+modules keep normal path precedence, so user files and regular packages can
+shadow them.
 
 ## Python API
 

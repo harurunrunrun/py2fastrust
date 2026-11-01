@@ -14,7 +14,7 @@ from .ir import Code, Instruction, Parameters, Pattern, Program
 from .native_leaf import prove_native_leaf
 
 
-from .module_catalog import BUILTIN_MODULES, VENDORED_MODULES
+from .module_catalog import BUILTIN_MODULES, TARGET_BUILTIN_MODULES, VENDORED_MODULES
 
 FUTURE_ANNOTATIONS = __future__.annotations.compiler_flag
 FUTURE_MASK = sum(getattr(__future__, name).compiler_flag for name in __future__.all_feature_names) & ~0x10
@@ -236,6 +236,9 @@ class Compiler:
 
     def load_module(self, name, node, filename):
         if not name or name in self.module_ids:
+            return
+        if name in TARGET_BUILTIN_MODULES:
+            self.native_imports.add(name)
             return
         path = self.find_module(name)
         vendored = False

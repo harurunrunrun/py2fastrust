@@ -19,7 +19,7 @@ from types import MappingProxyType
 
 from .diagnostics import CompilationError, Diagnostic
 from .source_locations import SourceLocation
-from .module_catalog import BUILTIN_MODULES, VENDORED_MODULES, VENDORED_PACKAGES
+from .module_catalog import BUILTIN_MODULES, TARGET_BUILTIN_MODULES, VENDORED_MODULES, VENDORED_PACKAGES
 
 
 _FUTURE_MASK = sum(getattr(__future__, name).compiler_flag for name in __future__.all_feature_names) & ~0x10
@@ -264,6 +264,7 @@ def _source_metadata(tree, scopes, *, future_annotations=False):
             return enclosing_owner(scopes[scope].parent,name)
         return scope
     private_owner = [None]
+    namespace_annotations={}
     def bind(name, role, scope, ordinal, namespace=None):
         name = private_name(name, private_owner[0])
         pending_bindings.append((name,role,scope,ordinal,namespace))
@@ -292,6 +293,14 @@ def _source_metadata(tree, scopes, *, future_annotations=False):
         definitions[id(node)] = result
         if parent>=official_count:
             scopes[result]=replace(scopes[result],parent=parent)
+        return result
+    def variable_annotation_scope(node,parent):
+        # CPython shares one deferred annotation scope for the simple variable
+        # annotations in a module/class namespace, located at the first one.
+        if parent not in namespace_annotations:
+            namespace_annotations[parent]=child_scope(node,parent,"__annotate__","annotation")
+        result=namespace_annotations[parent]
+        definitions[id(node)]=result
         return result
     def inline_scope(node,parent):
         targets={private_name(value.id,private_owner[0]):None
@@ -383,7 +392,8 @@ def _source_metadata(tree, scopes, *, future_annotations=False):
         if isinstance(node,ast.AnnAssign):
             visit(node.target,scope)
             inactive=future_annotations or not node.simple or scopes[scope].kind=="function"
-            visit(node.annotation,scope,syntax_only=inactive)
+            annotations_scope=scope if inactive else variable_annotation_scope(node,scope)
+            visit(node.annotation,annotations_scope,syntax_only=inactive)
             if node.value is not None:visit(node.value,scope)
             return
         if isinstance(node,(ast.ListComp,ast.SetComp,ast.DictComp)):
@@ -523,7 +533,9 @@ class _Resolver:
         if name in self.modules:return self.modules[name]
         if parent and not parent.package and not (parent.origin == "builtin" and name in BUILTIN_MODULES):
             self.fail(name, unit, node)
-        module = self.find(name)
+        # BuiltinImporter precedes PathFinder. Only actual builtin modules in
+        # this target build bypass source paths; ordinary stdlib names do not.
+        module = Module(name,"builtin",None,name=="string")if name in TARGET_BUILTIN_MODULES else self.find(name)
         if module is None:
             if parent and parent.origin != "builtin":self.fail(name, unit, node)
             if name in VENDORED_MODULES:module = Module(name, "vendored", f"<pytors-stdlib>/{name}.py", False,(),("stdlib",name+".py"))

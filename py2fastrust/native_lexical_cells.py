@@ -58,8 +58,8 @@ class LexicalCells:
         self.unit=model.unit
         self.bindings={binding.node:binding for binding in model.iter_bindings()}
         self.plans={}
-        self.scope_plans={0:model.module}
-        self.parents={0:None}
+        self.scope_plans={self.scope(plan):plan for plan in model.plans if model.is_module_plan(plan)}
+        self.parents={scope:None for scope in self.scope_plans}
         self.definitions={}
         self.environments={}
         self.definition_cells={}
@@ -71,7 +71,13 @@ class LexicalCells:
 
     def definition(self,plan):return self.unit.ordinal(plan.node)
 
-    def scope(self,plan):return 0 if plan is self.model.module else self.unit.scope_for(plan.node).ordinal
+    def scope(self,plan):
+        if self.model.is_module_plan(plan):
+            return self.unit.module_roots[plan.module_name]if hasattr(self.unit,"module_roots")else 0
+        return self.unit.scope_for(plan.node).ordinal
+
+    def iter_nodes(self):
+        return self.model.iter_nodes()
 
     def execution_scope(self,scope):
         while scope is not None and self.unit.scopes[scope].kind=='comprehension':scope=self.unit.scopes[scope].parent
@@ -86,7 +92,9 @@ class LexicalCells:
             self.plans[self.definition(plan)]=plan
             self.scope_plans[self.scope(plan)]=plan
             binding=self.bindings[self.definition(plan)]
-            self.parents[self.scope(plan)]=0 if self.unit.scopes[binding.owner].kind=="class"else binding.owner
+            owner=binding.owner
+            while self.unit.scopes[owner].kind=="class":owner=self.unit.scopes[owner].parent
+            self.parents[self.scope(plan)]=owner
         nodes={self.unit.ordinal(node):node for node in self.model.iter_nodes()}
         ast_parents={id(child):parent for parent in self.model.iter_nodes()for child in ast.iter_child_nodes(parent)}
         pending=[(ordinal,node)for ordinal,node in nodes.items()
@@ -116,9 +124,10 @@ class LexicalCells:
             if isinstance(plan.node,ast.Lambda):continue
             binding=self.bindings[definition]
             owner=binding.owner
-            if self.unit.scopes[owner].kind=='class':owner=0
+            if self.unit.scopes[owner].kind=='class':
+                while not self.model.module_owner(owner):owner=self.unit.scopes[owner].parent
             self.parents[self.scope(plan)]=owner
-            if owner==0:continue
+            if self.model.module_owner(owner):continue
             key=owner,binding.name
             if key in self.definitions:
                 raise ClassUnsupported(plan.node,'repeated definitions of one lexical callable binding require per-definition version/default cells',proof='lexical function definition versions')
@@ -141,7 +150,7 @@ class LexicalCells:
             while parent is not None and self.unit.scopes[parent].kind=="comprehension":parent=self.parents[parent]
             name=getattr(plan.node,'name','<lambda>')
             if plan.owner is not None:result=plan.owner.node.name+'.'+name
-            elif parent:result=qualify(self.scope_plans[parent])+'.<locals>.'+name
+            elif parent is not None and not self.model.module_owner(parent):result=qualify(self.scope_plans[parent])+'.<locals>.'+name
             else:result=name
             plan.qualified_name=result
             return result
@@ -150,7 +159,7 @@ class LexicalCells:
             key=binding.owner,binding.name
             if key in self.definitions and binding.role not in {'load','definition'}:
                 self.boundary_writes.add(key)
-            if binding.owner==0 or self.unit.scopes[binding.owner].kind not in {'function','comprehension'}:continue
+            if self.model.module_owner(binding.owner)or self.unit.scopes[binding.owner].kind not in {'function','comprehension'}:continue
             if binding.owner not in self.scope_plans:continue
             if self.execution_scope(binding.scope)==binding.owner or key in self.definitions:continue
             environment=self.environment(binding.owner)
@@ -159,15 +168,16 @@ class LexicalCells:
         # typed parent pointer. There is one pointer per lexical nesting edge.
         for environment in list(self.environments.values()):
             parent=environment.parent
-            while parent not in {0,None}:
+            while parent is not None and not self.model.module_owner(parent):
                 self.environment(parent)
                 parent=self.environment(parent).parent
 
     def environment(self,scope):
         if scope not in self.environments:
             plan=self.scope_plans[scope]
-            parent=self.parents.get(scope,0)
+            parent=self.parents.get(scope)
             if isinstance(plan.node,ast.Lambda)and self.scope(plan)==scope:parent=self.model.lambda_cells.capture_parent(plan,parent)
+            if parent is not None and self.model.module_owner(parent):parent=None
             self.environments[scope]=EnvironmentShape(scope,plan,parent)
         return self.environments[scope]
 
@@ -187,7 +197,10 @@ class LexicalCells:
         field=self.field_for(node)
         if field is None:return False
         owner,name,schema=field
-        self.model.namespace.contribute(schema,value,node,force=True)
+        if not self.model.namespace.contribute(schema,value,node,force=True):
+            # An empty captured container already has an allocation layout;
+            # body effects must still be able to infer its element storage.
+            self.model.contribute(schema,value,node)
         self.active.add(owner.scope)
         environment[name]=schema
         environment.definite.add(name)
@@ -209,7 +222,7 @@ class LexicalCells:
 
     def define(self,plan,node,environment):
         nested=self.plans.get(self.unit.ordinal(node))if isinstance(node,ast.FunctionDef)else None
-        if nested is None or self.parents[self.scope(nested)]==0:return False
+        if nested is None or self.model.module_owner(self.parents[self.scope(nested)]):return False
         binding=self.binding(node)
         if binding.owner!=self.scope(plan):return False
         if self.definition(nested)in self.repeated_definitions:
@@ -236,7 +249,8 @@ class LexicalCells:
         if shape is None:return
         for name,value in plan.arguments.items():
             if name in shape.fields:
-                self.model.namespace.contribute(shape.fields[name],value,plan.node,force=True)
+                if not self.model.namespace.contribute(shape.fields[name],value,plan.node,force=True):
+                    self.model.contribute(shape.fields[name],value,plan.node)
 
     def default_uninhabited(self):
         for environment in self.environments.values():
@@ -245,8 +259,9 @@ class LexicalCells:
                 if cell.root().tag is None:cell.root().tag='int'
 
     def parent_scope(self,plan):
-        parent=self.parents.get(self.scope(plan),0)
-        return self.model.lambda_cells.capture_parent(plan,parent)if isinstance(plan.node,ast.Lambda)else parent
+        parent=self.parents.get(self.scope(plan))
+        if isinstance(plan.node,ast.Lambda):parent=self.model.lambda_cells.capture_parent(plan,parent)
+        return None if parent is not None and self.model.module_owner(parent)else parent
 
     def expression_environment(self,emitter,scope):
         overrides=getattr(emitter,"comprehension_environments",{})
@@ -385,13 +400,15 @@ class LexicalCells:
         from .native_classes import ClassUnsupported,InstanceType,shape
         from .native_types import ListType,TupleType,NullableType,MaybeType,UnionType
         def targets(kind):
-            if getattr(kind,'_native_function_reference',False):
+            if getattr(kind,'_native_class_iterator',False):yield('iterator',kind.index)
+            elif getattr(kind,'_native_function_reference',False):
                 for definition in kind.definitions:
                     target=self.plans[definition]
                     if isinstance(target.node,ast.Lambda):yield("lambda",definition)
                     else:
                         parent=self.parent_scope(target)
                         if parent:yield("environment",parent)
+                for owned in getattr(kind,'_native_owned_kinds',()):yield from targets(owned)
             elif isinstance(kind,InstanceType):yield('object',kind.name)
             elif isinstance(kind,(NullableType,MaybeType)):yield from targets(kind.value)
             elif isinstance(kind,ListType):yield from targets(kind.element)
@@ -410,6 +427,7 @@ class LexicalCells:
         for name,owner in self.model.classes.items():
             edges[('object',name)]={target for field in owner.fields.values()for target in targets(shape(field.cell))}
         self.model.lambda_cells.add_lifetime_edges(edges,targets)
+        self.model.iterators.add_lifetime_edges(edges,targets)
         done=set();visiting=set()
         def visit(node):
             if node in visiting:

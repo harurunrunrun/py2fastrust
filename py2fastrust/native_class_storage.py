@@ -40,25 +40,53 @@ def check_merge(left,right,node):
         raise ClassUnsupported(node,"this storage flow would create a recursive list/tuple element layout; recursive shared values need a recursive typed representation and cycle-aware memory management, which this native class path does not implement",proof="finite nested storage layout and cycle-aware lifetime")
 
 
-def validate(cell,node,integer,*,field_value=False,seen=frozenset()):
+def validate(cell,node,integer,*,field_value=False,seen=frozenset(),model=None):
     from .native_classes import ClassUnsupported,Model
+    from .native_types import EmptyType
     cell=cell.root()
+    if isinstance(cell.tag,EmptyType):return
+    if getattr(cell.tag,"_native_class_iterator",False):
+        registry=getattr(model,"iterators",None)
+        if registry is None or not registry.owns(cell.tag):
+            raise ClassUnsupported(node,"this iterator value is not owned by the current typed iterator registry; its payload and lifetime edges have no matching family proof",proof="registered typed iterator payload and ownership graph")
+        return
+    if getattr(cell.tag,"_native_stored_reference",False):return
     if id(cell)in seen:
         raise ClassUnsupported(node,"recursive nested element storage needs cycle-aware layout/lifetime management, which is not implemented",proof="finite nested storage layout")
     if cell.tag is None or cell.tag not in Model.DATA:
         raise ClassUnsupported(node,"the class frame's field/result kind has no resolved native stored-value representation; storage for this value or escaping stream/callable has not been implemented",types=(("value",cell),),proof="resolved stored class-frame value")
-    if cell.tag=="object"and field_value:
-        raise ClassUnsupported(node,"an instance-reference field needs alias-preserving object handles and lifetime/cycle management; that field representation is not implemented on this class path",types=(("field",cell),),proof="object-field identity and lifetime")
+    # Instance leaves are already ClassHandle Rc values. Model.run validates
+    # the complete instance/list ownership graph before checking these fields;
+    # nested handles are cloned, never recursively copied into their parents.
     seen=seen|{id(cell)}
     if cell.tag=="list":
-        validate(cell.args[0],node,integer,seen=seen)
+        validate(cell.args[0],node,integer,seen=seen,model=model)
     elif cell.tag in {"tuple","union"}:
-        for value in cell.args:validate(value,node,integer,field_value=field_value,seen=seen)
+        for value in cell.args:validate(value,node,integer,field_value=field_value,seen=seen,model=model)
 
 
 def validate_instance_graph(model):
     """Rc storage admits acyclic instance ownership, without claiming a GC."""
-    from .native_classes import ClassUnsupported
+    from .native_classes import ClassUnsupported,InstanceType,shape
+    from .native_types import MaybeType,TupleSequenceType,DequeType
+    def owned_instances(kind,seen):
+        if isinstance(kind,InstanceType):
+            yield kind.name
+        elif isinstance(kind,(ListType,TupleSequenceType,DequeType)):
+            yield from owned_instances(kind.element,seen)
+        elif isinstance(kind,(NullableType,MaybeType)):
+            yield from owned_instances(kind.value,seen)
+        elif isinstance(kind,TupleType):
+            for child in kind.fields:yield from owned_instances(child,seen)
+        elif isinstance(kind,UnionType):
+            for child in kind.alternatives:yield from owned_instances(child,seen)
+        else:
+            # Descriptor payloads use stable family records. Do not recursively
+            # expand the same family when its source itself contains a handle.
+            key=id(getattr(kind,"record",kind))
+            if key in seen:return
+            owned=getattr(kind,"_native_owned_kinds",())
+            for child in owned:yield from owned_instances(child,seen|{key})
     graph={}
     for name,owner in model.classes.items():
         if not owner.used:continue
@@ -68,13 +96,15 @@ def validate_instance_graph(model):
             if id(cell)in seen:continue
             seen.add(id(cell))
             if cell.tag=="object":found.add(cell.args[0])
-            else:pending.extend(value for value in cell.args if hasattr(value,"root"))
+            else:
+                found.update(owned_instances(shape(cell),set()))
+                pending.extend(value for value in cell.args if hasattr(value,"root"))
         graph[name]=found
     done=set()
     def visit(name,path):
         if name in path:
             cycle=path[path.index(name):]+(name,)
-            raise ClassUnsupported(model.classes[name].node,"the class storage types permit a reference cycle ("+" -> ".join(cycle)+"); this native path has no proof that those allocations remain acyclic and no cycle-aware collector for shared instance/list handles",operation="instance/list storage graph",proof="acyclic shared instance ownership or cycle-aware memory management")
+            raise ClassUnsupported(model.classes[name].node,"the class storage types permit a reference cycle ("+" -> ".join(model.display_name(value)for value in cycle)+"); this native path has no proof that those allocations remain acyclic and no cycle-aware collector for shared instance/list handles",operation="instance/list storage graph",proof="acyclic shared instance ownership or cycle-aware memory management")
         if name in done:return
         for target in graph.get(name,()):visit(target,path+(name,))
         done.add(name)

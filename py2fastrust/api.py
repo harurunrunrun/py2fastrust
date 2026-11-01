@@ -47,15 +47,21 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
         except ValueError as exc:
             return TranspileResult(None, (Diagnostic(str(exc), options.filename, code="E004"),))
         program = build_program(source, options.filename, options.module_paths, options.include_modules)
+        from .native_module_linking import needs_linking,generate_linked
+        linked=needs_linking(program)
         if options.include_modules:
             return TranspileResult(None, (Diagnostic(
-                "Cannot lower --include-module: native module bundling/linking for the requested modules (" + ", ".join(options.include_modules) + ") is not implemented; their Python namespaces and calls need direct Rust module adapters.",
+                "Cannot lower --include-module: prebundled runtime module lookup for compile/eval/exec is not implemented for the requested modules (" + ", ".join(options.include_modules) + "). Fixed-name source imports use static linking without this option.",
                 options.filename, code="E006"),))
         diagnostics = []
-        native = try_generate_native(source, options.filename, options.integer,
-                                     unit=program.main,
-                                     prune_output=options.optimize, diagnostic_out=diagnostics,
-                                     string_mode=options.string_mode)
+        if linked:
+            native=generate_linked(program,options.integer,prune_output=options.optimize,
+                                   diagnostic_out=diagnostics,string_mode=options.string_mode)
+        else:
+            native = try_generate_native(source, options.filename, options.integer,
+                                         unit=program.main,
+                                         prune_output=options.optimize, diagnostic_out=diagnostics,
+                                         string_mode=options.string_mode)
         if native is None:
             return TranspileResult(None, tuple(diagnostics) or (Diagnostic(
                 "Cannot lower program analysis: native generation returned without a supported operation/storage path or a specific rejection context.",

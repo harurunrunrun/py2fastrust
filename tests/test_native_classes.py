@@ -254,6 +254,9 @@ print(Box().descend(3))
         frames=re.findall(r'line (\d+), in (\S+)',actual.stderr)
         self.assertEqual(frames,[("6","<module>"),("4","descend"),("4","descend"),("4","descend"),("5","descend")])
 
+    def test_saved_instance_method_retains_its_receiver(self):
+        self.compare("class Item:\n def read(self):return 1\nitem=Item()\nmethod=item.read\nprint(method())\n")
+
 
 class NativeClassProofTests(unittest.TestCase):
     def test_unproved_dynamic_object_features_are_positioned_errors(self):
@@ -264,7 +267,6 @@ class NativeClassProofTests(unittest.TestCase):
             "class Item:\n def __getattr__(self,name):return 1\n",
             "class Item:\n def __new__(cls):return 1\nprint(Item())\n",
             "class Item:\n def __init__(self):return 3\nprint(Item())\n",
-            "class Item:\n def read(self):return 1\nitem=Item()\nmethod=item.read\nprint(method())\n",
             "class Item:\n def read(self):return 1\n def __init__(self):self.read=2\nprint(Item().read)\n",
             "class Item:\n def __init__(self):self.child=self\nprint(Item())\n",
             "class Item:\n def __init__(self):self.values=[self]\nprint(Item())\n",

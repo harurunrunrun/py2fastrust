@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from .native import _Expression, _Unsupported, _direct_diagnostic, _string
 from .call_semantics import FunctionSignature, CallBindingError, normalize_call
 from .references import CORE_BUILTINS, BuiltinIdentity, UnknownReference, resolve_static_callable
-from .native_types import (TupleType, ListType, MaybeType, NullableType, UnionType,
+from .native_types import (TupleType, ListType, MaybeType, NullableType, UnionType,EmptyType,
                            alternatives, union_type, join_types, immutable, render_type,
                            tuple_code, union_declaration)
 from .native_types import reference_cloneable
@@ -28,6 +28,7 @@ from .native_constraints import Solver, SemanticGraph, Variable, value as constr
 class InstanceType:
     """A class-specific leaf; structural/value kinds use the shared descriptors."""
     name: str
+    _native_reference_cloneable=True
 
     @property
     def _native_kind_tag(self):
@@ -47,6 +48,8 @@ class StreamType:
 
 def domain(kind):
     if getattr(kind,"_native_function_reference",False):return "function"
+    if getattr(kind,"_native_namespace_view",False):return "globals_dict"
+    if getattr(kind,"_native_class_iterator",False):return "iterator"
     if isinstance(kind, InstanceType):return "object"
     if isinstance(kind, TupleType):return "tuple"
     if isinstance(kind, ListType):return "list"
@@ -90,7 +93,10 @@ def shape(cell):
     if cell.tag == "object":return InstanceType(cell.args[0])
     if cell.tag=="function":
         from .native_aot_callables import AotFunctionType
-        return AotFunctionType(tuple(cell.args))
+        return AotFunctionType.from_targets(cell.args)
+    if cell.tag=="globals_dict":
+        from .native_globals_view import GLOBALS_VIEW
+        return GLOBALS_VIEW
     if cell.tag in {"enumerate","map_int"}:return StreamType(cell.tag,tuple(shape(value)for value in cell.args))
     if cell.tag == "union":return union_type(*(shape(value)for value in cell.args))
     return cell.tag
@@ -113,8 +119,15 @@ def merge(left, right, node):
     if right.tag is None:
         right.parent = left
         return left
+    if isinstance(left.tag,EmptyType):
+        left.parent=right
+        return right
+    if isinstance(right.tag,EmptyType):
+        right.parent=left
+        return left
     if left.tag==right.tag=="function":
-        left.args=tuple(sorted(set(left.args)|set(right.args)))
+        from .native_aot_callables import ordered_targets
+        left.args=ordered_targets(left.args+right.args)
         right.parent=left
         return left
     if {left.tag, right.tag} <= {"int", "bool", "int_bool"}:
@@ -123,7 +136,10 @@ def merge(left, right, node):
         left.tag = tag
         return left
     if left.tag != right.tag or left.tag=="union"or(left.tag=="tuple"and len(left.args)!=len(right.args)):
-        if not reference_cloneable(shape(left))or not reference_cloneable(shape(right)):raise ClassUnsupported(node)
+        from .native_class_storage import shared_element
+        # ListType is an owned Vec in ordinary lowering, but the class ABI
+        # stores it as a shared ClassList handle. Prove that actual ABI here.
+        if not shared_element(shape(left))or not shared_element(shape(right)):raise ClassUnsupported(node)
         # Keep constructor payloads separate from the outer joined ABI. Mutable
         # allocation shapes are never widened into a union by this solver.
         candidates=[]
@@ -163,6 +179,9 @@ class ClassPlan:
     fields: dict = field(default_factory=dict)
     used: bool = False
     body_plan: object = None
+    source_unit: object = None
+    module_name: str = "__main__"
+    canonical_name: str | None = None
 
 
 @dataclass(eq=False)
@@ -185,6 +204,9 @@ class FunctionPlan:
     visible_definitions: set | None = None
     global_names: set | None = None
     class_body: ClassPlan | None = None
+    source_unit: object = None
+    module_name: str = "__main__"
+    definition_key: object = None
 
     @property
     def scope(self):
@@ -206,8 +228,8 @@ class Environment(dict):
 
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
-                "list", "map", "enumerate", "sum", "min", "max", "abs", "id"}
-    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "range"}
+                "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
+    DATA = {"int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "range","globals_dict"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -222,7 +244,7 @@ class Model:
         self.node_cells = {}
         # Storage members receive directional value constraints. Their incoming
         # immutable values retain independent types, just as in ordinary scopes.
-        self.value_constraints = Solver(SemanticGraph(unit) if unit is not None else SimpleNamespace())
+        self.value_constraints = Solver(self.semantic_graph(unit) if unit is not None else SimpleNamespace())
         self.member_allocations = {}
         self.constructors = {}
         self.sequence_calls = {}
@@ -233,6 +255,7 @@ class Model:
         self.records = {}
         self.augmented = {}
         self.module = FunctionPlan(tree, 0, reachable=True, visible_definitions=set(),global_names=set())
+        self.bind_plan_origin(self.module,tree)
         merge(self.module.result, Cell("none"), tree)
         self.plans.append(self.module)
         self.loop_depth = 0
@@ -245,27 +268,81 @@ class Model:
         # A possible module-owned write forbids assuming the default builtin,
         # including a write reached only on a later loop iteration.
         self.global_written_names=frozenset(binding.name for binding in unit.bindings
-            if binding.owner==0 and binding.role not in {"load","parameter"})if unit is not None else frozenset()
-        from .native_class_globals import Namespace
-        self.namespace=Namespace(self)
+            if self.module_owner(binding.owner) and binding.role not in {"load","parameter"})if unit is not None else frozenset()
+        self.namespace=self.create_namespace()
         self.discover()
         from .native_lambda_cells import LambdaCells
         self.lambda_cells=LambdaCells(self)
+        self.lexical=self.create_lexical_cells()
+        self.callable_cells=self.create_callable_cells()
+        from .native_class_iterators import Iterators
+        self.iterators=Iterators(self)
+
+    def semantic_graph(self,unit):return SemanticGraph(unit)
+
+    def create_namespace(self):
+        from .native_class_globals import Namespace
+        return Namespace(self)
+
+    def create_lexical_cells(self):
         from .native_lexical_cells import LexicalCells
-        self.lexical=LexicalCells(self)
+        return LexicalCells(self)
+
+    def create_callable_cells(self):
         from .native_aot_callables import CallableCells
-        self.callable_cells=CallableCells(self)
+        return CallableCells(self)
 
     def emitter(self,plan):return Emitter(self,plan)
 
-    def iter_nodes(self):return ast.walk(self.tree)
+    def finish_runtime(self,source):return source
 
-    def iter_bindings(self):return iter(self.unit.bindings)if self.unit is not None else iter(())
+    def class_runtime_context(self,owner):return "","",""
+
+    def module_owner(self,scope):return scope is not None and self.unit.scopes[scope].kind=="module"
+
+    def iter_nodes(self):
+        from .native_annotations import executable_nodes
+        return executable_nodes(self.tree)
+
+    def iter_bindings(self):
+        # Lazy annotation thunks retain free lexical cells without evaluating
+        # their expressions. Keep that ownership metadata for environment
+        # retention, even though iter_nodes excludes their executable plans.
+        return iter(self.unit.bindings)if self.unit is not None else iter(())
+
+    def is_module_plan(self,plan):return plan is self.module
+
+    def definition_name(self,node):
+        return self.unit.name_for(node)if self.unit is not None else node.name
+
+    @staticmethod
+    def class_key(owner):return owner.canonical_name or owner.node.name
+
+    def display_name(self,name):
+        return self.unit.display_name(name)if hasattr(self.unit,"display_name")else name
+
+    def bind_plan_origin(self,plan,node):
+        if self.unit is None:return
+        source=self.unit.original_unit(node)if hasattr(self.unit,"original_unit")else self.unit
+        plan.source_unit=source
+        plan.module_name=source.name
+        plan.definition_key=(source.name,source.ordinal(node))
 
     def resolved_name(self, plan, node):
         if self.unit is not None:return self.unit.name_for(node)
         raw=node.id if isinstance(node,ast.Name)else node.attr if isinstance(node,ast.Attribute)else node.arg
         return plan.name(raw)
+
+    @staticmethod
+    def display_name(name):
+        """Python spelling can differ from a linked module's canonical key."""
+        return getattr(name,"python_name",name)
+
+    def module_owner(self,scope):
+        if scope is None:return False
+        if self.unit is None:return scope==0
+        predicate=getattr(self.unit,"is_module_scope",None)
+        return predicate(scope)if predicate is not None else self.unit.scopes[scope].kind=="module"
 
     def builtin_identity(self,plan,node,environment):
         name=self.resolved_name(plan,node)
@@ -275,35 +352,38 @@ class Model:
         if name in self.classes or name in self.functions:
             return UnknownReference(name,"name denotes a source definition")
         return resolve_static_callable(node,environment,local_names=plan.declared,
-            global_bound_names=(set(plan.global_names or ())if plan is not self.module else set(environment))|self.global_written_names,
+            global_bound_names=(set(plan.global_names or ())if not self.is_module_plan(plan) else set(environment))|self.global_written_names,
             name_for=self.unit.name_for if self.unit is not None else None,
-            private_owner=plan.owner.node.name if plan.owner else None,function_scope=plan is not self.module)
+            private_owner=plan.owner.node.name if plan.owner else None,function_scope=not self.is_module_plan(plan),
+            builtin_spelling=self.display_name)
 
-    def cell(self, plan, node, tag=None, args=()):
-        key = (plan.index, id(node))
+    def cell(self, plan, node, tag=None, args=(),*,identity=None):
+        key = (plan.index, id(node))if identity is None else(plan.index,id(node),identity)
         result = self.node_cells.setdefault(key, Cell())
         if tag is not None:
             self.constructors.setdefault(key,Cell(tag,tuple(args)))
             merge(result, Cell(tag, tuple(args)), node)
-        self.records[key] = result
+        if identity is None:self.records[key] = result
         if tag == "list":
             site=self.unit.ordinal(node) if self.unit is not None else id(node)
-            allocation=self.value_constraints.allocation(site,"list",("class",plan.index))
+            allocation=self.value_constraints.allocation(site,"list",("class",plan.index)if identity is None else("class",plan.index,identity))
             self.member_allocations[id(result.root().args[0])]=allocation
+            from .native_class_allocation_facts import register
+            register(self,allocation,result.root().args[0])
         return result
 
     @staticmethod
     def flow_copy(cell):
         """Copy value shapes while preserving shared mutable allocation leaves."""
         cell=cell.root()
-        if cell.tag in {"list","object"}:return cell
         if cell.tag in {"tuple","union","enumerate","map_int"}:
             return Cell(cell.tag,tuple(Model.flow_copy(child)for child in cell.args))
         return Cell(cell.tag,cell.args)
 
     @staticmethod
     def cell_for_kind(kind):
-        if getattr(kind,"_native_function_reference",False):return Cell("function",kind.definitions)
+        if getattr(kind,"_native_function_reference",False):return Cell("function",kind.targets)
+        if getattr(kind,"_native_namespace_view",False):return Cell("globals_dict")
         if isinstance(kind,NullableType):
             return Cell("union",(Cell("none"),Model.cell_for_kind(kind.value)))
         if isinstance(kind,UnionType):
@@ -338,7 +418,9 @@ class Model:
 
     def field(self, owner, name, node, writing=False):
         if name in owner.methods:
-            raise ClassUnsupported(node)
+            if writing:
+                raise ClassUnsupported(node,"shadowing this method on an instance needs instance-dictionary storage and descriptor lookup precedence; that per-instance method replacement is not implemented",proof="instance method shadowing and descriptor lookup")
+            raise ClassUnsupported(node,"reading this method as a value requires a bound-method carrier retaining its receiver; direct method calls are supported, but storing or passing that bound method is not implemented",proof="bound receiver lifetime and callable identity")
         if name.startswith("__") and name.endswith("__"):
             raise ClassUnsupported(node)
         result = owner.fields.setdefault(name, Field(name))
@@ -351,14 +433,11 @@ class Model:
             raise ClassUnsupported(node,"variadic method/function arguments need tuple/dictionary packing and native argument-frame binding; that storage is not implemented on the class path",operation=f"signature of function {name!r}")
         if getattr(node,"decorator_list",()):
             raise ClassUnsupported(node.decorator_list[0],"decorator calls can replace the method/function object at definition time; that native decorated-callable capture is not implemented on the class path",operation=f"decorator of function {name!r}")
-        if getattr(node,"returns",None)is not None:
-            raise ClassUnsupported(node.returns,"lazy return-annotation objects and their namespace evaluation are not implemented on the class path",operation=f"annotation of function {name!r}")
         if getattr(node,"type_params",()):
             raise ClassUnsupported(node,"generic type-parameter objects and lazy bound/default evaluation are not implemented on the class path",operation=f"generic function definition {name!r}")
         arguments = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
-        if any(value.annotation is not None for value in arguments):
-            raise ClassUnsupported(node,"lazy parameter-annotation objects and their namespace evaluation are not implemented on the class path",operation=f"annotations of function {name!r}")
         plan = FunctionPlan(node, len(self.plans), owner)
+        self.bind_plan_origin(plan,node)
         if self.unit is not None:
             signature=self.unit.signature_for(node)
         else:
@@ -391,7 +470,7 @@ class Model:
                 captured=-captured if isinstance(value.op,ast.USub)else +captured
             plan.default_literals[name]=captured
         if owner:
-            merge(plan.arguments[plan.parameters[0]], Cell("object", (owner.node.name,)), node)
+            merge(plan.arguments[plan.parameters[0]], Cell("object", (self.class_key(owner),)), node)
         from .native_lexical_cells import own_return_values
         if not any(value is not None and not(isinstance(value,ast.Constant)and value.value is None)
                    for value in own_return_values(self.unit,node)):
@@ -402,30 +481,14 @@ class Model:
     def discover(self):
         effects = False
         names = set()
+        from .native_annotations import future_directive,class_body_statement,class_body_effect
         for node in self.tree.body:
+            if future_directive(node):continue
             if isinstance(node, ast.ClassDef):
                 if node.name in names or node.name in self.global_symbols or node.bases or node.keywords or node.decorator_list or node.type_params:
                     raise ClassUnsupported(node)
-                owner = ClassPlan(node, len(self.classes))
-                self.classes[node.name] = owner
+                self.discover_class(node,self.definition_name(node))
                 names.add(node.name)
-                for member in node.body:
-                    if isinstance(member, ast.Pass) or isinstance(member, ast.Expr) and isinstance(member.value, ast.Constant) and type(member.value.value) is str:
-                        continue
-                    if not isinstance(member, ast.FunctionDef):
-                        raise ClassUnsupported(member)
-                    if member.name.startswith("__") and member.name.endswith("__") and member.name != "__init__":
-                        protocol="truth-value"if member.name in {"__bool__","__len__"}else"special-method"
-                        raise ClassUnsupported(member,f"class {node.name!r} defines {member.name}; native {protocol} protocol dispatch for this override is not implemented",operation=f"special method {node.name+'.'+member.name!r}",proof=f"Python {member.name} protocol dispatch")
-                    name = self.unit.name_for(member) if self.unit is not None else mangle(member.name, node.name)
-                    if name in owner.methods:
-                        raise ClassUnsupported(member)
-                    owner.methods[name] = self.function(member, owner)
-                if any(name not in method.default_literals for method in owner.methods.values()for name in method.defaults):
-                    body=FunctionPlan(node,len(self.plans),owner,class_body=owner)
-                    merge(body.result,Cell("none"),node)
-                    owner.body_plan=body
-                    self.plans.append(body)
             elif isinstance(node, ast.FunctionDef):
                 if node.name in names or node.name in self.global_symbols:
                     raise ClassUnsupported(node)
@@ -442,7 +505,7 @@ class Model:
             else:
                 effects = True
         binding_owners={binding.node:binding.owner for binding in self.unit.bindings}if self.unit is not None else{}
-        for value in ast.walk(self.tree):
+        for value in self.iter_nodes():
             if isinstance(value, ast.Name) and isinstance(value.ctx, (ast.Store, ast.Del)) and value.id in names:
                 site=self.unit.ordinal(value)if self.unit is not None else id(value)
                 if value.id in self.functions:continue
@@ -450,6 +513,36 @@ class Model:
                 if site not in self.comprehension_targets:raise ClassUnsupported(value)
             if isinstance(value, ast.arg) and value.arg in names:
                 if self.unit is None or binding_owners.get(self.unit.ordinal(value))==0:raise ClassUnsupported(value)
+
+    def discover_class(self,node,key):
+        """Register one original class AST under its canonical definition key."""
+        if node.bases or node.keywords or node.decorator_list or node.type_params:
+            raise ClassUnsupported(node)
+        owner=ClassPlan(node,len(self.classes),canonical_name=key)
+        if self.unit is not None:
+            owner.source_unit=self.unit.original_unit(node)if hasattr(self.unit,"original_unit")else self.unit
+            owner.module_name=owner.source_unit.name
+        self.classes[key]=owner
+        from .native_annotations import class_body_statement,class_body_effect
+        for member in node.body:
+            if isinstance(member,ast.Pass)or isinstance(member,ast.Expr)and isinstance(member.value,ast.Constant)and type(member.value.value)is str:
+                continue
+            if class_body_statement(member):continue
+            if not isinstance(member,ast.FunctionDef):raise ClassUnsupported(member)
+            if member.name.startswith("__")and member.name.endswith("__")and member.name!="__init__":
+                protocol="truth-value"if member.name in {"__bool__","__len__"}else"special-method"
+                raise ClassUnsupported(member,f"class {node.name!r} defines {member.name}; native {protocol} protocol dispatch for this override is not implemented",operation=f"special method {node.name+'.'+member.name!r}",proof=f"Python {member.name} protocol dispatch")
+            name=self.unit.name_for(member)if self.unit is not None else mangle(member.name,node.name)
+            if name in owner.methods:raise ClassUnsupported(member)
+            owner.methods[name]=self.function(member,owner)
+        if (any(name not in method.default_literals for method in owner.methods.values()for name in method.defaults)
+                or any(class_body_effect(member)for member in node.body)):
+            body=FunctionPlan(node,len(self.plans),owner,class_body=owner)
+            self.bind_plan_origin(body,node)
+            merge(body.result,Cell("none"),node)
+            owner.body_plan=body
+            self.plans.append(body)
+        return owner
 
     def canonical_local(self, plan, name, value):
         values = plan.locals.setdefault(name, [])
@@ -459,7 +552,7 @@ class Model:
     def snapshot(self):
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
-                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),
+                tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())))
 
@@ -485,11 +578,19 @@ class Model:
                 remaining = self.analyze_body(plan,environment)
                 if remaining is not None:
                     merge(plan.result, Cell("none"), plan.node)
+            from .native_class_allocation_facts import publish
+            publish(self)
             if self.snapshot() == before:
                 break
         else:
             raise ClassUnsupported(self.tree)
     def run(self):
+        if self.unit is not None:
+            nodes={self.unit.ordinal(node):node for node in self.iter_nodes()}
+            for binding in self.unit.bindings:
+                if (self.module_owner(binding.owner)and binding.role in {"store","delete"}
+                        and binding.name in self.global_symbols and not self.namespace.eligible(binding.name)):
+                    raise ClassUnsupported(nodes[binding.node],"rebinding or deleting this imported reference needs namespace-owned module/callable object storage; the existing static module adapter supports reads and member calls but cannot preserve this binding's mutation",proof="stored imported-reference binding identity and lifetime")
         self.infer_until_stable()
         self.namespace.default_uninhabited()
         self.lexical.default_uninhabited()
@@ -524,6 +625,8 @@ class Model:
                 self.lexical.seed_arguments(plan)
                 global_names={name:value for name,value in self.global_symbols.items() if name not in plan.declared}
                 self.analyze_body(plan,{**global_names, **plan.arguments})
+        from .native_class_allocation_facts import publish
+        publish(self)
         from .native_class_storage import validate_instance_graph
         validate_instance_graph(self)
         for owner in self.classes.values():
@@ -544,7 +647,7 @@ class Model:
 
     def storage(self, cell, node, field_value=False):
         from .native_class_storage import validate
-        validate(cell,node,self.integer,field_value=field_value)
+        validate(cell,node,self.integer,field_value=field_value,model=self)
 
     def expression(self, plan, node, environment):
         if isinstance(node,ast.Lambda):return self.lambda_cells.value(plan,node,environment)
@@ -562,6 +665,12 @@ class Model:
             return self.cell(plan, node, literal.kind)
         if isinstance(node, ast.Name):
             name = self.resolved_name(plan,node)
+            binding=self.namespace.owners.get(self.unit.ordinal(node))if self.unit is not None else None
+            global_reference=(binding is not None and self.module_owner(binding.owner))if self.unit is not None else plan is self.module or name not in plan.declared
+            if name in self.global_symbols and global_reference and name not in(plan.visible_definitions or()):
+                from .native_class_builtins import SUPPORTED
+                if name not in SUPPORTED or plan is not self.module and plan.class_body is None:
+                    raise ClassUnsupported(node,"this imported reference is not definitely bound at this execution point; a namespace-owned imported-object carrier is required for lookup before/after import",proof="import binding initialization and call-context availability")
             provider=getattr(self,"callable_cells",None)
             function=provider.value(plan,node,environment)if provider is not None else None
             if function is not None:return self.remember(plan,node,function)
@@ -571,7 +680,7 @@ class Model:
             if shared is not None:return self.remember(plan,node,shared)
             if name in environment:
                 value=environment[name]
-                if (plan is self.module and name in CORE_BUILTINS and value.root().tag in self.INTRINSICS
+                if (self.is_module_plan(plan) and name in CORE_BUILTINS and value.root().tag in self.INTRINSICS
                         and name not in getattr(environment,"definite",environment)):
                     raise ClassUnsupported(node)
                 return self.remember(plan, node, value)
@@ -588,7 +697,9 @@ class Model:
                     return self.remember(plan,node,result)
                 if not self.final:
                     return self.cell(plan,node)
-            if node.id in self.functions or node.id in self.classes:
+            if node.id in self.classes:
+                raise ClassUnsupported(node,"this source class needs a first-class class object and constructor-dispatch carrier; direct class construction is supported, but stored class objects and metaclass protocols are not implemented",proof="class-object identity and dispatch")
+            if node.id in self.functions:
                 raise ClassUnsupported(node,"the class-aware path can call this definition by its resolved name, but cannot store/pass its function or class object as a first-class value; native callable/class-object storage and dispatch are not implemented",proof="first-class callable/class-object identity and dispatch")
             if name in self.namespace.implicit_names:
                 raise ClassUnsupported(node,f"implicit module binding {name!r} needs its Python initialization and namespace value representation; that implicit namespace entry is not implemented on this typed frame path",proof="implicit module namespace initialization")
@@ -603,24 +714,17 @@ class Model:
         if isinstance(node, ast.Tuple):
             return self.cell(plan, node, "tuple", tuple(self.expression(plan, value, environment) for value in node.elts))
         if isinstance(node, ast.Attribute):
-            receiver = self.expression(plan, node.value, environment).root()
-            if receiver.tag is None and not self.final:
-                return self.cell(plan, node)
-            if receiver.tag == "object":
-                owner = self.classes[receiver.args[0]]
-                name = self.resolved_name(plan,node)
-                return self.remember(plan, node, self.field(owner, name, node))
-            intrinsic = {("sys","stdin"):"stdin", ("stdin","buffer"):"stdin_buffer",
-                         ("stdin","readline"):"reader_text", ("stdin","read"):"read_text",
-                         ("stdin_buffer","readline"):"reader_bytes", ("stdin_buffer","read"):"read_bytes"}.get((receiver.tag,node.attr))
-            if intrinsic:
-                return self.cell(plan, node, intrinsic)
-            raise ClassUnsupported(node)
+            receiver=self.expression(plan,node.value,environment)
+            return self.attribute_value(plan,node,receiver,environment)
         if isinstance(node, ast.Subscript):
             if isinstance(node.slice, ast.Slice):
                 raise ClassUnsupported(node)
             owner = self.expression(plan, node.value, environment).root()
             index = self.expression(plan, node.slice, environment).root()
+            captured=self.subscript_item(plan,node,owner,index,environment)
+            if captured is not None:return captured
+            if owner.tag is None and not self.final:
+                return self.cell(plan,node)
             if index.tag not in {None,"int","bool","int_bool"}:
                 raise ClassUnsupported(node.slice)
             if owner.tag == "list":
@@ -640,7 +744,7 @@ class Model:
             return self.binary(plan, node, node.op, left, right)
         if isinstance(node,ast.NamedExpr):
             value=self.expression(plan,node.value,environment)
-            if self.namespace.owns(plan,node.target)and plan is self.module:
+            if self.namespace.owns(plan,node.target)and self.is_module_plan(plan):
                 self.namespace.active.add(self.resolved_name(plan,node.target))
             self.target(plan,node.target,value,environment)
             return self.remember(plan,node,self.namespace.named_value(plan,node,value))
@@ -724,6 +828,11 @@ class Model:
             if self.final:
                 raise ClassUnsupported(node)
             return self.cell(plan, node)
+        from .native_primitive_ops import analyze,classify
+        primitive_tags={"int","bool","int_bool","float","str","bytes","none","function","globals_dict","range","list","tuple"}
+        if (a.tag=="union"or b.tag=="union"or a.tag in primitive_tags and b.tag in primitive_tags
+                and classify(operator,shape(a),shape(b),self.integer).error is not None):
+            return analyze(self,plan,node,operator,left,right)
         if isinstance(operator, ast.Add) and a.tag == b.tag == "list":
             merge(a.args[0], b.args[0], node)
             return self.cell(plan, node, "list", (a.args[0],))
@@ -754,11 +863,11 @@ class Model:
             raise ClassUnsupported(node)
         return self.cell(plan,node,"int")
 
-    def bind_call(self, caller, node, callee, argument_cells, keyword_cells, environment):
-        if callee.class_body is None:
-            try:normalize_call(node)
-            except CallBindingError:raise ClassUnsupported(node)from None
-        names=(set(getattr(environment,"enclosing_global_names",environment))|set(caller.visible_definitions or ()))if caller is self.module else caller.global_names
+    def call_global_names(self,caller,callee,environment):
+        return (set(getattr(environment,"enclosing_global_names",environment))|set(caller.visible_definitions or ()))if self.is_module_plan(caller)else caller.global_names
+
+    def activate_frame(self,caller,node,callee,environment):
+        names=self.call_global_names(caller,callee,environment)
         if names is None:raise ClassUnsupported(node)
         if callee.global_names is None:callee.global_names=set(names)
         else:callee.global_names.update(names)
@@ -769,12 +878,24 @@ class Model:
             callee.visible_definitions = visible
         else:
             callee.visible_definitions.intersection_update(visible)
+
+    def bind_call(self, caller, node, callee, argument_cells, keyword_cells, environment):
+        if callee.class_body is None:
+            try:normalize_call(node)
+            except CallBindingError:raise ClassUnsupported(node)from None
+        return self.remember(caller,node,self.bind_captured(caller,node,callee,argument_cells,keyword_cells,environment))
+
+    def bind_captured(self,caller,node,callee,argument_cells,keyword_cells,environment):
+        """Shared binding for explicit calls and deferred produced arguments."""
+        self.activate_frame(caller,node,callee,environment)
         try:
             bound={}if callee.class_body is not None else callee.signature.bind(argument_cells,keyword_cells,callee.default_cells).by_name
         except CallBindingError:raise ClassUnsupported(node)from None
         for name, value in bound.items():
-            self.contribute(callee.arguments[name], value, node)
-        return self.remember(caller, node, callee.result)
+            if not self.namespace.contribute(callee.arguments[name],value,node,force=True):
+                self.contribute(callee.arguments[name], value, node)
+        self.namespace.call_effects(caller,callee,environment)
+        return callee.result
 
     def call(self, plan, node, environment):
         value=self.callable_cells.analyze(plan,node,environment)
@@ -792,11 +913,11 @@ class Model:
             if (name in CORE_BUILTINS and name in self.global_written_names and self.namespace.owns(plan,function)
                     and (current is None or current.root().tag not in self.INTRINSICS)):
                 raise ClassUnsupported(function,f"call name {name!r} has module-owned writes, so its current binding cannot be assumed to be the default builtin; invoking rebound callable values or restoring builtin lookup after deletion is not implemented on this typed frame path",proof="current module/builtin callable identity")
-        if (isinstance(function,ast.Name)and plan is self.module and function.id in CORE_BUILTINS
+        if (isinstance(function,ast.Name)and self.is_module_plan(plan) and function.id in CORE_BUILTINS
                 and function.id in environment and environment[function.id].root().tag in self.INTRINSICS
                 and function.id not in getattr(environment,"definite",environment)):
             raise ClassUnsupported(function)
-        if (isinstance(function,ast.Name) and plan is not self.module
+        if (isinstance(function,ast.Name) and not self.is_module_plan(plan)
                 and self.resolved_name(plan,function) in plan.declared and self.resolved_name(plan,function) not in environment):
             raise ClassUnsupported(node)
         if (isinstance(function,ast.Name) and function.id in self.BUILTINS
@@ -820,10 +941,13 @@ class Model:
             return self.cell(plan,node,"map_int",(words,))
         receiver = None
         if isinstance(function,ast.Attribute):
-            receiver = self.expression(plan,function.value,environment).root()
+            receiver=self.callable_cells.receivers.get((plan.index,id(node)))
+            if receiver is None:receiver=self.expression(plan,function.value,environment)
+            receiver=receiver.root()
         arguments = [self.expression(plan,value,environment) for value in node.args]
         keywords = [(value.arg,self.expression(plan,value.value,environment)) for value in node.keywords]
-        if isinstance(function,ast.Name) and self.resolved_name(plan,function) not in environment:
+        if isinstance(function,ast.Name) and(self.resolved_name(plan,function) not in environment
+                or self.callable_cells.stable_direct(plan,function,environment)):
             if function.id in self.classes:
                 if function.id not in (plan.visible_definitions or ()):
                     raise ClassUnsupported(node)
@@ -842,43 +966,11 @@ class Model:
                 if function.id not in (plan.visible_definitions or ()):
                     raise ClassUnsupported(node)
                 return self.bind_call(plan,node,self.functions[function.id],arguments,keywords,environment)
-            name = function.id
-            if name == "print":
-                if any(key not in {"sep","end","flush"} for key,_ in keywords):
-                    raise ClassUnsupported(node)
-                return self.cell(plan,node,"none")
-            if name == "input" and not arguments and not keywords:
-                return self.cell(plan,node,"str")
-            if name in {"int","str","bool","float"} and len(arguments) <= 1 and not keywords:
-                if name == "float" and self.integer == "bigint":
-                    raise ClassUnsupported(node)
-                return self.cell(plan,node,{"int":"int","str":"str","bool":"bool","float":"float"}[name])
-            if name == "len" and len(arguments) == 1 and not keywords:
-                return self.cell(plan,node,"int")
-            if name in {"abs","id"} and len(arguments) == 1 and not keywords:
-                return self.cell(plan,node,"int")
-            if name == "range" and 1 <= len(arguments) <= 3 and not keywords:
-                return self.cell(plan,node,"range")
-            if name == "enumerate" and 1 <= len(arguments) <= 2 and not keywords:
-                index = arguments[1] if len(arguments) == 2 else Cell("int")
-                return self.cell(plan,node,"enumerate",(arguments[0],index))
-            if name == "map" and len(node.args) == 2 and not keywords:
-                raise ClassUnsupported(node)
-            if name == "list" and len(arguments) <= 1 and not keywords:
-                result = self.cell(plan,node,"list",(Cell(),))
-                if arguments:
-                    merge(result.root().args[0],self.item(arguments[0],node),node)
-                return result
-            if name == "sum" and 1 <= len(arguments) <= 2 and not keywords:
-                item = self.item(arguments[0],node).root()
-                if item.tag not in {None,"int","bool","int_bool"}:
-                    raise ClassUnsupported(node)
-                return self.cell(plan,node,"int")
-            if name in {"min","max"} and arguments and not keywords:
-                result = self.cell(plan,node)
-                for value in arguments if len(arguments)>1 else [self.item(arguments[0],node)]:
-                    merge(result,value,node)
-                return result
+            identity=self.builtin_identity(plan,function,environment)
+            if isinstance(identity,BuiltinIdentity):
+                from .native_class_builtins import analyze
+                result=analyze(self,plan,node,identity,arguments,keywords,environment)
+                if result is not None:return result
         if isinstance(function,ast.Name) and self.resolved_name(plan,function) in environment:
             callable_ = environment[self.resolved_name(plan,function)].root()
             if callable_.tag in {"reader_text","reader_bytes","read_text","read_bytes"} and not arguments and not keywords:
@@ -930,8 +1022,36 @@ class Model:
                 return self.cell(plan,node)
         raise ClassUnsupported(node)
 
+    def attribute_value(self,plan,node,receiver,environment):
+        receiver=receiver.root()
+        from .native_annotations import metadata_access
+        metadata_access(node,shape(receiver))
+        bound=self.callable_cells.bound_methods.value(plan,node,receiver,environment)
+        if bound is not None:return bound
+        captured=self.attribute_item(plan,node,receiver,environment)
+        if captured is not None:return captured
+        if receiver.tag is None and not self.final:
+            return self.cell(plan, node)
+        if receiver.tag == "object":
+            owner = self.classes[receiver.args[0]]
+            name = self.resolved_name(plan,node)
+            return self.remember(plan, node, self.field(owner, name, node))
+        intrinsic = {("sys","stdin"):"stdin", ("stdin","buffer"):"stdin_buffer",
+                     ("stdin","readline"):"reader_text", ("stdin","read"):"read_text",
+                     ("stdin_buffer","readline"):"reader_bytes", ("stdin_buffer","read"):"read_bytes"}.get((receiver.tag,node.attr))
+        if intrinsic:
+            return self.cell(plan, node, intrinsic)
+        raise ClassUnsupported(node)
+
+    def attribute_item(self,plan,node,receiver,environment):return None
+
+    def attribute_target(self,plan,node,receiver,value,environment):return False
+
+    def subscript_item(self,plan,node,owner,index,environment):return None
+
     def item(self, value, node):
         value = value.root()
+        if getattr(value.tag,"_native_class_iterator",False):return self.iterators.item(value.tag)
         if value.tag == "list":
             return value.args[0]
         if value.tag == "tuple":
@@ -953,20 +1073,7 @@ class Model:
 
     def target(self, plan, node, value, environment):
         if isinstance(node,ast.Name):
-            if self.lexical.store(plan,node,value,environment):return
-            if self.namespace.assign(plan,node,value,environment):return
-            self.namespace.prepare_local(plan,node,environment)
-            value=self.namespace.local_value(plan,node,value)
-            name = self.resolved_name(plan,node)
-            if value.root().tag in {"map_int","enumerate"}:
-                raise ClassUnsupported(node)
-            if plan is self.module and name in self.global_symbols:
-                raise ClassUnsupported(node)
-            environment[name] = value
-            environment.definite.add(name)
-            self.canonical_local(plan,name,value)
-            self.remember(plan,node,value)
-            return
+            return self.bind_name(plan,node,value,environment)
         if isinstance(node,(ast.Tuple,ast.List)):
             source = value.root()
             if source.tag == "tuple":
@@ -980,6 +1087,9 @@ class Model:
             return
         if isinstance(node,ast.Attribute):
             owner = self.expression(plan,node.value,environment).root()
+            from .native_annotations import metadata_access
+            metadata_access(node,shape(owner))
+            if self.attribute_target(plan,node,owner,value,environment):return
             if owner.tag == "object":
                 field_ = self.field(self.classes[owner.args[0]],self.resolved_name(plan,node),node,writing=True)
                 self.contribute(field_,value,node)
@@ -997,6 +1107,22 @@ class Model:
             if owner.tag is None and not self.final:
                 return
         raise ClassUnsupported(node)
+
+    def bind_name(self,plan,node,value,environment):
+        """Bind an official Name or import-alias node using lexical metadata."""
+        if self.lexical.store(plan,node,value,environment):return
+        if self.namespace.assign(plan,node,value,environment):return
+        self.namespace.prepare_local(plan,node,environment)
+        value=self.namespace.local_value(plan,node,value)
+        name=self.resolved_name(plan,node)
+        if value.root().tag in {"map_int","enumerate"}:raise ClassUnsupported(node)
+        if self.is_module_plan(plan)and name in self.global_symbols:raise ClassUnsupported(node)
+        environment[name]=value
+        environment.definite.add(name)
+        self.canonical_local(plan,name,value)
+        self.remember(plan,node,value)
+
+    def import_statement(self,plan,node,environment):return False
 
     def join(self, left, right, node, role="join"):
         if left is None:
@@ -1023,34 +1149,40 @@ class Model:
         for node in statements:
             if environment is None:
                 break
+            if isinstance(node,(ast.Import,ast.ImportFrom))and self.import_statement(plan,node,environment):
+                continue
             if isinstance(node,(ast.ClassDef,ast.FunctionDef)):
                 if self.lexical.define(plan,node,environment):
                     self.namespace.define(plan,node,environment)
                     continue
-                if plan is not self.module and (plan.class_body is None or not isinstance(node,ast.FunctionDef)):
+                if not self.is_module_plan(plan) and (plan.class_body is None or not isinstance(node,ast.FunctionDef)):
                     raise ClassUnsupported(node)
                 expected=(plan.class_body.methods.get(self.resolved_name(plan,node))if plan.class_body is not None else
-                          self.classes.get(node.name)if isinstance(node,ast.ClassDef)else self.functions.get(node.name))
+                          self.classes.get(self.definition_name(node))if isinstance(node,ast.ClassDef)else self.functions.get(self.definition_name(node)))
                 if expected is None or expected.node is not node:
                     raise ClassUnsupported(node)
                 self.namespace.define(plan,node,environment)
-                if plan is self.module:plan.visible_definitions.add(node.name)
+                if self.is_module_plan(plan):plan.visible_definitions.add(self.definition_name(node))
                 continue
             if isinstance(node,ast.Import):
-                if plan is not self.module:
+                if not self.is_module_plan(plan):
                     raise ClassUnsupported(node)
+                self.namespace.import_event(plan,node,environment)
                 continue
-            if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal)):
+            from .native_annotations import future_directive
+            if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal))or future_directive(node):
                 continue
             if isinstance(node,ast.Expr):
                 self.expression(plan,node.value,environment)
             elif isinstance(node,ast.Assign):
+                from .native_annotations import metadata_target
+                for target in node.targets:metadata_target(self,plan,target,environment)
                 from .native_frame_references import alias_assignment
                 if alias_assignment(self,plan,node):continue
                 if (isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name)
                         and self.builtin_identity(plan,node.value.func,environment)==BuiltinIdentity("map")
                         and len(node.value.args)==2 and not node.value.keywords
-                        and isinstance(node.value.args[0],ast.Name) and node.value.args[0].id == "int" and "int" not in environment):
+                        and self.builtin_identity(plan,node.value.args[0],environment)==BuiltinIdentity("int")):
                     words = self.expression(plan,node.value.args[1],environment)
                     member = self.item(words,node.value).root()
                     if member.tag not in {"str","bytes",None}:
@@ -1060,6 +1192,17 @@ class Model:
                     value = self.expression(plan,node.value,environment)
                 for target in node.targets:
                     self.target(plan,target,value,environment)
+            elif isinstance(node,ast.AnnAssign):
+                from .native_annotations import metadata_target
+                if node.value is not None:
+                    metadata_target(self,plan,node.target,environment)
+                    self.target(plan,node.target,self.expression(plan,node.value,environment),environment)
+                else:
+                    from .native_annotations import target_inputs
+                    for expression in target_inputs(node.target):self.expression(plan,expression,environment)
+            elif isinstance(node,ast.Assert):
+                from .native_assertions import analyze
+                analyze(self,plan,node,environment)
             elif isinstance(node,ast.AugAssign):
                 left = self.expression(plan,node.target,environment)
                 self.augmented[(plan.index,id(node))] = left
@@ -1067,8 +1210,12 @@ class Model:
                 value = self.binary(plan,node,node.op,left,right)
                 self.target(plan,node.target,value,environment)
             elif isinstance(node,ast.Delete):
+                from .native_annotations import metadata_target
+                from .native_class_deletion import analyze
                 for target in node.targets:
-                    if not self.lexical.delete(plan,target,environment):self.namespace.delete(plan,target,environment)
+                    metadata_target(self,plan,target,environment)
+                    if not analyze(self,plan,target,environment):
+                        if not self.lexical.delete(plan,target,environment):self.namespace.delete(plan,target,environment)
             elif isinstance(node,ast.If):
                 self.condition(plan,node.test,environment)
                 environment = self.join(self.block(plan,node.body,environment),self.block(plan,node.orelse,environment),node)
@@ -1082,7 +1229,7 @@ class Model:
                 key=plan.index,id(node)
                 header=self.join(start,self.loop_feedback.get(key),node,"loop_header")
                 if isinstance(node,ast.For):
-                    self.target(plan,node.target,self.item(value,node.iter),header)
+                    self.target(plan,node.target,self.iterators.demand(plan,node,value,header),header)
                 else:
                     self.condition(plan,node.test,header)
                     start=Environment(header)
@@ -1102,7 +1249,7 @@ class Model:
                 if node.orelse:
                     environment = self.block(plan,node.orelse,environment)
             elif isinstance(node,ast.Return):
-                if plan is self.module:
+                if self.is_module_plan(plan):
                     raise ClassUnsupported(node)
                 value = Cell("none") if node.value is None else self.expression(plan,node.value,environment)
                 self.contribute(plan.result,value,node)
@@ -1140,7 +1287,7 @@ class Emitter:
                                            function=SimpleNamespace(node=SimpleNamespace(name=plan.scope)))
         self.numeric.string_mode=model.string_mode
         for name, values in plan.locals.items():
-            if plan is model.module and name in model.namespace.active:continue
+            if model.is_module_plan(plan) and name in model.namespace.active:continue
             shared=model.namespace.local_kind(plan,name)
             if shared is not None:
                 self.slot(name,shared)
@@ -1164,15 +1311,18 @@ class Emitter:
         return result
 
     def rust_type(self, kind):
-        def leaf(value, recurse):
-            if getattr(value,"_native_function_reference",False):return "ClassFunctionRef"
-            if isinstance(value,InstanceType):return f"ClassHandle_{self.model.classes[value.name].index}"
-            if isinstance(value,ListType):return f"ClassList<{recurse(value.element)}>"
-            if value=="range":return "ClassRange"
-            if isinstance(value,StreamType)or isinstance(value,str)and value in self.model.INTRINSICS:
-                raise ClassUnsupported(self.plan.node)
-            return None
-        return render_type(kind,leaf)
+        return render_type(kind,self.rust_leaf)
+
+    def rust_leaf(self,value,recurse):
+        if getattr(value,"_native_class_iterator",False):return f"ClassIterator_{value.index}"
+        if getattr(value,"_native_function_reference",False):return "ClassFunctionRef"
+        if getattr(value,"_native_namespace_view",False):return "ClassGlobalsView"
+        if isinstance(value,InstanceType):return f"ClassHandle_{self.model.classes[value.name].index}"
+        if isinstance(value,ListType):return f"ClassList<{recurse(value.element)}>"
+        if value=="range":return "ClassRange"
+        if isinstance(value,StreamType)or isinstance(value,str)and value in self.model.INTRINSICS:
+            raise ClassUnsupported(self.plan.node)
+        return None
 
     def slot(self, name, kind):
         key = name,kind
@@ -1188,22 +1338,31 @@ class Emitter:
     def reference_read(self,name,kind,node):
         if name in self.model.global_symbols and name not in self.plan.declared:return Expression("()",kind)
         slot=self.reference_slot(name,kind)
-        error="NameError"if self.plan is self.model.module else"UnboundLocalError"
-        message=(f"name '{name}' is not defined"if error=="NameError"else
-                 f"cannot access local variable '{name}' where it is not associated with a value")
+        error="NameError"if self.model.is_module_plan(self.plan) else"UnboundLocalError"
+        message=(f"name '{self.model.display_name(name)}' is not defined"if error=="NameError"else
+                 f"cannot access local variable '{self.model.display_name(name)}' where it is not associated with a value")
         result=f"if {slot}{{Ok(())}}else{{Err({_string(error+': '+message)}.to_owned())}}"
         return Expression(self.at(result,node),kind)
 
     def at(self, result, node):
-        return f"native_at({result},{node.lineno},{_string(self.plan.scope)})?"
+        return f"native_at({result},{node.lineno},{self.location_code()})?"
+
+    def location_code(self):return _string(self.plan.scope)
+
+    def prepare_call_context(self,callee,receiver,constructor,defining_module=None):return ""
+
+    def constructor_context_arguments(self,constructor,defining_class):return []
+
+    def emit_import(self,node):return None
 
     def unsupported(self, node):
         raise ClassUnsupported(node)
 
     def coerce(self, value, kind, node):
         if value.kind == kind:return value.code
+        if isinstance(value.kind,EmptyType):return f"native_empty({value.code})"
         if getattr(value.kind,"_native_function_reference",False)and getattr(kind,"_native_function_reference",False):
-            if set(value.kind.definitions)<=set(kind.definitions):return value.code
+            if set(value.kind.targets)<=set(kind.targets):return value.code
             raise ClassUnsupported(node,"this function reference has targets outside the solved receiving family",types=(("value",value.kind),("destination",kind)),proof="finite callable family inclusion")
         if union_kind(value.kind):
             return project(value.kind,value.code,
@@ -1212,7 +1371,7 @@ class Emitter:
             choices=alternatives(kind)
             chosen=value.kind if value.kind in choices else next((option for option in choices
                 if option=="int_bool"and value.kind in {"int","bool"}
-                or getattr(option,"_native_function_reference",False)and getattr(value.kind,"_native_function_reference",False)and set(value.kind.definitions)<=set(option.definitions)
+                or getattr(option,"_native_function_reference",False)and getattr(value.kind,"_native_function_reference",False)and set(value.kind.targets)<=set(option.targets)
                 or isinstance(option,TupleType)and isinstance(value.kind,TupleType)
                     and len(option.fields)==len(value.kind.fields)),None)
             if chosen is None:raise ClassUnsupported(node)
@@ -1260,12 +1419,14 @@ class Emitter:
         return Expression("{"+setup+f"let {result}={truth};{result}"+"}","bool")
 
     def truth(self, value):
+        if isinstance(value.kind,EmptyType):return f"native_empty::<bool>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
             lambda kind,code:self.truth(Expression(code,kind)))
         tag = domain(value.kind)
         if tag in {"int","bool","int_bool"}:
             return self.numeric.truth(self.scalar(value))
-        if tag=="function":return "true"
+        if tag in {"function","iterator"}:return "true"
+        if tag=="globals_dict":return "true"
         if tag in {"str","bytes"}:
             return f"!({value.code}).is_empty()"
         if tag == "float":
@@ -1287,6 +1448,7 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        if isinstance(value.kind,EmptyType):return f"native_empty::<String>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
             lambda kind,code:self.show(Expression(code,kind),node,representation))
         if isinstance(value.kind,ListType):
@@ -1302,6 +1464,8 @@ class Emitter:
             return "class_tuple_text(&[" + ",".join(fields) + "])"
         if tag=="function":
             raise ClassUnsupported(node,"this stored source function needs Python's function-object repr/name/address protocol; typed callable capture and direct dispatch are supported, but function-object display metadata is not implemented",types=(("value",value.kind),),proof="function-object display protocol")
+        if tag=="globals_dict":
+            raise ClassUnsupported(node,"displaying this globals dictionary needs value lookup and ordered dictionary repr; the live namespace view currently implements binding membership, length and identity",proof="module namespace value/iteration protocol")
         if tag in {"int","bool","int_bool","str","bytes","none","object","list","float"}:
             return f"ClassDisplay::class_{'repr' if representation else 'str'}(&({value.code}))"
         raise ClassUnsupported(node)
@@ -1334,6 +1498,8 @@ class Emitter:
             lexical=self.model.lexical.emit_function(self,node,wanted)
             if lexical is None:lexical=self.model.lexical.emit_read(self,node,wanted)
             if lexical is not None:return lexical
+            builtin=self.model.callable_cells.read_emission(self,node)
+            if builtin is not None:return builtin
             from .native_class_comprehensions import read_binding
             binding=read_binding(self,node,wanted)
             if binding is not None:return binding
@@ -1349,9 +1515,9 @@ class Emitter:
             if node.id == "__name__" and name not in self.plan.locals:
                 return Expression('NativeText::from("__main__")','str')
             slot = self.slot(name,wanted)
-            kind = "NameError" if self.plan is self.model.module else "UnboundLocalError"
-            message = (f"name '{name}' is not defined" if kind == "NameError" else
-                       f"cannot access local variable '{name}' where it is not associated with a value")
+            kind = "NameError" if self.model.is_module_plan(self.plan) else "UnboundLocalError"
+            message = (f"name '{self.model.display_name(name)}' is not defined" if kind == "NameError" else
+                       f"cannot access local variable '{self.model.display_name(name)}' where it is not associated with a value")
             result = f"{slot}.clone().ok_or_else(||{_string(kind+': '+message)}.to_owned())"
             return Expression(self.at(result,node),wanted)
         if isinstance(node,ast.Tuple):
@@ -1359,9 +1525,13 @@ class Emitter:
             values=[self.coerce(self.expression(value),kind,value)for value,kind in zip(node.elts,raw.fields)]
             return self.encoded(tuple_code(values),raw,wanted,node)
         if isinstance(node,ast.List):
+            if not node.elts:
+                return Expression(f"class_list(Vec::<{self.rust_type(wanted.element)}>::new())",wanted)
             values = [self.coerce(self.expression(value),wanted.element,value) for value in node.elts]
             return Expression("class_list(vec!["+",".join(values)+"])",wanted)
         if isinstance(node,ast.Attribute):
+            bound=self.model.callable_cells.bound_methods.read(self,node)
+            if bound is not None:return bound
             if domain(wanted) in self.model.INTRINSICS:
                 receiver=self.expression(node.value)
                 return Expression("{let _="+receiver.code+";()}",wanted)
@@ -1450,6 +1620,12 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def binary(self, operator, left, right, node, wanted):
+        from .native_primitive_ops import emit,classify
+        primitive_tags={"int","bool","int_bool","float","str","bytes","none","function","globals_dict","range","list","tuple"}
+        if (union_kind(left.kind)or union_kind(right.kind)or domain(left.kind)in primitive_tags
+                and domain(right.kind)in primitive_tags
+                and classify(operator,left.kind,right.kind,self.model.integer).error is not None):
+            return emit(self,operator,left,right,node,wanted)
         a,b = domain(left.kind),domain(right.kind)
         if a==b=="list" and isinstance(operator,ast.Add):
             return Expression(f"class_list_concat(&{left.code},&{right.code})",wanted)
@@ -1470,10 +1646,13 @@ class Emitter:
             lambda kind,code:self.comparison(operator,Expression(f"({code}).clone()",kind),right,node))
         if union_kind(right.kind):return project(right.kind,right.code,
             lambda kind,code:self.comparison(operator,left,Expression(f"({code}).clone()",kind),node))
+        from .native_globals_view import comparison as globals_comparison
+        observed=globals_comparison(self,operator,left,right,node)
+        if observed is not None:return observed
         a,b = domain(left.kind),domain(right.kind)
         if isinstance(operator,(ast.Is,ast.IsNot)):
-            if a==b=="function":code=f"{left.code}=={right.code}"
-            elif a==b and a in {"object","list"}:
+            if a==b=="function":code=self.model.callable_cells.identity(left.code,right.code)
+            elif a==b and a in {"object","list","iterator"}:
                 code = (f"Rc::ptr_eq(&{left.code},&{right.code})"if left.kind==right.kind else"false")
             elif a==b=="none":
                 code = "true"
@@ -1539,7 +1718,7 @@ class Emitter:
     def function_name(self, plan):
         return f"class_function_{plan.index}"
 
-    def call_user(self, node, callee, receiver=None, constructor=None):
+    def call_user(self, node, callee, receiver=None, constructor=None,defining_module=None,defining_class=None):
         setup,arguments = [],[]
         if receiver is not None:
             before,receiver = self.capture(receiver)
@@ -1550,7 +1729,7 @@ class Emitter:
         if callee is None:values=[]
         else:
             signature=callee.signature.without_receiver()if constructor is not None else callee.signature
-            default_emitter=Emitter(self.model,callee)
+            default_emitter=self.model.emitter(callee)
             def argument_value(expression,parameter):
                 before,value=self.capture(self.expression(expression))
                 setup.append(before)
@@ -1561,12 +1740,17 @@ class Emitter:
             except CallBindingError:raise ClassUnsupported(node)from None
             values=[self.coerce(value,shape(callee.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
+        if constructor is not None:values=self.constructor_context_arguments(constructor,defining_class)+values
         # Constructor futures receive only explicit Python arguments. Their
         # internal __init__ future shares this logical call-stack entry.
         invocation = name+"(class_scope.clone()"+(" ,"+",".join(values)if values else"")+")"
         from .native_class_calls import call as compiled_call
         call = compiled_call(self,invocation,callee,node)
-        return Expression("{"+"\n".join(setup)+call+"}",self.kind(node))
+        context=self.prepare_call_context(callee,receiver,constructor,defining_module)
+        code="{"+"\n".join(setup)+context+call+"}"
+        if constructor is not None:
+            return self.encoded(code,InstanceType(self.model.class_key(constructor)),self.kind(node),node)
+        return Expression(code,self.kind(node))
 
     def parse_words(self, node, count=None):
         words = self.expression(node.args[1])
@@ -1676,129 +1860,10 @@ class Emitter:
             name = alias_kind.root().tag
         code = None
         raw_kind=shape(self.model.constructors[(self.plan.index,id(node))])if(self.plan.index,id(node))in self.model.constructors else wanted
-        if name in {"input","reader_text","reader_bytes","read_text","read_bytes"}:
-            if name in {"reader_bytes","read_bytes"}:
-                code = self.at(f"class_read_bytes(&class_scope,{str(name=='reader_bytes').lower()})",node)
-            else:
-                code = self.at(f"class_read_text(&class_scope,{str(name!='read_text').lower()},{str(name=='input').lower()})",node)
-        elif name == "print":
-            sep = keywords.get("sep",Expression('" ".to_owned()','str'))
-            end = keywords.get("end",Expression('"\\n".to_owned()','str'))
-            if sep.kind == 'none':
-                sep = Expression('" ".to_owned()','str')
-            if end.kind == 'none':
-                end = Expression('"\\n".to_owned()','str')
-            if sep.kind != 'str' or end.kind != 'str':
-                raise ClassUnsupported(node)
-            pieces=[]
-            for i,value in enumerate(arguments):
-                if i:
-                    pieces.append(f"class_scope.io.borrow_mut().output.push_str(&{sep.code});")
-                pieces.append(f"class_scope.io.borrow_mut().output.push_str(&({self.show(value,node)}));")
-            pieces.append(f"class_scope.io.borrow_mut().output.push_str(&{end.code});")
-            if "flush"in keywords:
-                flush = self.truth(keywords["flush"])
-                call = self.at("native_flush_output(&mut class_scope.io.borrow_mut().output)",node)
-                pieces.append(f"if {flush}{{{call};}}")
-            code = "{"+"".join(pieces)+"()}"
-        elif name == "len":
-            value=arguments[0]
-            if domain(value.kind)=="list":length=f"{value.code}.borrow().len()"
-            elif domain(value.kind)=="str":
-                length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"codepoint_len()")
-            elif domain(value.kind)=="bytes":length=f"{value.code}.len()"
-            elif domain(value.kind)=="tuple":length=str(len(value.kind.fields))
-            else:raise ClassUnsupported(node)
-            code=f"class_from_usize({length})"
-            raw_kind='int'
-        elif name == "int":
-            raw_kind='int'
-            if not arguments:code=self.literal(0)
-            elif domain(arguments[0].kind) in {"int","bool","int_bool"}:code=self.number(arguments[0])
-            elif arguments[0].kind=='str':code=self.at(f"class_parse_text(&{arguments[0].code})",node)
-            elif arguments[0].kind=='bytes':code=self.at(f"class_parse_bytes(&{arguments[0].code})",node)
-            elif arguments[0].kind=='float':
-                operation='Int::from_f64'if self.model.integer=='bigint'else'native_float_integer'
-                code=self.at(f"{operation}({arguments[0].code})",node)
-            else:raise ClassUnsupported(node)
-        elif name == "str":
-            code=('NativeText::new()'if not arguments else arguments[0].code+'.clone()'
-                  if arguments[0].kind=="str"else self.show(arguments[0],node))
-        elif name == "bool":
-            code='false'if not arguments else self.truth(arguments[0])
-            raw_kind='bool'
-        elif name == "float":
-            if not arguments:code="0.0_f64"
-            elif domain(arguments[0].kind)in{"int","bool","int_bool"}:code=f"({self.number(arguments[0])}) as f64"
-            elif arguments[0].kind=='float':code=arguments[0].code
-            elif arguments[0].kind=='str':code=self.at(f"native_scalar_float(&{arguments[0].code})",node)
-            else:raise ClassUnsupported(node)
-        elif name == "abs":
-            value=arguments[0]
-            if domain(value.kind)in{"int","bool","int_bool"}:
-                number=self.number(value)
-                code=f"({number}).abs()"if self.model.integer=="bigint"else f"({number}).wrapping_abs()"
-                raw_kind='int'
-            else:raise ClassUnsupported(node)
-        elif name == "id":
-            if domain(arguments[0].kind)not in{"object","list"}:raise ClassUnsupported(node)
-            code=f"class_from_usize(Rc::as_ptr(&{arguments[0].code}) as usize)"
-            raw_kind='int'
-        elif name == "range":
-            values=[self.number(value)for value in arguments]
-            if len(values)==1:values.insert(0,self.literal(0))
-            if len(values)==2:values.append(self.literal(1))
-            code=self.at("class_range("+",".join(values)+")",node)
-        elif name == "list":
-            if not arguments:code=f"class_list(Vec::<{self.rust_type(wanted.element)}>::new())"
-            elif domain(arguments[0].kind)=="list":code=f"class_list({arguments[0].code}.borrow().clone())"
-            elif domain(arguments[0].kind)=="range":
-                values=f"{arguments[0].code}.iter()"
-                if wanted.element=='int_bool':values+=".map(NativeScalar::Int)"
-                code=f"class_list(({values}).collect::<Vec<_>>())"
-            elif domain(arguments[0].kind)=="tuple":
-                value=arguments[0]
-                elements=[self.coerce(Expression(f"{value.code}.{i}.clone()",kind),wanted.element,node)for i,kind in enumerate(value.kind.fields)]
-                code="class_list(vec!["+",".join(elements)+"])"
-            else:raise ClassUnsupported(node)
-        elif name in {"min","max","sum"}:
-            accumulator=self.fresh();member=self.fresh()
-            if name=="sum":
-                start=arguments[1]if len(arguments)==2 else Expression(self.literal(0),'int',0)
-                code=f"{{let mut {accumulator}={self.number(start)};"
-                stream=arguments[0]
-            elif len(arguments)>1:
-                code=f"{{let mut {accumulator}={self.coerce(arguments[0],wanted,node)};"
-                stream=None
-                for candidate in arguments[1:]:
-                    value=Expression(self.coerce(candidate,wanted,node),wanted)
-                    comparison=self.comparison(ast.Lt()if name=="min"else ast.Gt(),value,Expression(accumulator,wanted),node)
-                    code+=f"if {comparison}{{{accumulator}={value.code};}}"
-                code+=accumulator+"}"
-            else:
-                code=f"{{let mut {accumulator}:Option<{self.rust_type(wanted)}>=None;"
-                stream=arguments[0]
-            if stream is not None:
-                if domain(stream.kind)=="list":
-                    iterator=f"{stream.code}.borrow().iter().cloned()";kind=stream.kind.element
-                elif domain(stream.kind)=="range":
-                    iterator=f"{stream.code}.iter()";kind='int'
-                elif domain(stream.kind)=="tuple" and bool(stream.kind.fields):
-                    kind=wanted if name!="sum"else'int'
-                    values=[self.coerce(Expression(f"{stream.code}.{i}.clone()",old),kind,node)for i,old in enumerate(stream.kind.fields)]
-                    iterator="["+",".join(values)+"].into_iter()"
-                else:raise ClassUnsupported(node)
-                if name=="sum":
-                    value=self.numeric.binary(ast.Add(),_Expression(accumulator+".clone()","int"),self.scalar(Expression(member,kind)),node).code
-                    action=f"{accumulator}={value};"
-                    ending=accumulator
-                else:
-                    value=self.coerce(Expression(member,kind),wanted,node)
-                    candidate=self.fresh();old=self.fresh()
-                    comparison=self.comparison(ast.Lt()if name=="min"else ast.Gt(),Expression(candidate+".clone()",wanted),Expression(old+".clone()",wanted),node)
-                    action=f"let {candidate}={value};let replace=match &{accumulator}{{Some({old})=>{comparison},None=>true}};if replace{{{accumulator}=Some({candidate});}}"
-                    ending=self.at(f'{accumulator}.ok_or_else(||"ValueError: {name}() arg is an empty sequence".to_owned())',node)
-                code+=f"for {member} in {iterator}{{{action}}}{ending}}}"
+        from .native_class_builtins import SUPPORTED,emit as emit_builtin
+        if name in SUPPORTED or name in {"reader_text","reader_bytes","read_text","read_bytes"}:
+            result=emit_builtin(self,node,BuiltinIdentity(name),arguments,keywords,wanted,raw_kind)
+            return Expression("{"+"\n".join(setup)+"let class_value="+result.code+";class_value}",wanted,result.constant)
         elif receiver is not None:
             tag,method=domain(receiver.kind),function.attr
             if tag in {"str","bytes"}and method=="split":
@@ -1832,25 +1897,15 @@ class Emitter:
         return Expression("{"+"\n".join(setup)+"let class_value="+result.code+";class_value}",wanted,result.constant)
 
     def assign(self, target, value):
+        code=self._assign(target,value)
         if isinstance(target,ast.Name):
-            lexical=self.model.lexical.emit_store(self,target,value)
-            if lexical is not None:return lexical
-            from .native_class_globals import assign
-            shared=assign(self,target,value)
-            if shared is not None:return shared
-            from .native_class_globals import local_assign
-            shared=local_assign(self,target,value)
-            if shared is not None:return shared
-            kind = self.kind(target)
-            name=self.model.resolved_name(self.plan,target)
-            clearing="".join(f"{other}=None;"for(other_name,other_kind),other in self.slots.items()
-                             if other_name==name and other_kind!=kind)
-            clearing+="".join(f"{other}=false;"for(other_name,other_kind),other in self.reference_slots.items()
-                              if other_name==name and other_kind!=kind)
-            if domain(kind)in self.model.INTRINSICS:
-                return clearing+f"{self.reference_slot(name,kind)}=true;"
-            slot=self.slot(name,kind)
-            return clearing+f"{slot}=Some({self.coerce(value,kind,target)});"
+            from .native_globals_view import store
+            code+=store(self,target)
+        return code
+
+    def _assign(self,target,value):
+        if isinstance(target,ast.Name):
+            return self.assign_name(target,value)
         if isinstance(target,(ast.Tuple,ast.List)):
             setup,source = self.capture(value)
             if domain(source.kind)=="tuple":
@@ -1882,6 +1937,23 @@ class Emitter:
             return setup+more,("index",owner,index,owner.kind.element)
         raise ClassUnsupported(target)
 
+    def assign_name(self,target,value):
+        lexical=self.model.lexical.emit_store(self,target,value)
+        if lexical is not None:return lexical
+        from .native_class_globals import assign,local_assign
+        shared=assign(self,target,value)
+        if shared is not None:return shared
+        shared=local_assign(self,target,value)
+        if shared is not None:return shared
+        kind=self.kind(target)
+        name=self.model.resolved_name(self.plan,target)
+        clearing="".join(f"{other}=None;"for(other_name,other_kind),other in self.slots.items()
+                         if other_name==name and other_kind!=kind)
+        clearing+="".join(f"{other}=false;"for(other_name,other_kind),other in self.reference_slots.items()
+                          if other_name==name and other_kind!=kind)
+        if domain(kind)in self.model.INTRINSICS:return clearing+f"{self.reference_slot(name,kind)}=true;"
+        return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
+
     def load_reference(self, reference, node, kind=None):
         if reference[0]=="name":
             target=reference[1]
@@ -1896,8 +1968,8 @@ class Emitter:
             if shared is not None:return shared
             name=self.model.resolved_name(self.plan,target)
             slot=self.slot(name,kind)
-            message=f"UnboundLocalError: cannot access local variable '{name}' where it is not associated with a value"
-            if self.plan is self.model.module:message=f"NameError: name '{name}' is not defined"
+            message=f"UnboundLocalError: cannot access local variable '{self.model.display_name(name)}' where it is not associated with a value"
+            if self.model.is_module_plan(self.plan):message=f"NameError: name '{self.model.display_name(name)}' is not defined"
             return Expression(self.at(f"{slot}.clone().ok_or_else(||{_string(message)}.to_owned())",node),kind)
         if reference[0]=="field":
             _,owner,plan,index,kind=reference
@@ -1919,17 +1991,33 @@ class Emitter:
         return "\n".join(self.statement(value)for value in values)
 
     def statement(self, node):
+        if isinstance(node,(ast.Import,ast.ImportFrom)):
+            imported=self.emit_import(node)
+            if imported is not None:return imported
         if isinstance(node,(ast.ClassDef,ast.FunctionDef)):
             lexical=self.model.lexical.emit_define(self,node)
             if lexical is not None:return lexical
             from .native_class_globals import define
             return define(self,node)
-        if isinstance(node,(ast.Import,ast.Pass,ast.Global,ast.Nonlocal)):
+        if isinstance(node,ast.Import):
+            from .native_globals_view import imported
+            return imported(self,node)
+        from .native_annotations import future_directive
+        if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal))or future_directive(node):
             return ""
         if isinstance(node,ast.Expr):
             if isinstance(node.value,ast.Constant)and type(node.value.value)is str:
                 return ""
             return self.expression(node.value).code+";"
+        if isinstance(node,ast.Assert):
+            from .native_assertions import lower
+            return lower(self,node)
+        if isinstance(node,ast.AnnAssign):
+            if node.value is not None:
+                setup,value=self.capture(self.expression(node.value))
+                return setup+self.assign(node.target,value)
+            from .native_annotations import target_inputs
+            return ''.join(self.expression(expression).code+';'for expression in target_inputs(node.target))
         if isinstance(node,ast.Assign):
             from .native_frame_references import alias_assignment
             if alias_assignment(self.model,self.plan,node):return ''
@@ -1943,8 +2031,15 @@ class Emitter:
             setup,value=self.capture(self.expression(node.value))
             return setup+"".join(self.assign(target,Expression(value.code+".clone()",value.kind,value.constant))for target in node.targets)
         if isinstance(node,ast.Delete):
+            from .native_class_deletion import lower
             from .native_class_globals import delete
-            return "".join(self.model.lexical.emit_delete(self,target)if self.model.lexical.field_for(target)is not None else delete(self,target)for target in node.targets)
+            pieces=[]
+            for target in node.targets:
+                code=lower(self,target)
+                if code is None:
+                    code=self.model.lexical.emit_delete(self,target)if self.model.lexical.field_for(target)is not None else delete(self,target)
+                pieces.append(code)
+            return ''.join(pieces)
         if isinstance(node,ast.AugAssign):
             setup,reference=self.reference(node.target)
             old_kind=shape(self.model.augmented[(self.plan.index,id(node))])
@@ -2006,7 +2101,11 @@ class Emitter:
         setup+=cache
         self.loops.pop()
         current=self.fresh()
-        if domain(source.kind)=="list":
+        if domain(source.kind)=="iterator":
+            pulled=self.model.iterators.pull(self,node,source)
+            prefix=f"'{label}:loop{{let Some({current})=({pulled.code}) else{{break;}};"
+            item=Expression(current,pulled.kind)
+        elif domain(source.kind)=="list":
             index=self.fresh()
             setup+=f"let mut {index}=0_usize;"
             advance=self.at(f"{index}.checked_add(1).ok_or_else(||\"OverflowError: list iterator index overflow\".to_owned())",node)
@@ -2060,7 +2159,7 @@ class Emitter:
         if "none"in alternatives(shape(self.plan.result)):
             tail="Ok("+self.coerce(Expression("()","none"),shape(self.plan.result),self.plan.node)+")"
         else:
-            tail=f"Err(NativeError{{message:\"RuntimeError: invalid compiled return\".into(),line:{getattr(self.plan.node,'lineno',1)},function:{_string(self.plan.scope)},frames:Vec::new()}})"
+            tail=f"Err(NativeError{{message:\"RuntimeError: invalid compiled return\".into(),line:{getattr(self.plan.node,'lineno',1)},function:{self.location_code()},frames:Vec::new()}})"
         lexical_initial=self.model.lexical.initialize(self)
         signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+(" ,"+",".join(parameters)if parameters else"")
         from .native_class_calls import synchronous
@@ -2119,19 +2218,23 @@ def _class_layouts(model,emitter):
         if not owner.used:continue
         fields=list(owner.fields.values())
         members=",".join(f"field_{i}:{emitter.rust_type(MaybeType(shape(value.cell)))}"for i,value in enumerate(fields))
+        extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
+        if extra_member:members=extra_member+(","+members if members else"")
         result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<RefCell<ClassData_{owner.index}>>;")
         for i,value in enumerate(fields):
             message=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{value.name}'")
             result.append(f"fn class_get_{owner.index}_{i}(value:&ClassHandle_{owner.index})->Result<{emitter.rust_type(shape(value.cell))},String>{{value.borrow().field_{i}.clone().ok_or_else(||{message}.to_owned())}}")
-        result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<__main__.{owner.node.name} object at 0x{{:x}}>\",Rc::as_ptr(self)as usize)}}}}")
+        result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<{owner.module_name}.{owner.node.name} object at 0x{{:x}}>\",Rc::as_ptr(self)as usize)}}}}")
         constructor=owner.methods.get("__init__")
         params=[];args=[]
         if constructor:
             for i,name in enumerate(constructor.parameters[1:]+constructor.keyword_only):
                 params.append(f"argument_{i}:{emitter.rust_type(shape(constructor.arguments[name]))}")
                 args.append(f"argument_{i}")
+        if extra_parameter:params.insert(0,extra_parameter)
         signature="class_scope:ClassScope"+(","+",".join(params)if params else"")
         initialize=",".join(f"field_{i}:None"for i in range(len(fields)))
+        if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
         body=f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));"
         if constructor:
             suffix="?;"if synchronous(model,constructor)else".await?;"
@@ -2144,7 +2247,7 @@ def _class_layouts(model,emitter):
 
 
 def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),prune_output=True,diagnostic_out=None,unit=None,
-                         string_mode="ascii",frame_selection=None):
+                         string_mode="ascii",frame_selection=None,model_factory=None):
     """Lower a proved closed class program to concrete Rust and compiled futures."""
     from .frontend import build_program, native_namespace_diagnostic
     from .diagnostics import CompilationError
@@ -2167,14 +2270,16 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     try:
         if integer not in {"i64","i128","bigint"}:raise ClassUnsupported(ast.Module(body=[],type_ignores=[]))
         tree=unit.tree
-        model=Model(tree,filename,integer,trusted_imports,unit=unit,string_mode=string_mode)
+        factory=Model if model_factory is None else model_factory
+        model=factory(tree,filename,integer,trusted_imports,unit=unit,string_mode=string_mode)
         model.frame_selection=frame_selection
         model.run()
         from .native_class_calls import classify,synchronous,runtime as call_runtime
         classify(model)
-        emitters=[Emitter(model,plan)for plan in model.plans if plan.reachable]
+        emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
+        layouts=model.iterators.runtime(emitters[0])+"\n"+layouts
         unions={}
         def add_kind(kind):
             if isinstance(kind,UnionType):
@@ -2200,7 +2305,10 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         if lambda_layouts:lexical_layouts+=("\n"if lexical_layouts else"")+lambda_layouts
         layouts=(lexical_layouts+"\n"if lexical_layouts else"")+model.callable_cells.runtime()+"\n"+"\n".join(union_declaration(kind,emitters[0].rust_type)for kind in unions)+"\n"+layouts
     except (SyntaxError,_Unsupported,RecursionError)as error:
-        if diagnostic_out is not None:diagnostic_out.append(_direct_diagnostic(source,filename,error,unit=unit))
+        if diagnostic_out is not None:
+            node=getattr(error,"node",None)
+            origin=unit.original_unit(node)if node is not None and hasattr(unit,"original_unit")else unit
+            diagnostic_out.append(_direct_diagnostic(origin.source,origin.filename,error,unit=origin))
         return None
     from .native import _HELPERS,_OUTPUT_HELPERS,_INPUT_HELPERS,_SCALAR_UNION_HELPERS
     runtime=files("py2fastrust").joinpath("runtime")
@@ -2242,7 +2350,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                   'for &(line,function)in error.frames.iter().rev(){\n'
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}",{_string(filename)},line,function);}}\n'
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);std::process::exit(1);}}}}')
-    result="\n".join(pieces)
+    result=model.finish_runtime("\n".join(pieces))
     from .native_text_policy import apply_text_policy
     result=apply_text_policy(result,string_mode)
     from .native_cached_text import apply_cached_text

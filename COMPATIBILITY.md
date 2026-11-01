@@ -13,9 +13,24 @@ functions, integer containers, compatible branches/loops, scalar functions and
 selected competitive-programming input/BFS patterns are implemented. This is
 an incomplete subset of the required Python language. Remaining closure lifetime
 cases, exception handlers, general object models, user-defined generators,
-dynamic execution, general imports
-and many mixed-type/alias cases still require direct lowering. An `E006`
+dynamic execution, import reflection/reloading and many mixed-type/alias cases
+still require direct lowering. An `E006`
 diagnostic makes that gap explicit; it does not satisfy the missing feature.
+
+Fixed-name imports now compile supported user modules, pure-Python packages and
+bundled module sources to separate typed namespaces in the same Rust file.
+Original AST, symbol-table, scope and source positions remain attached to each
+source unit. Initialization runs once at the original import statement, with
+partial namespace caching for circular imports. Module references, supported
+attribute values and exported callables preserve identity and defining globals
+through aliases, function arguments, returned values and captured defaults.
+Relative imports and parent-package attributes use the same namespace objects.
+The implementation does not load Python files at runtime. Arbitrary namespace
+keys, import-spec objects, lazy annotation descriptors, runtime imports and
+`--include-module` dynamic bundles still require implementation. Replacing
+`sys.stdin`, `sys.stdout` or `sys.stderr` requires stored stream-object dispatch;
+such assignments are rejected instead of silently continuing to use the native
+standard streams.
 
 Immediate `for`, reduction, `list`, `set`, `sorted`, `next`, unpacking, and string
 `join` consumers use the same normalized producer plans. Core builtin aliases
@@ -376,6 +391,17 @@ onto positional-only, ordinary and keyword-only parameters. The binder consumes
 captured defaults without reevaluating their Python expressions. Class input
 aliases retain a bound flag, so reading an unset alias reports its Python
 name error before performing input or copying another alias.
+
+Captured builtin `pow(base, exp, mod)` calls on typed frames support integral
+arguments in every integer mode, including negative exponents with modular
+inverses, signed moduli, keyword binding and Python arithmetic/binding errors.
+They share the ordinary integer arithmetic implementation. Saved aliases and
+the canonical `builtins.pow` binding preserve callee-before-argument evaluation.
+Two-argument integral calls currently require a literal exponent whose value
+after selected-width normalization is nonnegative. Dynamic or negative
+two-argument exponents, floating/complex power results and user operand special
+methods remain required unfinished protocols with positioned `E006` diagnostics.
+
 Definition-time defaults on the typed frame path run once in their original
 execution scope, including mutable defaults and calls with effects. Optional
 typed module cells distinguish an unset name from `None`, preserve shared list
@@ -386,10 +412,22 @@ conditionals, supported containers and object fields. Rebinding or deleting a
 module function name updates its optional cell; saved references retain their
 original identity and defaults. Calls capture the current callee before their
 arguments and dispatch directly to the selected compiled Rust function. Valid
-call-only aliases retain their ordinary static path. Captured builtins,
-repeated definition instances, bound methods, callable objects, function
+call-only aliases retain their ordinary static path. Supported captured builtins
+share the canonical binding and typed captured-argument adapters; mutations of
+the `builtins` namespace also affect subsequent builtin fallback reads, while
+previously saved aliases keep their value. Repeated definition instances,
+callable objects, function
 metadata, dynamic argument expansion, emitted variadic functions and general
 dynamic namespaces still require implementation.
+
+Reading a supported ordinary instance method as a value captures its receiver
+in a fresh typed method object. Saved, returned and container-held methods use
+the same original function signature and defining module as direct calls.
+Repeated reads of the same function/receiver compare equal but have distinct
+identity; copying a saved method preserves its identity. Immediate method calls
+keep their direct call path. Unbound class methods, descriptor overrides,
+`staticmethod`/`classmethod`, method metadata and cyclic receiver ownership still
+require implementation.
 
 Named nested functions have canonical lexical definition identities and typed
 per-invocation environments. Returned and sibling functions preserve captured
@@ -410,17 +448,25 @@ shared cells, preserving late binding, nested comprehension lifetimes and
 first-iterable evaluation order. Official free-symbol information selects the
 environment actually retained by a lambda. Named functions and lambdas share
 the same finite callable carrier and direct Rust dispatch. Generic callbacks
-for `sort`, `sorted`, `map` and `filter` on the class/frame path, imported lambda
+for `sort`, `sorted` and `map` on the class/frame path, imported lambda
 lifetimes, reflection and cycle collection remain required work.
+
+The typed frame path represents builtin `iter` and `filter` with per-site typed
+state and captured callbacks. `next`, loops, `list`, `sum`, `min`, `max`, `any`
+and `all` consume the shared cursor lazily; aliases observe the same exhaustion
+state. List iteration releases each borrow before invoking a callback. Text
+cursors advance linearly in the selected ASCII or Unicode model. These states
+contain only their proved source and callback types, with direct Rust calls;
+arbitrary user iterator protocols and general generators remain required work.
 
 Class values, method signatures, fields, and list elements use the shared
 scalar, `TupleType`, `ListType`, `MaybeType`, `NullableType`, and `UnionType`
 descriptors. A storage renderer preserves shared instance/list handles. Immutable
 values entering allocation members use the common directional value constraints;
 a container join does not widen the value inserted into it. The class scope and
-control-flow planner still needs migration to the shared semantic graph. Nullable
-mutable handles and identity-sensitive floating-point container comparisons remain
-outside this direct proof.
+control-flow planner still needs migration to the shared semantic graph. Proved
+shared mutable handles retain identity through nullable method/function results.
+Identity-sensitive floating-point container comparisons remain outside this proof.
 
 A resolved call graph selects ordinary Rust functions for small acyclic class
 call paths. Recursive components, their callers and longer chains retain the
@@ -456,7 +502,11 @@ expressions allocate distinct containers; copy, concatenation, repetition,
 extension and in-place repetition preserve inner identity. Existing canonical
 list methods operate on these handles, including recursive built-in equality,
 search and supported lexicographic list/tuple sorting. Instance equality uses
-default object identity rather than structural field equality. Recursive storage
+default object identity rather than structural field equality. Acyclic instance
+fields retain shared child handles; deleting a field clears its presence state
+without changing surviving aliases. Missing fields remain distinct from fields
+containing `None`, including after deletion. Descriptor deletion and finalizers
+remain required protocols. Recursive storage
 layouts and possible instance/list ownership cycles are conservatively rejected
 until allocation-cycle proofs or cycle-aware collection exist. Mixed mutable
 alternative carriers, custom comparison protocols and floating element identity
@@ -484,7 +534,7 @@ recursive methods. Missing fields use typed optional storage. Compiled Rust
 futures run on an iterative executor; both successful deep calls and exception
 unwinding avoid dependence on the native stack. This separate class proof
 still needs integration with common semantic lowering. Inheritance,
-descriptors, metaclasses, escaped methods, cyclic field layouts and incompatible
+descriptors, metaclasses, cyclic field layouts and incompatible
 field/result types remain explicit implementation gaps.
 
 ## Retained internal runtime implementation
