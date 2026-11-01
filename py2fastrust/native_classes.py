@@ -142,7 +142,7 @@ def merge(left, right, node,*,allow_unresolved=False):
         right.parent = left
         left.tag = tag
         return left
-    if left.tag != right.tag or left.tag=="union"or(left.tag=="tuple"and len(left.args)!=len(right.args)):
+    if left.tag != right.tag or left.tag=="union"or(left.tag=="tuple"and len(left.args)!=len(right.args))or(left.tag==right.tag=="object"and left.args!=right.args):
         from .native_class_storage import shared_element
         # ListType is an owned Vec in ordinary lowering, but the class ABI
         # stores it as a shared ClassList handle. Prove that actual ABI here.
@@ -1128,6 +1128,9 @@ class Model:
         if deque is not None:return deque
         from .native_annotations import metadata_access
         metadata_access(node,shape(receiver))
+        from .native_finite_attributes import analyze
+        finite=analyze(self,plan,node,receiver)
+        if finite is not None:return finite
         bound=self.callable_cells.bound_methods.value(plan,node,receiver,environment)
         if bound is not None:return bound
         captured=self.attribute_item(plan,node,receiver,environment)
@@ -1199,6 +1202,8 @@ class Model:
             from .native_annotations import metadata_access
             metadata_access(node,shape(owner))
             if self.attribute_target(plan,node,owner,value,environment):return
+            from .native_finite_attributes import analyze
+            if analyze(self,plan,node,owner,value=value)is not None:return
             if owner.tag == "object":
                 field_ = self.field(self.classes[owner.args[0]],self.resolved_name(plan,node),node,writing=True)
                 self.contribute(field_,value,node)
@@ -1692,6 +1697,11 @@ class Emitter:
         if isinstance(node,(ast.Dict,ast.Set,ast.DictComp,ast.SetComp)):
             return self.model.mappings.emit_expression(self,node)
         if isinstance(node,ast.Attribute):
+            from .native_finite_attributes import selected,emit
+            if selected(self.model,self.plan,node):
+                before,receiver=self.capture(self.expression(node.value))
+                value=emit(self,node,receiver,wanted)
+                return Expression('{'+before+value.code+'}',wanted)
             if node.attr=='default_factory':
                 from .native_class_defaultdicts import is_default
                 if all(is_default(kind)for kind in alternatives(self.kind(node.value))):
@@ -2153,6 +2163,8 @@ class Emitter:
             return "",("name",target)
         if isinstance(target,ast.Attribute):
             setup,owner = self.capture(self.expression(target.value))
+            from .native_finite_attributes import selected
+            if selected(self.model,self.plan,target):return setup,('finite_field',owner,self.kind(target))
             if target.attr=='default_factory':
                 from .native_class_defaultdicts import is_default
                 if all(is_default(kind)for kind in alternatives(owner.kind)):return setup,('default_factory',owner,self.kind(target))
@@ -2189,6 +2201,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=='finite_field':
+            from .native_finite_attributes import emit
+            return emit(self,node,reference[1],kind or reference[2])
         if reference[0]=="deque_index":
             return self.model.deques.indexes.emit(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]=='default_factory':
@@ -2218,6 +2233,9 @@ class Emitter:
         return Expression(self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node),kind)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=='finite_field':
+            from .native_finite_attributes import emit
+            return emit(self,node,reference[1],'none',value=value).code+';'
         if reference[0]=="deque_index":
             return self.model.deques.indexes.emit(self,node,reference[1],reference[2],"none",value).code+";"
         if reference[0]=='default_factory':return self.model.mappings.defaultdicts.emit_attribute_store(self,node,reference[1],value)

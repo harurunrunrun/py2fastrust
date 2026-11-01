@@ -615,3 +615,13 @@ cells. A default-expression failure leaves the previous successful binding
 intact. Default payload ownership participates in cycle checks. Multiple
 distinct definitions of one lexical name and ordinary writes/deletes of that
 name remain separate capabilities.
+
+Plain instance data attributes support finite owner alternatives, including
+`None`, and distinct source-class instances can share a finite return/binding
+representation. Each Rust branch uses the actual class layout and retains its
+shared payloads. Missing builtin attributes produce their Python read/store
+errors; an existing builtin attribute needs its registered descriptor adapter
+and is diagnosed explicitly. Attribute assignment evaluates its RHS before
+looking up the target owner. Augmented assignment retains its owner and reads
+the old value before evaluating its RHS. Method/descriptor alternatives and
+cycle-aware object lifetimes remain independent capabilities.

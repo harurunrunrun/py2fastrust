@@ -1353,3 +1353,13 @@ capture the same owning environment and create a real cycle. Such unproved
 cycles retain the existing positioned cycle-collection diagnostic. This does
 not implement arbitrary function-object attributes, multiple distinct `def`
 nodes for one lexical binding, or rebinding/deleting that binding.
+
+Plain instance data attributes support finite owner alternatives, including
+`None`, and distinct source-class instances can share a finite return/binding
+representation. Each Rust branch uses the actual class layout and retains its
+shared payloads. Missing builtin attributes produce their Python read/store
+errors; an existing builtin attribute needs its registered descriptor adapter
+and is diagnosed explicitly. Attribute assignment evaluates its RHS before
+looking up the target owner. Augmented assignment retains its owner and reads
+the old value before evaluating its RHS. Method/descriptor alternatives and
+cycle-aware object lifetimes remain independent capabilities.
