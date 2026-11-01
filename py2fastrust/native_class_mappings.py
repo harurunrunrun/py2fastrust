@@ -33,6 +33,7 @@ class MappingRecord:
     source:object=None
     source_type:object=None
     emitted:bool=False
+    flavor:str='dict'
 
     @property
     def kind(self):return MappingType(self.index,self)
@@ -124,7 +125,7 @@ def query_canonical(emitter,value,wanted):
 def unhashable_leaf(kind):
     from .native_types import ListType
     if isinstance(kind,ListType):return 'list'
-    if mapping_kind(kind):return kind.record.category
+    if mapping_kind(kind):return 'Counter'if kind.record.flavor=='Counter'else kind.record.category
     if isinstance(kind,TupleType):
         for child in kind.fields:
             result=unhashable_leaf(child)
@@ -132,26 +133,36 @@ def unhashable_leaf(kind):
     return None
 
 
+def query_type_name(emitter,value,node):
+    from .native_class_builtins import _type_name
+    if mapping_kind(value.kind)and value.kind.record.flavor=='Counter':return '"collections.Counter"'
+    return _type_name(emitter,value,node)
+
+
 class Mappings:
     def __init__(self,model):
         self.model=model;self.records=[];self.sites={};self.methods={};self.augmented={}
         from .native_mapping_views import Views
         self.views=Views(self)
+        from .native_class_counters import Counters
+        self.counters=Counters(self)
 
     def owns(self,kind):
         return mapping_kind(kind)and 0<=kind.index<len(self.records)and self.records[kind.index]is kind.record
 
-    def record(self,plan,node,category,operation='literal'):
+    def record(self,plan,node,category,operation='literal',flavor=None):
         from .native_classes import Cell
-        key=plan.index,id(node),category
+        flavor=flavor or category
+        key=plan.index,id(node),category,flavor
         if key not in self.sites:
             self.sites[key]=MappingRecord(len(self.records),category,node,plan,Cell(),Cell('none')if category=='set'else Cell(),operation)
+            self.sites[key].flavor=flavor
             self.records.append(self.sites[key])
         return self.sites[key]
 
     def snapshot(self):
         from .native_classes import shape
-        return tuple((r.category,shape(r.key),shape(r.value))for r in self.records),self.views.snapshot()
+        return tuple((r.category,r.flavor,shape(r.key),shape(r.value))for r in self.records),self.views.snapshot()
 
     def default_uninhabited(self):
         from .native_classes import Cell,merge
@@ -171,6 +182,7 @@ class Mappings:
         from .native_classes import shape
         if not key_supported(shape(record.key)):
             raise ClassUnsupported(node,'this dictionary/set key family needs a heterogeneous or custom Python hash/equality protocol not implemented by the typed native hash adapter',types=(('key',shape(record.key)),),proof='compatible native hash-key representation')
+        self.counters.validate(record,node)
 
     def add_lifetime_edges(self,edges,targets):
         for record in self.records:
@@ -262,6 +274,8 @@ class Mappings:
 
     def analyze_method(self,plan,node,receiver,arguments,keywords,environment):
         from .native_classes import shape,Cell,ClassUnsupported
+        counted=self.counters.analyze_method(plan,node,receiver,arguments,keywords,environment)
+        if counted is not None:return counted
         view=self.views.analyze(plan,node,receiver,arguments,keywords)
         if view is not None:
             self.methods[(plan.index,id(node))]=(receiver,node.func.attr)
@@ -274,7 +288,7 @@ class Mappings:
         self.methods[(plan.index,id(node))]=(receiver,name)
         if name=='copy'and not arguments:
             if len(kinds)!=1:raise ClassUnsupported(node,'copying these mapping alternatives needs a joined destination key/value ABI',proof='mapping copy result representation')
-            old=kinds[0].record;record=self.record(plan,node,old.category,'copy');record.source=receiver
+            old=kinds[0].record;record=self.record(plan,node,old.category,'copy',flavor=old.flavor);record.source=receiver
             self.contribute_key(record,old.key,node);self.model.contribute(record.value,old.value,node)
             return self.model.cell(plan,node,record.kind)
         if name in {'get','setdefault'}and 1<=len(arguments)<=2:
@@ -368,10 +382,12 @@ class Mappings:
             from .native import _string
             leaf=unhashable_leaf(key.kind)
             if leaf is None:raise ClassUnsupported(node,'this dictionary query needs a floating/custom hash and equality adapter that has not been implemented; it cannot be treated as an unhashable value or as a missing key',types=(('key',key.kind),),proof='Python query-key hash/equality protocol')
-            return _error(emitter,node,wanted,'format!("TypeError: cannot use \'{}\' as a dict key (unhashable type: \'{}\')",'+_type_name(emitter,key,node)+','+_string(leaf)+')')
+            return _error(emitter,node,wanted,'format!("TypeError: cannot use \'{}\' as a dict key (unhashable type: \'{}\')",'+query_type_name(emitter,key,node)+','+_string(leaf)+')')
         if default is None:
-            error='format!("KeyError: {}",'+emitter.show(key,node,True)+')'
-            absent=emitter.at(f'Err::<{emitter.rust_type(wanted)},String>({error})',node)
+            if record.flavor=='Counter':absent=emitter.coerce(Expression(emitter.literal(0),'int',0),wanted,node)
+            else:
+                error='format!("KeyError: {}",'+emitter.show(key,node,True)+')'
+                absent=emitter.at(f'Err::<{emitter.rust_type(wanted)},String>({error})',node)
         else:absent=emitter.coerce(default,wanted,node)
         value,found,canonical_name=(emitter.fresh()for _ in range(3))
         query=query_canonical(emitter,key,source_kind)
@@ -386,6 +402,8 @@ class Mappings:
         return self._set(emitter,node,owner,key,value)
 
     def emit_method(self,emitter,node):
+        counted=self.counters.emit_method(emitter,node)
+        if counted is not None:return counted
         from .native_classes import Expression,shape
         from .call_semantics import normalize_call
         if (emitter.plan.index,id(node))not in self.methods:return None
@@ -439,6 +457,7 @@ class Mappings:
     def show(self,emitter,value,node):
         from .native_classes import Expression,shape,ClassUnsupported
         record=value.kind.record
+        if record.flavor=='Counter':return self.counters.show(emitter,value,node)
         if record.category=='set':
             raise ClassUnsupported(node,'set display would expose traversal order; the typed set adapter currently proves order-insensitive sorted/membership consumers only',proof='set traversal-order observation')
         before,value=emitter.capture(Expression('('+value.code+').clone()',value.kind))
@@ -459,7 +478,7 @@ class Mappings:
                 if leaf is None:raise ClassUnsupported(node,'this dictionary/set membership key needs a floating/custom Python hash/equality adapter that is not implemented',types=(('key',left.kind),),proof='Python membership-key hash/equality protocol')
                 purpose='dict key'if record.category=='dict'else'set element'
                 message='"TypeError: cannot use \'{}\' as a '+purpose+' (unhashable type: \'{}\')"'
-                code=emitter.at('Err::<bool,String>(format!('+message+','+_type_name(emitter,left,node)+','+_string(leaf)+'))',node)
+                code=emitter.at('Err::<bool,String>(format!('+message+','+query_type_name(emitter,left,node)+','+_string(leaf)+'))',node)
             else:
                 key=emitter.fresh();query=query_canonical(emitter,left,shape(record.key))
                 code='{let value=match '+query+'{Some('+key+')=>'+right.code+'.borrow().contains(&'+key+'),None=>false};value}'
@@ -483,4 +502,5 @@ class Mappings:
             key,value=shape(record.key),shape(record.value)
             result.append('type ClassMapping_'+str(record.index)+'=Rc<RefCell<NativeKeyDict<'+emitter.rust_type(key)+','+emitter.rust_type(value)+','+canonical_type(key)+'>>>;')
         result.append(self.views.runtime(emitter))
+        result.append(self.counters.runtime())
         return '\n'.join(result)

@@ -276,6 +276,28 @@ operations, recursive ownership cycles and arbitrary mapping subclasses still
 need their own protocols. The existing unique-owner path retains its
 separate deletion support described below.
 
+`collections.Counter` is a registered native mapping subclass with shared
+handles. Canonical imports and saved constructor aliases preserve their class
+identity; `isinstance(counter, Counter)` and `isinstance(counter, dict)` use the
+registered class metadata. User modules named `collections` retain their own
+exports and are never replaced by this adapter.
+
+Counter constructors accept typed iterables, dictionaries, other Counters,
+`None`, and compatible named counts. Missing indexing returns zero without
+inserting a key; `get` keeps its ordinary dictionary default behavior. Copy,
+mutation, class fields and returned aliases retain the same count/key storage
+rules. `update` and `subtract` accept supported iterable/mapping/optional sources
+and keywords. Counts must be builtin integers or booleans. Integral/boolean
+key equivalence retains the original key, including during updates.
+
+`most_common` preserves insertion-order ties. A requested finite positive limit
+uses O(m log(min(n,m)+1)) counting/selection work and O(min(n,m)) auxiliary storage;
+a nonpositive limit avoids traversal. Unbounded selection and Counter display
+sort by count. `total` adds in the selected integer mode. Live keys/items/values
+views use the same checked dictionary cursors. Counter `elements`, arithmetic
+and set-like comparison, arbitrary count objects, subclassing/custom protocol
+methods, generator-expression sources and frame `defaultdict` remain unfinished.
+
 `tuple(iterable)` shares the typed source/pull adapter on frames. It materializes
 immutable tuples with alias-preserving mutable elements, retains an existing
 tuple's identity, and shares the empty tuple. Fixed and runtime tuple query

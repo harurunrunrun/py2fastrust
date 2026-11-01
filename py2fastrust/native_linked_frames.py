@@ -109,6 +109,8 @@ class LinkedModel(Model):
         provider.register_member_adapter('sys',SysAdapter)
         from .native_itertools import ItertoolsAdapter
         provider.register_member_adapter('itertools',ItertoolsAdapter)
+        from .native_class_counters import CollectionsAdapter
+        provider.register_member_adapter('collections',CollectionsAdapter)
         return provider
 
     def builtin_identity(self,plan,node,environment):

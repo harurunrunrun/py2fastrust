@@ -71,6 +71,15 @@ materialization/reduction consumers, including `tuple(iterable)`. Key families
 and the remaining deletion, view-operation and custom-protocol limits are documented in
 [COMPATIBILITY.md](COMPATIBILITY.md).
 
+Canonical `collections.Counter` imports have a typed frame adapter, including
+saved constructor aliases, integer-count iterable/mapping constructors, missing
+zero reads, `get`, `copy`, `update`, `subtract`, `most_common`, `total`, and live
+mapping views. `isinstance` recognizes the Counter class and its dict base.
+`most_common(n)` uses a bounded native heap; it does not sort the whole mapping
+for small or nonpositive limits. Counter arithmetic, `elements`, general count
+objects, and `defaultdict` remain unfinished. See
+[COMPATIBILITY.md](COMPATIBILITY.md) for admitted keys and exact boundaries.
+
 Module/function aliases use resolved identities. Positional `*` call expansion
 supports compiled source functions and `print`, including nonescaping generator
 expressions and shared dictionary views. Expansion into other native builtins,

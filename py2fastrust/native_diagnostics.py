@@ -40,7 +40,8 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
     name = type(kind).__name__
     if getattr(kind,'_native_class_mapping',False):
         record=kind.record
-        return ('dict['+nested(record.key)+', '+nested(record.value)+']'if record.category=='dict'else'set['+nested(record.key)+']')
+        label='collections.Counter'if record.flavor=='Counter'else'dict'
+        return (label+'['+nested(record.key)+', '+nested(record.value)+']'if record.category=='dict'else'set['+nested(record.key)+']')
     if getattr(kind,'_native_mapping_view',False):
         return 'dict_'+kind.record.mode+'['+nested(kind.record.element)+']'
     if name in {"ListType","SharedListType"}:

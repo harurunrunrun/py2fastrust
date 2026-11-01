@@ -159,6 +159,7 @@ def _type_name(emitter,value,node):
     if tag=="int_bool":return f'match {value.code}{{NativeScalar::Int(_)=>"int",NativeScalar::Bool(_)=>"bool"}}'
     if tag=="object":return _string(emitter.model.classes[value.kind.name].node.name)
     if tag=="globals_dict":return '"dict"'
+    if getattr(value.kind,'_native_class_mapping',False)and value.kind.record.flavor=='Counter':return '"Counter"'
     if tag=="iterator"and value.kind.record.operation in {"filter","map","zip"}:
         return _string(value.kind.record.operation)
     if tag=="iterator"and hasattr(value.kind.record,"tool"):return _string("itertools."+value.kind.record.tool)
