@@ -76,7 +76,7 @@ def operation_plan(operator,left,right,integer,node):
     return classify(operator,left,right,integer)
 
 
-def analyze(model,plan,node,operator,left,right):
+def analyze(model,plan,node,operator,left,right,*,identity=None):
     from .native_classes import ClassUnsupported,shape,Cell,merge
     from .native_union_sequences import branches
     kinds=[]
@@ -95,7 +95,7 @@ def analyze(model,plan,node,operator,left,right):
             if child is not None:
                 # Namespace flow inputs can be weak. Own this operation's
                 # constructor facts independently of a transient solver pass.
-                key=plan.index,id(node),a,b
+                key=plan.index,id(node),identity,a,b
                 source=sources.setdefault(key,Cell("list",(child,)))
                 source.args=(child,)
                 sequences.append(source)
@@ -113,7 +113,7 @@ def analyze(model,plan,node,operator,left,right):
         if literal is None or literal.kind not in {"int","bool"}or integer_policy(bits).normalize(literal.value)<0:
             raise ClassUnsupported(node,"this finite power needs proof of a nonnegative exponent; negative integral powers produce binary64 results whose runtime result carrier is not implemented here",proof="power exponent/result-type proof")
     kind=union_type(*kinds)if kinds else"none"
-    result=model.cell(plan,node)
+    result=model.cell(plan,node,identity=identity)
     if sequences:
         for value in sequences:
             if not model.namespace.contribute(result,value,node,force=True):model.contribute(result,value,node)

@@ -859,32 +859,33 @@ class Model:
             return self.cell(plan,node,"bool")
         return self.expression(plan,node,environment)
 
-    def binary(self, plan, node, operator, left, right):
+    def binary(self, plan, node, operator, left, right, *, identity=None):
+        cell=lambda tag=None,args=():self.cell(plan,node,tag,args,identity=identity)
         a, b = left.root(), right.root()
         if a.tag is None or b.tag is None:
             if self.final:
                 raise ClassUnsupported(node)
-            return self.cell(plan, node)
+            return cell()
         from .native_primitive_ops import analyze,classify
         primitive_tags={"int","bool","int_bool","float","str","bytes","none","function","globals_dict","range","list","tuple"}
         if (a.tag=="union"or b.tag=="union"or a.tag in primitive_tags and b.tag in primitive_tags
                 and classify(operator,shape(a),shape(b),self.integer).error is not None):
-            return analyze(self,plan,node,operator,left,right)
+            return analyze(self,plan,node,operator,left,right,identity=identity)
         if isinstance(operator, ast.Add) and a.tag == b.tag == "list":
             merge(a.args[0], b.args[0], node)
-            return self.cell(plan, node, "list", (a.args[0],))
+            return cell("list", (a.args[0],))
         if isinstance(operator, ast.Mult) and (a.tag == "list" or b.tag == "list"):
             values, count = (a,b) if a.tag == "list" else (b,a)
             if count.tag not in {"int","bool","int_bool"}:
                 raise ClassUnsupported(node)
-            return self.cell(plan, node, "list", (values.args[0],))
+            return cell("list", (values.args[0],))
         if a.tag == b.tag == "str" and isinstance(operator,ast.Add):
-            return self.cell(plan, node, "str")
+            return cell("str")
         if isinstance(operator,ast.Mult) and "str" in {a.tag,b.tag}:
             other = b if a.tag == "str" else a
             if other.tag not in {"int","bool","int_bool"}:
                 raise ClassUnsupported(node)
-            return self.cell(plan,node,"str")
+            return cell("str")
         numeric = {"int","bool","int_bool","float"}
         if a.tag not in numeric or b.tag not in numeric:
             if a.tag=="union"or b.tag=="union":
@@ -893,12 +894,12 @@ class Model:
         if "float" in {a.tag,b.tag} or isinstance(operator,ast.Div):
             if self.integer == "bigint" or not isinstance(operator,(ast.Add,ast.Sub,ast.Mult,ast.Div,ast.FloorDiv,ast.Mod)):
                 raise ClassUnsupported(node)
-            return self.cell(plan,node,"float")
+            return cell("float")
         if isinstance(operator,(ast.BitAnd,ast.BitOr,ast.BitXor)) and {a.tag,b.tag} <= {"bool","int_bool"}:
-            return self.cell(plan,node,"bool" if a.tag == b.tag == "bool" else "int_bool")
+            return cell("bool" if a.tag == b.tag == "bool" else "int_bool")
         if not isinstance(operator,(ast.Add,ast.Sub,ast.Mult,ast.FloorDiv,ast.Mod,ast.Pow,ast.LShift,ast.RShift,ast.BitAnd,ast.BitOr,ast.BitXor)):
             raise ClassUnsupported(node)
-        return self.cell(plan,node,"int")
+        return cell("int")
 
     def call_global_names(self,caller,callee,environment):
         return (set(getattr(environment,"enclosing_global_names",environment))|set(caller.visible_definitions or ()))if self.is_module_plan(caller)else caller.global_names

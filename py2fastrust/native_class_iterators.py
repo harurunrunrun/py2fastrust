@@ -429,7 +429,7 @@ class Iterators:
             if kind=="none":return 'Some('+emitter.truth(item)+')'
             site=record.demands.get((emitter.plan.index,id(node)))
             if site is None:raise ClassUnsupported(node,"the deferred predicate has no matching typed demand proof",proof="deferred callable demand site")
-            result=emit_values(emitter,node,site,Expression(code,kind),[Expression(item.code+".clone()",item.kind)],[],shape(site.result))
+            result=emit_values(emitter,node,site,Expression("("+code+").clone()",kind),[Expression(item.code+".clone()",item.kind)],[],shape(site.result))
             temporary=emitter.fresh()
             optional=self._callback_result(emitter,result)
             return 'match '+optional.code+'{Some('+temporary+')=>Some('+emitter.truth(Expression(temporary,result.kind))+'),None=>None}'

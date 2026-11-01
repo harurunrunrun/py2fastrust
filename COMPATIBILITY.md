@@ -873,3 +873,9 @@ partial consumption, source mutations and callback exhaustion are preserved.
 These adapters compose with `map`, `filter`, `zip`, list/comprehension collectors
 and ordinary loops without materializing intermediate lists. Custom iterator
 protocols and the remaining itertools APIs still need direct adapters.
+
+`itertools.accumulate` also supports ordinary prefix addition and captured binary
+callbacks, optional initial values, partial consumption and shared payloads.
+Default addition uses the common value-operator planner, including boolean
+first-value identity, strings and shared lists. Transient source/callback
+`StopIteration` ends one pull without permanently exhausting its source.

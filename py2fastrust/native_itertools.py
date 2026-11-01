@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from .native_types import EMPTY,EmptyType
 
 
-NAMES=frozenset({'repeat','chain','islice','pairwise'})
+NAMES=frozenset({'repeat','chain','islice','pairwise','accumulate'})
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,9 @@ class ItertoolsAdapter:
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
         from .native_classes import Cell,shape
+        if identity.name=='accumulate':
+            from .native_itertools_accumulate import analyze
+            return analyze(model,plan,node,identity,positional,keywords,environment,factory=factory)
         values,error=_bind(identity.name,positional,keywords)
         if error:return ToolCall(factory("none"),error=error)
         registry=model.iterators
@@ -80,6 +83,9 @@ class ItertoolsAdapter:
         from .native import _string
         if call.error is not None:
             return Expression(emitter.at(f'Err::<{emitter.rust_type(shape(call.result))},String>({_string(call.error)}.into())',node),shape(call.result))
+        if identity.name=='accumulate':
+            from .native_itertools_accumulate import emit
+            return emit(emitter,node,identity,call,positional,keywords)
         values,error=_bind(identity.name,positional,keywords)
         assert error is None
         record=call.iterator;record.emitted=True
