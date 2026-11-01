@@ -333,6 +333,8 @@ class Model:
     def is_module_plan(self,plan):return plan is self.module
 
     def definition_name(self,node):
+        registry=getattr(self,"class_namespaces",None)
+        if registry is not None and id(node)in registry.keys:return registry.keys[id(node)]
         return self.unit.name_for(node)if self.unit is not None else node.name
 
     @staticmethod
@@ -455,11 +457,14 @@ class Model:
         result.written |= writing
         return result.cell
 
-    def function(self, node, owner=None):
+    def function(self, node, owner=None, *, receiver_kind=None):
         name=getattr(node,"name","<lambda>")
         if node.args.kwarg:
             raise ClassUnsupported(node,"variadic keyword arguments need dictionary packing and native argument-frame binding; that keyword storage is not implemented on the class path",operation=f"signature of function {name!r}")
-        if getattr(node,"decorator_list",()):
+        registry=getattr(self,"class_namespaces",None)
+        admitted_descriptor=(owner is not None and registry is not None and
+                             registry.member(owner,self.unit.name_for(node)).descriptor!="function")
+        if getattr(node,"decorator_list",())and not admitted_descriptor:
             raise ClassUnsupported(node.decorator_list[0],"decorator calls can replace the method/function object at definition time; that native decorated-callable capture is not implemented on the class path",operation=f"decorator of function {name!r}")
         if getattr(node,"type_params",()):
             raise ClassUnsupported(node,"generic type-parameter objects and lazy bound/default evaluation are not implemented on the class path",operation=f"generic function definition {name!r}")
@@ -500,7 +505,8 @@ class Model:
                 captured=-captured if isinstance(value.op,ast.USub)else +captured
             plan.default_literals[name]=captured
         if owner and plan.parameters:
-            merge(plan.arguments[plan.parameters[0]], Cell("object", (self.class_key(owner),)), node)
+            value=Cell("object",(self.class_key(owner),))if receiver_kind is None else self.cell_for_kind(receiver_kind)
+            merge(plan.arguments[plan.parameters[0]],value,node)
         from .native_lexical_cells import own_return_values
         if not any(value is not None and not(isinstance(value,ast.Constant)and value.value is None)
                    for value in own_return_values(self.unit,node)):
@@ -544,7 +550,7 @@ class Model:
             if isinstance(value, ast.arg) and value.arg in names:
                 if self.unit is None or binding_owners.get(self.unit.ordinal(value))==0:raise ClassUnsupported(value)
 
-    def discover_class(self,node,key):
+    def discover_class(self,node,key,*,parent=None):
         """Register one original class AST under its canonical definition key."""
         if node.bases or node.keywords or node.decorator_list or node.type_params:
             raise ClassUnsupported(node)
@@ -553,19 +559,28 @@ class Model:
             owner.source_unit=self.unit.original_unit(node)if hasattr(self.unit,"original_unit")else self.unit
             owner.module_name=owner.source_unit.name
         self.classes[key]=owner
+        registry=getattr(self,"class_namespaces",None)
+        if registry is not None:registry.register(owner,parent)
         from .native_annotations import class_body_statement,class_body_effect
         for member in node.body:
             if isinstance(member,ast.Pass)or isinstance(member,ast.Expr)and isinstance(member.value,ast.Constant)and type(member.value.value)is str:
                 continue
             if class_body_statement(member):continue
+            if registry is not None and isinstance(member,ast.ClassDef):
+                child=self.discover_class(member,registry.nested_key(owner,member),parent=owner)
+                registry.register_child(owner,member,child)
+                continue
+            if registry is not None and registry.class_statement(member):continue
             if not isinstance(member,ast.FunctionDef):raise ClassUnsupported(member)
             if member.name.startswith("__")and member.name.endswith("__")and member.name!="__init__":
                 protocol="truth-value"if member.name in {"__bool__","__len__"}else"special-method"
                 raise ClassUnsupported(member,f"class {node.name!r} defines {member.name}; native {protocol} protocol dispatch for this override is not implemented",operation=f"special method {node.name+'.'+member.name!r}",proof=f"Python {member.name} protocol dispatch")
             name=self.unit.name_for(member)if self.unit is not None else mangle(member.name,node.name)
             if name in owner.methods:raise ClassUnsupported(member)
-            owner.methods[name]=self.function(member,owner)
-        if (any(name not in method.default_literals for method in owner.methods.values()for name in method.defaults)
+            receiver_kind=registry.receiver_kind(owner,member)if registry is not None else None
+            owner.methods[name]=self.function(member,owner,receiver_kind=receiver_kind)
+            if registry is not None:registry.register_method(owner,name,owner.methods[name])
+        if (registry is not None or any(name not in method.default_literals for method in owner.methods.values()for name in method.defaults)
                 or any(class_body_effect(member)for member in node.body)):
             body=FunctionPlan(node,len(self.plans),owner,class_body=owner)
             self.bind_plan_origin(body,node)
@@ -1246,13 +1261,16 @@ class Model:
                 if self.lexical.define(plan,node,environment):
                     self.namespace.define(plan,node,environment)
                     continue
-                if not self.is_module_plan(plan) and (plan.class_body is None or not isinstance(node,ast.FunctionDef)):
+                if not self.is_module_plan(plan) and (plan.class_body is None or not isinstance(node,(ast.FunctionDef,ast.ClassDef))):
                     raise ClassUnsupported(node)
-                expected=(plan.class_body.methods.get(self.resolved_name(plan,node))if plan.class_body is not None else
-                          self.classes.get(self.definition_name(node))if isinstance(node,ast.ClassDef)else self.functions.get(self.definition_name(node)))
+                expected=(self.classes.get(self.definition_name(node))if isinstance(node,ast.ClassDef)else
+                          plan.class_body.methods.get(self.resolved_name(plan,node))if plan.class_body is not None else self.functions.get(self.definition_name(node)))
                 if expected is None or expected.node is not node:
                     raise ClassUnsupported(node)
+                registry=getattr(self,"class_namespaces",None)
+                if registry is not None:registry.prepare_definition(plan,node,environment)
                 self.namespace.define(plan,node,environment)
+                if registry is not None:registry.definition_event(plan,node,environment)
                 if self.is_module_plan(plan):plan.visible_definitions.add(self.definition_name(node))
                 continue
             if isinstance(node,ast.Import):

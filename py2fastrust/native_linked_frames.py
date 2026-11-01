@@ -41,8 +41,13 @@ class LinkedCallableCells(CallableCells):
 
     def candidate(self,plan,node,environment):
         if self.linked_builtins.candidate(plan,node,environment):return True
+        if isinstance(node.func,ast.Attribute):
+            receiver=self.model.module_linker.pure_cell(plan,node.func.value,environment)
+            if receiver is not None and self.model.class_namespaces.descriptor_receiver(shape(receiver),self.model.resolved_name(plan,node.func)):return True
         value=self.model.module_linker.pure_cell(plan,node.func,environment)
         if value is not None and isinstance(value.root().tag,ClassReferenceType):return False
+        if value is not None and isinstance(node.func,ast.Attribute):
+            if getattr(shape(value),"_native_function_reference",False):return True
         if isinstance(node.func,ast.Attribute):
             receiver=self.receivers.get((plan.index,id(node)))
             if receiver is None:receiver=self.model.module_linker.pure_cell(plan,node.func.value,environment)
@@ -100,7 +105,10 @@ class LinkedModel(Model):
         self.module_plans={}
         super().__init__(linked.unit.tree,filename,integer,linked.unit.native_imports,unit=linked.unit,string_mode=string_mode)
 
-    def create_namespace(self):return LinkedNamespace(self)
+    def create_namespace(self):
+        from .native_class_namespaces import ClassNamespaces
+        self.class_namespaces=ClassNamespaces(self)
+        return LinkedNamespace(self)
 
     def create_callable_cells(self):
         provider=LinkedCallableCells(self)
@@ -177,6 +185,9 @@ class LinkedModel(Model):
         linker.seed_namespaces()
 
     def expression(self,plan,node,environment):
+        if isinstance(node,ast.Name):
+            value=self.class_namespaces.read_name(plan,node,environment)
+            if value is not None:return value
         if isinstance(node,ast.Name)and node.id in ANNOTATION_METADATA:
             binding=self.unit.binding_for(node)
             if (binding is not None and self.module_owner(binding.owner)
@@ -189,7 +200,18 @@ class LinkedModel(Model):
                 raise ClassUnsupported(node,f"module metadata binding {node.id!r} needs its Python import-spec/namespace object representation; that protocol is not implemented on the linked native path")
         return super().expression(plan,node,environment)
 
+    def attribute_value(self,plan,node,receiver,environment):
+        if receiver.root().tag=='object':
+            owner=self.classes[receiver.root().args[0]]
+            member=self.class_namespaces.members.get((owner.index,self.resolved_name(plan,node)))
+            if member is not None and member.plan is not None and member.descriptor!="function":
+                value=self.class_namespaces.analyze_attribute(plan,node,receiver,environment)
+                if value is not None:return value
+        return super().attribute_value(plan,node,receiver,environment)
+
     def attribute_item(self,plan,node,receiver,environment):
+        result=self.class_namespaces.analyze_attribute(plan,node,receiver,environment)
+        if result is not None:return result
         if not self.module_linker.module_receiver_kinds(shape(receiver),node.attr):return None
         self.module_linker.attribute_receivers[(plan.index,id(node))]=self.cell_for_kind(shape(receiver))
         result=self.cell(plan,node)
@@ -199,6 +221,7 @@ class LinkedModel(Model):
         return self.remember(plan,node,result)
 
     def attribute_target(self,plan,node,receiver,value,environment):
+        if self.class_namespaces.assign_attribute(plan,node,receiver,value,environment):return True
         if not self.module_linker.module_receiver_kinds(shape(receiver),node.attr):return False
         result=self.cell(plan,node)
         for kind in self.module_linker.module_choices(receiver):
@@ -218,6 +241,10 @@ class LinkedModel(Model):
                 receiver=self.module_linker.attribute_receivers.get((plan.index,id(node)))
                 if receiver is not None and self.attribute_target(plan,node,receiver,value,environment):return
         return super().target(plan,node,value,environment)
+
+    def bind_name(self,plan,node,value,environment):
+        if self.class_namespaces.bind_name(plan,node,value,environment):return
+        return super().bind_name(plan,node,value,environment)
 
     def import_statement(self,plan,node,environment):
         linker=self.module_linker
@@ -245,6 +272,11 @@ class LinkedModel(Model):
     def call(self,plan,node,environment):
         from .call_semantics import normalize_call,CallBindingError
         known=self.module_linker.pure_cell(plan,node.func,environment)
+        if known is not None and known.root().tag is None and not self.final:
+            self.expression(plan,node.func,environment)
+            for argument in node.args:self.expression(plan,argument,environment)
+            for argument in node.keywords:self.expression(plan,argument.value,environment)
+            return self.cell(plan,node)
         if known is not None and isinstance(known.root().tag,ClassReferenceType):
             self.expression(plan,node.func,environment)
             try:normalized=normalize_call(node)
@@ -320,10 +352,17 @@ class LinkedEmitter(Emitter):
             return _string(text)+'.to_owned()'
         if isinstance(value.kind,ClassReferenceType):
             owner=next(owner for owner in self.model.classes.values()if owner.index==value.kind.definition)
-            return _string(f"<class '{owner.module_name}.{owner.node.name}'>")+'.to_owned()'
+            return _string(f"<class '{owner.module_name}.{self.model.class_namespaces.qualname(owner)}'>")+'.to_owned()'
         return super().show(value,node,quoted)
 
     def expression(self,node):
+        if isinstance(node,ast.Name):
+            value=self.model.class_namespaces.emit_name(self,node)
+            if value is not None:return value
+        if isinstance(node,ast.Attribute)and(self.plan.index,id(node))in self.model.class_namespaces.attribute_reads:
+            before,receiver=self.capture(self.expression(node.value))
+            value=self.model.class_namespaces.emit_attribute(self,node,receiver)
+            return Expression("{"+before+value.code+"}",value.kind)
         if isinstance(node,ast.Subscript):
             from .native_linked_namespaces import emit_item
             value=emit_item(self,node)
@@ -349,12 +388,21 @@ class LinkedEmitter(Emitter):
         if isinstance(target,ast.Attribute):
             from .native_types import alternatives
             kind=self.kind(target.value)
+            if self.model.class_namespaces.class_choices(kind):
+                setup,owner=self.capture(self.expression(target.value))
+                return setup,('class_namespace',owner,self.model.resolved_name(self.plan,target))
             if self.model.module_linker.module_receiver_kinds(kind,target.attr):
                 setup,owner=self.capture(self.expression(target.value))
                 return setup,('module',owner,target.attr)
         return super().reference(target)
 
     def load_reference(self,reference,node,kind=None):
+        if reference[0]=='name':
+            value=self.model.class_namespaces.emit_name(self,reference[1],kind)
+            if value is not None:return value
+        if reference[0]=='class_namespace':
+            _,owner,name=reference
+            return self.model.class_namespaces.emit_attribute(self,node,owner)
         if reference[0]!='module':return super().load_reference(reference,node,kind)
         _,owner,name=reference
         from .native_unions import project,union_kind
@@ -366,6 +414,14 @@ class LinkedEmitter(Emitter):
         return Expression(code,wanted)
 
     def store_reference(self,reference,value,node):
+        if reference[0]=='class_namespace':
+            from .native_unions import project,union_kind
+            _,owner,name=reference
+            def branch(kind,code):
+                member=self.model.class_namespaces.member(self.model.class_namespaces.owners[kind.definition],name)
+                return '{'+self.model.class_namespaces.emit_store(self,member,value,node,module=f'({code}).module')+'}'
+            result=project(owner.kind,owner.code,branch)if union_kind(owner.kind)else branch(owner.kind,owner.code)
+            return result+';'
         if reference[0]!='module':return super().store_reference(reference,value,node)
         _,owner,name=reference
         from .native_unions import project,union_kind
@@ -480,7 +536,8 @@ class LinkedEmitter(Emitter):
         return super().call(node)
 
     def statement(self,node):
-        result=super().statement(node)
+        result=self.model.class_namespaces.emit_prepare_definition(self,node)+super().statement(node)
+        result+=self.model.class_namespaces.emit_definition(self,node)
         if isinstance(node,ast.ClassDef):
             key=self.model.definition_name(node)
             owner=self.model.classes[key]
@@ -489,6 +546,10 @@ class LinkedEmitter(Emitter):
             wanted=dict(self.model.namespace.fields())[key]
             return result+f"class_scope.globals.borrow_mut().value_{index}=Some({self.coerce(Expression(value,ClassReferenceType(owner.index)),wanted,node)});"
         return result
+
+    def assign_name(self,target,value):
+        stored=self.model.class_namespaces.emit_assign_name(self,target,value)
+        return super().assign_name(target,value)if stored is None else stored
 
 
 def render_linked_runtime(model,source):
@@ -529,7 +590,7 @@ def render_linked_runtime(model,source):
     implicit={module.number:[]for module in linker.modules.values()}
     if model.namespace.globals_observed:
         for module in linker.modules.values():
-            for key in linker.namespace_initial_names(module):
+            for key in sorted(linker.namespace_initial_names(module)):
                 implicit[module.number].append(f'globals.borrow_mut().present[{namespace_names.index(key)}]=true;')
     for name,(number,value)in linker.implicit_values.items():
         index=model.namespace.index(name)

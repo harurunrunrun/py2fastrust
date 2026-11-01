@@ -897,6 +897,21 @@ still needs integration with common semantic lowering. Inheritance,
 descriptors, metaclasses, cyclic field layouts and incompatible
 field/result types remain explicit implementation gaps.
 
+Class data namespaces and nested plain classes use the existing linked class
+reference carrier. Definitions and private names retain their official source
+scope owners; identically named nested classes remain distinct. Class-local
+name reads use their initialized namespace before module fallback, while method
+globals do not capture the surrounding class namespace. Class scalar/list data
+supports aliases, rebinding, deletion, and instance lookup with instance-field
+precedence. Hidden namespace storage is excluded from `globals()`. Method
+attribute reads retain the actual function reference created after default
+capture. Rebinding/deleting method descriptors, class metadata dictionaries,
+arbitrary metaclasses and finite alternatives in class constructor dispatch
+remain explicit diagnostics. Class-local reads that need a builtin fallback
+also require a further lookup adapter. Compiler-created class metadata
+references/assignments remain explicit diagnostics. The native traceback formatter does not currently
+add CPython's optional spelling suggestions to `NameError` messages.
+
 ## Retained internal runtime implementation
 
 The following inventory describes code and regression coverage retained for

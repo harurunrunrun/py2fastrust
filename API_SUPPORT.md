@@ -21,6 +21,12 @@ Linked module references also adapt `sys.setrecursionlimit` and
 `sys.getrecursionlimit`, including saved references. Replacing the standard
 stream objects requires an unimplemented stream-object protocol and is rejected.
 
+Typed source-class namespaces support ordinary nested classes and scalar/list
+class data, including aliases, rebinding, deletion and instance-field precedence.
+They retain the original scope owners and captured defining-module references.
+Method descriptor replacement, arbitrary class metadata and metaclass protocols
+remain explicit boundaries; see [COMPATIBILITY.md](COMPATIBILITY.md).
+
 The direct linker bundles fixed-name user modules, packages and automatically
 resolved `atcoder` source modules while retaining each original AST and scope.
 An imported API compiles only when its own operations have direct lowering.

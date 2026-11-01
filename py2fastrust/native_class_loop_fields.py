@@ -11,6 +11,8 @@ from contextlib import contextmanager
 def key(emitter,node):
     from .native_classes import domain
     if not isinstance(node,ast.Attribute)or not isinstance(node.value,ast.Name):return None
+    registry=getattr(emitter.model,"class_namespaces",None)
+    if registry is not None and(emitter.plan.index,id(node))in registry.attribute_reads:return None
     owner=emitter.kind(node.value)
     if domain(owner)!="object":return None
     plan=emitter.model.classes[owner.name]

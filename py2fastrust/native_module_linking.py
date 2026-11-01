@@ -60,6 +60,13 @@ class LinkedProgram:
     def from_program(cls,program):return cls(program,LinkedUnit(program))
 
 
+def native_adapter_module_names(program):
+    from .module_catalog import VENDORED_MODULES
+    return frozenset(module.name for module in program.modules
+        if module.origin=='builtin'or module.origin=='vendored'and module.name in VENDORED_MODULES
+        and module.name in program.native_imports)
+
+
 class LinkedUnit:
     """Read-only metadata for original AST roots in separate Python modules.
 
@@ -72,10 +79,7 @@ class LinkedUnit:
         self.program=program
         self.main=program.main
         self.source_units=tuple(program.units)
-        from .module_catalog import VENDORED_MODULES
-        self.native_adapter_modules=frozenset(module.name for module in program.modules
-            if module.origin=='builtin'or module.origin=='vendored'and module.name in VENDORED_MODULES
-            and module.name in program.native_imports)
+        self.native_adapter_modules=native_adapter_module_names(program)
         self.executable_source_units=tuple(unit for unit in self.source_units if unit.name not in self.native_adapter_modules)
         self.source=self.main.source
         self.filename=self.main.filename
@@ -313,6 +317,10 @@ class ModuleLinker:
             if known:return self.model.cell_for_kind(union_type(*known))
         if isinstance(node,ast.Attribute):
             receiver=self.pure_cell(plan,node.value,environment)
+            registry=getattr(self.model,"class_namespaces",None)
+            if receiver is not None and registry is not None:
+                value=registry.pure_attribute(receiver,self.model.resolved_name(plan,node),node)
+                if value is not None:return value
             if receiver is not None and self.module_receiver_kinds(shape(receiver),node.attr):
                 choices=[shape(self.export_cell(kind,node.attr,node,activate=False))for kind in self.module_choices(receiver)]
                 if all(choice is not None for choice in choices):return self.model.cell_for_kind(union_type(*choices))
@@ -453,7 +461,7 @@ class ModuleLinker:
         initial=set().union(*(self.namespace_initial_names(module)for module in self.modules.values()))
         # Initialization depends on the actual module generation, not the
         # statically shared layout; its own initial bits are set by the factory.
-        exports={name for name in self.model.namespace.incoming if isinstance(name,QualifiedName)}
+        exports={name for name in self.model.namespace.incoming if isinstance(name,QualifiedName)and not getattr(name,"_native_class_namespace_field",False)}
         return sorted(initial|bound|exports|set(self.implicit_values)|set(self.implicit_members)),frozenset()
 
 
@@ -461,10 +469,11 @@ class ModuleLinker:
 def needs_linking(program,*,integer="i64"):
     from .module_catalog import VENDORED_MODULES
     from .native_module_capabilities import needs_linked_members
+    from .native_class_namespaces import requires_namespaces
     # Builtin exports are snapshots of the same canonical namespace as its
     # module-object imports; source modules retain their own global shadows.
     builtin_namespace=any(module.name=='builtins'and module.origin=='builtin'for module in program.modules)
-    return needs_linked_members(program,integer=integer)or builtin_namespace or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
+    return requires_namespaces(program)or needs_linked_members(program,integer=integer)or builtin_namespace or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
                for module in program.modules)
 
 

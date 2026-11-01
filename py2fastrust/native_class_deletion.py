@@ -8,6 +8,8 @@ import ast
 
 def analyze(model,plan,target,environment):
     """Consume supported field or recursive delete targets, preserving order."""
+    registry=getattr(model,"class_namespaces",None)
+    if registry is not None and registry.analyze_delete(plan,target,environment):return True
     if isinstance(target,(ast.Tuple,ast.List)):
         from .native_annotations import metadata_target
         for child in target.elts:
@@ -36,6 +38,10 @@ def analyze(model,plan,target,environment):
 
 def lower(emitter,target):
     """Capture each receiver once and release its borrow before dropping data."""
+    registry=getattr(emitter.model,"class_namespaces",None)
+    if registry is not None:
+        code=registry.emit_delete(emitter,target)
+        if code is not None:return code
     if isinstance(target,(ast.Tuple,ast.List)):
         from .native_class_globals import delete
         pieces=[]
