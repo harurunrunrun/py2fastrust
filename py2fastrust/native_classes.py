@@ -1312,6 +1312,8 @@ class Model:
                 self.remember(plan,node,owner.args[0])
                 return
             if owner.tag=="union":
+                from .native_finite_list_writes import analyze
+                if analyze(self,plan,node,owner,index,value):return
                 raise ClassUnsupported(node,"indexed assignment through finite owner alternatives needs per-alternative target storage and correlated value projection; that write adapter is not implemented",types=(("receiver",shape(owner)),),proof="per-alternative indexed write storage")
             if owner.tag is None and not self.final:
                 return
@@ -2386,6 +2388,9 @@ class Emitter:
                 return setup+more,("mapping",owner,index,self.kind(target))
             if all(domain(kind)=="deque"for kind in alternatives(owner.kind)):
                 return setup+more,("deque_index",owner,index,self.kind(target))
+            from .native_finite_list_writes import supported
+            if supported(owner.kind,index.kind):
+                return setup+more,("finite_list_index",owner,index,self.kind(target))
             if domain(owner.kind)!="list":raise ClassUnsupported(target)
             return setup+more,("index",owner,index,owner.kind.element)
         raise ClassUnsupported(target)
@@ -2420,6 +2425,9 @@ class Emitter:
         if reference[0]=='finite_field':
             from .native_finite_attributes import emit
             return emit(self,node,reference[1],kind or reference[2])
+        if reference[0]=='finite_list_index':
+            from .native_union_sequences import emit_subscript
+            return emit_subscript(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]=="deque_index":
             return self.model.deques.indexes.emit(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]=='default_factory':
@@ -2467,6 +2475,9 @@ class Emitter:
         if reference[0]=='finite_field':
             from .native_finite_attributes import emit
             return emit(self,node,reference[1],'none',value=value).code+';'
+        if reference[0]=='finite_list_index':
+            from .native_finite_list_writes import emit
+            return emit(self,node,reference[1],reference[2],value).code+';'
         if reference[0]=="deque_index":
             return self.model.deques.indexes.emit(self,node,reference[1],reference[2],"none",value).code+";"
         if reference[0]=='default_factory':return self.model.mappings.defaultdicts.emit_attribute_store(self,node,reference[1],value)

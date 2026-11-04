@@ -68,13 +68,11 @@ class UnresolvedAllocationSelectionTests(unittest.TestCase):
             self.assertFalse(requires_frames(unit,analyze(unit)),name)
             self.assertNotIn('fixed list record positional constraints',select_frames(unit).reasons)
 
-    def test_typed_model_still_rejects_unproved_correlated_mutable_leaf_write(self):
+    def test_nested_mutable_leaf_write_uses_validated_finite_storage(self):
         for mode in ('i64','i128','bigint'):
             result=transpile(NESTED_EXCLUDED,TranspileOptions(integer=mode,filename='nested.py'))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
-            self.assertIn('per-alternative',result.diagnostics[0].message)
-            self.assertIn('write',result.diagnostics[0].message)
+            self.assertTrue(result.success,result.diagnostics)
+            self.assertEqual(result.backend,'native')
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')

@@ -324,6 +324,8 @@ SOURCES = {'repeat_count_union': 'class Repeat:\n'
                                                ' return read()\n'
                                                'print(outer())\n'}
 
+SOURCES["indexed_inplace_finite_element_alternatives"] = 'class Operate:\n def run(self,values,b):\n  values[0]*=b\n  return values\nop=Operate()\nrow=[2]\nprint(op.run([row],2),row)\nprint(op.run([3],4))\n'
+
 class UnionSequenceProofTests(unittest.TestCase):
     def test_original_syntax_and_scope_metadata_are_not_rewritten(self):
         source=SOURCES["repeat_count_union"]
@@ -332,8 +334,8 @@ class UnionSequenceProofTests(unittest.TestCase):
         model=Model(unit.tree,unit.filename,"i64",unit.native_imports,unit=unit);model.run()
         self.assertEqual(ast.dump(unit.tree,include_attributes=True),before)
 
-    def test_unsupported_write_and_iterator_protocols_name_the_boundary(self):
-        sources=(("class Operate:\n def run(self,values,b):\n  values[0]*=b\n  return values\nop=Operate()\nrow=[2]\nprint(op.run([row],2),row)\nprint(op.run([3],4))\n","per-alternative indexed write storage"),("class Operate:\n def run(self,a,b):\n  a+=b\n  return a\nprint(Operate().run([1],(2,3)))\n","list inplace extension"),("class Index:\n def __index__(self):return 0\nclass Reader:\n def read(self,a,b):return a[b]\nprint(Reader().read([3],Index()))\n","__index__"))
+    def test_unsupported_iterator_and_index_protocols_name_the_boundary(self):
+        sources=(('class Operate:\n def run(self,a,b):\n  a+=b\n  return a\nprint(Operate().run([1],(2,3)))\n', 'list inplace extension'), ('class Index:\n def __index__(self):return 0\nclass Reader:\n def read(self,a,b):return a[b]\nprint(Reader().read([3],Index()))\n', '__index__'))
         for source,detail in sources:
             for integer in ("i64","i128","bigint"):
                 with self.subTest(detail=detail,integer=integer),patch("py2fastrust.codegen.generate",side_effect=AssertionError("VM entered")):

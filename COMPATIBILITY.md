@@ -1851,6 +1851,15 @@ model still validates indexed updates, aliases and every operation. Compatible
 constant-slot stores and alias-preserving augmented updates use the existing
 finite typed list storage. Ordinary print/length-only and homogeneous list code
 keeps its existing selection. Correlated writes through a union of list and
-non-list receiver kinds remain explicitly unsupported.
+non-list receiver kinds use the finite builtin indexed-store adapter where its
+receiver and index protocols are proved.
+
+Indexed assignment through finite builtin receiver alternatives supports actual
+list storage and Python errors for immutable builtin arms. The receiver and
+index are captured once after the assignment RHS; augmented assignment captures
+the old element before its RHS. Each list arm uses its own inferred element
+representation, retaining shallow aliases and child identity. Custom item/index
+protocols remain separate capabilities. This adapter does not introduce a VM or
+change list storage globally; ordinary homogeneous arrays keep their selection.
 
 Immediate calls to a proved immutable, monomorphic synchronous classmethod can pass the captured class reference and its actual defining module directly to the original compiled body. Callee evaluation precedes explicit arguments; the existing argument binder, defaults, exception frames and recursion rules remain in effect. Retained methods and unproved mutable class/function layouts keep their ordinary native callable representation.
