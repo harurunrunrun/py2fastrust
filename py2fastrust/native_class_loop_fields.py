@@ -18,6 +18,8 @@ def key(emitter,node):
     plan=emitter.model.classes[owner.name]
     field=emitter.model.resolved_name(emitter.plan,node)
     if field not in plan.fields:return None
+    from .native_owned_class_lists import selected
+    if selected(emitter.model,plan,list(plan.fields).index(field)):return None
     return emitter.model.resolved_name(emitter.plan,node.value),plan.index,field
 
 

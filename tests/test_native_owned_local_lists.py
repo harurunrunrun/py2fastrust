@@ -158,5 +158,28 @@ def solve(n):
  print(a[-1],b[0],len(a))
 '''})
 
+    def test_positional_string_augassign_encodes_the_uniform_carrier(self):
+        self.compare('''class Packet:
+ def __init__(self):
+  self.pair=[3,"ab"]
+  self.columns=[(1,2),("c",3)]
+ def change(self):
+  self.pair[0]+=2
+  self.pair[1]+="!"
+  self.pair[1]*=2
+  self.columns[0]=(self.columns[0][0]+1,7)
+  print(self.pair[0],self.pair[1],self.columns[0][0],self.columns[0][1])
+def main():
+ pair=[3,"ab"]
+ columns=[(1,2),("c",3)]
+ pair[0]+=2
+ pair[1]+="!"
+ pair[1]*=2
+ columns[0]=(columns[0][0]+1,7)
+ print(pair[0],pair[1],columns[0][0],columns[0][1])
+ Packet().change()
+main()
+''')
+
 
 if __name__=='__main__':unittest.main()

@@ -189,5 +189,7 @@ def select_frames(unit,*,integer="i64"):
     if integer_base_requires_frames(analysis):reasons+=('explicit-base captured integer conversion',)
     from .native_formal_bindings import requires_frames as formal_bindings_require_frames
     if formal_bindings_require_frames(unit,analysis):reasons+=("container formal binding changes",)
+    from .native_positional_selection import requires_frames as positional_requires_frames
+    if positional_requires_frames(unit,analysis):reasons+=("fixed list record positional constraints",)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

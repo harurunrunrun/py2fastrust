@@ -67,6 +67,7 @@ class Namespace:
         if destination.parent is not None:
             destination.parent=None
             destination.tag,destination.args=left.tag,left.args
+            destination.list_origins=left.list_origins
             left=destination
         # This creates a new directional ABI view, rather than unifying the
         # source with its destination. A destination containing the scalar
@@ -74,13 +75,14 @@ class Namespace:
         if contains_cell(right,left):check_merge(left,right,node)
         variable=Variable(("native_global_flow",id(left)),"value")
         if left not in self.flow_inputs:
-            self.flow_inputs[left]=set()if left.tag is None else{Cell(left.tag,left.args)}
+            self.flow_inputs[left]=set()if left.tag is None else{Cell(left.tag,left.args,list_origins=left.list_origins)}
         inputs=self.flow_inputs[left]
         inputs.add(source)
         kind=self.value_kind(variable,[value for value in inputs if value.root()is not left])
         if kind is None:return False
         replacement=self.representation(kind,list(inputs),node)
         left.tag,left.args=replacement.tag,replacement.args
+        left.list_origins=replacement.list_origins
         self.flow_cells.add(left)
         return True
 
@@ -169,7 +171,7 @@ class Namespace:
         from .native_classes import Cell
         root=cell.root()
         if any(root is item for item in self.cells.values()):
-            return Cell(root.tag,root.args)
+            return Cell(root.tag,root.args,list_origins=root.list_origins)
         return cell
 
     @staticmethod
@@ -193,7 +195,8 @@ class Namespace:
         if isinstance(kind,ListType):
             lists=[value for value in sources if value.tag=="list"and shape(value)==kind]
             if not lists:return Cell("list",(self.representation(kind.element,[],node),))
-            return Cell("list",lists[0].args)
+            origins=None if any(value.list_origins is None for value in lists)else frozenset().union(*(value.list_origins for value in lists))
+            return Cell("list",lists[0].args,list_origins=origins)
         if isinstance(kind,TupleSequenceType):
             sequences=[value for value in sources if value.tag=="tuple_sequence"and shape(value)==kind]
             return Cell("tuple_sequence",sequences[0].args if sequences else(self.representation(kind.element,[],node),))
@@ -224,12 +227,15 @@ class Namespace:
                 members={value.args[0].root()for value in pending}
                 if len(members)==1:
                     cell.tag,cell.args='list',pending[0].args
+                    cell.list_origins=(None if any(value.list_origins is None for value in pending)
+                                       else frozenset().union(*(value.list_origins for value in pending)))
             return cell
         variable=Variable(("native_module",name),"value")
         kind=self.value_kind(variable,known)
         if kind is None:return cell
         replacement=self.representation(kind,known,node)
         cell.tag,cell.args=replacement.tag,replacement.args
+        cell.list_origins=replacement.list_origins
         return cell
 
     def read(self,plan,node,environment=None):

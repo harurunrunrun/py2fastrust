@@ -301,6 +301,7 @@ class Analysis:
     graph: SemanticGraph
     scopes: object
     iterations: int
+    heap: object=field(default_factory=dict)
 
     def scope(self,function=None,kinds=()):
         key=(None,()) if function is None else (self.graph.unit.ordinal(function),tuple(canonical_kind(kind) for kind in kinds))
@@ -1118,7 +1119,7 @@ class Solver:
         iteration_access=self.iteration_access.export(key)
         keys=set(allocations)|set(headers)|set(expressions)|set(resets)|set(calls)
         scopes={scope:ScopeFacts(MappingProxyType(allocations.get(scope,{})),MappingProxyType({site:MappingProxyType(state) for site,state in headers.get(scope,{}).items()}),MappingProxyType(expressions.get(scope,{})),frozenset(site for context,site in self.constructors if key(context)==scope),MappingProxyType(resets.get(scope,{})),MappingProxyType(calls.get(scope,{})),MappingProxyType(values.get(scope,{})),MappingProxyType(storage.get(scope,{})),MappingProxyType({site:MappingProxyType(state)for site,state in header_storage.get(scope,{}).items()}),MappingProxyType(iteration_access.get(scope,{}))) for scope in keys}
-        return Analysis(self.graph,MappingProxyType(scopes),iteration+1)
+        return Analysis(self.graph,MappingProxyType(scopes),iteration+1,MappingProxyType(self.variables.copy()))
 
 
 def analyze(unit):return Solver(SemanticGraph(unit)).solve()

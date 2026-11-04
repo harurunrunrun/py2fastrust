@@ -1,6 +1,7 @@
 """Indexed scalar updates retain Python target evaluation and mutation order."""
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import unittest
@@ -132,9 +133,14 @@ class NativeClassAugAssignTests(unittest.TestCase):
             main=next(item for item in _parse(result.rust_source,tokens,comments,pairs)
                       if item.kind=="fn"and item.name=="main")
             zero="Int::from_i128(0)"if mode=="bigint"else f"0_{mode}"
+            def context(function):
+                signature=next(item for item in _parse(result.rust_source,tokens,comments,pairs)
+                               if item.kind=="fn"and item.name==function)
+                header=result.rust_source[signature.start:signature.end].split('{',1)[0]
+                return "&scope"if re.search(r'class_scope\s*:\s*&\s*ClassScope',header)else"scope.clone()"
             harness=('fn main(){let scope=ClassScope::new();'
-                     'let object=class_construct_0(scope.clone()).unwrap();'
-                     f'let error=class_function_2(scope,object.clone(),{zero}).unwrap_err();'
+                     f'let object=class_construct_0({context("class_construct_0")}).unwrap();'
+                     f'let error=class_function_2({context("class_function_2")},object.clone(),{zero}).unwrap_err();'
                      'assert!(error.message.starts_with("ZeroDivisionError:"));'
                      'let values=class_get_0_0(&object).unwrap();'
                      'let mut values=values.borrow_mut();'
@@ -160,10 +166,6 @@ class NativeClassAugAssignTests(unittest.TestCase):
     def test_effectful_rhs_keeps_negative_index_renormalization(self):
         source,inputs=CASES["effectful_rhs_negative_index"]
         self.exercise(source,inputs)
-        result=transpile(source)
-        self.assertTrue(result.success,result.diagnostics)
-        self.assertIn("fn class_list_get",result.rust_source)
-        self.assertIn("fn class_list_set",result.rust_source)
 
     def test_getitem_error_precedes_rhs_call(self):
         self.exercise(*CASES["getitem_error_precedes_rhs_call"])

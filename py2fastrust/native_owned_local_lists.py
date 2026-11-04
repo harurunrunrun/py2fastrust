@@ -203,12 +203,18 @@ def reference(emitter,node):
 
 
 def load(emitter,reference,node,kind=None):
-    from .native_classes import Expression
+    from .native_list_positions import project_element
+    from .native_list_end_indices import method,result
     _,local,index,element=reference
     owner=emitter.fresh();offset=emitter.fresh()
     checked_owner=checked(emitter,local,node.value if isinstance(node,ast.Subscript)else node)
-    offset_code=emitter.at(f'class_index(&({emitter.number(index)}),{owner}.len())',node)
-    return Expression('{'+f'let {owner}={checked_owner};let {offset}={offset_code};{owner}[{offset}].clone()'+'}',kind or element)
+    operation=method(node.slice)if isinstance(node,ast.Subscript)else None
+    if operation is None:
+        offset_code=emitter.at(f'class_index(&({emitter.number(index)}),{owner}.len())',node)
+        value=f'let {offset}={offset_code};{owner}[{offset}].clone()'
+    else:value=emitter.at(result(owner,operation),node)
+    code='{'+f'let {owner}={checked_owner};'+value+'}'
+    return project_element(emitter,code,local.kind.element,kind or element,node)
 
 
 def store(emitter,reference,value,node):
@@ -219,7 +225,7 @@ def store(emitter,reference,value,node):
     owner=emitter.fresh();offset=emitter.fresh()
     index_code=emitter.at(f'class_index(&({emitter.number(index)}),{owner}.len()).map_err(|_|"IndexError: list assignment index out of range".to_owned())',node)
     return ('{'+before+f'let {owner}={checked(emitter,local,node,True)};let {offset}={index_code};'
-            +f'{owner}[{offset}]={emitter.coerce(captured,element,node)};'+'}')
+            +f'{owner}[{offset}]={emitter.coerce(captured,local.kind.element,node)};'+'}')
 
 
 def read(emitter,node):

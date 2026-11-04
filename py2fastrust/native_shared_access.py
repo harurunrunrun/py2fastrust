@@ -55,6 +55,14 @@ def owner(g,proved,environment):
     lines=[f"let {reference}={code};"]
     kind=unmaybe(binding.kind)
     for step in proved.steps:
+        from .native_list_end_indices import method,result as end_result
+        operation=method(step.slice)
+        if operation is not None:
+            guard,next_reference=(g.temporary()for _ in range(2))
+            lines.append(f"let {guard}={reference}.borrow();let {next_reference}="
+                         +g.at(end_result(guard,operation,clone=False),step)+";")
+            reference=next_reference;kind=kind.element
+            continue
         number,guard,position,next_reference=(g.temporary()for _ in range(4))
         value=g.expression(step.slice,environment)
         lines.append(f"let {number}={g.number(value)};let {guard}={reference}.borrow();")
@@ -72,6 +80,13 @@ def read(g,node,environment):
     from .native import _Expression
     from .native_nested_lists import _index
     lines,reference,kind=owner(g,proved,environment)
+    from .native_list_end_indices import method,result as end_result
+    operation=method(node.slice)
+    if operation is not None:
+        guard,value=(g.temporary()for _ in range(2))
+        lines.append(f"let {guard}={reference}.borrow();let {value}="
+                     +g.at(end_result(guard,operation),node)+f";{value}")
+        return _Expression("{"+"".join(lines)+"}",kind.element)
     number,guard,position,result=(g.temporary()for _ in range(4))
     value=g.expression(node.slice,environment)
     lines.append(f"let {number}={g.number(value)};let {guard}={reference}.borrow();")

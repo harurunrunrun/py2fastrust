@@ -119,6 +119,13 @@ def try_expression(g,node,environment):
         owner=g.expression(node.value,environment)
         if isinstance(node.slice,ast.Slice):
             raise _Unsupported("shared nested list slicing is not implemented yet",node=node,types=(("owner",owner.kind),),proof="shallow-copy list slice preserving row identity")
+        from .native_list_end_indices import method,result as end_result
+        operation=method(node.slice)
+        if operation is not None:
+            handle,guard,value=(g.temporary()for _ in range(3))
+            code=(f"{{let {handle}={owner.code};let {value}={{let {guard}={handle}.borrow();"
+                  +end_result(guard,operation)+"};"+g.at(value,node)+"}")
+            return _Expression(code,owner.kind.element)
         value=g.expression(node.slice,environment)
         handle,index,position,result=(g.temporary() for _ in range(4))
         checked=_index(g,index,f"{handle}.borrow().len()",node)
@@ -131,6 +138,11 @@ def try_expression(g,node,environment):
             from .native_container_reads import capture
             owner=g.expression(node.value,environment)
             read=capture(g,node.value,owner,environment)
+            from .native_list_end_indices import method,result as end_result
+            operation=method(node.slice)
+            if operation is not None:
+                element="int"if owner.kind=="list_int"else owner.kind.element
+                return _Expression("{"+read.setup+g.at(end_result(read.owner,operation),node)+"}",element)
             value=g.expression(node.slice,environment)
             index,position,result=(g.temporary() for _ in range(3))
             checked=_index(g,index,f"({read.owner}).len()",node)

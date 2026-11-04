@@ -115,4 +115,7 @@ def emit_subscript(emitter,node,owner,index,wanted):
         arms=[str(position)+"=>"+emitter.coerce(Expression(f"{owner.code}.{position}.clone()",kind),wanted,node)for position,kind in enumerate(owner.kind.fields)]
         arms.append('_=>unreachable!("tuple index contradicts checked bounds")')
         return Expression("{"+f"let {offset}={bound};match {offset}"+"{"+",".join(arms)+"}}",wanted)
+    if tag=='list'and(emitter.plan.index,id(node))in getattr(emitter.model,'positional_list_reads',{}):
+        from .native_list_positions import project_element
+        return project_element(emitter,code,raw,wanted,node)
     return Expression(emitter.coerce(Expression(code,raw),wanted,node),wanted)

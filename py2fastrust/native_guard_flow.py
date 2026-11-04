@@ -35,6 +35,7 @@ def lexical_store(model,plan,node,value,owner,name):
     point=model.type_guard_cells.setdefault(key,Cell())
     incoming=model.flow_copy(value)
     point.parent=None;point.tag,point.args=incoming.tag,incoming.args
+    point.list_origins=incoming.list_origins
     model.namespace.flow_cells.add(point)
     return point
 
@@ -133,6 +134,7 @@ def branches(model,plan,test,environment):
         copies=tuple(model.flow_copy(member)for member in members)
         replacement=copies[0]if len(copies)==1 else Cell('union',copies)
         cell.parent=None;cell.tag,cell.args=replacement.tag,replacement.args
+        cell.list_origins=replacement.list_origins
         model.namespace.flow_cells.add(cell)
         branch[name]=cell
         result.append(branch)

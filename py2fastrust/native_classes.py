@@ -87,6 +87,7 @@ class Cell:
     tag: str | None = None
     args: tuple = ()
     parent: "Cell | None" = None
+    list_origins: frozenset | None = field(default=None,repr=False)
 
     def root(self):
         if self.parent is not None:
@@ -159,15 +160,22 @@ def merge(left, right, node,*,allow_unresolved=False):
         # allocation shapes are never widened into a union by this solver.
         candidates=[]
         for value in (left,right):
-            choices=value.args if value.tag=="union"else(Cell(value.tag,value.args),)
+            choices=value.args if value.tag=="union"else(Cell(value.tag,value.args,list_origins=value.list_origins),)
             for choice in choices:
-                if not any(shape(choice)==shape(old)for old in candidates):candidates.append(choice)
+                old=next((old for old in candidates if shape(choice)==shape(old)),None)
+                if old is None:candidates.append(choice)
+                else:
+                    from .native_list_positions import join_origins
+                    join_origins(old,choice)
         left.tag,left.args="union",tuple(candidates)
         right.parent=left
         return left
     if left.tag in {"list", "tuple", "tuple_sequence", "enumerate", "map_int"}or getattr(left.tag,'_native_tuple_record',False):
         if len(left.args) != len(right.args):
             raise ClassUnsupported(node)
+        if left.tag=='list':
+            left.list_origins=(None if left.list_origins is None or right.list_origins is None
+                               else left.list_origins|right.list_origins)
         for a, b in zip(left.args, right.args):
             merge(a, b, node,allow_unresolved=allow_unresolved)
     elif left.args != right.args:
@@ -398,8 +406,13 @@ class Model:
         key = (plan.index, id(node))if identity is None else(plan.index,id(node),identity)
         result = self.node_cells.setdefault(key, Cell())
         if tag is not None:
-            self.constructors.setdefault(key,Cell(tag,tuple(args)))
-            merge(result, Cell(tag, tuple(args)), node,allow_unresolved=not self.final)
+            origins=None
+            if tag=='list':
+                site=self.unit.ordinal(node)if self.unit is not None else id(node)
+                allocation=self.value_constraints.allocation(site,'list',('class',plan.index)if identity is None else('class',plan.index,identity))
+                origins=frozenset({allocation})
+            self.constructors.setdefault(key,Cell(tag,tuple(args),list_origins=origins))
+            merge(result, Cell(tag, tuple(args),list_origins=origins), node,allow_unresolved=not self.final)
         if identity is None:self.records[key] = result
         if tag == "list":
             site=self.unit.ordinal(node) if self.unit is not None else id(node)
@@ -407,6 +420,8 @@ class Model:
             self.member_allocations[result.root().args[0]]=allocation
             from .native_class_allocation_facts import register
             register(self,allocation,result.root().args[0])
+            from .native_list_positions import register as register_positions
+            register_positions(self,allocation,result.root().args[0],node)
         return result
 
     @staticmethod
@@ -415,7 +430,7 @@ class Model:
         cell=cell.root()
         if cell.tag in {"tuple","union","enumerate","map_int"}or getattr(cell.tag,'_native_tuple_record',False):
             return Cell(cell.tag,tuple(Model.flow_copy(child)for child in cell.args))
-        return Cell(cell.tag,cell.args)
+        return Cell(cell.tag,cell.args,list_origins=cell.list_origins)
 
     @staticmethod
     def cell_for_kind(kind):
@@ -617,13 +632,14 @@ class Model:
     def snapshot(self):
         from .native_class_extrema import snapshot as extrema_snapshot
         from .native_typing_metadata import snapshot as metadata_snapshot
+        from .native_list_positions import snapshot as position_snapshot
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
                 tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.deques.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),metadata_snapshot(self),
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())),
                 self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else(),
-                tuple(tuple(shape(value)for value in record.arguments)for record in self.exceptions.records))
+                tuple(tuple(shape(value)for value in record.arguments)for record in self.exceptions.records),position_snapshot(self))
 
     def analyze_body(self,plan,environment):
         if isinstance(plan.node,ast.Lambda):
@@ -655,6 +671,8 @@ class Model:
                     merge(plan.result, Cell("none"), plan.node)
             from .native_class_allocation_facts import publish
             publish(self)
+            from .native_list_positions import refresh as refresh_positions
+            refresh_positions(self)
             if self.snapshot() == before:
                 break
         else:
@@ -804,8 +822,11 @@ class Model:
             raise ClassUnsupported(node)
         if isinstance(node, ast.List):
             result = self.cell(plan, node, "list", (Cell(),))
-            for value in node.elts:
-                self.contribute(result.root().args[0], self.expression(plan, value, environment), value)
+            values=[self.expression(plan,value,environment)for value in node.elts]
+            for value,item in zip(node.elts,values):
+                self.contribute(result.root().args[0],item,value)
+            from .native_list_positions import literal as literal_positions
+            literal_positions(self,result,values,node)
             return result
         if isinstance(node, ast.Tuple):
             return self.cell(plan, node, "tuple", tuple(self.expression(plan, value, environment) for value in node.elts))
@@ -824,6 +845,12 @@ class Model:
             if indexed is not None:return indexed
             mapped=self.mappings.analyze_item(plan,node,owner,index,environment)
             if mapped is not None:return mapped
+            from .native_list_positions import read as positional_read
+            positional=positional_read(self,owner,node.slice)
+            if positional is not None:
+                if not hasattr(self,'positional_list_reads'):self.positional_list_reads={}
+                self.positional_list_reads[(plan.index,id(node))]=positional
+                return self.remember(plan,node,positional)
             from .native_union_sequences import analyze_subscript
             indexed=analyze_subscript(self,plan,node,owner,index)
             if indexed is not None:return indexed
@@ -901,7 +928,10 @@ class Model:
             self.replace_environment(environment,self.join(yes,no,node))
             return result
         if isinstance(node, ast.Call):
-            return self.call(plan, node, environment)
+            result=self.call(plan,node,environment)
+            from .native_list_positions import after_call
+            after_call(self,plan,node)
+            return result
         raise ClassUnsupported(node)
 
     def _condition_join(self,environment,left,right,node):
@@ -1277,6 +1307,8 @@ class Model:
             if self.mappings.analyze_store(plan,node,owner,index,value,environment):return
             if owner.tag == "list":
                 self.contribute(owner.args[0],value,node)
+                from .native_list_positions import store as positional_store
+                positional_store(self,owner,node.slice,value,node)
                 self.remember(plan,node,owner.args[0])
                 return
             if owner.tag=="union":
@@ -1745,6 +1777,12 @@ class Emitter:
         from .native_owned_local_lists import read as owned_read
         owned=owned_read(self,node)
         if owned is not None:return owned
+        from .native_owned_class_lists import expression as owned_field_expression
+        owned_field=owned_field_expression(self,node)
+        if owned_field is not None:return owned_field
+        from .native_list_end_indices import class_read
+        endpoint=class_read(self,node)
+        if endpoint is not None:return endpoint
         from .native_list_access_regions import read as region_read
         optimized=region_read(self,node)
         if optimized is not None:return optimized
@@ -1851,6 +1889,8 @@ class Emitter:
             tag = domain(owner.kind)
             if tag == "list":
                 code = self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node)
+                from .native_list_positions import project_element
+                code=project_element(self,code,owner.kind.element,wanted,node).code
             elif tag == "tuple_sequence":
                 offset=self.at(f'class_index(&({self.number(index)}),{owner.code}.len()).map_err(|_|"IndexError: tuple index out of range".to_owned())',node)
                 code=f"{owner.code}.as_slice()[{offset}].clone()"
@@ -1945,15 +1985,15 @@ class Emitter:
             return emit(self,operator,left,right,node,wanted)
         a,b = domain(left.kind),domain(right.kind)
         if a==b=="list" and isinstance(operator,ast.Add):
-            return Expression(f"class_list_concat(&{left.code},&{right.code})",wanted)
+            return self.encoded(f"class_list_concat(&{left.code},&{right.code})",left.kind,wanted,node)
         if "list" in {a,b} and isinstance(operator,ast.Mult):
             values,count = (left,right)if a=="list"else(right,left)
-            return Expression(self.at(f"class_list_repeat(&{values.code},&({self.number(count)}))",node),wanted)
+            return self.encoded(self.at(f"class_list_repeat(&{values.code},&({self.number(count)}))",node),values.kind,wanted,node)
         if a==b=="str" and isinstance(operator,ast.Add):
-            return Expression(self.at(f"class_string_add({left.code},&{right.code})",node),wanted)
+            return self.encoded(self.at(f"class_string_add({left.code},&{right.code})",node),'str',wanted,node)
         if "str" in {a,b} and isinstance(operator,ast.Mult):
             value,count = (left,right)if a=="str"else(right,left)
-            return Expression("NativeText::from("+self.at(f"class_string_repeat(&{value.code},&({self.number(count)}))",node)+")",wanted)
+            return self.encoded("NativeText::from("+self.at(f"class_string_repeat(&{value.code},&({self.number(count)}))",node)+")",'str',wanted,node)
         result = self.numeric.binary(operator,self.scalar(left),self.scalar(right),node)
         raw = result.kind
         return self.encoded(result.code,raw,wanted,node,result.constant)
@@ -2173,6 +2213,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_owned_class_lists import length as owned_field_length
+        owned_length=owned_field_length(self,node)
+        if owned_length is not None:return owned_length
         from .native_text_join import emit as emit_join
         joined=emit_join(self,node)
         if joined is not None:return joined
@@ -2314,6 +2357,9 @@ class Emitter:
         from .native_owned_local_lists import reference as owned_reference
         owned=owned_reference(self,target)
         if owned is not None:return owned
+        from .native_owned_class_lists import reference as owned_field_reference
+        owned_place=owned_field_reference(self,target)
+        if owned_place is not None:return owned_place
         from .native_value_classes import reference as value_reference
         borrowed=value_reference(self,target)
         if borrowed is not None:return borrowed
@@ -2365,6 +2411,9 @@ class Emitter:
         if reference[0]=='owned_local_list':
             from .native_owned_local_lists import load
             return load(self,reference,node,kind)
+        if reference[0]=='owned_class_index':
+            from .native_owned_class_lists import load
+            return load(self,reference,node,kind)
         if reference[0]=="list_region":
             from .native_list_access_regions import load
             return load(self,reference[1],reference[2],node)
@@ -2396,12 +2445,21 @@ class Emitter:
         if reference[0]=="field":
             _,owner,plan,index,kind=reference
             return Expression(self.at(f"class_get_{plan.index}_{index}(&{owner.code})",node),kind)
+        requested=kind
         _,owner,index,kind=reference
-        return Expression(self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node),kind)
+        from .native_list_end_indices import class_get
+        endpoint=class_get(self,node,owner,requested or kind)
+        if endpoint is not None:return endpoint
+        from .native_list_positions import project_element
+        raw=self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node)
+        return project_element(self,raw,owner.kind.element,requested or kind,node)
 
     def store_reference(self, reference, value, node):
         if reference[0]=='owned_local_list':
             from .native_owned_local_lists import store
+            return store(self,reference,value,node)
+        if reference[0]=='owned_class_index':
+            from .native_owned_class_lists import store
             return store(self,reference,value,node)
         if reference[0]=="list_region":
             from .native_list_access_regions import store
@@ -2433,6 +2491,9 @@ class Emitter:
         from .native_owned_local_lists import statement as owned_statement
         owned=owned_statement(self,node)
         if owned is not None:return owned
+        from .native_owned_class_lists import initialize as initialize_owned_field
+        initialized=initialize_owned_field(self,node)
+        if initialized is not None:return initialized
         if isinstance(node,ast.Raise):return self.model.exceptions.emit_raise(self,node)
         from .native_context_managers import control_statement
         control=control_statement(self,node)
@@ -2702,7 +2763,8 @@ def _class_layouts(model,emitter):
         from .native_packed_value_fields import selected as packed_selected,initial as packed_initial,raw as packed_raw
         packed=packed_selected(model,owner)
         fields=list(owner.fields.values())
-        members=",".join(f"field_{i}:"+(f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields))
+        from .native_owned_class_lists import selected as owned_field_selected,runtime as owned_field_runtime
+        members=",".join(f"field_{i}:"+(f"Option<Vec<{emitter.rust_type(shape(value.cell).element)}>>"if owned_field_selected(model,owner,i)else f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields))
         extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
         from .native_static_class_metadata import layout as metadata_layout
         extra_member,extra_initialize,metadata_runtime=metadata_layout(model,owner,extra_member,extra_initialize)
@@ -2722,11 +2784,14 @@ def _class_layouts(model,emitter):
         gc_body=gc_layout(model,owner)
         if gc_body:result.append(gc_body)
         for i,value in enumerate(fields):
+            if owned_field_selected(model,owner,i):continue
             message=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{value.name}'")
             argument=f'impl AsRef<ClassHandle_{owner.index}>'if unboxed else f'&ClassHandle_{owner.index}'
             receiver='value.as_ref()'if unboxed else'value'
             getter='Ok('+packed_raw(receiver,i)+')'if packed else load(model,owner,receiver,i)+f'.ok_or_else(||{message}.to_owned())'
             result.append(f"fn class_get_{owner.index}_{i}(value:{argument})->Result<{emitter.rust_type(shape(value.cell))},String>{{{getter}}}")
+        field_runtime=owned_field_runtime(model,owner,emitter)
+        if field_runtime:result.append(field_runtime)
         identity='self.class_value_identity'if unboxed else'Rc::as_ptr(self)as usize'
         result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<{owner.module_name}.{owner.node.name} object at 0x{{:x}}>\",{identity})}}}}")
         constructor=owner.methods.get("__init__")
@@ -2793,6 +2858,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         classify(model)
         from .native_value_classes import prepare as prepare_value_classes
         prepare_value_classes(model)
+        from .native_owned_class_lists import prepare as prepare_owned_fields
+        prepare_owned_fields(model)
         from .native_value_parameter_borrows import prepare as prepare_parameter_borrows
         prepare_parameter_borrows(model)
         from .native_class_reference_borrows import prepare as prepare_class_reference_borrows
@@ -2945,6 +3012,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=apply_single_execution_metadata(result,model)
     from .native_scope_views import apply as apply_scope_views
     result=apply_scope_views(result,model)
+    from .native_scope_common import apply as apply_scope_common
+    result=apply_scope_common(result,model)
     if prune_output:
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)

@@ -129,6 +129,12 @@ They preserve `break`, `continue`, `return`, and loop `else`. A possibly unset
 scalar target uses `Option<T>` with a positioned Python unbound-name error on
 read, including zero-iteration and filtered-generator paths.
 
+Fixed-shape list literals can retain per-position types for constant
+indexing, record unpacking and iteration over records. Their physical element
+carrier remains a typed finite union, so aliases and mutable list identity are
+preserved. Unknown allocation origins, resizing, reordering and unproved
+callback effects conservatively widen positional facts to ordinary list facts.
+
 All integer modes support uniquely owned flat integer lists, indexed reads and
 updates, copied lists, ordinary list operations, `sorted` with supported immutable key results,
 and slicing with positive or negative steps. Slices make independent lists.
@@ -1769,6 +1775,20 @@ References must call an unqualified direct function with a concrete
 the original context. Module expressions keep their normal evaluation order,
 and retained or returned context clones remain owned.
 
+Builtin list reads with an exact integer literal `0` or `-1` use the first or last element directly, retaining the original positioned IndexError and mutable element identity. Other literals, computed indices, booleans, custom index protocols and other sequence types keep their existing native paths. This applies to ordinary, shared nested and typed class list storage without a runtime fallback.
+
+
+A certified finite synchronous program can share the execution-context control,
+input/output and module-cache roots as one common owned allocation. Each actual
+root constructor creates its own common state. Module switches and retained
+context clones share that state, while globals keep their original distinct Rc
+identity. Existing inner root Rc types and explicit retained clones are
+preserved. Exact private constructors/layouts and a global field-use seal are
+required; aliases, custom destruction, alternate construction/destructuring,
+root moves/replacement, layout/count/address observers and unproved runtime
+forms retain the original native context. Source calls, stream cursors, module
+initialization/failure, exceptions and frame propagation remain unchanged.
+
 Function-local list bindings with fresh allocations and no escaping aliases can
 use owned `Vec<T>` storage even on the class/frame path. Physical layout follows
 the official binding separately from the Python element type: homogeneous lists
@@ -1788,3 +1808,32 @@ string mode. Receivers and explicit arguments retain their evaluation order,
 including calls that raise a signature error. Classes with methods of the same
 name retain ordinary method dispatch. Unicode string casing still reports the
 missing Python-compatible case-mapping and conditional-casing implementation.
+
+
+A nonescaping builtin list field of a plain native class can reside directly as
+an `Option<Vec<Element>>` in its existing identity-preserving object. Fresh
+at-most-once constructor assignment, official self bindings, canonical implicit
+initialization and every reached field use must be proved. Object aliases share
+the same vector; escaping/replaced/shared-argument lists keep their ordinary
+shared storage. Scalar, finite-union, heterogeneous tuple and shared-reference
+elements retain their existing ABI and child identities.
+
+Selected indexed places capture the owner and check field presence before index
+effects. Element snapshots and stores use short owner borrows that end before
+source callbacks. Assignment/AugAssign keep Python evaluation and error order;
+old element destruction happens after releasing the owner borrow. Reflection,
+custom allocation/attribute protocols, initializer reset, GC/finalizers and
+owner address/representation observations prevent this initial optimization.
+The generic list type is unchanged and no whole-vector cloning getter is emitted.
+
+
+Ordinary modules and function wrappers can select fixed-list positional
+constraints without declaring a class. The choice runs before either emitter
+and uses reached shared AST/type facts plus solved allocation provenance for
+unpack, constant slot, record iteration and keyed sort consumers. Merely
+printing, measuring or leaving a heterogeneous literal unused does not force
+that route; uniform ordinary scalar paths remain available. The immutable
+analysis heap stores symbolic type/allocation constraints, never source values
+or runtime object uniqueness. The positional emitter still validates slot
+mutation and escape independently. Failed lowering never selects another
+emitter, and no marker class or input-source rewrite is performed.
