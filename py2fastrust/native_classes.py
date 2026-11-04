@@ -2923,6 +2923,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=apply_finite_depth(result,model)
     from .native_single_execution_metadata import apply as apply_single_execution_metadata
     result=apply_single_execution_metadata(result,model)
+    from .native_scope_views import apply as apply_scope_views
+    result=apply_scope_views(result,model)
     if prune_output:
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)

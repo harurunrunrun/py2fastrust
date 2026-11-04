@@ -275,21 +275,9 @@ def try_statement(generator,node,environment):
             if isinstance(target,ast.Name):
                 if target.id in generator.iterating_lists:raise _Unsupported
                 lines.append(f"{generator.bind(target.id,value,environment)}={name}.clone();")
-            elif isinstance(target,(ast.Tuple,ast.List)) and all(isinstance(item,ast.Name) for item in target.elts):
-                if len(target.elts)!=len(value.kind.fields):
-                    message=(f"ValueError: not enough values to unpack (expected {len(target.elts)}, got {len(value.kind.fields)})"
-                             if len(target.elts)>len(value.kind.fields) else f"ValueError: too many values to unpack (expected {len(target.elts)}, got {len(value.kind.fields)})")
-                    lines.append(generator.at(f'Err::<(),String>(String::from({_string(message)}))',node)+";")
-                    # Bind placeholders solely to keep statically unreachable
-                    # Rust uses well typed; the prior error always exits.
-                    for item in target.elts:
-                        lines.append(f"{generator.bind(item.id,'int',environment)}={generator.literal(0)};")
-                    continue
-                for index,(item,kind) in enumerate(zip(target.elts,value.kind.fields)):
-                    if item.id in generator.iterating_lists:raise _Unsupported
-                    code=generator.coerce(_Expression(f"{name}.{index}",kind,owned=False),kind)
-                    lines.append(f"{generator.bind(item.id,kind,environment)}={code};")
-            else:raise _Unsupported
+            else:
+                from .native_ordered_targets import assign
+                lines.extend(assign(generator,target,_Expression(name,value.kind,owned=False),environment))
         return "\n".join(lines),environment
     if not (isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id=="print"):
         return None

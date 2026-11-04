@@ -3,14 +3,15 @@
 This is a physical ABI pass over compiler-owned Rust function symbols. Python
 arguments, frames, callbacks, module changes and exceptions keep their normal
 evaluation rules. Futures and escaping Rust function references retain an owned
-context. Every retained/returned context is explicitly cloned.
+context. Source functions and constructors share the same nonescaping ABI
+proof. Every retained/returned context is explicitly cloned.
 """
 import re
 
 from .rust_pruning import _lex,_parse
 
 
-FUNCTION=re.compile(r'class_function_\d+\Z')
+FUNCTION=re.compile(r'class_(?:function|construct)_\d+\Z')
 
 
 def body_index(tokens,pairs,opening,limit):

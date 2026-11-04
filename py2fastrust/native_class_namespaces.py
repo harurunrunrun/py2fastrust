@@ -364,6 +364,9 @@ class ClassNamespaces:
         from .native import _string
         index=self.model.namespace.index(member.key)
         stored=dict(self.model.namespace.fields())[member.key]
+        from .native_immutable_class_functions import emit
+        immutable=emit(self,emitter,node,reference,member,stored)
+        if immutable is not None:return immutable
         message=f"AttributeError: type object '{member.owner.node.name}' has no attribute '{member.name}'"
         loaded=emitter.at(f'{{let value={reference.code}.module.borrow().value_{index}.clone();value.ok_or_else(||{_string(message)}.to_owned())}}',node)
         return Expression(loaded,stored)

@@ -132,9 +132,10 @@ class ItemField:
 
 
 class Planner:
-    def __init__(self, generator, snapshot_strings=()):
+    def __init__(self, generator, snapshot_strings=(),iteration_site=None):
         self.g = generator
         self.snapshot_strings = frozenset(snapshot_strings)
+        self.iteration_site=iteration_site
 
     def leaf(self, setup, begin, iterator, fields, owners=(), eager=False, tupled=False,
              length=None, nonempty=False, unpack_length=None):
@@ -698,7 +699,9 @@ def try_for_loop(generator, node, environment):
     written = {target.id for statement in node.body for target in ast.walk(statement)
                if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store)}
     written.update(target.id for target in ast.walk(node.target) if isinstance(target, ast.Name))
-    planner = Planner(g, snapshot_strings=written)
+    from .native_iteration_effects import borrowable_for
+    planner = Planner(g, snapshot_strings=written,
+                      iteration_site=node if borrowable_for(plan.source)else None)
     stream = planner.lower(plan.source, environment)
     # Validate tuple shape independently of the function/module bindings.
     pairs = planner.target_values(node.target,stream)

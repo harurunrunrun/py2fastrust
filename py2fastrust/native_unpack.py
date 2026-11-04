@@ -22,17 +22,19 @@ def _placeholders(g,target,environment):
 
 
 def _assign(g,plan,fields,environment):
-    from .native_iterators import Planner, Stream, _owned
-    count=len(plan.target.elts)
-    lines=[_check(g,str(len(fields)),count,plan.node)]
-    if len(fields)!=count:
-        return lines+_placeholders(g,plan.target,environment)
-    source=Stream("","",tuple(fields),frozenset(),lambda *_:"",tupled=True)
-    for target,value in Planner(g).target_values(plan.target,source):
-        if target.id in g.iterating_lists or not immutable(value.kind)and not value.owned:
-            raise _Unsupported
-        lines.append(f"{g.bind(target.id,value,environment)}={_owned(g,value,value.kind)};")
-    return lines
+    if all(isinstance(target,ast.Name)for target in plan.target.elts):
+        from .native_iterators import _owned
+        count=len(plan.target.elts)
+        lines=[_check(g,str(len(fields)),count,plan.node)]
+        if len(fields)!=count:
+            return lines+_placeholders(g,plan.target,environment)
+        for target,value in zip(plan.target.elts,fields):
+            if target.id in g.iterating_lists or not immutable(value.kind)and not value.owned:
+                raise _Unsupported
+            lines.append(f"{g.bind(target.id,value,environment)}={_owned(g,value,value.kind)};")
+        return lines
+    from .native_ordered_targets import fields as assign_fields
+    return assign_fields(g,plan.target,fields,environment)
 
 
 def try_statement(g,node,environment):
@@ -44,10 +46,9 @@ def try_statement(g,node,environment):
         lines,fields=[],[]
         for element in source_plan.elements:
             value=g.expression(element,environment)
-            if not immutable(value.kind)and not value.owned:
-                raise _Unsupported
+            from .native_ordered_targets import owned
             temporary=g.temporary()
-            lines.append(f"let {temporary}={value.code};")
+            lines.append(f"let {temporary}={owned(g,value,element)};")
             fields.append(_Expression(temporary,value.kind,owned=True,length=value.length))
         lines+=_assign(g,plan,fields,environment)
         return "\n".join(lines),environment

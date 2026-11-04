@@ -69,6 +69,8 @@ class TupleValue:
 class IteratorValue:
     item: Value
     sources: frozenset[Allocation]=frozenset()
+    may_call:bool=False
+    source_inputs:frozenset[Value]=frozenset()
 
 
 @dataclass(frozen=True)
@@ -268,7 +270,7 @@ class SemanticGraph:
         if isinstance(node,(ast.Import,ast.ImportFrom)):
             data=(None,tuple((item.name,item.asname) for item in node.names)) if isinstance(node,ast.Import) else (node.module,tuple((item.name,item.asname) for item in node.names))
             return Operation(site,"import",data=data)
-        if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal)):return Operation(site,"pass")
+        if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal)):return Operation(site,"pass",data=type(node).__name__)
         return Operation(site,"unknown")
 
     def block(self,statements):return tuple(self.statement(node) for node in statements)
@@ -291,6 +293,7 @@ class ScopeFacts:
     values: object=field(default_factory=dict)
     storage: object=field(default_factory=dict)
     header_storage: object=field(default_factory=dict)
+    iteration_access:object=field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -344,6 +347,8 @@ class Solver:
         self.allocation_contexts={}
         self.incoming_sources={}
         self.active_iterations=[]
+        from .native_iteration_effects import Recorder
+        self.iteration_access=Recorder(self)
 
     def constrain(self,variable,item):
         self.variables[variable]=self.variables.get(variable,BOTTOM).join(item)
@@ -384,8 +389,12 @@ class Solver:
     def lookup(self,name,state,globals,locals):
         if name in state:return state[name]
         if name in locals:return MISSING
-        if name in globals:return globals[name]
+        if name in globals:
+            self.iteration_access.global_read(name,globals[name])
+            return globals[name]
+        self.iteration_access.global_read(name,MISSING)
         if name in CORE_BUILTINS:return value(BuiltinIdentity(name))
+        if name=="__name__":return value("str")
         return MISSING
 
     def field_values(self,item,role,index=None):
@@ -416,6 +425,7 @@ class Solver:
         return Value(result.alternatives,result.unbound or item.unbound,result.unknown or item.unknown)
 
     def insert(self,receiver,role,item):
+        self.iteration_access.store(receiver,role,item)
         for part in self.provenance(receiver).alternatives:
             if isinstance(part,Allocation):self.constrain(Variable(part.site,role),item)
 
@@ -424,9 +434,13 @@ class Solver:
         # Constrain inserted payloads, not a fresh list or a copied shape.
         if isinstance(self.kind(first),ListType)and operator in {"Add","Mult"}:
             if operator=="Add"and self.kind(second)not in {"int","bool","int_bool","float","none"}:
-                self.insert(first,"element",self.provenance(self.field_values(second,"iteration")))
+                payload=self.field_values(second,"iteration")
+                self.iteration_access.store(first,"element",payload)
+                self.insert(first,"element",self.provenance(payload))
             return first
-        return self.compute("binary:"+operator,(first,second))
+        result=self.compute("binary:"+operator,(first,second))
+        if result.unknown:self.iteration_access.unknown()
+        return result
 
     def incoming_allocations(self,context):
         """Reachable caller storage, including children inserted during a call."""
@@ -469,6 +483,7 @@ class Solver:
 
     def record_mutation(self,receiver,context):
         """Preserve caller-owned list identity across a proved mutable call."""
+        self.iteration_access.mutation(receiver)
         self.retain_iteration(receiver)
         if context is None or context[0]is None:return
         incoming=self.incoming_allocations(context)
@@ -477,9 +492,14 @@ class Solver:
                 self.shared_references.add(part)
 
     def store_index(self,receiver,index,item,context=None):
+        self.iteration_access.implicit(receiver,index)
         self.record_mutation(receiver,context)
+        original=receiver
         receiver=self.provenance(receiver)
         categories={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
+        if "dict"in categories:
+            self.iteration_access.store(original,"key",index);self.iteration_access.store(original,"value",item)
+        if categories&{"list","deque"}:self.iteration_access.store(original,"element",item)
         if "dict" in categories:
             self.insert(receiver,"key",index);self.insert(receiver,"value",item)
         if categories&{"list","deque"}:self.insert(receiver,"element",item)
@@ -511,6 +531,8 @@ class Solver:
                     offset=index if star is None or index<star else len(fields)-len(target[1])+index if fields is not None else None
                     source=fields[offset]if fields is not None and offset is not None and 0<=offset<len(fields)else self.field_values(item,'iteration',offset)
                     self.assign(child,source,state,context)
+
+        else:self.iteration_access.unknown()
 
     def compute(self,operation,operands):
         # Resolve type dependencies, never source values. Keeping a nested
@@ -546,14 +568,17 @@ class Solver:
                 if member is not None:members=members.join(value(member))
             if members.alternatives:result=members
             elif term.data=="maxlen"and deque_type(self.kind(receiver)):result=value(NullableType("int"))
+            elif not self.iteration_access.closed(receiver):self.iteration_access.unknown()
         elif op=="call":
             callee=evaluate(args[0]);positional=tuple(evaluate(child) for child in args[1]);keywords=tuple((name,evaluate(child)) for name,child in args[2])
             self.calls[(context,term.site)]=CallFact(callee,positional,keywords)
+            self.iteration_access.call(callee,positional,keywords)
             result=BOTTOM
             for identity in callee.alternatives:
                 result=result.join(self.call(identity,positional,keywords,term,state,globals,locals,context))
             if callee.unknown or callee.unbound or not callee.alternatives:result=result.join(UNKNOWN)
         elif op=="expanded_call":
+            self.iteration_access.unknown()
             # Observe real expression order without pretending one iterable
             # supplies one positional argument to the fixed-arity solver.
             callee=evaluate(args[0])
@@ -562,29 +587,33 @@ class Solver:
             if not callee.unknown and not callee.unbound and callee.alternatives==frozenset({BuiltinIdentity("print")}):
                 result=value("none")
         elif op=="index":
-            receiver=evaluate(args[0]);evaluate(args[1])
+            receiver=evaluate(args[0]);index_value=evaluate(args[1])
+            self.iteration_access.implicit(receiver,index_value)
             literal=self.graph.literals.get(args[1].site)
             index=literal.value if literal is not None and literal.kind=="int" and -(1<<63)<=literal.value<(1<<63) else None
             result=self.field_values(receiver,"value",index)
         elif op=="slice":
             receiver=evaluate(args[0])
-            for bound in args[1]:evaluate(bound)
+            bounds=tuple(evaluate(bound)for bound in args[1])
+            self.iteration_access.implicit(receiver,*bounds)
             item=self.field_values(receiver,"iteration")
             allocation=self.allocation(term.site,"list",context);result=value(allocation);self.insert(result,"element",item)
             if self.kind(receiver)=="str":result=value("str")
             elif self.kind(receiver)=="bytes":result=value("bytes")
         elif op=="compare":
-            for child in args[:2]:evaluate(child)
+            for child in args[:2]:self.iteration_access.implicit(evaluate(child))
             for child in args[2:]:
                 possible=state.copy()
-                self.expression(child,possible,globals,locals,context)
+                self.iteration_access.implicit(self.expression(child,possible,globals,locals,context))
                 joined=merge([state,possible])
                 state.clear();state.update(joined)
             result=value("bool")
         elif op=="unary":
-            operand=evaluate(args[0]);result=value("bool") if term.data=="Not" else self.compute("unary:"+term.data,(operand,))
+            operand=evaluate(args[0]);self.iteration_access.implicit(operand)
+            result=value("bool") if term.data=="Not" else self.compute("unary:"+term.data,(operand,))
         elif op=="binary":
             first,second=(evaluate(child) for child in args)
+            self.iteration_access.implicit(first,second)
             if term.data in {"Add","Mult"} and any(isinstance(part,(Allocation,ListType)) and (not isinstance(part,Allocation) or part.category=="list") for part in first.alternatives|second.alternatives):
                 result=value(self.allocation(term.site,"list",context))
                 sources=(first,second) if term.data=="Add" else tuple(item for item in (first,second) if any(isinstance(part,(Allocation,ListType)) for part in item.alternatives))
@@ -593,7 +622,7 @@ class Solver:
         elif op in {"join","conditional"}:
             result=BOTTOM
             if op=="conditional":
-                evaluate(args[0]);branches=[]
+                self.iteration_access.implicit(evaluate(args[0]));branches=[]
                 for child in args[1:]:
                     possible=state.copy()
                     result=result.join(self.expression(child,possible,globals,locals,context))
@@ -602,9 +631,12 @@ class Solver:
                 state.clear();state.update(joined)
             elif args:
                 result=evaluate(args[0])
+                self.iteration_access.implicit(result)
                 for child in args[1:]:
                     possible=state.copy()
-                    result=result.join(self.expression(child,possible,globals,locals,context))
+                    next_value=self.expression(child,possible,globals,locals,context)
+                    self.iteration_access.implicit(next_value)
+                    result=result.join(next_value)
                     joined=merge([state,possible])
                     state.clear();state.update(joined)
         elif op=="comprehension":
@@ -619,11 +651,12 @@ class Solver:
                     for condition in filters:self.expression(condition,inside,globals,locals,context)
                 items=tuple(self.expression(child,inside,globals,locals,context) for child in args[1])
             finally:del self.active_iterations[depth:]
-            if term.data=="iterator":result=value(IteratorValue(items[0],frozenset(sources)))
+            if term.data=="iterator":result=value(IteratorValue(items[0],frozenset(sources),True))
             else:
                 result=value(self.allocation(term.site,term.data,context))
                 if term.data=="dict":self.insert(result,"key",items[0]);self.insert(result,"value",items[1])
                 else:self.insert(result,"element" if term.data=="list" else "key",items[0])
+        else:self.iteration_access.unknown()
         self.records[(context,term.site)]=result
         return result
 
@@ -643,6 +676,8 @@ class Solver:
                 if bind_error(LIST_METHODS[name],len(args),keywords).error:return value("none")
             if name in {"append","extend","clear","reverse","sort","pop","insert","remove"}:
                 self.record_mutation(receiver,context)
+            elif category&{'set','dict','deque'}and name in{'add','discard','update','setdefault','popitem','popleft','appendleft','extendleft','rotate','difference_update','intersection_update','symmetric_difference_update'}:
+                self.record_mutation(receiver,context)
             category={part.category for part in receiver.alternatives if isinstance(part,Allocation)}
             kinds={part for part in receiver.alternatives if isinstance(part,(str,ListType,DictType,SetType))}
             if name in {"append","appendleft","add"} and args and (category&{"list","deque","set"}):
@@ -659,6 +694,7 @@ class Solver:
                 # not a new Python identity. All abstract aliases share it; the
                 # emitter must prove unique ownership before changing storage.
                 fresh=value(self.allocation(term.site,next(iter(category)),context))
+                self.iteration_access.alias_epoch(fresh,identity.receiver)
                 old={part for part in receiver.alternatives if isinstance(part,Allocation)}
                 for binding,item in tuple(state.items()):
                     if old&item.alternatives:
@@ -669,22 +705,22 @@ class Solver:
             if name=="copy" and len(category)==1:
                 category=next(iter(category));result=value(self.allocation(term.site,category,context))
                 for role in ("element",) if category in {"list","deque"} else ("key",) if category=="set" else ("key","value"):
-                    self.insert(result,role,self.field_values(receiver,"iteration" if role in {"key","element"} else "value"))
+                    self.insert(result,role,self.field_values(identity.receiver,"iteration" if role in {"key","element"} else "value"))
                 return result
             if name in {"keys","values","items"} and ("dict" in category or any(isinstance(kind,DictType) for kind in kinds)):
-                key=self.field_values(receiver,"iteration");item=self.field_values(receiver,"value")
+                key=self.field_values(identity.receiver,"iteration");item=self.field_values(identity.receiver,"value")
                 return value(IteratorValue(value(TupleValue((key,item))) if name=="items" else key if name=="keys" else item))
             if name=="get" and args:
                 fallback=args[1] if len(args)>1 else value("none")
-                return self.field_values(receiver,"value").join(fallback)
+                return self.field_values(identity.receiver,"value").join(fallback)
             if name=="split" and kinds&{"str","bytes"}:
                 result=value(self.allocation(term.site,"list",context));self.insert(result,"element",value("bytes" if "bytes" in kinds else "str"));return result
             if name in {"strip","lstrip","rstrip","join"} and kinds&{"str","bytes"}:return value("bytes" if "bytes" in kinds else "str")
-            if name in {"pop","popleft"} and "deque"in category:return self.field_values(receiver,"iteration")
+            if name in {"pop","popleft"} and "deque"in category:return self.field_values(identity.receiver,"iteration")
             if name in {"pop","popleft"} and "deque_int" in kinds:return value("int")
             if name=="copy"and "deque_int"in kinds:return value("deque_int")
             if name=="pop" and ("list" in category or any(isinstance(kind,ListType) for kind in kinds)):
-                return self.field_values(receiver,"iteration")
+                return self.field_values(identity.receiver,"iteration")
             if name in {"append","appendleft","extend","extendleft","clear","reverse","rotate"} and "deque_int" in kinds:return value("none")
             from .native_text_predicates import STR_PREDICATES,supports
             if name in STR_PREDICATES and not args and not keywords:
@@ -746,8 +782,11 @@ class Solver:
             if name=="sorted":
                 result=value(self.allocation(term.site,"list",context));self.insert(result,"element",item);return result
             inputs=(args[1:]if name in {'map','filter'}else args if name=='zip'else args[:1]if name in {'iter','reversed','enumerate'}else())
-            sources=frozenset().union(*(self.iteration_allocations(item)for item in inputs))
-            return value(IteratorValue(item,sources))
+            sources=frozenset().union(*(self.iteration_access.iteration_allocations(item)for item in inputs))
+            deferred=(name in {'map','filter'}and(not args or not self.iteration_access.sealed_mapper(args[0],inputs,filtering=name=='filter')))
+            may_call=(deferred or name=='iter'and len(args)!=1
+                      or any(self.iteration_access.iteration_may_call(item)for item in inputs))
+            return value(IteratorValue(item,sources,may_call,self.iteration_access.iterator_inputs(inputs)))
         if name=="next" and args:
             item=self.field_values(args[0],"iteration")
             return item.join(args[1]) if len(args)>1 else item
@@ -773,7 +812,7 @@ class Solver:
         # Semantic kinds select generated function signatures. Analysis also
         # needs object provenance: same-typed calls may read/write distinct
         # allocations and may return a reference to their particular argument.
-        identities=tuple(self.provenance(item)for item in bound.values)
+        identities=tuple((self.provenance(item),item)for item in bound.values)
         # Heap sites use the lexical invocation path, never the argument
         # allocation graph. A loop can feed a fresh result into the same call
         # without recursively embedding all earlier arguments in new heap IDs.
@@ -783,13 +822,20 @@ class Solver:
         # Provenance still distinguishes summaries that return/mutate actual
         # caller references; site abstraction denotes MAY alias, not identity.
         context=(definition.site,kinds,global_key,identities,allocation_context)
-        if context in self.cache:return self.cache[context]
-        if definition.site in self.active or len(self.active)>=128:return UNKNOWN
+        if context in self.cache:
+            if self.iteration_access.matches_globals(context,globals):
+                self.iteration_access.replay(context,globals)
+                return self.cache[context]
+            del self.cache[context]
+        if definition.site in self.active or len(self.active)>=128:
+            self.iteration_access.unknown()
+            return UNKNOWN
         self.allocation_contexts[context]=allocation_context
         self.incoming_sources[context]=tuple(bound.values)+tuple(globals.values())
         self.active.add(definition.site);self.contexts[context]=(definition.site,kinds)
         state=dict(zip(bound.parameters,bound.values))
-        flow=self.block(definition.body,state,globals,definition.signature.local_names,context)
+        with self.iteration_access.function(context):
+            flow=self.block(definition.body,state,globals,definition.signature.local_names,context)
         result=flow.returns.join(value("none")) if flow.normal is not None else flow.returns
         # A returned caller reference outlives this function frame. New local
         # allocations can still move out as uniquely owned vectors.
@@ -812,7 +858,8 @@ class Solver:
                     if target[0]=="index":
                         receiver=evaluate(target[1]);index=evaluate(target[2])
                         self.store_index(receiver,index,item,context)
-                    elif target[0]=="attribute":evaluate(target[1])
+                    elif target[0]=="attribute":
+                        evaluate(target[1]);self.iteration_access.unknown()
                     else:self.assign(target,item,state,context)
             elif op=="augment":
                 target,operator=operation.data
@@ -823,17 +870,19 @@ class Solver:
                             and -(1<<63)<=literal.value<(1<<63)else None)
                     first=self.field_values(receiver,"value",offset)
                     second=evaluate(args[1])
+                    self.iteration_access.implicit(first,second)
                     self.record_mutation(first,context)
                     self.store_index(receiver,index,self.augmented(first,second,operator),context)
                 else:
                     first,second=(evaluate(term) for term in args)
+                    self.iteration_access.implicit(first,second)
                     self.record_mutation(first,context)
                     self.assign(target,self.augmented(first,second,operator),state,context)
             elif op=="expression":evaluate(args[0])
             elif op=="expression_group":
                 for term in args:evaluate(term)
             elif op=="assert":
-                evaluate(args[0])
+                self.iteration_access.implicit(evaluate(args[0]))
                 from .native_assertions import literal_truth
                 if len(args)>1 and literal_truth(self.graph.nodes[operation.site].test)is not True:
                     self.expression(args[1],state.copy(),globals,locals,context)
@@ -843,26 +892,29 @@ class Solver:
                     elif target[0]=='unpack':
                         for child in target[1]:delete(child)
                     elif target[0]=='index':
-                        receiver=evaluate(target[1]);evaluate(target[2])
+                        receiver=evaluate(target[1]);index=evaluate(target[2])
+                        self.iteration_access.implicit(receiver,index)
                         self.record_mutation(receiver,context)
-                    elif target[0]=='attribute':evaluate(target[1])
+                    elif target[0]=='attribute':
+                        evaluate(target[1]);self.iteration_access.unknown()
                 for target in operation.data:delete(target)
             elif op=="branch":
-                evaluate(args[0]);yes=self.block(operation.blocks[0],state,globals,locals,context);no=self.block(operation.blocks[1],state,globals,locals,context)
+                self.iteration_access.implicit(evaluate(args[0]));yes=self.block(operation.blocks[0],state,globals,locals,context);no=self.block(operation.blocks[1],state,globals,locals,context)
                 flow.normal=merge([yes.normal,no.normal]);flow.breaks+=yes.breaks+no.breaks;flow.continues+=yes.continues+no.continues;flow.returns=flow.returns.join(yes.returns).join(no.returns)
             elif op in {"for","while"}:
                 if op=="for":source=evaluate(args[0])
                 header=state.copy()
-                with self.iterating(source if op=='for'else BOTTOM):
+                with self.iterating(source if op=='for'else BOTTOM),self.iteration_access.loop(source if op=='for'else BOTTOM,context,operation.site if op=='for'else None):
                     for iteration in range(128):
                         inside=header.copy()
                         if op=="for":self.assign(operation.data,self.field_values(source,"iteration"),inside,context)
-                        else:self.expression(args[0],inside,globals,locals,context)
+                        else:self.iteration_access.implicit(self.expression(args[0],inside,globals,locals,context))
                         body=self.block(operation.blocks[0],inside,globals,locals,context)
                         joined=merge([state,body.normal,*body.continues])
                         if joined==header:break
                         header=joined
                     else:
+                        self.iteration_access.incomplete()
                         header={name:UNKNOWN for name in header}
                 self.headers[(context,operation.site)]=header
                 otherwise=self.block(operation.blocks[1],header,globals,locals,context)
@@ -872,12 +924,17 @@ class Solver:
             elif op=="break":flow.breaks.append(state.copy());flow.normal=None
             elif op=="continue":flow.continues.append(state.copy());flow.normal=None
             elif op=="definition":
+                if getattr(self.graph.nodes[operation.site],"decorator_list",()):self.iteration_access.unknown()
                 definition=self.graph.functions[operation.data]
                 defaults=tuple((name,evaluate(term)) for name,term in definition.defaults)
                 state[definition.name]=value(FunctionValue(definition.site,defaults))
+            elif op=="pass":
+                if operation.data!="Pass":self.iteration_access.unknown()
             elif op=="import":
                 from .native_module_calls import ModuleRef,MEMBERS
                 module,names=operation.data
+                if not(module in self.graph.unit.native_imports or module is None and all(name in self.graph.unit.native_imports for name,_ in names)):
+                    self.iteration_access.unknown()
                 for name,alias in names:
                     if module is None and name in self.graph.unit.native_imports:state[alias or name]=value(ModuleRef(name))
                     elif module in self.graph.unit.native_imports:
@@ -886,6 +943,7 @@ class Solver:
                             from .native_stdio import TEXT
                             member=TEXT
                         state[alias or name]=value(member) if member is not None else UNKNOWN
+            else:self.iteration_access.unknown()
             # Unknown operations are retained in the graph. The ordinary
             # emitter diagnoses their missing semantics; they are never run here.
         return flow
@@ -977,6 +1035,7 @@ class Solver:
     def solve(self):
         root=(None,())
         for iteration in range(128):
+            self.iteration_access.reset()
             before=self.variables.copy();self.cache={};self.records={};self.headers={};self.constructors=set();self.resets={};self.calls={};self.contexts={root:root}
             self.block(self.graph.body,{}, {},frozenset(),root)
             self.propagate()
@@ -1056,8 +1115,9 @@ class Solver:
         for (context,site),fact in self.calls.items():
             target=calls.setdefault(key(context),{})
             target[site]=target[site].join(fact) if site in target else fact
+        iteration_access=self.iteration_access.export(key)
         keys=set(allocations)|set(headers)|set(expressions)|set(resets)|set(calls)
-        scopes={scope:ScopeFacts(MappingProxyType(allocations.get(scope,{})),MappingProxyType({site:MappingProxyType(state) for site,state in headers.get(scope,{}).items()}),MappingProxyType(expressions.get(scope,{})),frozenset(site for context,site in self.constructors if key(context)==scope),MappingProxyType(resets.get(scope,{})),MappingProxyType(calls.get(scope,{})),MappingProxyType(values.get(scope,{})),MappingProxyType(storage.get(scope,{})),MappingProxyType({site:MappingProxyType(state)for site,state in header_storage.get(scope,{}).items()})) for scope in keys}
+        scopes={scope:ScopeFacts(MappingProxyType(allocations.get(scope,{})),MappingProxyType({site:MappingProxyType(state) for site,state in headers.get(scope,{}).items()}),MappingProxyType(expressions.get(scope,{})),frozenset(site for context,site in self.constructors if key(context)==scope),MappingProxyType(resets.get(scope,{})),MappingProxyType(calls.get(scope,{})),MappingProxyType(values.get(scope,{})),MappingProxyType(storage.get(scope,{})),MappingProxyType({site:MappingProxyType(state)for site,state in header_storage.get(scope,{}).items()}),MappingProxyType(iteration_access.get(scope,{}))) for scope in keys}
         return Analysis(self.graph,MappingProxyType(scopes),iteration+1)
 
 

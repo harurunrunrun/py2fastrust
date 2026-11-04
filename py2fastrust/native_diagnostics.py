@@ -367,6 +367,19 @@ def direct_diagnostic(source, filename, error=None, node=None, unit=None):
     kinds = getattr(error, "operand_types", ()) or _types(node, frames, unit)
     operation = getattr(error, "operation", None) or operation_name(node)
     reason = _reason(error, node, kinds)
+    if (unit is not None and isinstance(node,(ast.Subscript,ast.Attribute))
+            and isinstance(node.ctx,ast.Store) and not getattr(error,'reason',None)):
+        unpacking=any(isinstance(statement,ast.Assign)
+                      and any(isinstance(target,(ast.Tuple,ast.List))
+                              and any(child is node for child in ast.walk(target))
+                              for target in statement.targets)
+                      for statement in ast.walk(unit.tree))
+        if unpacking:
+            operation='indexed/attribute unpacking'
+            if isinstance(node,ast.Subscript)and isinstance(node.slice,ast.Slice):
+                reason='slice targets require ordered slice replacement and alias-preserving resize handling; that unpacking slice-store adapter is not implemented'
+            else:
+                reason='this target has no proved ordered native receiver/value storage adapter for its indexed or attribute store'
     message = f"Cannot lower {operation}: {reason.rstrip('.')}."
     if kinds:
         message += " Types: " + ", ".join(f"{name}={kind_name(kind)}" for name, kind in kinds) + "."

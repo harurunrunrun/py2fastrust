@@ -282,6 +282,9 @@ def stream(g,node,value,planner):
     from .native import _Expression
     if not isinstance(value.kind,SharedListType):return None
     g.register_type(value.kind);g.has_typed_lists=g.has_lists=True
+    from .native_iteration_effects import borrow_stream
+    borrowed=borrow_stream(g,node,value,planner)
+    if borrowed is not None:return borrowed
     owner,cursor=g.temporary(),g.temporary()
     # Each next owns one immutable value or shared row reference. No contents
     # borrow spans the Python loop body; list mutation remains observable.

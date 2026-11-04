@@ -143,6 +143,31 @@ borrow guards instead of acquiring a new reference-counted handle for each row.
 Scalar stores and scalar augmented assignments use the same path when its
 evaluation-order and storage-effect proofs apply. Effectful indices retain
 owned handles and short borrows so mutations still observe Python semantics.
+List `for` loops can retain one immutable contents borrow when solved allocation
+and call-effect facts prove that the body cannot mutate any possible source
+object. Mutations of other proved disjoint lists remain allowed. Cached source
+function effects retain their actual receiver origins; delayed or unknown calls
+prevent the optimization. Repeated executions of one allocation site are never
+assumed to identify distinct objects. Direct list loops and one-source `iter`
+and `enumerate` adapters share this proof. Eager adapter arguments finish before
+the borrow starts, and the captured owner and borrow leave scope before loop
+`else`, subsequent statements, or a function return. Other cases keep native
+live cursors so alias mutation and suspended producer effects remain observable.
+Source-function summaries refresh when their global binding dependencies change,
+including a formerly absent builtin override. Content-type epochs created by
+`clear()` keep their original object identity for alias proofs. Reference-field
+proofs include updates made through every such epoch, including caller-owned
+containers cleared and refilled inside another function. Symbolic writes to
+reference fields reach a finite weak-update fixed point separately from type
+layouts; protocol preconditions are checked again against those final fields.
+Builtin method reference results and stored iterators preserve symbolic input
+paths, and function-summary cache keys retain argument paths as well as origins.
+Iterator rewrapping keeps finite root sets rather than growing nested histories.
+Unmodeled calls or implicit protocols conservatively invalidate heap-alias
+proofs across the program, including before a loop or through reentry into an
+earlier function. Canonical standard input and closed primitive mappers retain
+their sealed non-reentrant paths; delayed producers with unproved effects do
+not retain loop borrows.
 Subscript receivers and indices execute once; assignment evaluates its RHS first,
 and numeric item augmented assignment reads the old item before its RHS and checks
 the stored index again after a length-changing RHS. Shared-list `+=` and `*=` retain that same list object, including self-extension,
@@ -1719,3 +1744,27 @@ callback imports, conditional/loop imports and unproved programs retain the
 owned-capable metadata carrier. Constructors still evaluate their actual class
 reference and arguments in the original order. Class aliases and pending module
 initialization keep their nominal identity.
+
+
+The synchronous context-borrow ABI also covers generated constructors. It uses
+the same shared-field, nonescaping-use, synchronous-header and function-address
+guards as ordinary source calls. Retained or returned contexts remain explicit
+owned clones; futures, qualified/escaping functions and custom context drops
+retain their original ABI. Constructor arguments and module context captures
+keep their original evaluation order.
+
+Immutable class callable lookup: for a proved Copy-field value class defined directly in its module, an unchanged direct method binding can use its compiled function identity and the captured class module without loading the namespace slot. Class-body rebinding, function metadata observations, lexical captures and unproved value layouts retain ordinary native namespace lookup. Definition-time defaults and descriptor binding keep their original order.
+
+Ordinary native unpacking supports mixed name and builtin list-index targets, including character swaps, fixed nested tuple/list targets, dynamic tuple sources and generator consumers. Each unpack level captures its values before storing targets from left to right; a later index observes earlier assignments and an error preserves earlier stores. Shared list elements retain their handles. Unproved slice, mapping or attribute places report the missing ordered store adapter at the original target. Class-field and descriptor targets retain their existing class-emitter path.
+
+
+Module context switches can borrow the existing execution context when the
+actual globals Rc is identical. A different globals object retains the ordinary
+owned context, including failed-import generations with the same module number.
+This optimization requires the finite synchronous runtime certificate and a
+shared context layout without custom destruction. Only compiler-private module
+bindings in synchronous functions with borrow-only context uses qualify.
+References must call an unqualified direct function with a concrete
+`&ClassScope` parameter; unknown, generic, qualified or retained references keep
+the original context. Module expressions keep their normal evaluation order,
+and retained or returned context clones remain owned.
