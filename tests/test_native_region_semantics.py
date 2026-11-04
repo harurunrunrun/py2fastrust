@@ -59,6 +59,7 @@ print(total)
 ''',('3\n0\nabc\nx\nfirst\nsecond\n','3\n-1\nabcd\ndxy\na\nb\nc\n','0\n0\n\n\n'),debug=True)
 
     def test_zero_domains_preserve_prior_target_value_and_loop_else(self):
+        # Loop-else selects typed frames; this case validates their checked path.
         self.compare('''n=int(input())
 s=input()
 p=input()
@@ -69,7 +70,7 @@ for j in range(n):
 else:
  print("done")
 print(total,j)
-''',('0\n\n\n','-2\n\n\n','3\nabc\nabc\n'),debug=True)
+''',('0\n\n\n','-2\n\n\n','3\nabc\nabc\n'),debug=True,guard=False)
 
     def test_generator_filter_keeps_lazy_error_scope_and_prefix(self):
         self.compare('''n=int(input())
