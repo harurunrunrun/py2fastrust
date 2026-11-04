@@ -1489,6 +1489,8 @@ class Emitter:
         self.counter = 0
         self.loops = []
         self.loop_field_caches = []
+        self.list_access_regions = []
+        self.list_access_tails = {}
         self.slots = {}
         self.reference_slots = {}
         if model.integer == "bigint":
@@ -1738,6 +1740,9 @@ class Emitter:
         return result
 
     def expression(self, node):
+        from .native_list_access_regions import read as region_read
+        optimized=region_read(self,node)
+        if optimized is not None:return optimized
         exception=self.model.exceptions.read(self,node)
         if exception is not None:return exception
         from .native_builtin_singletons import read as read_singleton
@@ -2286,6 +2291,9 @@ class Emitter:
         return setup+self.store_reference(reference,value,target)
 
     def reference(self, target):
+        from .native_list_access_regions import reference as region_reference
+        optimized=region_reference(self,target)
+        if optimized is not None:return optimized
         if isinstance(target,ast.Name):
             return "",("name",target)
         if isinstance(target,ast.Attribute):
@@ -2328,6 +2336,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=="list_region":
+            from .native_list_access_regions import load
+            return load(self,reference[1],reference[2],node)
         if reference[0]=='finite_field':
             from .native_finite_attributes import emit
             return emit(self,node,reference[1],kind or reference[2])
@@ -2360,6 +2371,9 @@ class Emitter:
         return Expression(self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node),kind)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=="list_region":
+            from .native_list_access_regions import store
+            return store(self,reference[1],reference[2],value,node)
         if reference[0]=='finite_field':
             from .native_finite_attributes import emit
             return emit(self,node,reference[1],'none',value=value).code+';'
@@ -2440,6 +2454,9 @@ class Emitter:
         if isinstance(node,ast.AugAssign):
             setup,reference=self.reference(node.target)
             old_kind=shape(self.model.augmented[(self.plan.index,id(node))])
+            from .native_list_access_regions import augmented
+            fused=augmented(self,node,setup,reference,old_kind)
+            if fused is not None:return fused
             from .native_class_augassign import emit
             fused=emit(self,node,setup,reference,old_kind)
             if fused is not None:return fused
@@ -2475,11 +2492,14 @@ class Emitter:
             self.loops.append(label)
             flags=enter(self,node,label)
             from .native_class_loop_fields import scope
-            with scope(self,node)as cache:
+            from .native_list_access_regions import scope as access_scope
+            with scope(self,node)as cache,access_scope(self,node)as access:
                 setup,test=self.capture(self.condition(node.test))
                 body=self.statements(node.body)
+            cache+=access
             self.loops.pop()
-            tail=leave(self,node,label)
+            from .native_list_access_regions import tail_scope
+            with tail_scope(self,node):tail=leave(self,node,label)
             return "{"+flags+cache+f"'{label}:loop{{{setup}if !({self.truth(test)}){{break;}}{body}}}"+tail+"}"
         if isinstance(node,ast.For):
             return self.for_statement(node)
@@ -2509,8 +2529,10 @@ class Emitter:
         from .native_loop_else import enter,leave
         setup+=enter(self,node,label)
         from .native_class_loop_fields import scope
-        with scope(self,node)as cache:
+        from .native_list_access_regions import scope as access_scope
+        with scope(self,node)as cache,access_scope(self,node)as access:
             body=self.statements(node.body)
+        cache+=access
         setup+=cache
         self.loops.pop()
         current=self.fresh()
@@ -2551,7 +2573,8 @@ class Emitter:
             before+=f"{counter}={increment};"
             item=Expression(f"({saved},{item.code})",TupleType(("int",item.kind)))
         binding=self.assign(node.target,item)
-        tail=leave(self,node,label)
+        from .native_list_access_regions import tail_scope
+        with tail_scope(self,node):tail=leave(self,node,label)
         return "{"+setup+prefix+before+binding+body+"}"+tail+"}"
 
     def declaration(self):

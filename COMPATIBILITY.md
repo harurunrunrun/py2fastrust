@@ -137,6 +137,12 @@ immutable tuple payloads use typed shared handles in every integer mode. Named
 row aliases, shallow `copy`, repetition/concatenation, item mutation, ordinary
 function parameters/results, live list iteration, and printing retain object
 identity. Captured row handles survive replacement or clearing of the parent.
+Shared-list indexing through stable local names and scalar, non-reentrant
+indices borrows the existing handles directly. Nested paths retain parent
+borrow guards instead of acquiring a new reference-counted handle for each row.
+Scalar stores and scalar augmented assignments use the same path when its
+evaluation-order and storage-effect proofs apply. Effectful indices retain
+owned handles and short borrows so mutations still observe Python semantics.
 Subscript receivers and indices execute once; assignment evaluates its RHS first,
 and numeric item augmented assignment reads the old item before its RHS and checks
 the stored index again after a length-changing RHS. Shared-list `+=` and `*=` retain that same list object, including self-extension,
@@ -1587,3 +1593,12 @@ Lexical value deletion drops the binding independently from references held by
 iterators and aliases. Maybe-unbound cells retain positioned NameError and
 UnboundLocalError behavior; the ordinary static callable/import identity ABI
 does not yet expose generic deletion cells.
+
+Closed scalar loops on typed function frames borrow stable local lists once for the loop. Reads, writes, augmented assignments and `len` share that borrow; mutable regions require a single list binding. The proof includes nested control flow and exhaustion clauses, preserves zero-trip and first-read name errors, and excludes callbacks, rebinding, escaping containers and accesses through other possible aliases. Other loops retain their native identity-preserving accesses.
+
+Proved builtin integer and boolean `bit_count()` and `bit_length()` calls inside
+generator expressions do not require a StopIteration conversion boundary.
+Their use alone therefore does not change the storage and loops of the enclosing
+program. The proof uses resolved receiver types and callable identities;
+source-defined methods with the same names and real `next()` effects retain
+Python's PEP 479 exception chain. Unresolved callable effects remain conservative.

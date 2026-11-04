@@ -2,6 +2,16 @@
 import ast
 
 
+def _numeric_method_no_stop(identity,choices=None):
+    """Exact builtin bit queries neither invoke user protocols nor stop a cursor."""
+    receiver=identity.receiver
+    choices=receiver.alternatives if choices is None else choices
+    return (identity.name in {'bit_count','bit_length'}
+            and not receiver.unknown and not receiver.unbound
+            and bool(choices)
+            and all(part in {'int','bool','int_bool'}for part in choices))
+
+
 def may_stop(unit,analysis):
     from .native_constraints import FunctionValue,MethodValue,TupleValue
     from .native_types import ListType,DequeType,alternatives
@@ -25,12 +35,14 @@ def may_stop(unit,analysis):
             if call.identity.unknown:direct.add(scope)
             for identity in identities:
                 if not isinstance(identity,MethodValue):continue
-                safe=bool(identity.receiver.alternatives)and identity.receiver.alternatives<={'str','bytes'}
+                safe=(_numeric_method_no_stop(identity)or
+                      bool(identity.receiver.alternatives)and identity.receiver.alternatives<={'str','bytes'})
                 original=nodes[ordinal]
                 if isinstance(original,ast.Call)and isinstance(original.func,ast.Attribute)and identity.site==unit.ordinal(original.func):
                     kind=facts.expressions.get(unit.ordinal(original.func.value))
                     choices=alternatives(kind)if kind is not None else()
-                    if choices and all(part in {'str','bytes'}for part in choices):safe=True
+                    if _numeric_method_no_stop(identity,choices):safe=True
+                    elif choices and all(part in {'str','bytes'}for part in choices):safe=True
                     elif choices and all(isinstance(part,(ListType,DequeType))for part in choices):
                         safe=identity.name in {'append','appendleft','pop','popleft','insert','clear','reverse','copy'}
                     elif choices and all(isinstance(part,DictType)for part in choices):

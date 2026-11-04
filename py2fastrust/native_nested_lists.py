@@ -111,6 +111,10 @@ def try_expression(g,node,environment):
         else:code=f"{binding.slot}.clone()"
         return _Expression(code,kind)
     if isinstance(node,ast.Subscript) and isinstance(kind_for(g,node.value,environment),SharedListType):
+        if not isinstance(node.slice,ast.Slice):
+            from .native_shared_access import read
+            borrowed=read(g,node,environment)
+            if borrowed is not None:return borrowed
         owner=g.expression(node.value,environment)
         if isinstance(node.slice,ast.Slice):
             raise _Unsupported("shared nested list slicing is not implemented yet",node=node,types=(("owner",owner.kind),),proof="shallow-copy list slice preserving row identity")
@@ -242,6 +246,9 @@ def try_statement(g,node,environment):
     target=(node.targets[0] if isinstance(node,(ast.Assign,ast.Delete)) and len(node.targets)==1 else node.target if isinstance(node,ast.AugAssign) else None)
     if not isinstance(target,ast.Subscript) or not isinstance(kind_for(g,target.value,environment),SharedListType):return None
     if isinstance(target.slice,ast.Slice):raise _Unsupported("shared list slice assignment/deletion is not implemented",node=target)
+    from .native_shared_access import statement
+    borrowed=statement(g,node,target,environment)
+    if borrowed is not None:return borrowed
     lines=[]
     # Assignment evaluates RHS first. AugAssign captures and reads LHS first.
     item=g.temporary()
