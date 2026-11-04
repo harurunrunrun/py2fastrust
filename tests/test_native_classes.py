@@ -46,6 +46,9 @@ class NativeClassTests(unittest.TestCase):
                                      expected.stderr.splitlines()[-1].split(":")[0])
         return expected
 
+    def test_collected_self_cycle_preserves_instance_identity(self):
+        self.compare("class Item:\n def __init__(self):self.child=self\na=Item()\nprint(a.child is a,a.child.child is a)\n")
+
     def test_instances_fields_and_returned_lists_preserve_shared_aliases(self):
         self.compare('''class Box:
  def __init__(self, values):
@@ -268,7 +271,6 @@ class NativeClassProofTests(unittest.TestCase):
             "class Item:\n def __new__(cls):return 1\nprint(Item())\n",
             "class Item:\n def __init__(self):return 3\nprint(Item())\n",
             "class Item:\n def read(self):return 1\n def __init__(self):self.read=2\nprint(Item().read)\n",
-            "class Item:\n def __init__(self):self.child=self\nprint(Item())\n",
             "class Item:\n def __init__(self):self.values=[self]\nprint(Item())\n",
         )
         with patch("py2fastrust.codegen.generate",side_effect=AssertionError("general codegen entered")):
@@ -290,6 +292,14 @@ class NativeClassProofTests(unittest.TestCase):
             result=transpile(source)
             self.assertFalse(result.success)
             self.assertEqual(result.diagnostics[0].code,"E006")
+
+    def test_direct_self_cycle_is_admitted_by_the_native_collector(self):
+        source="class Item:\n def __init__(self):self.child=self\nprint(Item())\n"
+        for mode in ("i64","i128","bigint"):
+            with self.subTest(mode=mode):
+                result=transpile(source,TranspileOptions(integer=mode,filename="proof.py"))
+                self.assertTrue(result.success,result.diagnostics)
+                self.assertEqual(result.backend,"native")
 
     def test_definition_visibility_is_proved_transitively(self):
         for source in (
