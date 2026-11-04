@@ -1768,3 +1768,15 @@ References must call an unqualified direct function with a concrete
 `&ClassScope` parameter; unknown, generic, qualified or retained references keep
 the original context. Module expressions keep their normal evaluation order,
 and retained or returned context clones remain owned.
+
+Function-local list bindings with fresh allocations and no escaping aliases can
+use owned `Vec<T>` storage even on the class/frame path. Physical layout follows
+the official binding separately from the Python element type: homogeneous lists
+use their concrete element type, while heterogeneous lists use a finite enum of
+the inferred alternatives. Repetition preserves shared child-object identities.
+Direct indexing, indexed stores, `len`, `append` and `pop` access the vector
+without per-element Rc clones or RefCell loans. Canonical list construction,
+list literals, comprehensions and literal repetition construct vectors directly.
+Captured, returned, aliased, reflectively observed or otherwise unproved list
+bindings retain identity-preserving shared storage. This does not yet infer
+separate field types for heterogeneous lists unpacked as records.

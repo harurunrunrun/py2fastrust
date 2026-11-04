@@ -308,7 +308,7 @@ def prepare_first(emitter,node):
     return _prepare(emitter,record.sources[0])
 
 
-def emit(emitter, node, *, collector=None, first=None, wanted=None):
+def emit(emitter, node, *, collector=None, first=None, wanted=None, owned=False):
     from .native_classes import Expression, shape
     record=emitter.model.comprehensions[(emitter.plan.index,id(node))]
     wanted=emitter.kind(node)if wanted is None else wanted
@@ -353,7 +353,7 @@ def emit(emitter, node, *, collector=None, first=None, wanted=None):
             return setup+f"while let Some({current})={source.next}{{{body}}}"
         initial=(f"let mut {result}:Vec<{emitter.rust_type(wanted.element)}>=Vec::new();"if collector is None
                  else collector.initialize(emitter,result,wanted))
-        finish=f"class_list({result})"if collector is None else collector.finish(emitter,result,wanted)
+        finish=(result if owned else f"class_list({result})")if collector is None else collector.finish(emitter,result,wanted)
         code=first.setup+lexical_setup+declarations+initial+loop(0)+finish
     finally:
         scopes.pop()

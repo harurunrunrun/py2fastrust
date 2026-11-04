@@ -158,7 +158,7 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     return None
 
 
-def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
+def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=False):
     from .native_classes import Expression
     from .native_unions import project,union_kind
     from .native_builtin_singletons import has_singleton
@@ -224,7 +224,7 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
                 code=project(value.kind,value.code,lambda kind,code:emit(emitter,node,identity,arguments,
                     {**keywords,key:Expression(f"({code}).clone()",kind)},wanted,raw_kind).code)
                 return Expression(code,wanted)
-    return _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind)
+    return _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,owned_list=owned_list)
 
 
 def _type_name(emitter,value,node):
@@ -264,7 +264,7 @@ def _error(emitter,node,kind,message):
     return Expression(emitter.at(f'Err::<{emitter.rust_type(kind)},String>({message})',node),kind)
 
 
-def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
+def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=False):
     from .native import _Expression
     from .native_classes import Expression,ClassUnsupported,domain
     from .native_types import ListType
@@ -388,38 +388,39 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
         if name=="all":test="!("+test+")"
         return Expression("{"+setup+"loop{"+f"let Some({current})=({pulled.code}) else{{break {str(name=='all').lower()};}};if {test}{{break {str(name=='any').lower()};}}"+"}}","bool")
     elif name == "list":
-        if not arguments:code=f"class_list(Vec::<{self.rust_type(wanted.element)}>::new())"
+        def wrap(values):return values if owned_list else f'class_list({values})'
+        if not arguments:code=wrap(f"Vec::<{self.rust_type(wanted.element)}>::new()")
         elif self.model.mappings.views.element(arguments[0].kind)is not None:
             before,source=self.capture(self.model.iterators.construct(self,node,arguments[0]))
             pulled=self.model.iterators.pull(self,node,source);current=self.fresh();values=self.fresh()
             item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
-            code="{"+before+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}class_list({values})"+"}"
+            code="{"+before+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}"+wrap(values)+"}"
         elif domain(arguments[0].kind)=="iterator":
             pulled=self.model.iterators.pull(self,node,arguments[0]);current=self.fresh();values=self.fresh()
             item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
-            code="{"+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}class_list({values})"+"}"
+            code="{"+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}"+wrap(values)+"}"
         elif domain(arguments[0].kind)=="list":
             source=arguments[0]
-            if source.kind.element==wanted.element:code=f"class_list({source.code}.borrow().clone())"
+            if source.kind.element==wanted.element:code=wrap(f"{source.code}.borrow().clone()")
             else:
                 item=self.fresh()
                 converted=self.coerce(Expression(item+".clone()",source.kind.element),wanted.element,node)
-                code=f"class_list({source.code}.borrow().iter().map(|{item}|{converted}).collect::<Vec<{self.rust_type(wanted.element)}>>())"
+                code=wrap(f"{source.code}.borrow().iter().map(|{item}|{converted}).collect::<Vec<{self.rust_type(wanted.element)}>>()")
         elif domain(arguments[0].kind)=="tuple_sequence":
             source=arguments[0];item=self.fresh()
             converted=self.coerce(Expression(item+".clone()",source.kind.element),wanted.element,node)
-            code=f"class_list({source.code}.iter().map(|{item}|{converted}).collect::<Vec<{self.rust_type(wanted.element)}>>())"
+            code=wrap(f"{source.code}.iter().map(|{item}|{converted}).collect::<Vec<{self.rust_type(wanted.element)}>>()")
         elif domain(arguments[0].kind)=="range":
             values=f"{arguments[0].code}.iter()"
             if wanted.element!='int':
                 item=self.fresh()
                 converted=self.coerce(Expression(item,'int'),wanted.element,node)
                 values+=f".map(|{item}|{converted})"
-            code=f"class_list(({values}).collect::<Vec<_>>())"
+            code=wrap(f"({values}).collect::<Vec<_>>()")
         elif domain(arguments[0].kind)=="tuple":
             value=arguments[0]
             elements=[self.coerce(Expression(f"{value.code}.{i}.clone()",kind),wanted.element,node)for i,kind in enumerate(value.kind.fields)]
-            code="class_list(vec!["+",".join(elements)+"])"
+            code=wrap("vec!["+",".join(elements)+"]")
         elif domain(arguments[0].kind)in {"none","int","bool","int_bool","float","function"}:
             name=_type_name(self,arguments[0],node)
             return _error(self,node,wanted,f'format!("TypeError: \'{{}}\' object is not iterable",{name})')
@@ -427,7 +428,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
             before,source=self.capture(self.model.iterators.construct(self,node,arguments[0]))
             pulled=self.model.iterators.pull(self,node,source);current=self.fresh();values=self.fresh()
             item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
-            code="{"+before+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}class_list({values})"+"}"
+            code="{"+before+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}"+wrap(values)+"}"
     elif name in {"min","max","sum"}:
         accumulator=self.fresh();member=self.fresh()
         if name=="sum":

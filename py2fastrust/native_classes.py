@@ -1501,6 +1501,8 @@ class Emitter:
             self.numeric = ScalarGenerator(64 if model.integer == "i64" else 128,
                                            function=SimpleNamespace(node=SimpleNamespace(name=plan.scope)))
         self.numeric.string_mode=model.string_mode
+        from .native_owned_local_lists import prepare as prepare_owned_lists
+        self.owned_local_lists=prepare_owned_lists(self)
         for name, values in plan.locals.items():
             if model.is_module_plan(plan) and name in model.namespace.active:continue
             shared=model.namespace.local_kind(plan,name)
@@ -1740,6 +1742,9 @@ class Emitter:
         return result
 
     def expression(self, node):
+        from .native_owned_local_lists import read as owned_read
+        owned=owned_read(self,node)
+        if owned is not None:return owned
         from .native_list_access_regions import read as region_read
         optimized=region_read(self,node)
         if optimized is not None:return optimized
@@ -2123,7 +2128,7 @@ class Emitter:
         call = self.at(f"class_parse_words(&{words.code},{limit},{parser})",consumer or node)
         return f"{{{before}{call}}}"
 
-    def sequence_call(self,node,method):
+    def sequence_call(self,node,method,*,storage=None):
         if method.name=="sort":
             from .native_class_sorting import emit_method
             return emit_method(self,node)
@@ -2147,7 +2152,7 @@ class Emitter:
                 from .native_class_builtins import _type_name
                 return _type_name(emitter,value,node)
         adapter=Adapter()
-        storage=capture_shared(adapter,self.expression(node.func.value))
+        if storage is None:storage=capture_shared(adapter,self.expression(node.func.value))
         lines=list(storage.setup)
         bound={}
         arguments=normalize_call(node)
@@ -2306,6 +2311,9 @@ class Emitter:
         return setup+self.store_reference(reference,value,target)
 
     def reference(self, target):
+        from .native_owned_local_lists import reference as owned_reference
+        owned=owned_reference(self,target)
+        if owned is not None:return owned
         from .native_value_classes import reference as value_reference
         borrowed=value_reference(self,target)
         if borrowed is not None:return borrowed
@@ -2354,6 +2362,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=='owned_local_list':
+            from .native_owned_local_lists import load
+            return load(self,reference,node,kind)
         if reference[0]=="list_region":
             from .native_list_access_regions import load
             return load(self,reference[1],reference[2],node)
@@ -2389,6 +2400,9 @@ class Emitter:
         return Expression(self.at(f"class_list_get(&{owner.code},&({self.number(index)}))",node),kind)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=='owned_local_list':
+            from .native_owned_local_lists import store
+            return store(self,reference,value,node)
         if reference[0]=="list_region":
             from .native_list_access_regions import store
             return store(self,reference[1],reference[2],value,node)
@@ -2416,6 +2430,9 @@ class Emitter:
                          if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
+        from .native_owned_local_lists import statement as owned_statement
+        owned=owned_statement(self,node)
+        if owned is not None:return owned
         if isinstance(node,ast.Raise):return self.model.exceptions.emit_raise(self,node)
         from .native_context_managers import control_statement
         control=control_statement(self,node)
@@ -2598,7 +2615,7 @@ class Emitter:
 
     def declaration(self):
         from .native_value_classes import borrowed_self
-        data=[f"let mut {slot}:"+(f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()]
+        data=[f"let mut {slot}:"+(f"Option<Vec<{self.rust_type(kind.element)}>>"if name in self.owned_local_lists else f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()]
         references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
         return "\n".join(data+references)
 
@@ -2892,6 +2909,9 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(slice_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),class_runtime,layouts,*bodies])
+    if getattr(model,'owned_list_repetition',False):
+        from .native_owned_local_lists import RUNTIME as owned_list_runtime
+        pieces.append(owned_list_runtime)
     entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if synchronous(model,model.module)
            else "let result=class_execute(scope.clone(),class_function_0(scope.clone()));")
     pieces.append("fn main(){use std::io::Write as _;let scope=ClassScope::new();"+entry+"\n"
