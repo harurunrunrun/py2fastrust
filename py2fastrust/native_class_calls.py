@@ -34,19 +34,21 @@ def synchronous(model,plan):
     return plan is None or plan.index in model.synchronous_calls
 
 
-def call(emitter,invocation,callee,node):
+def call(emitter,invocation,callee,node,*,propagate=True):
     if getattr(emitter,'iterator_callback_context',None)is not None:
+        if not propagate:return None
         from .native_iterator_stop_policy import callback_call
         return callback_call(emitter,invocation,callee,node)
     from .native import _string
     mode=synchronous(emitter.model,callee)
+    suffix='?'if propagate else''
     if mode:
         return (f"class_sync_call(&class_scope,||{invocation},"
-                f"{node.lineno},{emitter.location_code()})?")
+                f"{node.lineno},{emitter.location_code()})"+suffix)
     if synchronous(emitter.model,emitter.plan):
         raise RuntimeError("a synchronous native function has an unrecorded asynchronous callee")
     return (f"class_call(class_scope.clone(),{invocation},"
-            f"{node.lineno},{emitter.location_code()}).await?")
+            f"{node.lineno},{emitter.location_code()}).await"+suffix)
 
 
 def runtime(source,model):

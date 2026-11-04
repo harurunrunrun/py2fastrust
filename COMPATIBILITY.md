@@ -1875,3 +1875,5 @@ before target effects; binding and bounds failures retain their source positions
 Child values keep their existing shallow value/reference ABI. Unproved records,
 class fields, dynamic indices and interprocedural list values retain the existing
 vector or shared-handle storage.
+
+An exact synchronous constructor call returned with the same nominal instance type can forward its compiled Result directly. Argument/callee captures, defaults, actual module context, source call guards and error frames remain in their original order. Non-tail expressions, result type conversions, recursive callers, context-manager control returns and unproved call forms retain their existing native return path.

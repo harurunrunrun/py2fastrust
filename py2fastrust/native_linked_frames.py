@@ -560,6 +560,8 @@ class LinkedEmitter(Emitter):
             before,reference=self.capture(self.expression(node.func))
             result=self.call_user(node,owner.methods.get('__init__'),constructor=owner,
                 defining_module=f"{reference.code}.module.clone()",defining_class=f"{reference.code}.clone()")
+            from .native_tail_constructor_result import wrap
+            wrap(self,node,before)
             return Expression("{"+before+result.code+"}",result.kind)
         return super().call(node)
 

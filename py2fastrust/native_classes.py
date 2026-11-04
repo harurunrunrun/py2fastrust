@@ -2153,6 +2153,8 @@ class Emitter:
         context=self.prepare_call_context(callee,receiver,constructor,defining_module)
         code="{"+"\n".join(setup)+context+call+"}"
         if constructor is not None:
+            from .native_tail_constructor_result import register
+            register(self,node,constructor,callee,invocation,setup,context)
             return self.encoded(code,InstanceType(self.model.class_key(constructor)),self.kind(node),node)
         from .native_source_returns import emit_result
         return Expression(emit_result(self,node,callee,code,self.kind(node)),self.kind(node))
@@ -2601,7 +2603,11 @@ class Emitter:
             result_setup,result=self.capture(result)
             return setup+before+more+operation+result_setup+self.store_reference(reference,result,node.target)
         if isinstance(node,ast.Return):
-            value=Expression("()",'none')if node.value is None else self.expression(node.value)
+            if node.value is None:value=Expression("()",'none')
+            else:
+                from .native_tail_constructor_result import capture
+                with capture(self,node.value)as tail:value=self.expression(node.value)
+                if tail is not None and tail.code is not None:return 'return '+tail.code+';'
             return f"return Ok({self.coerce(value,shape(self.plan.result),node)});"
         if isinstance(node,ast.If):
             setup,test=self.capture(self.condition(node.test))
