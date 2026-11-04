@@ -15,10 +15,14 @@ def selected(model,owner):
 
 
 def load(model,owner,receiver,index):
+    from .native_packed_value_fields import selected as packed,raw
+    if packed(model,owner):return 'Some('+raw(receiver,index)+')'
     operation='get()'if selected(model,owner)else'clone()'
     return f'({receiver}).borrow().field_{index}.{operation}'
 
 
 def store(model,owner,receiver,index,value):
+    from .native_packed_value_fields import selected as packed
+    if packed(model,owner):return f'({receiver}).borrow().field_{index}.set({value});'
     if selected(model,owner):return f'({receiver}).borrow().field_{index}.set(Some({value}));'
     return f'({receiver}).borrow_mut().field_{index}=Some({value});'

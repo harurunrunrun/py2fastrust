@@ -2682,9 +2682,14 @@ def _class_layouts(model,emitter):
         copied=selected(model,owner)
         from .native_value_classes import selected as value_selected
         unboxed=value_selected(model,owner)
+        from .native_packed_value_fields import selected as packed_selected,initial as packed_initial,raw as packed_raw
+        packed=packed_selected(model,owner)
         fields=list(owner.fields.values())
-        members=",".join(f"field_{i}:"+(f"std::cell::Cell<{emitter.rust_type(MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields))
+        members=",".join(f"field_{i}:"+(f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields))
         extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
+        from .native_static_class_metadata import layout as metadata_layout
+        extra_member,extra_initialize,metadata_runtime=metadata_layout(model,owner,extra_member,extra_initialize)
+        if metadata_runtime:result.append(metadata_runtime)
         if extra_member:members=extra_member+(","+members if members else"")
         if unboxed:
             members='class_value_identity:usize'+(','+members if members else'')
@@ -2703,7 +2708,8 @@ def _class_layouts(model,emitter):
             message=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{value.name}'")
             argument=f'impl AsRef<ClassHandle_{owner.index}>'if unboxed else f'&ClassHandle_{owner.index}'
             receiver='value.as_ref()'if unboxed else'value'
-            result.append(f"fn class_get_{owner.index}_{i}(value:{argument})->Result<{emitter.rust_type(shape(value.cell))},String>{{{load(model,owner,receiver,i)}.ok_or_else(||{message}.to_owned())}}")
+            getter='Ok('+packed_raw(receiver,i)+')'if packed else load(model,owner,receiver,i)+f'.ok_or_else(||{message}.to_owned())'
+            result.append(f"fn class_get_{owner.index}_{i}(value:{argument})->Result<{emitter.rust_type(shape(value.cell))},String>{{{getter}}}")
         identity='self.class_value_identity'if unboxed else'Rc::as_ptr(self)as usize'
         result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<{owner.module_name}.{owner.node.name} object at 0x{{:x}}>\",{identity})}}}}")
         constructor=owner.methods.get("__init__")
@@ -2715,7 +2721,7 @@ def _class_layouts(model,emitter):
         if unboxed:params.insert(0,'class_value_identity:usize')
         if extra_parameter:params.insert(0,extra_parameter)
         signature="class_scope:ClassScope"+(","+",".join(params)if params else"")
-        initialize=",".join(f"field_{i}:"+('std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields)))
+        initialize=",".join(f"field_{i}:"+('std::cell::Cell::new('+packed_initial(shape(fields[i].cell))+')'if packed else'std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields)))
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
         if unboxed:initialize='class_value_identity'+(','+initialize if initialize else'')
         body=(f"let object=ClassData_{owner.index}{{{initialize}}};"if unboxed else
@@ -2770,6 +2776,12 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         classify(model)
         from .native_value_classes import prepare as prepare_value_classes
         prepare_value_classes(model)
+        from .native_value_parameter_borrows import prepare as prepare_parameter_borrows
+        prepare_parameter_borrows(model)
+        from .native_class_reference_borrows import prepare as prepare_class_reference_borrows
+        prepare_class_reference_borrows(model)
+        from .native_packed_value_fields import prepare as prepare_packed_fields
+        prepare_packed_fields(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
@@ -2903,6 +2915,14 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=exit_runtime(result,model)
     from .native_scope_borrows import apply as borrow_scope_abi
     result=borrow_scope_abi(result)
+    from .native_value_parameter_borrows import apply as apply_parameter_borrows
+    result=apply_parameter_borrows(result,model)
+    from .native_class_reference_borrows import apply as apply_class_reference_borrows
+    result=apply_class_reference_borrows(result,model)
+    from .native_finite_depth_calls import apply as apply_finite_depth
+    result=apply_finite_depth(result,model)
+    from .native_single_execution_metadata import apply as apply_single_execution_metadata
+    result=apply_single_execution_metadata(result,model)
     if prune_output:
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)

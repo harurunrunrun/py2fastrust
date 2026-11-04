@@ -1658,3 +1658,64 @@ attribute errors and the existing lazy loop cache retains first-read timing.
 Captured, module, comprehension and generator bindings, mixed receiver storage,
 class namespace lookup and custom attribute protocols keep ordinary lowering.
 Mutable and BigInt fields also retain their existing owned access paths.
+
+Selected value classes declared directly in a source module can share their
+class metadata after successful module initialization. Copies of those values
+copy the shared metadata reference. Initializing or failed imports and distinct
+runtime class generations retain owned metadata; reuse checks actual class
+identity. At most one metadata record per eligible source definition is pinned
+for the generated program's lifetime. Normal class lookup, classmethod binding
+and explicit requests for an owned class reference retain the actual class and
+module globals. Source classes with unproved value semantics keep their native
+reference representation.
+
+
+Synchronous source parameters of a proved value class can borrow their captured
+actual value when every use of the official parameter binding is a plain Copy
+scalar field load. Rebinding, captures, forwarding, identity observations and
+escaping uses keep the owned native ABI. The physical call adaptation runs after
+normal argument capture, so later arguments, exceptions and callback evaluation
+retain their original order. Address-taken Rust functions, async/unsafe/const/extern headers, physical class
+layouts with a custom destructor (including aliases), futures and unknown
+physical call shapes keep their original ABI.
+
+
+Native recursion-depth counters can be omitted for an entirely synchronous,
+closed, acyclic source graph with a certified depth below 256 and a sealed
+default limit of 1000. Import initializer edges are verified explicitly. A
+physical graph bounds synthetic call spans between source activations; positive
+counter cycles and opaque trait callbacks prevent this optimization. Recursion
+limit setters (including captured adapters), runtime compilation/reflection,
+generators, finalizers, unproved calls and changing control state retain the
+ordinary native guard. Actual calls and exception-frame propagation remain.
+
+Already-proved immutable value classes can use scalar field slots without an
+additional missing-value tag. A canonical initializer must assign every field
+on every normal exit, and every initializer read must follow its assignment.
+The proof follows official parameter bindings and structured branches. Field
+deletion, class member sharing, raw or reflective allocation, unproved receiver
+escape, loops and structured cleanup retain the previous optional field layout.
+Fresh factory updates preserve the same initialized slots. Missing fields and
+first-read errors keep their existing behavior; this optimization adds no new
+language capability and does not change integer normalization.
+
+
+Exact synchronous class-reference parameters can borrow their captured class
+when every use of the official parameter is an ordinary class data attribute
+load and its owner has the closed value-class capability. Rebinding, aliases,
+closures, forwarding, returns and method/descriptor attribute uses retain the
+owned parameter ABI. Attribute values, including mutable list contents, are
+still looked up and captured in their original order. Class identity and stored
+bound methods remain the actual runtime objects. Unknown Rust ABI shapes,
+address-taken functions, futures and observable destructors prevent borrowing.
+
+
+Eligible value classes can retain a plain process-lifetime reference to their
+class metadata when module execution is proved unique. This requires the full
+closed finite-depth certificate and every reached fixed-name import to be an
+original direct module-body statement. Runtime importer/reload/loader APIs and
+import-hook/cache namespaces prevent this specialization. Failed-import retry,
+callback imports, conditional/loop imports and unproved programs retain the
+owned-capable metadata carrier. Constructors still evaluate their actual class
+reference and arguments in the original order. Class aliases and pending module
+initialization keep their nominal identity.

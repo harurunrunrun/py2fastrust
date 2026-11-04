@@ -1,0 +1,356 @@
+"""Elide logical depth counters only for sealed, bounded native call graphs.
+
+All source calls and the exact exception-frame propagation remain. Unknown
+source effects, control state, callbacks, suspension or physical call shapes
+keep the ordinary typed native recursion guard.
+"""
+import ast
+from collections import defaultdict, deque
+
+
+MAX_CERTIFIED_DEPTH = 256
+
+
+class Unproved(Exception):
+    pass
+
+
+def _model_proof(model):
+    from .native_classes import shape, domain, InstanceType
+    from .native_class_calls import synchronous
+    from .references import BuiltinIdentity
+    from .native_module_calls import BuiltinRef
+    from .native_module_linking import ClassReferenceType
+    plans = {plan.index: plan for plan in model.plans if plan.reachable}
+    if not plans or any(not synchronous(model, plan) for plan in plans.values()):
+        raise Unproved('source graph is recursive, suspended or exceeds the synchronous chain proof')
+    if getattr(model, 'gc_classes', ()) or any(owner.used and '__del__' in owner.methods for owner in model.classes.values()):
+        raise Unproved('collection or a finalizer can reenter source calls')
+    if model.generators.records:
+        raise Unproved('a generator can contribute suspended logical depth')
+    heights = getattr(model, 'native_call_heights', {})
+    if any(index not in heights for index in plans):
+        raise Unproved('a reached source plan has no finite acyclic height')
+    import_edges, native_imports = set(), set()
+    linker = getattr(model, 'module_linker', None)
+    if linker is not None:
+        for (caller, node_id), bindings in linker.imports.items():
+            if caller not in plans:
+                continue
+            expected = set()
+            for binding in bindings:
+                parts = binding.module.split('.')
+                modules = [linker.modules['.'.join(parts[:i])] for i in range(1, len(parts)+1)]
+                modules += [linker.modules[child] for child in binding.children
+                            if binding.exported_name is not None and child.rpartition('.')[2] == binding.exported_name]
+                for module in modules:
+                    if module.initializer is None:
+                        native_imports.add(module.number)
+                    else:
+                        expected.add(module.initializer.index)
+            if not expected <= model.call_edges_by_site.get((caller, node_id), set()):
+                raise Unproved('an import initializer is missing from the semantic call graph')
+            if not expected <= plans.keys() or not expected <= model.call_edges.get(caller, set()):
+                raise Unproved('an imported source frame lacks a reached acyclic graph edge')
+            import_edges.update((caller, target) for target in expected)
+    nodes = {id(node): node for node in model.iter_nodes()}
+    observers = {'eval', 'exec', 'compile', 'globals', 'locals', 'vars', 'getattr', 'setattr', 'delattr'}
+    def identities(kind, seen=frozenset()):
+        if id(kind) in seen:
+            return
+        seen = seen | {id(kind)}
+        for identity in (*getattr(kind, 'builtins', ()), *getattr(kind, 'members', ())):
+            yield identity
+        for child in getattr(kind, '_native_owned_kinds', ()):
+            yield from identities(child, seen)
+    for cell in model.records.values():
+        for identity in identities(shape(cell)):
+            if isinstance(identity, BuiltinIdentity) and identity.name in observers:
+                raise Unproved('a reachable namespace or runtime compiler observer is retained')
+            if isinstance(identity, BuiltinRef) and identity.module == 'builtins' and identity.name in observers:
+                raise Unproved('a canonical builtin-module namespace or runtime compiler adapter is retained')
+            if isinstance(identity, BuiltinRef) and identity.module == 'sys' and identity.name == 'setrecursionlimit':
+                raise Unproved('a canonical recursion-limit setter or saved adapter is retained')
+    for identity in model.callable_cells.member_used:
+        if isinstance(identity, BuiltinRef) and identity.module == 'builtins' and identity.name in observers:
+            raise Unproved('a saved builtin-module namespace or runtime compiler adapter is retained')
+        if isinstance(identity, BuiltinRef) and identity.module == 'sys' and identity.name == 'setrecursionlimit':
+            raise Unproved('a saved recursion-limit member adapter is retained')
+    sealed = {'int', 'bool', 'int_bool', 'float', 'str', 'bytes', 'list', 'tuple', 'tuple_sequence',
+              'deque', 'dict', 'set', 'defaultdict', 'Counter', 'OrderedDict', 'dict_view',
+              'range', 'stdin', 'stdin_buffer', 'sys', 'iterator', 'cmp_key'}
+    for (index, node_id), cell in model.records.items():
+        node = nodes.get(node_id)
+        if index not in plans or not isinstance(node, ast.Call):
+            continue
+        plan = plans[index]
+        site = model.callable_cells.sites.get((index, node_id))
+        if site is not None:
+            if not any((site.targets, site.builtins, site.members, site.constructors, site.exception_constructors)):
+                raise Unproved('a reached invocation has no finite canonical callable targets')
+            continue
+        if model.call_edges_by_site.get((index, node_id)):
+            continue
+        function = node.func
+        if isinstance(function, ast.Name):
+            identity = model.builtin_identity(plan, function, {})
+            if isinstance(identity, BuiltinIdentity):
+                if identity.name in observers:
+                    raise Unproved('a namespace or runtime compiler observer is reached')
+                continue
+        kind_cell = model.records.get((index, id(function)))
+        kind = None if kind_cell is None else shape(kind_cell)
+        if isinstance(kind, ClassReferenceType):
+            continue
+        result = shape(cell)
+        if isinstance(result, InstanceType):
+            owner = model.classes.get(result.name)
+            if owner is not None and model.value_classes.constructor(plan, node, owner):
+                continue
+        if isinstance(function, ast.Attribute):
+            receiver = model.records.get((index, id(function.value)))
+            tag = None if receiver is None else domain(shape(receiver))
+            if tag == 'sys' and function.attr == 'setrecursionlimit':
+                raise Unproved('a direct canonical recursion-limit setter is reached')
+            if isinstance(tag, str) and tag in sealed:
+                continue
+        raise Unproved('a reached call lacks a closed source or sealed builtin identity')
+    return dict(source_plans=len(plans), max_source_height=max(heights[index] for index in plans),
+                certified_import_edges=len(import_edges), terminal_native_imports=len(native_imports))
+
+
+def _body(tokens, pairs, first, end):
+    opening = next((i for i in range(first, len(tokens)) if tokens[i].start < end and tokens[i].text == '{'), None)
+    if opening is None:
+        raise Unproved('a physical function has no recognized body')
+    return opening, pairs[opening]
+
+
+def _components(edges):
+    """Iterative SCC traversal avoids using the host's recursion limit."""
+    seen, order = set(), []
+    for start in edges:
+        if start in seen:
+            continue
+        stack = [(start, False)]
+        while stack:
+            node, leaving = stack.pop()
+            if leaving:
+                order.append(node)
+                continue
+            if node in seen:
+                continue
+            seen.add(node)
+            stack.append((node, True))
+            stack.extend((child, False) for child in edges[node] if child not in seen)
+    reverse = {node: set() for node in edges}
+    for node, children in edges.items():
+        for child in children:
+            reverse[child].add(node)
+    membership, groups = {}, []
+    for start in reversed(order):
+        if start in membership:
+            continue
+        component = len(groups)
+        group, stack = [], [start]
+        membership[start] = component
+        while stack:
+            node = stack.pop()
+            group.append(node)
+            for child in reverse[node]:
+                if child not in membership:
+                    membership[child] = component
+                    stack.append(child)
+        groups.append(group)
+    return membership, groups
+
+
+def _weighted_bounds(edges, weights):
+    membership, groups = _components(edges)
+    component_weights, children = {}, {}
+    for index, group in enumerate(groups):
+        weight = sum(weights[node] for node in group)
+        if weight and (len(group) > 1 or any(node in edges[node] for node in group)):
+            raise Unproved('a physical recursion component can retain a positive depth counter')
+        component_weights[index] = weight
+        children[index] = {membership[child] for node in group for child in edges[node] if membership[child] != index}
+    parents = defaultdict(set)
+    for parent, targets in children.items():
+        for child in targets:
+            parents[child].add(parent)
+    remaining = {index: len(targets) for index, targets in children.items()}
+    ready = deque(index for index, count in remaining.items() if not count)
+    bounds = {}
+    while ready:
+        index = ready.popleft()
+        bounds[index] = component_weights[index] + max((bounds[child] for child in children[index]), default=0)
+        for parent in parents[index]:
+            remaining[parent] -= 1
+            if not remaining[parent]:
+                ready.append(parent)
+    return ({node: bounds[membership[node]] for node in edges},
+            sum(not value for value in component_weights.values()))
+
+
+def apply(source, model):
+    from .rust_pruning import _lex, _parse, _Unsupported
+    info = {'eligible': False}
+    model.finite_depth_calls = info
+    try:
+        info.update(_model_proof(model))
+        tokens, comments, pairs = _lex(source)
+        items = _parse(source, tokens, comments, pairs)
+        positions = {token.start: i for i, token in enumerate(tokens)}
+        if any(token.text in {'async', 'ClassFuture', 'ClassTask', 'ClassCall', 'generator_depth', 'class_generator_enter'} for token in tokens):
+            raise Unproved('a suspended or generator depth runtime is retained')
+        functions = [item for item in items if item.kind == 'fn']
+        functions += [child for item in items if item.kind == 'impl' and not item.trait
+                      for child in item.children if child.kind == 'fn']
+        guard = next((item for item in functions if item.name == 'class_sync_call'), None)
+        if guard is None:
+            raise Unproved('the canonical synchronous guard is absent')
+        body, ending = _body(tokens, pairs, positions[guard.start], guard.end)
+        if tokens[body+1].text != '{':
+            raise Unproved('the synchronous guard prefix changed')
+        check, check_end = body+1, pairs[body+1]
+        condition = next(i for i in range(check+1, check_end) if tokens[i].text == 'if')
+        condition_body = next(i for i in range(condition+1, check_end) if tokens[i].text == '{')
+        texts = lambda first, stop: [token.text for token in tokens[first:stop]]
+        if texts(check+1, condition) != ['let', 'mut', 'control', '=', 'scope', '.', 'control', '.', 'borrow_mut', '(', ')', ';']:
+            raise Unproved('the synchronous guard has an unknown counter acquisition')
+        if texts(condition, condition_body) != ['if', 'control', '.', 'depth', '>', '=', 'control', '.', 'limit']:
+            raise Unproved('the synchronous guard has an unknown limit condition')
+        if texts(pairs[condition_body]+1, check_end) != ['control', '.', 'depth', '+', '=', '1', ';']:
+            raise Unproved('the synchronous guard has an unknown depth increment')
+        after = check_end+1
+        if texts(after, after+8) != ['let', '_depth', '=', 'ClassSyncDepth', '(', 'scope', ')', ';']:
+            raise Unproved('the synchronous guard has an unknown cleanup capability')
+        keep = after+8
+        if texts(keep, keep+5) != ['call', '(', ')', '.', 'map_err']:
+            raise Unproved('the synchronous exception-frame propagation changed')
+        # Both fields are sealed: one default control constructor, one root
+        # activation, the exact existing guard, and canonical limit getters.
+        initializers = 0
+        depth_cleanup = [item for item in items if item.kind == 'impl' and item.owner == 'ClassSyncDepth']
+        if len(depth_cleanup) != 1:
+            raise Unproved('the depth cleanup implementation is not unique')
+        cleanup = depth_cleanup[0]
+        cleanup_text = texts(positions[cleanup.start], next(i for i in range(positions[cleanup.start], len(tokens)) if tokens[i].start >= cleanup.end))
+        canonical_cleanup = "impl Drop for ClassSyncDepth<'_>{fn drop(&mut self){self.0.control.borrow_mut().depth-=1;}}"
+        if cleanup_text != [token.text for token in _lex(canonical_cleanup)[0]]:
+            raise Unproved('the depth destructor has unknown effects')
+        main = next((item for item in functions if item.name == 'main'), None)
+        for i, token in enumerate(tokens):
+            if token.text == 'ClassControl' and i+1 < len(tokens) and tokens[i+1].text == '{' and (not i or tokens[i-1].text != 'struct'):
+                if texts(i+2, pairs[i+1]) != ['depth', ':', '0', ',', 'limit', ':', '1000']:
+                    raise Unproved('a control object does not start at the default limit')
+                initializers += 1
+            if i == 0 or tokens[i-1].text != '.' or token.text not in {'depth', 'limit'}:
+                continue
+            if guard.start <= token.start < guard.end or cleanup.start <= token.start < cleanup.end:
+                continue
+            if token.text == 'depth' and main is not None and main.start <= token.start < main.end:
+                if texts(i-8, i+4) == ['scope', '.', 'control', '.', 'borrow_mut', '(', ')', '.', 'depth', '=', '1', ';']:
+                    continue
+            if token.text == 'limit' and texts(i-10, i+2) == ['class_from_usize', '(', 'class_scope', '.', 'control', '.', 'borrow', '(', ')', '.', 'limit', ')']:
+                continue
+            raise Unproved('control depth or limit has a noncanonical observer or setter')
+        if initializers != 1:
+            raise Unproved('the default control constructor is not unique')
+        by_name = defaultdict(set)
+        bodies = {}
+        for item in functions:
+            key = item.start
+            by_name[item.name].add(key)
+            bodies[key] = (item, *_body(tokens, pairs, positions[item.start], item.end))
+        source_symbols = {name for name in by_name if name.startswith('class_function_') or name.startswith('class_construct_')}
+        for i, token in enumerate(tokens[:-1]):
+            if token.text in source_symbols and tokens[i+1].text != '(':
+                raise Unproved('a physical source-function address escapes the closed call graph')
+        edges, weights = {}, {}
+        for key, (item, opening, closing) in bodies.items():
+            edges[key], weights[key] = set(), 0
+            if item is guard:
+                continue
+            for i in range(opening+1, closing):
+                if tokens[i+1].text != '(':
+                    continue
+                name = tokens[i].text
+                if name == 'class_sync_call':
+                    weights[key] += 1
+                else:
+                    edges[key].update(by_name.get(name, ()))
+        bounds, zero_components = _weighted_bounds(edges, weights)
+        named_path_bound = 1 + max(bounds.values(), default=0)
+        # A generic Rust helper can invoke a closure supplied by its caller:
+        # its guard and that closure's source target occur on separate named
+        # edges. Do not mistake the named longest path for a complete bound.
+        # Cut entry edges to every source activation and bound only the
+        # remaining synthetic span. Source/import heights above certify how
+        # many such spans may be simultaneously active. The extra activation
+        # covers terminal constructors and native adapter import frames.
+        source_entries = {key for key, (item, _, _) in bodies.items()
+                          if item.name.startswith('class_function_')}
+        ranks = {}
+        for key in source_entries:
+            suffix = bodies[key][0].name[len('class_function_'):]
+            if not suffix.isdigit() or int(suffix) not in model.native_call_heights:
+                raise Unproved('a physical source activation lacks an exact semantic rank')
+            ranks[key] = model.native_call_heights[int(suffix)]
+        transitions = set()
+        for caller in source_entries:
+            pending, visited = list(edges[caller]), set()
+            while pending:
+                target = pending.pop()
+                if target in visited:
+                    continue
+                visited.add(target)
+                if target in source_entries:
+                    if ranks[target] >= ranks[caller]:
+                        raise Unproved('a physical source transition does not decrease its certified semantic rank')
+                    transitions.add((caller, target))
+                else:
+                    pending.extend(edges[target])
+        cut_edges = {key: targets - source_entries for key, targets in edges.items()}
+        cut_bounds, _ = _weighted_bounds(cut_edges, weights)
+        synthetic_span = max(cut_bounds.values(), default=0)
+        guard_sites = sum(weights.values())
+        physical_bound = max(named_path_bound,
+                             1 + (info['max_source_height'] + 1) * synthetic_span)
+        if physical_bound >= MAX_CERTIFIED_DEPTH:
+            raise Unproved('the certified physical depth is not well below the default limit')
+        source_reaching = set(source_entries)
+        reverse = defaultdict(set)
+        for caller, targets in edges.items():
+            for target in targets:
+                reverse[target].add(caller)
+        pending = list(source_entries)
+        while pending:
+            for caller in reverse[pending.pop()]:
+                if caller not in source_reaching:
+                    source_reaching.add(caller)
+                    pending.append(caller)
+        # Trait/default/other opaque bodies must not hide a source call. Their
+        # ordinary scalar operations and zero-counter helpers need no roots.
+        for item in items:
+            if item.kind not in {'impl', 'trait'} or item.kind == 'impl' and not item.trait:
+                continue
+            first = positions[item.start]
+            stop = next((i for i in range(first, len(tokens)) if tokens[i].start >= item.end), len(tokens))
+            for i in range(first, stop-1):
+                if tokens[i+1].text != '(':
+                    continue
+                name = tokens[i].text
+                if name == 'class_sync_call' or any(key in source_reaching or bounds[key]
+                                                   for key in by_name.get(name, ())):
+                    raise Unproved('an opaque trait body can hide a guarded source callback')
+        info.update(eligible=True, certified_depth=physical_bound, named_path_depth=named_path_bound,
+                    synthetic_span=synthetic_span, guard_sites=guard_sites,
+                    certified_source_transitions=len(transitions),
+                    rust_functions=len(functions), zero_weight_components=zero_components)
+        # Preserve the complete existing call/error-frame expression byte for
+        # byte, including exception identity and context synchronization.
+        return source[:tokens[body].end] + '\n' + source[tokens[keep].start:]
+    except (Unproved, _Unsupported, StopIteration, KeyError, IndexError) as error:
+        info['reason'] = str(error) or type(error).__name__
+        return source
