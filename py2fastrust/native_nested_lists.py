@@ -25,6 +25,7 @@ impl<T:Clone> NativeSharedIter<T> {
 }
 impl<T:Clone> Iterator for NativeSharedIter<T> {
     type Item=T;
+    #[inline(always)]
     fn next(&mut self)->Option<T> {
         let values=self.owner.borrow();
         if self.done||self.front>=values.len()||self.back.is_some_and(|back|self.front>=back){self.done=true;return None;}

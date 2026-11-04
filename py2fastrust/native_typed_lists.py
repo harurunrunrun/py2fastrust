@@ -10,11 +10,13 @@ from .native_stream_plans import ConsumerKind, ConsumerPlan, consumer_plan, cont
 
 
 HELPERS = r'''
+#[inline(always)]
 fn native_typed_reserve<T>(values:&mut Vec<T>,additional:usize)->Result<(),String> {
     let length=values.len().checked_add(additional).ok_or("MemoryError")?;
     if length>isize::MAX as usize{return Err("MemoryError".into());}
     values.try_reserve(additional).map_err(|_|"MemoryError".to_string())
 }
+#[inline(always)]
 fn native_typed_push<T>(values:&mut Vec<T>,value:T)->Result<(),String> {
     native_typed_reserve(values,1)?;
     values.push(value);
