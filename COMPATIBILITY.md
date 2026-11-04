@@ -1863,3 +1863,15 @@ protocols remain separate capabilities. This adapter does not introduce a VM or
 change list storage globally; ordinary homogeneous arrays keep their selection.
 
 Immediate calls to a proved immutable, monomorphic synchronous classmethod can pass the captured class reference and its actual defining module directly to the original compiled body. Callee evaluation precedes explicit arguments; the existing argument binder, defaults, exception frames and recursion rules remain in effect. Retained methods and unproved mutable class/function layouts keep their ordinary native callable representation.
+
+A private fixed-schema heterogeneous function-local list can use a separate
+physical tuple place such as `Option<(NativeInt, NativeText)>`. The semantic
+value remains a Python list. Selection requires original lexical bindings, one
+fresh literal definition, converged position types equal to the literal fields,
+and no whole-list alias, capture, return, identity observation, resize or slot
+type change. Constant indices, builtin `len`, compatible stores and explicit
+unpack access the physical fields directly. Unpack snapshots all source values
+before target effects; binding and bounds failures retain their source positions.
+Child values keep their existing shallow value/reference ABI. Unproved records,
+class fields, dynamic indices and interprocedural list values retain the existing
+vector or shared-handle storage.

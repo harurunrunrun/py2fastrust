@@ -1537,6 +1537,9 @@ class Emitter:
         self.numeric.string_mode=model.string_mode
         from .native_owned_local_lists import prepare as prepare_owned_lists
         self.owned_local_lists=prepare_owned_lists(self)
+        from .native_record_places import prepare as prepare_record_places
+        self.record_places=prepare_record_places(self)
+        self.owned_local_lists={name:local for name,local in self.owned_local_lists.items()if name not in self.record_places}
         for name, values in plan.locals.items():
             if model.is_module_plan(plan) and name in model.namespace.active:continue
             shared=model.namespace.local_kind(plan,name)
@@ -1776,6 +1779,9 @@ class Emitter:
         return result
 
     def expression(self, node):
+        from .native_record_places import read as record_read
+        record=record_read(self,node)
+        if record is not None:return record
         from .native_owned_local_lists import read as owned_read
         owned=owned_read(self,node)
         if owned is not None:return owned
@@ -2356,6 +2362,9 @@ class Emitter:
         return setup+self.store_reference(reference,value,target)
 
     def reference(self, target):
+        from .native_record_places import reference as record_reference
+        record=record_reference(self,target)
+        if record is not None:return record
         from .native_owned_local_lists import reference as owned_reference
         owned=owned_reference(self,target)
         if owned is not None:return owned
@@ -2413,6 +2422,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=='record_slot':
+            from .native_record_places import load
+            return load(self,reference,node,kind)
         if reference[0]=='owned_local_list':
             from .native_owned_local_lists import load
             return load(self,reference,node,kind)
@@ -2463,6 +2475,9 @@ class Emitter:
         return project_element(self,raw,owner.kind.element,requested or kind,node)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=='record_slot':
+            from .native_record_places import store
+            return store(self,reference,value,node)
         if reference[0]=='owned_local_list':
             from .native_owned_local_lists import store
             return store(self,reference,value,node)
@@ -2499,6 +2514,9 @@ class Emitter:
                          if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
+        from .native_record_places import statement as record_statement
+        record=record_statement(self,node)
+        if record is not None:return record
         from .native_owned_local_lists import statement as owned_statement
         owned=owned_statement(self,node)
         if owned is not None:return owned
@@ -2687,7 +2705,8 @@ class Emitter:
 
     def declaration(self):
         from .native_value_classes import borrowed_self
-        data=[f"let mut {slot}:"+(f"Option<Vec<{self.rust_type(kind.element)}>>"if name in self.owned_local_lists else f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()]
+        from .native_record_places import physical_type
+        data=[f"let mut {slot}:"+(f"Option<{physical_type(self,self.record_places[name])}>"if name in self.record_places else f"Option<Vec<{self.rust_type(kind.element)}>>"if name in self.owned_local_lists else f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()]
         references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
         return "\n".join(data+references)
 
