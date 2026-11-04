@@ -50,6 +50,7 @@ def _length(g, code):
 
 
 def _index(g, code, length, node, *, assignment=False):
+    g.has_lists = True
     call = f"native_big_list_index(&({code}),{length})" if not g.bits else f"native_index({code},{length})"
     if assignment:
         call += '.map_err(|_|String::from("IndexError: list assignment index out of range"))'

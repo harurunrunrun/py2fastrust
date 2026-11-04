@@ -827,10 +827,9 @@ class _Generator:
             raise _Unsupported
         index = self.expression(node.slice, environment)
         offset = self.temporary()
-        check = f"native_index({self.number(index)}, {matrix.code}.len())"
-        if assignment:
-            check += '.map_err(|_| "IndexError: list assignment index out of range".to_string())'
-        setup = f"let {offset} = {self.at(check, node)};"
+        from .native_typed_lists import _index
+        checked = _index(self,self.number(index),f"{matrix.code}.len()",node,assignment=assignment)
+        setup = f"let {offset} = {checked};"
         return setup, f"{matrix.code}[{offset}]"
 
     def integer_bit_query(self, node, environment):

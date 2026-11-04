@@ -116,8 +116,9 @@ def row_expression(g,node,owner,index,environment):
     if not isinstance(binding,_Binding):
         raise _Unsupported("the matrix row's owner has no resolved native binding; retaining the same row across later argument effects requires an identity-preserving owner/row handle",node=node,types=(("owner",owner.kind),),proof="stable matrix owner and row identity")
     offset=g.temporary()
+    from .native_typed_lists import _index
     setup=(f"let _=&({owner.code});",
-           f"let {offset}={g.at(f'native_index({g.number(index)},({owner.code}).len())',node)};")
+           f"let {offset}={_index(g,g.number(index),f'({owner.code}).len()',node)};")
     read=f"&(({owner.code})[{offset}])[..]"
     parent=(f'{binding.slot}.as_mut().expect("validated matrix receiver")'if is_maybe(binding.kind)
             else binding.slot)
