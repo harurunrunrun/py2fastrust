@@ -402,6 +402,9 @@ class ClassNamespaces:
             return Expression("{"+setup+fallback+"}",wanted)
         def branch(kind,code):
             member=next(member for member in records if member.owner.index==kind.definition)
+            from .native_immediate_classmethod import direct_payload
+            direct=direct_payload(emitter,node,Expression(code,kind),member)
+            if direct is not None:return direct.code
             reference=Expression(f"({code}).clone()",kind)
             loaded=self.emit_get(emitter,node,reference,member)
             if member.plan is not None:

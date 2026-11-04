@@ -37,14 +37,18 @@ def definition(model,member,stored):
     return number
 
 
-def emit(registry,emitter,node,reference,member,stored):
+def prepared_definition(registry,member,stored):
     model=registry.model
     cache=getattr(registry,'immutable_function_bindings',None)
     if cache is None:
         cache={};registry.immutable_function_bindings=cache
     key=(member.owner.index,member.name)
     if key not in cache:cache[key]=definition(model,member,stored)
-    number=cache[key]
+    return cache[key]
+
+
+def emit(registry,emitter,node,reference,member,stored):
+    number=prepared_definition(registry,member,stored)
     if number is None:return None
     from .native_classes import Expression
     # The captured class carries the module of this actual successful class

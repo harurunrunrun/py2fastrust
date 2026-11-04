@@ -179,7 +179,8 @@ class ImmutableClassFunctionProofs(unittest.TestCase):
    result=None if disabled else emit(registry,emitter,node,reference,member,stored)
    if result is not None:calls.append((member.name,result.code))
    return result
-  with patch('py2fastrust.native_immutable_class_functions.emit',side_effect=observe):
+  # Exercise the callable-reference adapter independently of direct calls.
+  with patch('py2fastrust.native_immediate_classmethod.direct_payload',return_value=None),patch('py2fastrust.native_immutable_class_functions.emit',side_effect=observe):
    result=transpile(CASES[name],TranspileOptions(integer=mode,license='none'))
   self.assertTrue(result.success,result.diagnostics)
   return result,calls

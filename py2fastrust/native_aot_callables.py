@@ -541,6 +541,31 @@ def emit_call(emitter,node):
     return _Expression("{"+''.join(lines)+result.code+"}",wanted)
 
 
+def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted,error,*,source_call_location=None):
+    """Bind and call an original source body in its already selected context."""
+    from .native_classes import ClassUnsupported,shape
+    provider=emitter.model.callable_cells
+    target=provider.plans[definition]
+    if definition in site.errors:return error(site.errors[definition])
+    default_emitter=emitter.model.emitter(target)
+    parent=emitter.model.lexical.parent_scope(target)
+    is_lambda=isinstance(target.node,ast.Lambda)
+    from .native_function_instances import instanced
+    has_instance=instanced(emitter.model.lexical,target)
+    if is_lambda:default_emitter.lambda_instance_override="class_selected_environment"
+    if has_instance:default_emitter.function_instance_override='class_selected_environment.data'
+    if parent:default_emitter.lexical_environment_override="class_selected_environment.environment"if is_lambda or has_instance else"class_selected_environment"
+    try:
+        from .native_variadic import pack_emission
+        bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target),pack_positional=lambda members:pack_emission(emitter,target,members,node))
+    except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
+    values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
+    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
+    from .native_class_calls import call
+    from .native_source_returns import emit_result
+    return emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)
+
+
 def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_call_location=None):
     """Invoke a captured callable without replaying any source expression."""
     from .native import _Expression,_string
@@ -567,25 +592,8 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
             arms=[]
             for definition in kind.definitions:
                 target=provider.plans[definition]
-                if definition in site.errors:result=error(site.errors[definition])
-                else:
-                    default_emitter=emitter.model.emitter(target)
-                    parent=emitter.model.lexical.parent_scope(target)
-                    is_lambda=isinstance(target.node,ast.Lambda)
-                    from .native_function_instances import instanced
-                    has_instance=instanced(emitter.model.lexical,target)
-                    if is_lambda:default_emitter.lambda_instance_override="class_selected_environment"
-                    if has_instance:default_emitter.function_instance_override='class_selected_environment.data'
-                    if parent:default_emitter.lexical_environment_override="class_selected_environment.environment"if is_lambda or has_instance else"class_selected_environment"
-                    try:
-                        from .native_variadic import pack_emission
-                        bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target),pack_positional=lambda members:pack_emission(emitter,target,members,node))
-                    except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
-                    values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
-                    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
-                    from .native_class_calls import call
-                    from .native_source_returns import emit_result
-                    result=emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)
+                result=emit_definition_body(emitter,node,site,definition,positional,keywords,wanted,error,
+                    source_call_location=source_call_location)
                 context=provider.call_context_setup(emitter,target)
                 if context:result="{"+context+result+"}"
                 arms.append(provider.call_pattern(definition)+"=>"+result)

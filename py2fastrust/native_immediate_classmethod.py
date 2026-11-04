@@ -9,6 +9,8 @@ class Request:
     node: object
     target: object
     used: bool=False
+    direct_definition: int|None=None
+    direct_used: bool=False
 
 
 def candidate(emitter,node):
@@ -33,7 +35,16 @@ def candidate(emitter,node):
     if not isinstance(receiver,(InstanceType,ClassReferenceType)):return None
     if isinstance(receiver,ClassReferenceType)and receiver.definition!=member.owner.index:return None
     if isinstance(receiver,InstanceType)and receiver.name!=emitter.model.class_key(member.owner):return None
-    return Request(node,target)
+    request=Request(node,target)
+    # Only a captured exact class reference can use the existing immutable
+    # direct-definition proof. Instance binding retains its ordinary adapter.
+    from .native_class_calls import synchronous
+    if isinstance(receiver,ClassReferenceType)and synchronous(emitter.model,member.plan):
+        from .native_immutable_class_functions import prepared_definition
+        stored=dict(emitter.model.namespace.fields())[member.key]
+        number=prepared_definition(registry,member,stored)
+        if number==target.definition:request.direct_definition=number
+    return request
 
 
 @contextmanager
@@ -52,10 +63,37 @@ def stack_payload(emitter,node,target,fields):
     return 'ClassBoundMethod'+str(target.definition)+'{'+fields+'}'
 
 
+def direct_payload(emitter,node,reference,member):
+    request=getattr(emitter,'immediate_classmethod_request',None)
+    if (request is None or request.node is not node or request.direct_definition is None
+            or request.target.definition!=request.direct_definition
+            or request.target.class_definition!=member.owner.index):return None
+    from .native_classes import Expression
+    from .native_aot_callables import AotFunctionType
+    receiver,module=emitter.fresh(),emitter.fresh()
+    request.used=request.direct_used=True
+    # The outer emitter already captured this class exactly once. Hold both
+    # receiver and actual defining generation before any explicit argument.
+    code=('{let '+receiver+'='+reference.code+';let '+module+'='+receiver+'.module.clone();('
+          +receiver+','+module+')}')
+    return Expression(code,AotFunctionType.from_targets((request.target,)))
+
+
 def invoke(emitter,node,request,site,callee,positional,keywords,wanted):
     from .native import _Expression,_string
     def error(message):
         return emitter.at(f'Err::<{emitter.rust_type(wanted)},String>({_string(message)}.to_owned())',node)
+    if request.direct_used:
+        provider=emitter.model.callable_cells
+        if request.target in site.errors:return _Expression(error(site.errors[request.target]),wanted)
+        from .native_aot_callables import AotFunctionType,CallSite,emit_definition_body
+        receiver=_Expression('class_selected_method.0',request.target._native_receiver_kind)
+        nested=CallSite(provider.model.cell_for_kind(AotFunctionType((request.direct_definition,))),site.result)
+        code=emit_definition_body(emitter,node,nested,request.direct_definition,
+            [receiver]+positional,keywords,wanted,error)
+        context=provider.call_context_setup(emitter,provider.plans[request.direct_definition])
+        return _Expression('{let class_selected_method='+callee.code+';let class_defining_module=class_selected_method.1;'
+            +context+code+'}',wanted)
     code=emitter.model.callable_cells.bound_methods.emit(
         emitter,node,request.target,site,positional,keywords,wanted,error)
     return _Expression('{let class_selected_method='+callee.code+';'+code+'}',wanted)
