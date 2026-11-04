@@ -343,13 +343,8 @@ class NativeBuiltinCallableTests(unittest.TestCase):
         for name in ("class_shadow_direct_constructor","ordinary_module_reader_after_import","ordinary_reader_definition_before_import"):
             self.exercise(name)
 
-    def test_unsupported_class_capture_is_not_reinterpreted_as_builtin(self):
-        source,_=CASES["class_shadow_capture"]
-        for mode in ("i64","i128","bigint"):
-            result=transpile(source,TranspileOptions(integer=mode,filename="<input>"))
-            self.assertFalse(result.success)
-            self.assertIn("class-object identity and dispatch",result.diagnostics[0].message)
-            self.assertEqual((result.diagnostics[0].line,result.diagnostics[0].column),(3,9))
+    def test_captured_class_shadow_keeps_constructor_dispatch(self):
+        self.exercise("class_shadow_capture")
 
     def test_imported_reference_initialization_and_mutation_fail_closed(self):
         for name,reason in (("future_module_default_is_not_prebound","import binding initialization"),
