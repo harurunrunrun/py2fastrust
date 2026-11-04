@@ -1808,6 +1808,12 @@ string mode. Receivers and explicit arguments retain their evaluation order,
 including calls that raise a signature error. Classes with methods of the same
 name retain ordinary method dispatch. Unicode string casing still reports the
 missing Python-compatible case-mapping and conditional-casing implementation.
+Zero-argument immediate calls can also project a finite builtin receiver domain
+containing strings or bytes plus integers, booleans, floats or None. Only text
+alternatives contribute a returned value; other alternatives raise AttributeError
+with their actual builtin type name. The receiver is evaluated once. Mixed
+receiver calls with explicit, keyword or expanded arguments, stored bound methods,
+and user-class alternatives still need a pre-argument attribute lookup adapter.
 
 
 A nonescaping builtin list field of a plain native class can reside directly as
