@@ -1602,3 +1602,12 @@ Their use alone therefore does not change the storage and loops of the enclosing
 program. The proof uses resolved receiver types and callable identities;
 source-defined methods with the same names and real `next()` effects retain
 Python's PEP 479 exception chain. Unresolved callable effects remain conservative.
+
+Ordinary loop transfers omit unused exit and feedback carriers when the original
+binding cannot be read on those paths and its concrete storage has no Python
+cleanup protocol. This preserves source assignments, mutations, exceptions,
+zero-iteration behavior and live post-loop targets. Generator and comprehension
+targets use their own official scopes. Captured cells, namespace observers and
+unresolved calls retain conservative storage, including effects of reached
+source callees and captured callbacks. An annotation without a value leaves the
+existing binding intact.

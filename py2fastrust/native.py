@@ -1231,6 +1231,8 @@ class _Generator:
         names = dict.fromkeys(name for environment in live for name in environment)
         for name in names:
             values = [environment.get(name) for environment in live]
+            from .native_join_liveness import dead
+            if dead(self,name,values):continue
             first = next(value for value in values if value is not None)
             if _static_reference(first):
                 if all(value is first for value in values):
@@ -1376,7 +1378,9 @@ class _Generator:
 
     def finish_loop(self, node, entry, header, context, body, remaining, nonempty, may_repeat, zero=False):
         from .native_constraint_lowering import finish_loop
-        return finish_loop(self,node,entry,header,context,body,remaining,nonempty,may_repeat,zero)
+        from .native_join_liveness import loop
+        with loop(self,node,header)as selected:
+            return finish_loop(self,node,entry,selected,context,body,remaining,nonempty,may_repeat,zero)
 
     def statement(self, node, environment):
         from .native_annotations import try_statement as annotation_statement
