@@ -1,8 +1,8 @@
 """Direct, typed class lowering with compiled Rust continuations.
 
 The proof covers a closed collection of ordinary classes and functions. Each
-instance has a concrete Rust layout, and each mutable list has shared typed
-storage. Rust compiles function bodies into futures; an iterative caller stack
+instance has a concrete Rust layout. Lists use ownership-selected vectors or
+shared typed handles. Rust compiles function bodies into futures; a caller stack
 polls them without interpreting Python operations or growing the host stack.
 """
 

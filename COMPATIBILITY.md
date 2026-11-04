@@ -1775,8 +1775,16 @@ the official binding separately from the Python element type: homogeneous lists
 use their concrete element type, while heterogeneous lists use a finite enum of
 the inferred alternatives. Repetition preserves shared child-object identities.
 Direct indexing, indexed stores, `len`, `append` and `pop` access the vector
-without per-element Rc clones or RefCell loans. Canonical list construction,
+without cloning the outer list handle or taking a RefCell loan for each access.
+Canonical list construction,
 list literals, comprehensions and literal repetition construct vectors directly.
 Captured, returned, aliased, reflectively observed or otherwise unproved list
 bindings retain identity-preserving shared storage. This does not yet infer
 separate field types for heterogeneous lists unpacked as records.
+
+Direct builtin `str.upper()` and `str.lower()` calls are supported in ASCII
+mode. `bytes.upper()` and `bytes.lower()` preserve non-ASCII bytes in either
+string mode. Receivers and explicit arguments retain their evaluation order,
+including calls that raise a signature error. Classes with methods of the same
+name retain ordinary method dispatch. Unicode string casing still reports the
+missing Python-compatible case-mapping and conditional-casing implementation.
