@@ -64,7 +64,8 @@ def emit(emitter,node,receiver,wanted,*,value=None):
                 loaded=Expression(emitter.at(f'class_get_{owner.index}_{index}(&({code}))',node),shape(field.cell))
                 return emitter.coerce(loaded,wanted,node)
             converted=emitter.coerce(value,shape(field.cell),node)
-            return '{'+f'({code}).borrow_mut().field_{index}=Some({converted});'+'()}'
+            from .native_copy_scalar_fields import store
+            return '{'+store(emitter.model,owner,code,index,converted)+'()}'
         typename=_type_name(emitter,Expression(code,kind),node)
         suffix=' and no __dict__ for setting new attributes'if value is not None else''
         message='format!("AttributeError: \'{}\' object has no attribute '+repr(node.attr)+suffix+'",'+typename+')'

@@ -393,7 +393,8 @@ class ClassNamespaces:
                 field=member.owner.fields[member.name]
                 index=list(member.owner.fields).index(member.name)
                 current=emitter.fresh()
-                setup+=f"let {current}={{{receiver.code}.borrow().field_{index}.clone()}};"
+                from .native_copy_scalar_fields import load
+                setup+=f"let {current}={{{load(self.model,member.owner,receiver.code,index)}}};"
                 fallback=(f"match {current}{{Some(value)=>{emitter.coerce(Expression('value',shape(field.cell)),wanted,node)},None=>{fallback}}}")
             return Expression("{"+setup+fallback+"}",wanted)
         def branch(kind,code):

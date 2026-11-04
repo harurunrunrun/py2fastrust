@@ -1611,3 +1611,50 @@ targets use their own official scopes. Captured cells, namespace observers and
 unresolved calls retain conservative storage, including effects of reached
 source callees and captured callbacks. An annotation without a value leaves the
 existing binding intact.
+
+Fixed builtin tuple projections from stable function-local bindings copy only
+the selected field. A short immutable reference replaces cloning the whole
+tuple, including chained fixed projections; the selected result is owned before
+evaluating later arguments or callbacks. Original unbound-local errors remain.
+Captured, module-owned, comprehension and generator bindings, widened local
+storage and named tuple receivers keep their existing storage paths.
+
+Canonical classmethods used directly as a call's attribute callee retain their
+receiver and actual function in a stack payload, after attribute lookup and
+before evaluating explicit arguments. This avoids allocating a temporary method
+object for an identity that cannot escape that immediate call. Stored methods,
+finite mixed targets, instance attribute overrides and expanded calls retain
+their ordinary native method-object representation. Argument errors, captured
+defaults, class namespace changes and source traceback frames keep their normal
+evaluation rules.
+
+Typed instances whose solved data fields are all fixed-width integers, booleans,
+floats or None use independent `Cell<Option<T>>` slots inside the same stable Rc
+object identity. Field access avoids a whole-object runtime borrow check.
+Uninitialized and deleted fields remain distinct from Python None, and class
+namespace fallback retains its original class-definition handle. BigInt integer
+fields, reference payloads and cycle-collected objects keep their native shared
+borrowed layout. This representation choice does not restrict accepted programs.
+
+
+Plain classes with only proved fixed Copy scalar fields can use native value
+storage when every reached write occurs in an implicit, nonescaping constructor
+or a unique fresh local before publication. Constructor receivers borrow the
+actual new value; factories update their real local slot. Aliases, captures,
+postpublication mutations, explicit initializer calls, reflective namespaces,
+identity/representation observations, custom attribute protocols, inheritance,
+and unproved callable identities retain the normal native reference layout.
+Definition-time positional and keyword-only defaults count as publication.
+Indirect builtin observers in callback values and expanded arguments retain
+reference storage as well.
+Integer fields in BigInt mode retain reference storage. This optimization does
+not specialize a class, module, library, or source name and does not remove
+constructor, callback, namespace, or error effects.
+
+Ordinary scalar fields of a proved concrete local instance are read through its
+existing local slot without cloning the receiver. This applies to fixed-width
+integers, booleans, floats and None, while the existing getter retains missing
+attribute errors and the existing lazy loop cache retains first-read timing.
+Captured, module, comprehension and generator bindings, mixed receiver storage,
+class namespace lookup and custom attribute protocols keep ordinary lowering.
+Mutable and BigInt fields also retain their existing owned access paths.

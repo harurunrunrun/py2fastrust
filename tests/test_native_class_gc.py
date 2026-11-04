@@ -189,7 +189,17 @@ CASES = {'self_cycle': {'main.py': 'class Node:\n'
                                         ' return visit(node,count-1)\n'
                                         'a=Node(5)\n'
                                         'a.link=a\n'
-                                        'print(visit(a,120))\n'}}
+                                        'print(visit(a,120))\n'},
+ 'recursive_calls': {'main.py': 'class Node:\n'
+                    ' def __init__(self,n):self.n=n;self.link=None\n'
+                    ' def walk(self,steps):\n'
+                    '  if steps==0:return self.n\n'
+                    '  return self.link.walk(steps-1)\n'
+                    'a=Node(3)\n'
+                    'b=Node(7)\n'
+                    'a.link=b\n'
+                    'b.link=a\n'
+                    'print(a.walk(15),b.walk(12))\n'}}
 
 BOUNDARIES = {'container_mediated_cycle': 'class Node:\n'
                              ' def __init__(self):self.children=[]\n'
@@ -214,17 +224,7 @@ BOUNDARIES = {'container_mediated_cycle': 'class Node:\n'
                         ' a.callback=lambda:a\n'
                         ' return a\n'
                         'a=make()\n'
-                        'print(a.callback() is a)\n',
- 'recursive_calls': 'class Node:\n'
-                    ' def __init__(self,n):self.n=n;self.link=None\n'
-                    ' def walk(self,steps):\n'
-                    '  if steps==0:return self.n\n'
-                    '  return self.link.walk(steps-1)\n'
-                    'a=Node(3)\n'
-                    'b=Node(7)\n'
-                    'a.link=b\n'
-                    'b.link=a\n'
-                    'print(a.walk(15),b.walk(12))\n'}
+                        'print(a.callback() is a)\n'}
 
 class DirectClassGcProtocolTests(unittest.TestCase):
     def test_uncollected_protocols_remain_positioned(self):

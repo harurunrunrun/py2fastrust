@@ -1743,6 +1743,12 @@ class Emitter:
         from .native_list_access_regions import read as region_read
         optimized=region_read(self,node)
         if optimized is not None:return optimized
+        from .native_tuple_projection import read as tuple_projection
+        projected=tuple_projection(self,node)
+        if projected is not None:return projected
+        from .native_scalar_attribute_projection import read as scalar_attribute
+        projected=scalar_attribute(self,node)
+        if projected is not None:return projected
         exception=self.model.exceptions.read(self,node)
         if exception is not None:return exception
         from .native_builtin_singletons import read as read_singleton
@@ -1976,7 +1982,8 @@ class Emitter:
         if isinstance(operator,(ast.Is,ast.IsNot)):
             if a==b=="function":code=self.model.callable_cells.identity(left.code,right.code)
             elif a==b and a in {"object","list","iterator","dict_view","cmp_key"}:
-                code = (f"Rc::ptr_eq(&{left.code},&{right.code})"if left.kind==right.kind else"false")
+                from .native_value_classes import identity_equal
+                code = (identity_equal(self.model,left.kind,left.code,right.code)if left.kind==right.kind else"false")
             elif a==b=="none":
                 code = "true"
             elif a==b=="bool":
@@ -2002,7 +2009,8 @@ class Emitter:
             code = str(a==b).lower()
             return f"!({code})"if isinstance(operator,ast.NotEq)else code
         if a==b=="object"and isinstance(operator,(ast.Eq,ast.NotEq)):
-            code = f"Rc::ptr_eq(&{left.code},&{right.code})"if left.kind==right.kind else"false"
+            from .native_value_classes import identity_equal
+            code = identity_equal(self.model,left.kind,left.code,right.code)if left.kind==right.kind else"false"
             return f"!({code})"if isinstance(operator,ast.NotEq)else code
         if a==b=="list"and isinstance(operator,(ast.Eq,ast.NotEq)):
             if has_float_payload(left.kind)or has_float_payload(right.kind):
@@ -2076,7 +2084,14 @@ class Emitter:
             except CallBindingError:raise ClassUnsupported(node)from None
             values=[self.coerce(value,shape(callee.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
-        if constructor is not None:values=self.constructor_context_arguments(constructor,defining_class)+values
+        if constructor is not None:
+            from .native_value_classes import selected as value_selected
+            prefix=self.constructor_context_arguments(constructor,defining_class)
+            if value_selected(self.model,constructor):
+                identity=self.fresh()
+                setup.append(f'let {identity}='+self.at('class_value_next_id()',node)+';')
+                prefix.append(identity)
+            values=prefix+values
         # Constructor futures receive only explicit Python arguments. Their
         # internal __init__ future shares this logical call-stack entry.
         invocation = name+"(class_scope.clone()"+(" ,"+",".join(values)if values else"")+")"
@@ -2291,6 +2306,9 @@ class Emitter:
         return setup+self.store_reference(reference,value,target)
 
     def reference(self, target):
+        from .native_value_classes import reference as value_reference
+        borrowed=value_reference(self,target)
+        if borrowed is not None:return borrowed
         from .native_list_access_regions import reference as region_reference
         optimized=region_reference(self,target)
         if optimized is not None:return optimized
@@ -2386,7 +2404,8 @@ class Emitter:
             return self.assign(reference[1],value)
         if reference[0]=="field":
             _,owner,plan,index,kind=reference
-            return f"{owner.code}.borrow_mut().field_{index}=Some({self.coerce(value,kind,node)});"
+            from .native_copy_scalar_fields import store
+            return store(self.model,plan,owner.code,index,self.coerce(value,kind,node))
         _,owner,index,kind=reference
         setter=f"class_list_set(&{owner.code},&({self.number(index)}),{self.coerce(value,kind,node)})"
         return self.at(setter,node)+";"
@@ -2578,7 +2597,8 @@ class Emitter:
         return "{"+setup+prefix+before+binding+body+"}"+tail+"}"
 
     def declaration(self):
-        data=[f"let mut {slot}:{self.rust_type(MaybeType(kind))}=None;"for(_,kind),slot in self.slots.items()]
+        from .native_value_classes import borrowed_self
+        data=[f"let mut {slot}:"+(f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()]
         references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
         return "\n".join(data+references)
 
@@ -2590,7 +2610,9 @@ class Emitter:
         parameters=[];initial=[]
         for i,name in enumerate(self.plan.runtime_parameters):
             kind=shape(self.plan.arguments[name]);argument=f"class_argument_{i}"
-            parameters.append(f"{argument}:{self.rust_type(kind)}")
+            from .native_value_classes import borrowed_self
+            reference=borrowed_self(self.model,self.plan,name,kind)
+            parameters.append(f"{argument}:"+('&'if reference else'')+self.rust_type(kind))
             captured=self.model.lexical.environments.get(self.model.lexical.scope(self.plan))
             if captured is not None and name in captured.fields:continue
             stored=self.model.namespace.local_kind(self.plan,name)or kind
@@ -2656,37 +2678,61 @@ def _class_layouts(model,emitter):
     result=[]
     for owner in model.classes.values():
         if not owner.used:continue
+        from .native_copy_scalar_fields import selected,load
+        copied=selected(model,owner)
+        from .native_value_classes import selected as value_selected
+        unboxed=value_selected(model,owner)
         fields=list(owner.fields.values())
-        members=",".join(f"field_{i}:{emitter.rust_type(MaybeType(shape(value.cell)))}"for i,value in enumerate(fields))
+        members=",".join(f"field_{i}:"+(f"std::cell::Cell<{emitter.rust_type(MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields))
         extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
         if extra_member:members=extra_member+(","+members if members else"")
-        result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<RefCell<ClassData_{owner.index}>>;")
+        if unboxed:
+            members='class_value_identity:usize'+(','+members if members else'')
+            result.append(f"#[derive(Clone)]\nstruct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=ClassData_{owner.index};"
+                          f"impl ClassData_{owner.index}{{fn borrow(&self)->&Self{{self}}fn borrow_mut(&self)->&Self{{self}}}}"
+                          f"impl AsRef<ClassData_{owner.index}> for ClassData_{owner.index}{{fn as_ref(&self)->&Self{{self}}}}")
+        elif copied:
+            result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<ClassData_{owner.index}>;"
+                          f"impl ClassData_{owner.index}{{fn borrow(&self)->&Self{{self}}fn borrow_mut(&self)->&Self{{self}}}}")
+        else:
+            result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<RefCell<ClassData_{owner.index}>>;")
         from .native_class_gc import layout as gc_layout,registration as gc_registration
         gc_body=gc_layout(model,owner)
         if gc_body:result.append(gc_body)
         for i,value in enumerate(fields):
             message=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{value.name}'")
-            result.append(f"fn class_get_{owner.index}_{i}(value:&ClassHandle_{owner.index})->Result<{emitter.rust_type(shape(value.cell))},String>{{value.borrow().field_{i}.clone().ok_or_else(||{message}.to_owned())}}")
-        result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<{owner.module_name}.{owner.node.name} object at 0x{{:x}}>\",Rc::as_ptr(self)as usize)}}}}")
+            argument=f'impl AsRef<ClassHandle_{owner.index}>'if unboxed else f'&ClassHandle_{owner.index}'
+            receiver='value.as_ref()'if unboxed else'value'
+            result.append(f"fn class_get_{owner.index}_{i}(value:{argument})->Result<{emitter.rust_type(shape(value.cell))},String>{{{load(model,owner,receiver,i)}.ok_or_else(||{message}.to_owned())}}")
+        identity='self.class_value_identity'if unboxed else'Rc::as_ptr(self)as usize'
+        result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<{owner.module_name}.{owner.node.name} object at 0x{{:x}}>\",{identity})}}}}")
         constructor=owner.methods.get("__init__")
         params=[];args=[]
         if constructor:
             for i,name in enumerate(constructor.signature.parameters[1:]):
                 params.append(f"argument_{i}:{emitter.rust_type(shape(constructor.arguments[name]))}")
                 args.append(f"argument_{i}")
+        if unboxed:params.insert(0,'class_value_identity:usize')
         if extra_parameter:params.insert(0,extra_parameter)
         signature="class_scope:ClassScope"+(","+",".join(params)if params else"")
-        initialize=",".join(f"field_{i}:None"for i in range(len(fields)))
+        initialize=",".join(f"field_{i}:"+('std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields)))
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
-        body=f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));"
+        if unboxed:initialize='class_value_identity'+(','+initialize if initialize else'')
+        body=(f"let object=ClassData_{owner.index}{{{initialize}}};"if unboxed else
+              f"let object=Rc::new(ClassData_{owner.index}{{{initialize}}});"if copied else
+              f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));")
         body+=gc_registration(model,owner)
         if constructor:
             suffix="?;"if synchronous(model,constructor)else".await?;"
-            body+=f"class_function_{constructor.index}(class_scope.clone(),object.clone()"+(","+",".join(args)if args else"")+ ")"+suffix
+            receiver='&object'if unboxed else'object.clone()'
+            body+=f"class_function_{constructor.index}(class_scope.clone(),{receiver}"+(","+",".join(args)if args else"")+ ")"+suffix
         if synchronous(model,constructor):
             result.append(f"fn class_construct_{owner.index}({signature})->ClassResult<ClassHandle_{owner.index}>{{{body}Ok(object)}}")
         else:
             result.append(f"fn class_construct_{owner.index}({signature})->ClassFuture<ClassHandle_{owner.index}>{{Box::pin(async move{{{body}Ok(object)}})}}")
+    if getattr(getattr(model,'value_classes',None),'selected',()):
+        from .native_value_classes import RUNTIME
+        result.insert(0,RUNTIME)
     return "\n".join(result)
 
 
@@ -2722,6 +2768,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_integer_words(model)
         from .native_class_calls import classify,synchronous,runtime as call_runtime
         classify(model)
+        from .native_value_classes import prepare as prepare_value_classes
+        prepare_value_classes(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
@@ -2853,6 +2901,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=apply_cached_text(result,string_mode,class_repr=model.string_repr_required)
     from .native_exit import runtime as exit_runtime
     result=exit_runtime(result,model)
+    from .native_scope_borrows import apply as borrow_scope_abi
+    result=borrow_scope_abi(result)
     if prune_output:
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)

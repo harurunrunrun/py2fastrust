@@ -72,7 +72,10 @@ def emit_member(registry,emitter,node,member,class_reference,function):
     from .native_classes import Expression
     from .native_aot_callables import AotFunctionType
     target=ClassMethodTarget(registry.model.callable_cells.definition(member.plan),registry.model.class_key(member.owner),member.owner.index)
-    code='ClassFunctionRef::D'+str(target.definition)+'(std::rc::Rc::new(ClassBoundMethod'+str(target.definition)+'{receiver:('+class_reference.code+').clone(),function:('+function.code+').clone()}))'
+    fields='receiver:('+class_reference.code+').clone(),function:('+function.code+').clone()'
+    from .native_immediate_classmethod import stack_payload
+    code=stack_payload(emitter,node,target,fields)
+    if code is None:code='ClassFunctionRef::D'+str(target.definition)+'(std::rc::Rc::new(ClassBoundMethod'+str(target.definition)+'{'+fields+'}))'
     return Expression(code,AotFunctionType.from_targets((target,)))
 
 

@@ -188,7 +188,10 @@ class BoundMethods:
             if self.linked:fields+=',module:ClassModuleRef'
             declarations.append('struct ClassBoundMethod'+str(target.definition)+'{'+fields+'}')
             variants.append(tag+'(std::rc::Rc<ClassBoundMethod'+str(target.definition)+'>)')
-            equals.append('(Self::'+tag+'(left),Self::'+tag+'(right))=>std::rc::Rc::ptr_eq(&left.receiver,&right.receiver)')
+            from .native_value_classes import identity_equal
+            from .native_classes import InstanceType
+            equal=identity_equal(self.model,InstanceType(target.owner),'left.receiver','right.receiver')
+            equals.append('(Self::'+tag+'(left),Self::'+tag+'(right))=>'+equal)
             identical.append('(Self::'+tag+'(left),Self::'+tag+'(right))=>std::rc::Rc::ptr_eq(left,right)')
         identity=('impl ClassFunctionRef{fn class_same_identity(&self,other:&Self)->bool{match(self,other){'+','.join(identical)+',_=>self==other}}}')if identical else''
         return '\n'.join(declarations),variants,equals,identity

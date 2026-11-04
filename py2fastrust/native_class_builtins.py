@@ -353,7 +353,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind):
             return _error(emitter,node,wanted,f'format!("TypeError: bad operand type for abs(): \'{{}}\'",{name})')
     elif name == "id":
         if domain(arguments[0].kind)not in{"exception_value","object","list","iterator","dict","set","dict_view"}:raise ClassUnsupported(node)
-        code=f"class_from_usize(Rc::as_ptr(&{arguments[0].code}) as usize)"
+        from .native_value_classes import identity
+        code=f"class_from_usize({identity(emitter.model,arguments[0].kind,arguments[0].code)})"
         raw_kind='int'
     elif name == "range":
         values=[self.number(value)for value in arguments]

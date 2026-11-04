@@ -524,7 +524,10 @@ def emit_call(emitter,node):
     site=provider.sites.get((emitter.plan.index,id(node)))
     if site is None:return None
     lines=[]
-    before,callee=emitter.capture(emitter.expression(node.func));lines.append(before)
+    from .native_immediate_classmethod import capture_callee,invoke
+    with capture_callee(emitter,node.func)as immediate:
+        before,callee=emitter.capture(emitter.expression(node.func))
+    lines.append(before)
     arguments=normalize_call(node)
     positional=[];keywords=[]
     for argument in arguments.positional:
@@ -532,7 +535,9 @@ def emit_call(emitter,node):
     for argument in arguments.keywords:
         before,value=emitter.capture(emitter.expression(argument.expression));lines.append(before);keywords.append((argument.name,value))
     wanted=emitter.kind(node)
-    result=emit_values(emitter,node,site,callee,positional,keywords,wanted)
+    result=(invoke(emitter,node,immediate,site,callee,positional,keywords,wanted)
+            if immediate is not None and immediate.used
+            else emit_values(emitter,node,site,callee,positional,keywords,wanted))
     return _Expression("{"+''.join(lines)+result.code+"}",wanted)
 
 

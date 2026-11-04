@@ -70,9 +70,16 @@ def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_lo
             bound=constructor.signature.without_receiver().bind(positional,keywords,default_emitter.captured_defaults(constructor),pack_positional=lambda members:pack_emission(emitter,constructor,members,node))
         except CallBindingError as error:raise ClassUnsupported(node,str(error))from None
         values=[emitter.coerce(value,shape(constructor.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
-    values=emitter.constructor_context_arguments(owner,reference.code+'.clone()')+values
+    from .native_value_classes import selected as value_selected
+    prefix=emitter.constructor_context_arguments(owner,reference.code+'.clone()')
+    identity_setup=''
+    if value_selected(emitter.model,owner):
+        identity=emitter.fresh()
+        identity_setup=f'let {identity}='+emitter.at('class_value_next_id()',source_call_location or node)+';'
+        prefix.append(identity)
+    values=prefix+values
     invocation='class_construct_'+str(owner.index)+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'
     from .native_class_calls import call
     invocation=call(emitter,invocation,constructor,source_call_location or node)
     context=emitter.prepare_call_context(constructor,None,owner,reference.code+'.module.clone()')
-    return emitter.coerce(Expression('{'+context+invocation+'}',InstanceType(emitter.model.class_key(owner))),wanted,node)
+    return emitter.coerce(Expression('{'+identity_setup+context+invocation+'}',InstanceType(emitter.model.class_key(owner))),wanted,node)
