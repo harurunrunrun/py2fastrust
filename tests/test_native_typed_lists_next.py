@@ -268,7 +268,24 @@ class NativeTypedListsNextTests(NativeIteratorReductionTests):
         ):
             self.differential(source,modes=("i64","i128","bigint"))
         for mode in ("i64","i128","bigint"):
-            self.assertIsNone(try_generate_native('a=["x"]\nfor x in a:a.append(x)',"case.py",mode))
+            # Admission only: the original program intentionally never terminates.
+            self.assertIsNotNone(try_generate_native('a=["x"]\nfor x in a:a.append(x)',"case.py",mode))
+
+    def test_mutating_list_iteration_observes_bounded_appends(self):
+        source='''limit=int(input())
+values=["x"]
+for value in values:
+ print(value)
+ if len(values)<limit:
+  values.append(value+"x")
+print(values)
+'''
+        for mode in ("i64","i128","bigint"):
+            for release in (False,True):
+                compiled=self.compile(source,mode,release=release)
+                for data in ("0\n","2\n","5\n"):
+                    with self.subTest(mode=mode,release=release,input=data):
+                        self.compare(compiled,data,mode=mode)
 
     def test_nested_default_string_helpers_and_debug_bytes_repr(self):
         self.differential('''
