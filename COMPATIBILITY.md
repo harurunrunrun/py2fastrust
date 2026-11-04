@@ -1843,3 +1843,12 @@ analysis heap stores symbolic type/allocation constraints, never source values
 or runtime object uniqueness. The positional emitter still validates slot
 mutation and escape independently. Failed lowering never selects another
 emitter, and no marker class or input-source rewrite is performed.
+
+Reached heterogeneous list literals with closed per-element facts can select
+positional analysis even when coarse aggregate mutation constraints are unresolved.
+This is an upfront capability choice, not a type or ownership proof: the selected
+model still validates indexed updates, aliases and every operation. Compatible
+constant-slot stores and alias-preserving augmented updates use the existing
+finite typed list storage. Ordinary print/length-only and homogeneous list code
+keeps its existing selection. Correlated writes through a union of list and
+non-list receiver kinds remain explicitly unsupported.

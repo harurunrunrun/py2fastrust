@@ -62,7 +62,12 @@ def requires_frames(unit,analysis):
     for facts in analysis.scopes.values():
         for site,kind in facts.allocations.items():
             node=nodes.get(site)
-            if not isinstance(node,ast.List)or not node.elts or not isinstance(kind,ListType):continue
+            if not isinstance(node,ast.List)or not node.elts:continue
+            # Capability selection needs the literal's canonical provenance
+            # and closed child facts, not a proved uniform element ABI. A
+            # coarse aggregate can be unresolved after indexed mutation;
+            # the selected model still independently validates every use.
+            if kind is not None and not isinstance(kind,ListType):continue
             slots=tuple(facts.expressions.get(unit.ordinal(child))for child in node.elts)
             if any(slot is None or not closed(slot)for slot in slots):continue
             origins=flow.lists(facts.values.get(site))
