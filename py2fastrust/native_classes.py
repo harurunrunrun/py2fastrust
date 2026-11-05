@@ -653,32 +653,8 @@ class Model:
         return result
 
     def infer_until_stable(self):
-        from .native_guard_flow import AnalysisPending
-        for _ in range(96):
-            before = self.snapshot()
-            self.module.visible_definitions = set()
-            try:self.block(self.module, self.tree.body, dict(self.global_symbols))
-            except AnalysisPending:pass
-            for plan in self.plans[1:]:
-                if not plan.reachable:
-                    continue
-                environment = {name:value for name,value in self.global_symbols.items() if name not in plan.declared}
-                environment.update(plan.arguments)
-                self.lexical.seed_arguments(plan)
-                for name, value in plan.arguments.items():
-                    self.canonical_local(plan, name, value)
-                try:remaining = self.analyze_body(plan,environment)
-                except AnalysisPending:continue
-                if remaining is not None:
-                    merge(plan.result, Cell("none"), plan.node)
-            from .native_class_allocation_facts import publish
-            publish(self)
-            from .native_list_positions import refresh as refresh_positions
-            refresh_positions(self)
-            if self.snapshot() == before:
-                break
-        else:
-            raise ClassUnsupported(self.tree)
+        from .native_inference_worklist import solve
+        solve(self)
     def run(self):
         if self.unit is not None:
             nodes={self.unit.ordinal(node):node for node in self.iter_nodes()}

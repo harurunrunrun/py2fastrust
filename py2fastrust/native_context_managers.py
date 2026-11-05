@@ -105,7 +105,9 @@ class ContextManagers:
         def descend(index,current):
             item=node.items[index]
             record=self._item(plan,item,current)
-            if record is None:return Environment(current)
+            if record is None:
+                from .native_guard_flow import AnalysisPending
+                raise AnalysisPending()
             records.append(record)
             enter_arguments=CallArguments((Argument(item.context_expr),),())
             record.enter_site=analyze_values(self.model.callable_cells,plan,node,record.enter_member.function_cell,enter_arguments,[record.manager],[],current,identity=('context_enter',index))
@@ -115,7 +117,13 @@ class ContextManagers:
             exit_arguments=CallArguments(tuple(Argument(item.context_expr)for _ in range(4)),())
             effect=Environment(normal if normal is not None else entry)
             record.exit_site=analyze_values(self.model.callable_cells,plan,node,record.exit_member.function_cell,exit_arguments,[record.manager]+[Cell(ERASED)for _ in range(3)],[],effect,identity=('context_exit',index))
-            if shape(record.exit_site.result)=='none':return effect if normal is not None else None
+            exit_kind=shape(record.exit_site.result)
+            if exit_kind is None:
+                from .native_guard_flow import AnalysisPending
+                if not self.model.final:raise AnalysisPending()
+                from .native_classes import ClassUnsupported
+                raise ClassUnsupported(item.context_expr,'the context manager __exit__ result is unresolved, so its exception-suppression behavior has no native control-flow representation',proof='resolved context-manager exit result')
+            if exit_kind=='none':return effect if normal is not None else None
             continuation=self.model.join(normal,entry,node,'with_exception_suppression')
             # The cleanup call can mutate shared/module bindings on either path.
             self.model.namespace.call_effects(plan,record.exit_member.plan,continuation)

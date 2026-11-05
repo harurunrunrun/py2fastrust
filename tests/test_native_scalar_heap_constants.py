@@ -249,12 +249,26 @@ class ScalarHeapSourceTests(unittest.TestCase):
             result,registry=self.capture(CASES['one_context'][0],mode)
             self.assertIsNone(registry.reason)
             self.assertGreaterEqual(sum(fact.low==97 for fact in registry.fields.values()),2)
-            self.assertIn('class_scalar_actual.map(',result.rust_source)
             self.assertIn('fn class_construct_',result.rust_source)
             model=registry.model
             session=next(owner for owner in model.classes.values()if owner.node.name=='Session')
             residue=next(owner for owner in model.classes.values()if owner.node.name=='Residue')
             current=session.methods['current'];constructor=residue.methods['__init__']
+            from py2fastrust.native_constant_field_projection import selected
+            from py2fastrust.native_packed_value_fields import selected as packed
+            from py2fastrust.native_class_identity_demand import elided
+            index=list(residue.fields).index('rule')
+            if selected(model,residue,index):
+                self.assertTrue(packed(model,residue))
+                self.assertTrue(elided(model,residue))
+                self.assertEqual(registry.fields[(residue.index,index)].low,97)
+                tokens,comments,pairs=_lex(result.rust_source)
+                data=next(result.rust_source[item.start:item.end]
+                          for item in _parse(result.rust_source,tokens,comments,pairs)
+                          if item.kind=='struct'and item.name=='ClassData_'+str(residue.index))
+                self.assertNotIn('field_'+str(index)+':',data)
+            else:
+                self.assertIn('class_scalar_actual.map(',result.rust_source)
             calls=[]
             for (caller,_),targets in model.call_edges_by_site.items():
                 caller=registry.plans.get(caller)

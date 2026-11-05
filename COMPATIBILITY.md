@@ -2046,3 +2046,18 @@ Actual saved classes therefore retain the namespace of their own import
 generation. Inherited or custom descriptor members, nonliteral defaults,
 observed callable metadata and bodies that read global names keep their existing
 native context.
+
+Native class/frame type inference schedules dependent function bodies when their
+argument, result, reachability or scope facts change. Every scheduling wave also
+runs the original full source-order analysis and publishes shared heap facts;
+there is no fixed 96-pass cutoff. Empty-storage defaults still trigger a new
+analysis phase, and recursive structural layouts retain positioned diagnostics.
+The shared constraint analyzer and Python frontend retain separate recursion
+limits; this change does not claim support for every arbitrarily deep source
+or call dependency. Typed continuation exception unwinding is emitted once,
+so its source size grows with the reached call sites rather than duplicating
+the complete unwind table in every call/error branch.
+Context-manager analysis defers unresolved manager and `__exit__` result kinds
+until their source producers have supplied type facts. An unknown exit result
+does not imply an exception-suppressing path or invent an implicit None return.
+Resolved suppressors retain the existing Python cleanup/control behavior.
