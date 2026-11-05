@@ -1532,6 +1532,8 @@ class Emitter:
         self.list_access_tails = {}
         self.slots = {}
         self.reference_slots = {}
+        from .native_primitive_parameter_places import prepare as primitive_parameters
+        self.primitive_parameters=primitive_parameters(self)
         if model.integer == "bigint":
             from .native_bigint import BigIntGenerator
             self.numeric = BigIntGenerator(function=SimpleNamespace(node=SimpleNamespace(name=plan.scope)))
@@ -1847,6 +1849,9 @@ class Emitter:
             from .native_class_globals import local_read
             binding=local_read(self,node,wanted)
             if binding is not None:return binding
+            from .native_primitive_parameter_places import read as primitive_parameter
+            direct=primitive_parameter(self,node)
+            if direct is not None:return direct
             name = self.model.resolved_name(self.plan,node)
             if domain(wanted) in self.model.INTRINSICS:
                 return self.reference_read(name,wanted,node)
@@ -2776,7 +2781,8 @@ class Emitter:
         from .native_owned_object_places import receiver as owned_receiver
         from .native_record_places import physical_type
         from .native_owned_matrix_places import physical_type as matrix_type
-        data=[f"let mut {slot}:"+(f"Option<{matrix_type(self,self.owned_matrices[name].tree)}>"if name in self.owned_matrices else f"Option<{physical_type(self,self.record_places[name])}>"if name in self.record_places else f"Option<Vec<{self.rust_type(kind.element)}>>"if name in self.owned_local_lists else f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()if not owned_receiver(self.model,self.plan,name)]
+        from .native_primitive_parameter_places import slot_required
+        data=[f"let mut {slot}:"+(f"Option<{matrix_type(self,self.owned_matrices[name].tree)}>"if name in self.owned_matrices else f"Option<{physical_type(self,self.record_places[name])}>"if name in self.record_places else f"Option<Vec<{self.rust_type(kind.element)}>>"if name in self.owned_local_lists else f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()if not owned_receiver(self.model,self.plan,name)and slot_required(self,name,kind)]
         references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
         return "\n".join(data+references)
 
@@ -2793,7 +2799,7 @@ class Emitter:
             from .native_owned_object_places import receiver as owned_receiver
             mutable=owned_receiver(self.model,self.plan,name)
             parameters.append(f"{argument}:"+('&mut 'if mutable else'&'if reference else'')+self.rust_type(kind))
-            if mutable:continue
+            if mutable or name in self.primitive_parameters:continue
             captured=self.model.lexical.environments.get(self.model.lexical.scope(self.plan))
             if captured is not None and name in captured.fields:continue
             stored=self.model.namespace.local_kind(self.plan,name)or kind

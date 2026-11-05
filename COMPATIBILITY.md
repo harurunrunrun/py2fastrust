@@ -1989,3 +1989,14 @@ container comparisons, hashed keys, metadata, unproved native roles and heap or
 address/lifetime observers retain the required original captures. A saved bound
 method always retains its actual receiver and method-object identity. Recursive,
 suspended or unclosed graphs retain the existing complete native payload.
+
+A proved readonly primitive function or method parameter uses its existing
+native argument directly, without a second `Option` local or repeated unbound
+checks. The signature and Python argument/default evaluation remain unchanged.
+This requires both the official symbol table and every original binding
+producer to exclude rebinding, deletion, capture and namespace observation.
+Inline comprehension targets retain their separate official ownership. The
+initial certificate covers exact fixed-width integers, bool, float and None;
+BigInt integers, unions, non-Copy values, captured or mutable parameters,
+suspended/recursive functions and generator-expression bodies retain their
+existing storage.
