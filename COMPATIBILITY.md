@@ -1877,3 +1877,5 @@ class fields, dynamic indices and interprocedural list values retain the existin
 vector or shared-handle storage.
 
 An exact synchronous constructor call returned with the same nominal instance type can forward its compiled Result directly. Argument/callee captures, defaults, actual module context, source call guards and error frames remain in their original order. Non-tail expressions, result type conversions, recursive callers, context-manager control returns and unproved call forms retain their existing native return path.
+
+Immediate global calls with one proved source-function definition can capture the actual stored module and closure/function-instance payload without cloning the common callable enum. Global initialization errors still precede explicit arguments; defaults, shared captured cells and failed-import module generations retain their existing behavior. First-class values, fields, finite callable families, builtin fallback and observed function metadata keep their ordinary native representation.

@@ -525,7 +525,8 @@ def emit_call(emitter,node):
     if site is None:return None
     lines=[]
     from .native_immediate_classmethod import capture_callee,invoke
-    with capture_callee(emitter,node.func)as immediate:
+    from .native_global_callable_payload import capture as capture_global,invoke as invoke_global
+    with capture_callee(emitter,node.func)as immediate,capture_global(emitter,node.func)as global_call:
         before,callee=emitter.capture(emitter.expression(node.func))
     lines.append(before)
     arguments=normalize_call(node)
@@ -535,7 +536,9 @@ def emit_call(emitter,node):
     for argument in arguments.keywords:
         before,value=emitter.capture(emitter.expression(argument.expression));lines.append(before);keywords.append((argument.name,value))
     wanted=emitter.kind(node)
-    result=(invoke(emitter,node,immediate,site,callee,positional,keywords,wanted)
+    result=(invoke_global(emitter,node,global_call,site,callee,positional,keywords,wanted)
+            if global_call is not None and global_call.used
+            else invoke(emitter,node,immediate,site,callee,positional,keywords,wanted)
             if immediate is not None and immediate.used
             else emit_values(emitter,node,site,callee,positional,keywords,wanted))
     return _Expression("{"+''.join(lines)+result.code+"}",wanted)

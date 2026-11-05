@@ -74,6 +74,10 @@ class LinkedCallableCells(CallableCells):
     def call_context_setup(self,emitter,target):
         return self.model.module_linker.call_context(emitter,"class_defining_module")
 
+    def call_payload_layout(self,definition):
+        from .native_global_callable_payload import linked_layout
+        return linked_layout(self,definition)
+
     def runtime(self):
         definitions=sorted(self.used)
         if not definitions and not self.builtin_used and not self.member_used and not self.bound_methods.used:return ""

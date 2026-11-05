@@ -417,6 +417,9 @@ def read(emitter,node,wanted):
     namespace=emitter.model.namespace
     name=emitter.model.resolved_name(emitter.plan,node)
     if name not in namespace.active or not namespace.owns(emitter.plan,node):return None
+    from .native_global_callable_payload import read as payload_read
+    payload=payload_read(emitter,node,wanted)
+    if payload is not None:return payload
     index=namespace.index(name)
     loaded=emitter.at(f"class_global_get_{index}(&class_scope)",node)
     return narrow_binding(emitter,node,dict(namespace.fields())[name],wanted,loaded)
@@ -522,6 +525,8 @@ def runtime(source,model,emitter):
                 loaded=f"Ok(scope.globals.borrow().value_{index}.clone().unwrap_or_else(||{fallback}))"
         else:loaded=f"scope.globals.borrow().value_{index}.clone().ok_or_else(||{error}.to_owned())"
         declaration+=(f"fn class_global_get_{index}(scope:&ClassScope)->Result<{emitter.rust_type(kind)},String>{{{loaded}}}\n")
+    from .native_global_callable_payload import runtime as payload_runtime
+    declaration+=payload_runtime(model)
     for index,(_,kind)in enumerate(defaults):
         declaration+=(f"fn class_default_get_{index}(scope:&ClassScope)->{emitter.rust_type(kind)}{{"
                       f'scope.globals.borrow().default_{index}.clone().expect("definition-time default must be initialized")}}\n')
