@@ -11,7 +11,8 @@ class LinkedBuiltinBindings:
         self.sites={}
 
     def binding(self,plan,node):
-        from .native_class_builtins import SUPPORTED
+        from .native_builtin_identities import names as builtin_value_names
+        SUPPORTED=builtin_value_names()
         if self.module is None or not isinstance(node,ast.Name):return None
         provider=self.provider
         name=self.model.resolved_name(plan,node)
@@ -21,10 +22,6 @@ class LinkedBuiltinBindings:
         key=self.model.unit.global_name(self.module.name,spelling)
         if spelling not in SUPPORTED:
             if key not in self.model.namespace.incoming:return None
-            # Existing unsupported builtin objects need their original value
-            # representation before a later write, rather than an invented
-            # initially-unbound field. New user keys have no initial value.
-            if spelling in self.model.namespace.builtin_names and key not in self.model.module_linker.implicit_values:return None
         if name in self.model.classes:
             if key in self.model.namespace.incoming:
                 from .native_classes import ClassUnsupported
@@ -62,18 +59,29 @@ class LinkedBuiltinBindings:
         name,spelling=binding
         provider=self.provider
         if name in self.model.global_symbols:return None
+        from .native_builtin_namespace_points import unsupported_initial
+        from .native_builtin_identities import names as builtin_value_names
+        if (unsupported_initial(self.model,self.module,spelling)
+                and spelling not in builtin_value_names()
+                and self.model.is_module_plan(plan)and name in environment
+                and name in getattr(environment,'definite',())):
+            # An existing definite module binding is selected before builtin
+            # fallback; its supported payload needs no original builtin value.
+            self.sites.pop((plan.index,id(node)),None)
+            return None
         key=self.model.unit.global_name(self.module.name,spelling)
         linker=self.model.module_linker
         linker.seed_native_member(provider,self.module,spelling)
-        builtin=linker.export_cell(self.module.kind,spelling,node)
-        provider.builtin_cells[name]=builtin
+        builtin=linker.export_cell(self.module.kind,spelling,node,context=(plan,environment))
+        stored=self.model.namespace.refresh(key,node)
+        provider.builtin_cells[name]=stored
         provider.builtin_sites.pop((plan.index,id(node)),None)
         if name not in provider.mutable_names and name not in self.model.functions and name not in self.model.namespace.incoming:
             self.sites[(plan.index,id(node))]=key
             return builtin
         self.sites.pop((plan.index,id(node)),None)
         provider.fallback_names.add(name)
-        self.model.namespace.incoming.setdefault(name,{})[("builtin",name)]=builtin
+        self.model.namespace.incoming.setdefault(name,{})[("builtin",name)]=stored
         if name in self.model.functions:provider.function_bindings.add(name)
         schema=provider.require_binding(name,node)
         if self.model.is_module_plan(plan):

@@ -34,11 +34,14 @@ class Site:
 class Registry:
     def __init__(self,model):
         self.model=model;self.plans={};self.reason=None;self.builders={};self.sites=[]
-        self.targets={};self.result_entries=set()
+        self.targets={};self.result_entries=set();self.invocations=None
         self.parents={id(child):node for node in model.iter_nodes()for child in ast.iter_child_nodes(node)}
         try:self.prove()
         except Unproved as error:self.reason=str(error);self.plans.clear();self.targets.clear();return
-        self.result_entries={plan.index for plan in model.plans if plan.reachable}
+        # Explicitly certify source entries; constructor wrappers remain a
+        # separate physical role and must already be bounded/direct here.
+        self.result_entries={plan.index for plan in model.plans if plan.reachable
+                             and(plan is model.module or plan.index in self.plans)}
 
     def omitted(self,plan,node):
         reached=getattr(self.model,'reached_statements',None)
@@ -56,20 +59,67 @@ class Registry:
         from .native_aot_callables import AotFunctionType
         from .references import BuiltinIdentity
         from .native_module_calls import BuiltinRef
-        if self.model.classes:raise Unproved('source-class protocols are not yet continuation-normalized')
+        from .native_invocation_control import InvocationLedger,owned_kind,contains_instance,canonical_identities
+        self.invocations=InvocationLedger(self.model,self.source)
+        if self.model.classes:
+            if getattr(self.model,'module_linker',None)is not None:
+                raise Unproved('retained linked class/function generations need owned invocation context fields')
+            if self.model.unit is None:raise Unproved('class bindings need the official source graph')
+            binding_rows=tuple(self.model.iter_bindings())
+            for owner in self.model.classes.values():
+                writes=[row for row in binding_rows if row.owner==0 and row.name==self.model.class_key(owner)and row.role!='load']
+                if(len(writes)!=1 or writes[0].role!='definition'
+                        or writes[0].node!=self.model.unit.ordinal(owner.node)):
+                    raise Unproved('the source class binding has another producer/generation')
+                if(owner.node not in self.model.tree.body or owner.node.bases or owner.node.keywords
+                        or owner.node.decorator_list or owner.node.type_params
+                        or any(not isinstance(child,(ast.FunctionDef,ast.Pass))for child in owner.node.body)):
+                    raise Unproved('class publication effects need their own invocation control producer')
+                for member in owner.node.body:
+                    if isinstance(member,ast.FunctionDef)and(member.decorator_list or member.type_params
+                            or member.args.defaults or member.args.kw_defaults):
+                        raise Unproved('class member definition effects need their own publication producer')
+                if any(name in owner.methods for name in ('__new__','__del__','__getattribute__','__getattr__','__setattr__','__delattr__')):
+                    raise Unproved('custom allocation/attribute/lifetime protocols need typed invocation control')
+                if set(owner.fields)&(set(owner.methods)|{'__dict__','__weakref__'}):
+                    raise Unproved('an instance field can replace a direct method binding')
+                initializer=owner.methods.get('__init__')
+                if initializer is not None and not synchronous(self.model,initializer):
+                    raise Unproved('suspending construction needs a distinct object-returning ConstructorEntry')
+                from .native_owned_object_places import selected as unique_owned
+                if unique_owned(self.model,owner):
+                    raise Unproved('a unique owned object receiver needs a stable cross-frame place')
+        if self.model.classes:
+            from .native_invocation_control import method_binding_write_closed
+            for plan in self.model.plans:
+                if not plan.reachable:continue
+                for node in self.model.value_classes.own_nodes(plan):
+                    if self.omitted(plan,node):continue
+                    if isinstance(node,ast.Attribute)and isinstance(node.ctx,(ast.Store,ast.Del)):
+                        if not method_binding_write_closed(self.model,plan,node):
+                            raise Unproved('a class/instance method write or unknown receiver breaks immutable method lookup')
+            identities=set(self.model.callable_cells.builtin_used)|set(self.model.callable_cells.member_used)
+            for stored in self.model.records.values():identities.update(canonical_identities(shape(stored)))
+            if any((isinstance(target,BuiltinIdentity)or isinstance(target,BuiltinRef)and target.module=='builtins')and target.name in {'id','hash','repr','vars','dir','locals','globals','eval','exec','compile','getattr','setattr','delattr','type','__import__'}
+                    or isinstance(target,BuiltinRef)and target.module=='sys'and target.name not in {'getrecursionlimit','setrecursionlimit'}for target in identities):
+                raise Unproved('a retained native observer/callback needs exact frame lifetime coverage')
         if self.model.gc_classes:raise Unproved('collector frame roots require an explicit continuation layout')
         if self.model.exceptions.used:raise Unproved('retained exception payload/origin state needs a continuation policy')
         region=[plan for plan in self.model.plans if plan.reachable and plan is not self.model.module and not synchronous(self.model,plan)]
         if not region:raise Unproved('no ordinary heap continuation region is needed')
         functions={self.source(plan).node: self.source(plan)for plan in self.model.functions.values()}
         definition_positions={id(node):index for index,node in enumerate(self.model.tree.body)
-                              if isinstance(node,ast.FunctionDef)}
+                              if isinstance(node,(ast.FunctionDef,ast.ClassDef))}
         last_definition=max(definition_positions.values(),default=-1)
         self.static_callees=set()
         for plan in self.model.plans:
             if not plan.reachable or plan is self.model.module:continue
             source=self.source(plan)
-            if not isinstance(source.node,ast.FunctionDef)or source.node not in self.model.tree.body:
+            if getattr(source,'class_body',None)is not None:
+                if not synchronous(self.model,plan):raise Unproved('suspending class publication needs an owned class-body entry')
+                continue
+            method=(source.owner is not None and source.node in source.owner.node.body)
+            if not isinstance(source.node,ast.FunctionDef)or not(method or source.node in self.model.tree.body):
                 raise Unproved('nested/implicit source activations require continuation environment support')
             if self.model.lexical.signature(plan):
                 raise Unproved('a runtime lexical environment is not an owned ordinary scalar activation')
@@ -78,7 +128,7 @@ class Registry:
                     or args.vararg or args.kwarg or args.kwonlyargs):
                 raise Unproved('captured defaults/decorators/variadic signatures are not yet continuation-normalized')
             locals=[cell for values in plan.locals.values()for cell in values]
-            if any(shape(cell)not in SCALARS for cell in [*plan.arguments.values(),plan.result,*locals]):
+            if any(not owned_kind(self.model,shape(cell))for cell in [*plan.arguments.values(),plan.result,*locals]):
                 raise Unproved('ordinary continuation locals/parameters/results are not closed owned scalar slots')
             if any(len({shape(cell)for cell in values})>1 for values in plan.locals.values()):
                 raise Unproved('type-changing local clearing needs a physical frame-place rule')
@@ -86,11 +136,19 @@ class Registry:
         for plan in self.model.plans:
             if not plan.reachable:continue
             source=self.source(plan)
+            if getattr(source,'class_body',None)is not None:continue
             own=list(source.node.body if isinstance(source.node.body,list)else[source.node.body])
             stack=list(reversed(own))
             while stack:
                 node=stack.pop()
                 if self.omitted(plan,node):continue
+                if isinstance(node,ast.ClassDef)and node in self.model.tree.body:
+                    owner=next((owner for owner in self.model.classes.values()if owner.node is node),None)
+                    if owner is None:raise Unproved('class publication lacks an original owner')
+                    body=getattr(owner,'body_plan',None)
+                    if body is not None and not synchronous(self.model,body):
+                        raise Unproved('class publication would reenter a typed source region')
+                    continue
                 if isinstance(node,ast.FunctionDef):
                     if plan is not self.model.module:raise Unproved('nested function binding is not normalized')
                     if node not in self.model.tree.body or node.decorator_list or node.args.defaults or node.args.kw_defaults or node.type_params:
@@ -103,15 +161,32 @@ class Registry:
                 if isinstance(node,(ast.NamedExpr,ast.Delete)):raise Unproved('this binding mutation needs an explicit continuation place')
                 if isinstance(node,ast.Name)and isinstance(node.ctx,ast.Load)and node.id in {'__annotations__','__annotate__'}:
                     raise Unproved('lazy annotation activation is not continuation-normalized')
+                if self.model.classes and isinstance(node,ast.FormattedValue):
+                    stored=self.model.records.get((plan.index,id(node.value)))
+                    if stored is None or contains_instance(shape(stored)):
+                        raise Unproved('formatted object representation needs exact temporary lifetime coverage')
+                if self.model.classes and isinstance(node,ast.BinOp)and isinstance(node.op,ast.Mod):
+                    first=self.model.records.get((plan.index,id(node.left)))
+                    second=self.model.records.get((plan.index,id(node.right)))
+                    if first is not None and shape(first)in {'str','bytes'}and(second is None or contains_instance(shape(second))):
+                        raise Unproved('object percent formatting needs exact temporary lifetime coverage')
                 if isinstance(node,ast.AnnAssign)and any(isinstance(part,(ast.Call,ast.NamedExpr,ast.Lambda))for part in ast.walk(node.annotation)):
                     raise Unproved('effectful lazy annotations require their own source activation descriptor')
                 if isinstance(node,ast.Name)and isinstance(node.ctx,(ast.Store,ast.Del)):
                     name=self.model.resolved_name(plan,node)
-                    if name in self.model.functions:raise Unproved('a source callable binding can change during argument evaluation')
+                    if name in self.model.functions or name in self.model.classes:raise Unproved('a source callable/class binding can change during argument evaluation')
                 if isinstance(node,ast.Name)and isinstance(node.ctx,ast.Load)and self.model.resolved_name(plan,node)in self.model.functions:
                     parent=self.parents.get(id(node))
                     if not isinstance(parent,ast.Call)or parent.func is not node:
                         raise Unproved('source function values escape their proved call-only binding')
+                if self.model.classes and isinstance(node,(ast.Name,ast.Attribute))and isinstance(node.ctx,ast.Load):
+                    stored=self.model.records.get((plan.index,id(node)))
+                    identities=canonical_identities(None if stored is None else shape(stored))
+                    parent=self.parents.get(id(node))
+                    if not(isinstance(parent,ast.Call)and parent.func is node)and any(
+                            (isinstance(target,BuiltinIdentity)or isinstance(target,BuiltinRef)and target.module=='builtins')
+                            and target.name in {'print','str','format','ascii'}for target in identities):
+                        raise Unproved('a retained representation callback needs its typed argument/lifetime ledger')
                 if isinstance(node,ast.Call):
                     cell=self.model.records.get((plan.index,id(node.func)))
                     kind=None if cell is None else shape(cell)
@@ -131,18 +206,34 @@ class Registry:
                             identities.update(getattr(site,family,{}))
                     if isinstance(node.func,ast.Name)and static_builtin(self.model,plan,node.func,node.func.id):
                         identities.add(BuiltinIdentity(node.func.id))
+                    if self.model.classes and any((isinstance(target,BuiltinIdentity)or isinstance(target,BuiltinRef)and target.module=='builtins')and target.name in {'print','str','format','ascii'}for target in identities):
+                        operands=[*node.args,*(keyword.value for keyword in node.keywords)]
+                        for operand in operands:
+                            if isinstance(operand,ast.Starred):operand=operand.value
+                            stored=self.model.records.get((plan.index,id(operand)))
+                            if stored is None or contains_instance(shape(stored)):
+                                raise Unproved('object representation observation needs exact temporary lifetime coverage')
                     if any((isinstance(target,BuiltinIdentity)or isinstance(target,BuiltinRef)and target.module=='builtins')and target.name in{
-                        'id','hash','repr','vars','locals','globals','eval','exec','compile','getattr','setattr','delattr','type','__import__','exit','quit'}
+                        'id','hash','repr','dir','vars','locals','globals','eval','exec','compile','getattr','setattr','delattr','type','__import__','exit','quit'}
                         or isinstance(target,BuiltinRef)and(target.module not in {'builtins','sys'}or target.module=='sys'and target.name not in {'getrecursionlimit','setrecursionlimit'})for target in identities):
                         raise Unproved('an observer/native payload has no closed continuation lifetime policy')
                     targets=self.model.call_edges_by_site.get((plan.index,id(node)),())
+                    if not targets and isinstance(node.func,ast.Name):
+                        owner=self.model.classes.get(self.model.resolved_name(plan,node.func))
+                        if owner is not None and owner.methods.get('__init__')is None:
+                            self.invocations.bounded_constructor(plan,node,owner)
                     if targets:
-                        if len(targets)!=1 or not isinstance(node.func,ast.Name)or node.keywords or any(isinstance(arg,ast.Starred)for arg in node.args):
+                        producer=self.invocations.describe(plan,node,targets)
+                        if producer.role=='constructor':
+                            if producer.callee is None or not synchronous(self.model,producer.callee):
+                                raise Unproved('constructor object result needs an owned synthetic invocation entry')
+                            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+                            continue
+                        if(producer.role not in {'direct_function','direct_method'}or node.keywords
+                                or any(isinstance(arg,ast.Starred)for arg in node.args)):
                             raise Unproved('implicit/finite callback calls need a typed continuation invocation descriptor')
-                        callee=next((item for item in self.model.plans if item.index==next(iter(targets))),None)
-                        canonical=self.model.functions.get(self.model.resolved_name(plan,node.func))
-                        if callee is None or canonical is None or self.source(callee)is not self.source(canonical):
-                            raise Unproved('the source call does not have one canonical ordinary target')
+                        callee=producer.callee
+                        if callee is None:raise Unproved('the source invocation has no canonical native target')
                         if plan is self.model.module:
                             statement=node
                             while id(statement)not in {id(item)for item in self.model.tree.body}:
@@ -150,7 +241,7 @@ class Registry:
                                 if statement is None:raise Unproved('module call has no original statement owner')
                             if self.model.tree.body.index(statement)<=last_definition:
                                 raise Unproved('call-only definitions must precede all module source invocations')
-                        if cell is None:
+                        if cell is None and producer.role=='direct_function':
                             from .native_frame_references import call_target
                             if call_target(self.model,plan,node)is not self.source(callee):
                                 if plan is self.model.module:
@@ -161,15 +252,22 @@ class Registry:
                                     if self.model.tree.body.index(statement)<=last_definition:
                                         raise Unproved('a call-only definition is not initialized before module source calls')
                                 self.static_callees.add((plan.index,id(node)))
-                        if len(node.args)!=len(callee.runtime_parameters):raise Unproved('call binding errors keep their existing native path')
+                        if len(producer.argument_nodes)!=len(callee.runtime_parameters):raise Unproved('call binding errors keep their existing native path')
                         self.targets[plan.index,id(node)]=callee
                 stack.extend(reversed(list(ast.iter_child_nodes(node))))
         self.plans={plan.index:plan for plan in region}
-        for plan in self.model.plans:
-            if not plan.reachable:continue
-            covered={target.index for(caller,_),target in self.targets.items()if caller==plan.index}
-            if not set(self.model.call_edges.get(plan.index,()))<=covered:
-                raise Unproved('an implicit/source activation lacks a normalized ordinary call producer')
+        nodes={id(node):node for node in self.model.iter_nodes()}
+        for(caller,site),targets in self.model.call_edges_by_site.items():
+            plan=self.invocations.plans.get(caller)
+            if plan is None:continue
+            if(caller,site)in self.invocations.producers:continue
+            node=nodes.get(site)
+            producer=self.invocations.describe(plan,node,targets)
+            if any(target in self.plans for target in targets):
+                raise Unproved('an implicit source producer has no typed transfer/resume rule')
+            if not all(synchronous(self.model,self.invocations.plans[target])for target in targets):
+                raise Unproved('an unmodeled source entry can reenter a continuation region')
+        if not self.invocations.complete():raise Unproved('the source invocation producer ledger is incomplete')
         # Typed source blocks currently cover ordinary statements. Reject
         # unlowered producers before any source body is emitted.
         allowed=(ast.Assign,ast.AnnAssign,ast.AugAssign,ast.Expr,ast.Return,ast.If,
@@ -179,7 +277,7 @@ class Registry:
                 if self.omitted(plan,node):continue
                 if isinstance(node,ast.stmt)and node is not self.source(plan).node and not isinstance(node,allowed):
                     raise Unproved('an ordinary statement has no typed continuation control rule')
-                if isinstance(node,ast.AugAssign)and not isinstance(node.target,ast.Name):
+                if isinstance(node,ast.AugAssign)and not isinstance(node.target,ast.Name)and any((plan.index,id(part))in self.targets and self.targets[plan.index,id(part)].index in self.plans for part in ast.walk(node)if isinstance(part,ast.Call)):
                     raise Unproved('augmented container places need a suspension-safe captured owner/index')
                 if isinstance(node,ast.AugAssign)and any((plan.index,id(part))in self.targets
                         and self.targets[plan.index,id(part)].index in self.plans for part in ast.walk(node.value)if isinstance(part,ast.Call)):
@@ -195,6 +293,15 @@ class Registry:
                         and self.targets[plan.index,id(part)].index in self.plans for part in ast.walk(node)if isinstance(part,ast.Call)):
                     if not isinstance(node,(ast.Call,ast.BinOp,ast.UnaryOp,ast.Subscript,ast.Tuple,ast.List,ast.IfExp,ast.BoolOp)):
                         raise Unproved('this suspending expression has no typed evaluation-order rule')
+                    if isinstance(node,ast.Subscript)and isinstance(node.value,ast.Attribute):
+                        from .native_classes import InstanceType
+                        from .native_owned_class_lists import selected as owned_field
+                        receiver=self.model.records.get((plan.index,id(node.value.value)))
+                        kind=None if receiver is None else shape(receiver)
+                        owner=self.model.classes.get(kind.name)if isinstance(kind,InstanceType)else None
+                        name=self.model.resolved_name(plan,node.value)
+                        if owner is not None and name in owner.fields and owned_field(self.model,owner,list(owner.fields).index(name)):
+                            raise Unproved('a suspending owned class-list read needs an owned place descriptor')
                     if isinstance(node,ast.Subscript)and isinstance(node.slice,ast.Slice):
                         raise Unproved('suspending slice bounds need a captured sequence-place rule')
                 if isinstance(node,ast.Assert)and any((plan.index,id(part))in self.targets and self.targets[plan.index,id(part)].index in self.plans for part in ast.walk(node)if isinstance(part,ast.Call)):
@@ -284,7 +391,12 @@ class Builder:
         elif isinstance(node,ast.Subscript)and not isinstance(node.slice,ast.Slice):children=[node.value,node.slice]
         elif isinstance(node,(ast.Tuple,ast.List)):children=list(node.elts)
         elif isinstance(node,ast.Call):
-            if(self.plan.index,id(node.func))in self.emitter.model.records:children.append(node.func)
+            producer=self.registry.invocations.producers.get((self.plan.index,id(node)))
+            if producer is not None and producer.role=='direct_method':
+                # Plain immutable method binding is already certified. Retain
+                # its original owned receiver before any explicit arguments.
+                children.append(producer.receiver)
+            elif(self.plan.index,id(node.func))in self.emitter.model.records:children.append(node.func)
             elif isinstance(node.func,ast.Attribute):children.append(node.func.value)
             children.extend(node.args);children.extend(item.value for item in node.keywords)
         else:raise Unproved('this suspending expression has no typed evaluation-order rule')
@@ -292,7 +404,8 @@ class Builder:
         target=self.registry.targets.get((self.plan.index,id(node)))if isinstance(node,ast.Call)else None
         if target is not None and target.index in self.registry.plans:
             destination=self.temp(self.emitter.kind(node));resume=self.new()
-            site=Site(len(self.registry.sites),self.plan,target,node,tuple(values[id(arg)]for arg in node.args),destination,resume)
+            producer=self.registry.invocations.producers[self.plan.index,id(node)]
+            site=Site(len(self.registry.sites),self.plan,target,node,tuple(values[id(arg)]for arg in producer.argument_nodes),destination,resume)
             self.registry.sites.append(site);self.end(('call',site));self.current=resume;return destination
         old=self.overrides;self.overrides={**old,**values}
         try:value=self.original_expression(node)

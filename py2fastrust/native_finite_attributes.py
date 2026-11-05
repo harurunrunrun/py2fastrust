@@ -10,9 +10,10 @@ def _owners(model,plan,node,receiver):
     from .native_classes import InstanceType,ClassUnsupported,shape,domain
     from .native_unions import union_kind
     kind=shape(receiver)
-    if not union_kind(kind):return None
+    if kind is None:return None
+    if isinstance(kind,InstanceType):return None
     choices=alternatives(kind)
-    if not any(isinstance(part,InstanceType)for part in choices):return None
+    instances=any(isinstance(part,InstanceType)for part in choices)
     name=model.resolved_name(plan,node)
     if name.startswith('__')and name.endswith('__'):return None
     owners=[]
@@ -29,6 +30,7 @@ def _owners(model,plan,node,receiver):
             builtin=BUILTIN_TYPES.get(domain(part))
             if builtin is None:return None
             if hasattr(builtin,node.attr):
+                if not instances:return None
                 raise ClassUnsupported(node,f'builtin {builtin.__name__!r} defines attribute {node.attr!r}; lookup across this builtin attribute and instance data needs a typed builtin descriptor/member adapter, which is not implemented',types=(('builtin receiver',part),),proof='builtin attribute lookup within finite data-attribute alternatives')
     return owners
 
@@ -37,6 +39,9 @@ def analyze(model,plan,node,receiver,*,value=None):
     owners=_owners(model,plan,node,receiver)
     if owners is None:return None
     result=model.cell(plan,node)
+    if not owners:
+        from .native_types import EMPTY
+        model.contribute(result,model.cell_for_kind(EMPTY),node)
     for owner in owners:
         field=model.field(owner,model.resolved_name(plan,node),node,writing=value is not None)
         if value is not None:model.contribute(field,value,node)

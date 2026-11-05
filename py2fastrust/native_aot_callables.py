@@ -81,7 +81,8 @@ def requires_cells(unit,analysis,references=None):
     definitions={unit.ordinal(node)for node in unit.tree.body if isinstance(node,ast.FunctionDef)}
     bindings={binding.node:binding for binding in unit.bindings}
     names={binding.name for binding in unit.bindings if binding.role=="definition"and binding.node in definitions and binding.owner==0}
-    from .native_class_builtins import SUPPORTED
+    from .native_builtin_identities import names as builtin_value_names
+    SUPPORTED=builtin_value_names()
     from .native_static_builtins import capture_assignments
     static_builtin_assignments=capture_assignments(unit,analysis,references)
     if names&SUPPORTED:return True
@@ -161,7 +162,8 @@ class CallableCells:
         self.mutable_names={binding.name for binding in bindings
             if model.module_owner(binding.owner) and binding.role not in {"load","parameter","definition"}}
         self.function_bindings.update(set(model.functions)&self.mutable_names)
-        from .native_class_builtins import SUPPORTED
+        from .native_builtin_identities import names as builtin_value_names
+        SUPPORTED=builtin_value_names()
         self.function_bindings.update(name for name in model.functions if self.spelling(name)in SUPPORTED)
         self.used.update(self.definition(model.functions[name])for name in self.function_bindings)
         for name,plan in model.functions.items():
@@ -194,7 +196,8 @@ class CallableCells:
             if lexical is not None:
                 self.used.update(lexical.root().args)
                 return lexical
-        from .native_class_builtins import SUPPORTED
+        from .native_builtin_identities import names as builtin_value_names
+        SUPPORTED=builtin_value_names()
         if isinstance(node,ast.Name)and self.model.module_owner(self.owner(plan,node)):
             name=self.model.resolved_name(plan,node)
             spelling=self.spelling(name)

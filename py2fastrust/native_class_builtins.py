@@ -7,7 +7,7 @@ import ast
 from .references import BuiltinIdentity
 
 SUPPORTED=frozenset({"exit","quit","classmethod","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bool","float","len","abs","id","globals","isinstance",
-                     "range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
+                     "round","range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
 
 
 def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=None,call_arguments=None):
@@ -15,6 +15,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='round':
+        from .native_class_round import analyze as analyze_round
+        return analyze_round(model,plan,node,arguments,keywords,factory=cell)
     if name=='sum':
         from .native_sum_binding import bind
         arguments,failure=bind(arguments,keywords,Cell('int'))
@@ -162,6 +165,9 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=F
     from .native_classes import Expression
     from .native_unions import project,union_kind
     from .native_builtin_singletons import has_singleton
+    if identity.name=='round':
+        from .native_class_round import emit as emit_round
+        return emit_round(emitter,node,arguments,keywords,wanted)
     if identity.name=='sum':
         from .native_sum_binding import bind
         arguments,failure=bind(arguments,list(keywords.items()),Expression(emitter.literal(0),'int',0))

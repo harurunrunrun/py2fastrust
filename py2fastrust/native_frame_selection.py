@@ -169,6 +169,8 @@ def select_frames(unit,*,integer="i64"):
     if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
     from .native_class_sorting import requires_frames as sorting_requires_frames
     if sorting_requires_frames(unit,analysis):reasons+=('direct sorted generator collection',)
+    from .native_class_round import requires_frames as round_requires_frames
+    if round_requires_frames(analysis):reasons+=('captured integral round protocol',)
     from .native_class_divmod import requires_frames as divmod_requires_frames
     if divmod_requires_frames(analysis):reasons+=('captured quotient/remainder builtin',)
     from .native_class_splits import requires_frames as split_requires_frames

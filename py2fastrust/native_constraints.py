@@ -546,20 +546,30 @@ class Solver:
         return value(Computed(operation,operands))
 
     def expression(self,term,state,globals,locals,context):
-        evaluate=lambda child:self.expression(child,state,globals,locals,context)
+        from .native_constraint_calls import Request,run
+        return run(Request(self._expression,(term,state,globals,locals,context,)))
+
+    def _expression(self,term,state,globals,locals,context):
+        from .native_constraint_calls import Request
+        evaluate=lambda child:Request(self._expression,(child,state,globals,locals,context))
         op,args=term.operation,term.operands
         result=UNKNOWN
         if op=="constant":result=value(term.data)
         elif op=="name":result=self.lookup(term.data,state,globals,locals)
-        elif op=="tuple":result=value(TupleValue(tuple(evaluate(child) for child in args)))
+        elif op=="tuple":
+            fields=[]
+            for child in args:fields.append((yield evaluate(child)))
+            result=value(TupleValue(tuple(fields)))
         elif op in {"list","set","dict"}:
             allocation=self.allocation(term.site,op,context);result=value(allocation)
             if op=="dict":
-                for key,item in args:self.insert(result,"key",evaluate(key));self.insert(result,"value",evaluate(item))
+                for key,item in args:
+                    self.insert(result,"key",(yield evaluate(key)))
+                    self.insert(result,"value",(yield evaluate(item)))
             else:
-                for child in args:self.insert(result,"element" if op=="list" else "key",evaluate(child))
+                for child in args:self.insert(result,"element" if op=="list" else "key",(yield evaluate(child)))
         elif op=="attribute":
-            receiver=evaluate(args[0]);result=value(MethodValue(receiver,term.data,term.site))
+            receiver=(yield evaluate(args[0]));result=value(MethodValue(receiver,term.data,term.site))
             # Trusted modules and streams resolve using the same pure member
             # table as calls; ordinary object attributes remain unproved.
             from .references import _member
@@ -571,49 +581,54 @@ class Solver:
             elif term.data=="maxlen"and deque_type(self.kind(receiver)):result=value(NullableType("int"))
             elif not self.iteration_access.closed(receiver):self.iteration_access.unknown()
         elif op=="call":
-            callee=evaluate(args[0]);positional=tuple(evaluate(child) for child in args[1]);keywords=tuple((name,evaluate(child)) for name,child in args[2])
+            callee=(yield evaluate(args[0]));positional=[];keywords=[]
+            for child in args[1]:positional.append((yield evaluate(child)))
+            for name,child in args[2]:keywords.append((name,(yield evaluate(child))))
+            positional,keywords=tuple(positional),tuple(keywords)
             self.calls[(context,term.site)]=CallFact(callee,positional,keywords)
             self.iteration_access.call(callee,positional,keywords)
             result=BOTTOM
             for identity in callee.alternatives:
-                result=result.join(self.call(identity,positional,keywords,term,state,globals,locals,context))
+                result=result.join((yield Request(self._call,(identity,positional,keywords,term,state,globals,locals,context))))
             if callee.unknown or callee.unbound or not callee.alternatives:result=result.join(UNKNOWN)
         elif op=="expanded_call":
             self.iteration_access.unknown()
             # Observe real expression order without pretending one iterable
             # supplies one positional argument to the fixed-arity solver.
-            callee=evaluate(args[0])
-            for child in args[1]:evaluate(child)
-            for name,child in args[2]:evaluate(child)
+            callee=(yield evaluate(args[0]))
+            for child in args[1]:(yield evaluate(child))
+            for name,child in args[2]:(yield evaluate(child))
             if not callee.unknown and not callee.unbound and callee.alternatives==frozenset({BuiltinIdentity("print")}):
                 result=value("none")
         elif op=="index":
-            receiver=evaluate(args[0]);index_value=evaluate(args[1])
+            receiver=(yield evaluate(args[0]));index_value=(yield evaluate(args[1]))
             self.iteration_access.implicit(receiver,index_value)
             literal=self.graph.literals.get(args[1].site)
             index=literal.value if literal is not None and literal.kind=="int" and -(1<<63)<=literal.value<(1<<63) else None
             result=self.field_values(receiver,"value",index)
         elif op=="slice":
-            receiver=evaluate(args[0])
-            bounds=tuple(evaluate(bound)for bound in args[1])
+            receiver=(yield evaluate(args[0]))
+            bounds=[]
+            for bound in args[1]:bounds.append((yield evaluate(bound)))
+            bounds=tuple(bounds)
             self.iteration_access.implicit(receiver,*bounds)
             item=self.field_values(receiver,"iteration")
             allocation=self.allocation(term.site,"list",context);result=value(allocation);self.insert(result,"element",item)
             if self.kind(receiver)=="str":result=value("str")
             elif self.kind(receiver)=="bytes":result=value("bytes")
         elif op=="compare":
-            for child in args[:2]:self.iteration_access.implicit(evaluate(child))
+            for child in args[:2]:self.iteration_access.implicit((yield evaluate(child)))
             for child in args[2:]:
                 possible=state.copy()
-                self.iteration_access.implicit(self.expression(child,possible,globals,locals,context))
+                self.iteration_access.implicit((yield Request(self._expression,(child,possible,globals,locals,context))))
                 joined=merge([state,possible])
                 state.clear();state.update(joined)
             result=value("bool")
         elif op=="unary":
-            operand=evaluate(args[0]);self.iteration_access.implicit(operand)
+            operand=(yield evaluate(args[0]));self.iteration_access.implicit(operand)
             result=value("bool") if term.data=="Not" else self.compute("unary:"+term.data,(operand,))
         elif op=="binary":
-            first,second=(evaluate(child) for child in args)
+            first=(yield evaluate(args[0]));second=(yield evaluate(args[1]))
             self.iteration_access.implicit(first,second)
             if term.data in {"Add","Mult"} and any(isinstance(part,(Allocation,ListType)) and (not isinstance(part,Allocation) or part.category=="list") for part in first.alternatives|second.alternatives):
                 result=value(self.allocation(term.site,"list",context))
@@ -623,19 +638,19 @@ class Solver:
         elif op in {"join","conditional"}:
             result=BOTTOM
             if op=="conditional":
-                self.iteration_access.implicit(evaluate(args[0]));branches=[]
+                self.iteration_access.implicit((yield evaluate(args[0])));branches=[]
                 for child in args[1:]:
                     possible=state.copy()
-                    result=result.join(self.expression(child,possible,globals,locals,context))
+                    result=result.join((yield Request(self._expression,(child,possible,globals,locals,context))))
                     branches.append(possible)
                 joined=merge(branches)
                 state.clear();state.update(joined)
             elif args:
-                result=evaluate(args[0])
+                result=(yield evaluate(args[0]))
                 self.iteration_access.implicit(result)
                 for child in args[1:]:
                     possible=state.copy()
-                    next_value=self.expression(child,possible,globals,locals,context)
+                    next_value=(yield Request(self._expression,(child,possible,globals,locals,context)))
                     self.iteration_access.implicit(next_value)
                     result=result.join(next_value)
                     joined=merge([state,possible])
@@ -645,12 +660,14 @@ class Solver:
             depth=len(self.active_iterations);sources=set()
             try:
                 for target,source,filters in args[0]:
-                    iterable=self.expression(source,inside,globals,locals,context)
+                    iterable=(yield Request(self._expression,(source,inside,globals,locals,context)))
                     owners=self.iteration_allocations(iterable);sources.update(owners)
                     self.active_iterations.append(owners)
                     self.assign(target,self.field_values(iterable,"iteration"),inside,context)
-                    for condition in filters:self.expression(condition,inside,globals,locals,context)
-                items=tuple(self.expression(child,inside,globals,locals,context) for child in args[1])
+                    for condition in filters:(yield Request(self._expression,(condition,inside,globals,locals,context)))
+                items=[]
+                for child in args[1]:items.append((yield Request(self._expression,(child,inside,globals,locals,context))))
+                items=tuple(items)
             finally:del self.active_iterations[depth:]
             if term.data=="iterator":result=value(IteratorValue(items[0],frozenset(sources),True))
             else:
@@ -662,7 +679,12 @@ class Solver:
         return result
 
     def call(self,identity,args,keywords,term,state,globals,locals,context):
-        if isinstance(identity,FunctionValue):return self.function(identity,args,keywords,state if context[0] is None else globals,context,term.site)
+        from .native_constraint_calls import Request,run
+        return run(Request(self._call,(identity,args,keywords,term,state,globals,locals,context,)))
+
+    def _call(self,identity,args,keywords,term,state,globals,locals,context):
+        from .native_constraint_calls import Request
+        if isinstance(identity,FunctionValue):return (yield Request(self._function,(identity,args,keywords,state if context[0] is None else globals,context,term.site)))
         if isinstance(identity,DequeConstructor):
             result=value(self.allocation(term.site,"deque",context))
             if args:self.insert(result,"element",self.field_values(args[0],"iteration"))
@@ -778,7 +800,7 @@ class Solver:
             elif len(args)>=2:
                 item=BOTTOM
                 for callback in args[0].alternatives:
-                    item=item.join(self.call(callback,tuple(self.field_values(arg,"iteration") for arg in args[1:]),(),term,state,globals,locals,context))
+                    item=item.join((yield Request(self._call,(callback,tuple(self.field_values(arg,"iteration") for arg in args[1:]),(),term,state,globals,locals,context))))
             else:item=UNKNOWN
             if name=="sorted":
                 result=value(self.allocation(term.site,"list",context));self.insert(result,"element",item);return result
@@ -805,6 +827,11 @@ class Solver:
         return UNKNOWN
 
     def function(self,identity,args,keywords,globals,caller_context=None,call_site=None):
+        from .native_constraint_calls import Request,run
+        return run(Request(self._function,(identity,args,keywords,globals,caller_context,call_site,)))
+
+    def _function(self,identity,args,keywords,globals,caller_context=None,call_site=None):
+        from .native_constraint_calls import Request
         definition=self.graph.functions[identity.definition]
         try:bound=definition.signature.bind(args,keywords,dict(identity.defaults))
         except CallBindingError:return UNKNOWN
@@ -828,89 +855,97 @@ class Solver:
                 self.iteration_access.replay(context,globals)
                 return self.cache[context]
             del self.cache[context]
-        if definition.site in self.active or len(self.active)>=128:
+        if definition.site in self.active:
             self.iteration_access.unknown()
             return UNKNOWN
         self.allocation_contexts[context]=allocation_context
         self.incoming_sources[context]=tuple(bound.values)+tuple(globals.values())
         self.active.add(definition.site);self.contexts[context]=(definition.site,kinds)
-        state=dict(zip(bound.parameters,bound.values))
-        with self.iteration_access.function(context):
-            flow=self.block(definition.body,state,globals,definition.signature.local_names,context)
-        result=flow.returns.join(value("none")) if flow.normal is not None else flow.returns
-        # A returned caller reference outlives this function frame. New local
-        # allocations can still move out as uniquely owned vectors.
-        incoming=self.incoming_allocations(context)
-        self.shared_references.update(part for part in self.provenance(result).alternatives
-            if isinstance(part,Allocation)and part.category=="list"and(part in incoming or part.site[0]!=self.allocation_context(context)))
-        self.active.remove(definition.site);self.cache[context]=result
-        return result
+        try:
+            state=dict(zip(bound.parameters,bound.values))
+            with self.iteration_access.function(context):
+                flow=(yield Request(self._block,(definition.body,state,globals,definition.signature.local_names,context)))
+            result=flow.returns.join(value("none")) if flow.normal is not None else flow.returns
+            # A returned caller reference outlives this function frame. New local
+            # allocations can still move out as uniquely owned vectors.
+            incoming=self.incoming_allocations(context)
+            self.shared_references.update(part for part in self.provenance(result).alternatives
+                if isinstance(part,Allocation)and part.category=="list"and(part in incoming or part.site[0]!=self.allocation_context(context)))
+            self.cache[context]=result
+            return result
+        finally:
+            self.active.remove(definition.site)
 
     def block(self,operations,incoming,globals,locals,context):
+        from .native_constraint_calls import Request,run
+        return run(Request(self._block,(operations,incoming,globals,locals,context,)))
+
+    def _block(self,operations,incoming,globals,locals,context):
+        from .native_constraint_calls import Request
         flow=Flow(incoming.copy())
         for operation in operations:
             if flow.normal is None:break
             state=flow.normal
-            evaluate=lambda term:self.expression(term,state,globals,locals,context)
+            evaluate=lambda term:Request(self._expression,(term,state,globals,locals,context))
             op,args=operation.operation,operation.operands
             if op=="assign":
-                item=evaluate(args[0])
+                item=(yield evaluate(args[0]))
                 for target in operation.data:
                     if target[0]=="index":
-                        receiver=evaluate(target[1]);index=evaluate(target[2])
+                        receiver=(yield evaluate(target[1]));index=(yield evaluate(target[2]))
                         self.store_index(receiver,index,item,context)
                     elif target[0]=="attribute":
-                        evaluate(target[1]);self.iteration_access.unknown()
+                        (yield evaluate(target[1]));self.iteration_access.unknown()
                     else:self.assign(target,item,state,context)
             elif op=="augment":
                 target,operator=operation.data
                 if target[0]=="index":
-                    receiver=evaluate(target[1]);index=evaluate(target[2])
+                    receiver=(yield evaluate(target[1]));index=(yield evaluate(target[2]))
                     literal=self.graph.literals.get(target[2].site)
                     offset=(literal.value if literal is not None and literal.kind=="int"
                             and -(1<<63)<=literal.value<(1<<63)else None)
                     first=self.field_values(receiver,"value",offset)
-                    second=evaluate(args[1])
+                    second=(yield evaluate(args[1]))
                     self.iteration_access.implicit(first,second)
                     self.record_mutation(first,context)
                     self.store_index(receiver,index,self.augmented(first,second,operator),context)
                 else:
-                    first,second=(evaluate(term) for term in args)
+                    first=(yield evaluate(args[0]));second=(yield evaluate(args[1]))
                     self.iteration_access.implicit(first,second)
                     self.record_mutation(first,context)
                     self.assign(target,self.augmented(first,second,operator),state,context)
-            elif op=="expression":evaluate(args[0])
+            elif op=="expression":(yield evaluate(args[0]))
             elif op=="expression_group":
-                for term in args:evaluate(term)
+                for term in args:(yield evaluate(term))
             elif op=="assert":
-                self.iteration_access.implicit(evaluate(args[0]))
+                self.iteration_access.implicit((yield evaluate(args[0])))
                 from .native_assertions import literal_truth
                 if len(args)>1 and literal_truth(self.graph.nodes[operation.site].test)is not True:
-                    self.expression(args[1],state.copy(),globals,locals,context)
+                    (yield Request(self._expression,(args[1],state.copy(),globals,locals,context)))
             elif op=="delete":
                 def delete(target):
                     if target[0]=='name':self.assign(target,MISSING,state,context)
                     elif target[0]=='unpack':
-                        for child in target[1]:delete(child)
+                        for child in target[1]:(yield Request(delete,(child,)))
                     elif target[0]=='index':
-                        receiver=evaluate(target[1]);index=evaluate(target[2])
+                        receiver=(yield evaluate(target[1]));index=(yield evaluate(target[2]))
                         self.iteration_access.implicit(receiver,index)
                         self.record_mutation(receiver,context)
                     elif target[0]=='attribute':
-                        evaluate(target[1]);self.iteration_access.unknown()
-                for target in operation.data:delete(target)
+                        (yield evaluate(target[1]));self.iteration_access.unknown()
+                for target in operation.data:(yield Request(delete,(target,)))
             elif op=="branch":
-                self.iteration_access.implicit(evaluate(args[0]));yes=self.block(operation.blocks[0],state,globals,locals,context);no=self.block(operation.blocks[1],state,globals,locals,context)
+                self.iteration_access.implicit((yield evaluate(args[0])));yes=(yield Request(self._block,(operation.blocks[0],state,globals,locals,context)));no=(yield Request(self._block,(operation.blocks[1],state,globals,locals,context)))
                 flow.normal=merge([yes.normal,no.normal]);flow.breaks+=yes.breaks+no.breaks;flow.continues+=yes.continues+no.continues;flow.returns=flow.returns.join(yes.returns).join(no.returns)
             elif op in {"for","while"}:
-                if op=="for":source=evaluate(args[0])
+                if op=="for":source=(yield evaluate(args[0]))
                 header=state.copy()
                 with self.iterating(source if op=='for'else BOTTOM),self.iteration_access.loop(source if op=='for'else BOTTOM,context,operation.site if op=='for'else None):
                     for iteration in range(128):
                         inside=header.copy()
                         if op=="for":self.assign(operation.data,self.field_values(source,"iteration"),inside,context)
-                        else:self.iteration_access.implicit(self.expression(args[0],inside,globals,locals,context))
-                        body=self.block(operation.blocks[0],inside,globals,locals,context)
+                        else:self.iteration_access.implicit((yield Request(self._expression,(args[0],inside,globals,locals,context))))
+                        body=(yield Request(self._block,(operation.blocks[0],inside,globals,locals,context)))
                         joined=merge([state,body.normal,*body.continues])
                         if joined==header:break
                         header=joined
@@ -918,16 +953,18 @@ class Solver:
                         self.iteration_access.incomplete()
                         header={name:UNKNOWN for name in header}
                 self.headers[(context,operation.site)]=header
-                otherwise=self.block(operation.blocks[1],header,globals,locals,context)
+                otherwise=(yield Request(self._block,(operation.blocks[1],header,globals,locals,context)))
                 flow.normal=merge([otherwise.normal,*body.breaks]);flow.breaks+=otherwise.breaks;flow.continues+=otherwise.continues
                 flow.returns=flow.returns.join(body.returns).join(otherwise.returns)
-            elif op=="return":flow.returns=flow.returns.join(evaluate(args[0]) if args else value("none"));flow.normal=None
+            elif op=="return":flow.returns=flow.returns.join((yield evaluate(args[0])) if args else value("none"));flow.normal=None
             elif op=="break":flow.breaks.append(state.copy());flow.normal=None
             elif op=="continue":flow.continues.append(state.copy());flow.normal=None
             elif op=="definition":
                 if getattr(self.graph.nodes[operation.site],"decorator_list",()):self.iteration_access.unknown()
                 definition=self.graph.functions[operation.data]
-                defaults=tuple((name,evaluate(term)) for name,term in definition.defaults)
+                defaults=[]
+                for name,term in definition.defaults:defaults.append((name,(yield evaluate(term))))
+                defaults=tuple(defaults)
                 state[definition.name]=value(FunctionValue(definition.site,defaults))
             elif op=="pass":
                 if operation.data!="Pass":self.iteration_access.unknown()

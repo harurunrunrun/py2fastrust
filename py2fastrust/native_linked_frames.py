@@ -207,7 +207,7 @@ class LinkedModel(Model):
         self.module_linker.attribute_receivers[(plan.index,id(node))]=self.cell_for_kind(shape(receiver))
         result=self.cell(plan,node)
         for kind in self.module_linker.module_choices(receiver):
-            value=self.module_linker.export_cell(kind,node.attr,node)
+            value=self.module_linker.export_cell(kind,node.attr,node,context=(plan,environment))
             self.namespace.contribute(result,value,node,force=True)
         return self.remember(plan,node,result)
 
@@ -255,7 +255,7 @@ class LinkedModel(Model):
                     if child.rpartition('.')[2]==binding.exported_name:
                         target=linker.modules[child]
                         if target.initializer is not None:self.activate_frame(plan,node,target.initializer,environment)
-                value=linker.export_cell(requested.kind,binding.exported_name,node)
+                value=linker.export_cell(requested.kind,binding.exported_name,node,context=(plan,environment))
             self.bind_name(plan,binding.node,value,environment)
             self.namespace.import_event(plan,binding.node,environment)
         return True
@@ -465,7 +465,12 @@ class LinkedEmitter(Emitter):
         value=self.fresh()
         result=(f"{{let {value}={owner.code}.borrow().value_{index}.clone();"
                 f"{value}.ok_or_else(||class_module_export_error(&{owner.code},{_string(name)},{_string(repr(name))},{str(importing).lower()}))}}")
-        return Expression(self.at(result,node),wanted)
+        loaded=self.at(result,node)
+        point=self.model.module_linker.export_points.get((self.plan.index,id(node),kind.number,name))
+        if point is not None:
+            from .native_class_globals import narrow_binding
+            return narrow_binding(self,node,wanted,shape(point),loaded)
+        return Expression(loaded,wanted)
 
     def import_module(self,module,node):
         from .native_class_calls import call

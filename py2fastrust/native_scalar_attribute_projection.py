@@ -22,8 +22,9 @@ def read(emitter,node):
     if type(receiver)is not InstanceType:return None
     stored=model.namespace.local_kind(emitter.plan,name)
     if stored is not None and stored!=receiver:return None
-    slot=emitter.slots.get((name,receiver))
-    if slot is None:return None
+    if(name,receiver)not in emitter.slots:return None
+    # The emitter's place accessor may address a movable owned frame field.
+    slot=emitter.slot(name,receiver)
     owner=model.classes[receiver.name]
     field=model.resolved_name(emitter.plan,node)
     if field not in owner.fields or field in owner.methods:return None

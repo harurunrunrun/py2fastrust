@@ -296,6 +296,7 @@ class ModuleLinker:
         self.alias_steps={}
         self.implicit_values={}
         self.implicit_members={}
+        self.export_points={}
         self.annotation_aliases={}
         self.model=None
 
@@ -326,7 +327,7 @@ class ModuleLinker:
                 if all(choice is not None for choice in choices):return self.model.cell_for_kind(union_type(*choices))
         return self.model.records.get((plan.index,id(node)))
 
-    def export_cell(self,kind,name,node,*,activate=True):
+    def export_cell(self,kind,name,node,*,activate=True,context=None):
         from .native_classes import Cell
         module=self.by_number[kind.number]
         if name in ANNOTATION_METADATA:
@@ -337,8 +338,11 @@ class ModuleLinker:
             raise ClassUnsupported(node,f"module metadata attribute {name!r} needs its Python import-spec/namespace object representation; that protocol is not implemented on the linked native path")
         if module.native_adapter and module.name=="sys"and name=="stdin":return Cell("stdin")
         key=self.unit.global_name(module.name,name)
-        if module.native_adapter and key not in self.model.namespace.incoming:
+        if module.native_adapter:
             self.seed_native_member(self.model.callable_cells,module,name)
+        if activate and module.native_adapter and module.name=='builtins':
+            from .native_builtin_namespace_points import require_replacement
+            require_replacement(self.model,module,name,node,context)
         hook=self.unit.global_name(module.name,'__getattr__')
         if hook in self.model.namespace.incoming and name not in {'__name__','__package__','__doc__','__file__'}:
             from .native_classes import ClassUnsupported
@@ -347,7 +351,16 @@ class ModuleLinker:
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,f"the canonical builtin module {module.name!r} needs a typed adapter for member {name!r}; that member's native value/call protocol is not implemented")
         if activate:self.model.namespace.active.add(key)
-        return self.model.namespace.refresh(key,node)
+        value=self.model.namespace.refresh(key,node)
+        if activate and module.native_adapter and module.name=='builtins'and context is not None:
+            from .native_builtin_namespace_points import replacement
+            point=replacement(self.model,context[0],node,module,name)
+            site=(context[0].index,id(node),module.number,name)
+            if point is not None:
+                self.export_points[site]=point
+                return point
+            self.export_points.pop(site,None)
+        return value
 
     @staticmethod
     def module_choices(value):
@@ -431,8 +444,8 @@ class ModuleLinker:
         if seed_alias(self,module,name):return
         from .native_module_calls import BuiltinRef
         from .references import BuiltinIdentity
-        from .native_class_builtins import SUPPORTED
-        if module.name=='builtins'and name in SUPPORTED:
+        from .native_builtin_identities import names as builtin_value_names
+        if module.name=='builtins'and name in builtin_value_names():
             from .native_classes import Cell
             identity=BuiltinIdentity(name)
             provider.builtin_used.add(identity)

@@ -2028,9 +2028,9 @@ owned scalar arguments, locals, and results; ordinary conditionals, builtin
 list/tuple/range iteration, and proved direct source calls are supported.
 Existing atomic statements retain their established lowering, including shared
 list inplace operations, fused input unpacking, annotations, and sorting.
-Classes, closures, escaped source callbacks, defaults, generators, cleanup
-protocols, and suspension inside assignment/loop targets retain their existing
-native calling convention. This is an upfront capability choice, not a retry
+Uncertified class protocols, closures, escaped source callbacks, defaults,
+generators, cleanup protocols, and suspension inside assignment/loop targets
+retain their existing native calling convention. This is an upfront capability choice, not a retry
 after failed conversion. The separate native type inference limit can still
 reject sufficiently long dependency chains before this calling convention is
 chosen. Try/exception-state and suspended-place normalization remain separate
@@ -2061,3 +2061,50 @@ Context-manager analysis defers unresolved manager and `__exit__` result kinds
 until their source producers have supplied type facts. An unknown exit result
 does not imply an exception-suppressing path or invent an implicit None return.
 Resolved suppressors retain the existing Python cleanup/control behavior.
+
+Shared source-call constraint analysis uses an explicit compiler transfer stack
+instead of one host-language call frame for each acyclic source dependency.
+Arguments, defaults, callbacks, caller allocation references and effect scopes
+retain their original depth-first analysis order. An analysis abort closes every
+suspended effect and iteration scope. This is compiler bookkeeping; generated
+programs receive no instruction interpreter or general value execution loop.
+Actual recursive source edges retain their conservative abstract summary, and
+the separate fixed-point convergence and loop-analysis policies are unchanged.
+This change does not alter the host recursion limit or Python's runtime logical
+recursion behavior.
+
+
+Plain source instance methods can also use typed continuation frames for self
+and mutual recursion, including exact instance parameters and results. The
+compiler's invocation producer ledger retains the original receiver before
+explicit argument evaluation. Existing shared instance handles preserve aliases;
+certified immutable value layouts keep their original identity and metadata.
+No borrowed receiver, owned-vector loan, or emitter-local reference crosses a
+frame transition. Atomic scalar/list field operations keep their established
+lookup, error, and mutation behavior.
+
+This initial class path requires flat builtin instance fields and canonical
+plain class/method bindings. Captured bound/class methods, linked class/function
+generations, source operator callbacks, suspension inside construction, source
+cleanup, and unproved object-representation/lifetime observers retain their
+existing native convention. Bounded constructors remain direct: their physical
+object result is distinct from the initializer's None result, and the internal
+initializer shares the constructor's logical call-depth entry. A Result entry
+still grants no additional no-suspension borrowing eligibility.
+
+Canonical builtin function values have typed identity carriers independently of
+whether their operation has an adapter. Linked builtin namespace reads preserve
+the actual current payload and defining module generation, including failed
+imports, retries, aliases and global-name fallback. A proved same-block store
+can narrow a subsequent builtin payload read; the physical namespace still
+retains every reaching alternative. Observing an unsupported original builtin
+operation produces a positioned capability diagnostic. Sealed one-argument
+builtin signatures can still raise their real binding errors.
+
+`round()` supports builtin integers and booleans with an integral or `None`
+`ndigits`, captured aliases, keywords, decimal ties-to-even, and the selected
+integer policy. Fixed-width results wrap and BigInt results are exact. Binary64
+rounding and user-defined `__round__`/`__index__` dispatch remain unsupported.
+Finite absent attributes of sealed builtin values raise `AttributeError`; such
+an error arm does not prevent a later inference pass from adding a source
+instance alternative.

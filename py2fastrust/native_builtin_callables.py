@@ -13,6 +13,12 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name=='round':
+        from .native_class_round import bind
+        return bind([None]*count,[(item.name,None)for item in keywords],None)[1]
+    from .native_builtin_identities import binding_error as canonical_binding_error
+    canonical_error=canonical_binding_error(name,count,keywords)
+    if canonical_error:return canonical_error
     if name=='sum':
         from .native_sum_binding import error
         return error(count,(item.name for item in keywords))

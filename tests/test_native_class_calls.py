@@ -77,7 +77,8 @@ print(Node(int(input())).total)
         self.exercise(source,("2\n","0\n"))
         result=transpile(source)
         self.assertTrue(result.success,result.diagnostics)
-        self.assertIn("Box::pin",result.rust_source)
+        self.assertNotIn("Box::pin",result.rust_source)
+        self.assertIn("Vec<ClassNativeContinuation>",result.rust_source)
         self.assertIn("class_sync_call",result.rust_source)
 
     def test_low_recursion_limit_still_prevents_direct_callee_effects(self):
