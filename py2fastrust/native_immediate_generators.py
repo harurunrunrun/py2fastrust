@@ -158,7 +158,7 @@ class Generators:
     def consume(self,emitter,node,name,value,arguments,keywords,wanted,*,append_item=None):
         from .native_classes import Expression,shape
         from .native_class_comprehensions import Collector,_Iterator,emit
-        from .native_class_calls import synchronous
+        from .native_class_calls import entry_result
         from .native_generator_effects import ensure_protocol
         ensure_protocol(self.model,value.kind.record.node)
         record=value.kind.record;record.consumed=True
@@ -214,7 +214,7 @@ class Generators:
             first=_Iterator('',pulled.kind,pulled.code)
             body=emit(emitter,record.node,collector=Collector(initialize,append,finish),first=first,wanted=wanted).code
         result=emitter.fresh();guard=emitter.fresh()
-        invoke=('(||{Ok::<'+emitter.rust_type(wanted)+',NativeError>('+body+')})()'if synchronous(self.model,emitter.plan)
+        invoke=('(||{Ok::<'+emitter.rust_type(wanted)+',NativeError>('+body+')})()'if entry_result(self.model,emitter.plan)
                 else '(async{Ok::<'+emitter.rust_type(wanted)+',NativeError>('+body+')}).await')
         stop=(f'error=class_exception_generator_stop(error,{node.lineno},{caller_location});'if self.model.exceptions.used else
               f'error=NativeError{{message:"RuntimeError: generator raised StopIteration".to_owned(),line:{node.lineno},function:{caller_location},frames:Vec::new()}};')

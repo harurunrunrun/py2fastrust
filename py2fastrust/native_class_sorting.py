@@ -206,8 +206,8 @@ def emit_builtin(emitter,node,arguments,keywords,wanted):
     body=(materialize+
         ( _error(emitter,node,site.error,'none')+';'if site.error else'')+f'let {direction}={emitter.truth(reverse)};'+
         _sort(emitter,node,values,element,direction,key,site)+f'Ok(class_list({values}))')
-    from .native_class_calls import synchronous
-    if synchronous(emitter.model,emitter.plan):code='( ||->Result<'+emitter.rust_type(ListType(element))+',NativeError>{'+body+'})()?'
+    from .native_class_calls import entry_result
+    if entry_result(emitter.model,emitter.plan):code='( ||->Result<'+emitter.rust_type(ListType(element))+',NativeError>{'+body+'})()?'
     else:code='(async{'+body+'}).await?'
     return emitter.encoded(code,ListType(element),wanted,node)
 
@@ -229,12 +229,12 @@ def emit_method(emitter,node):
     element=shape(site.element)
     # No RefCell borrow spans a user callback. The detached vector is restored
     # after both key failure and successful sorting before propagating errors.
-    from .native_class_calls import synchronous
+    from .native_class_calls import entry_result
     operation=_sort(emitter,node,values,element,direction,key,site)+'Ok::<(),NativeError>(())'
-    operation=('(||->Result<(),NativeError>{'+operation+'})()'if synchronous(emitter.model,emitter.plan)else'(async{'+operation+'}).await')
+    operation=('(||->Result<(),NativeError>{'+operation+'})()'if entry_result(emitter.model,emitter.plan)else'(async{'+operation+'}).await')
     body=(f'let {direction}={emitter.truth(reverse)};let mut {values}=std::mem::take(&mut *{receiver.code}.borrow_mut());'
         f'let {result}='+operation+';'
         f'let {modified}={receiver.code}.borrow().capacity()!=0;*{receiver.code}.borrow_mut()={values};'
         f'{result}?;if {modified}{{'+_error(emitter,node,'ValueError: list modified during sort','none')+';}Ok(())')
-    operation=('(||->Result<(),NativeError>{'+body+'})()?'if synchronous(emitter.model,emitter.plan)else'(async{'+body+'}).await?')
+    operation=('(||->Result<(),NativeError>{'+body+'})()?'if entry_result(emitter.model,emitter.plan)else'(async{'+body+'}).await?')
     return Expression('{'+setup+operation+'}','none')

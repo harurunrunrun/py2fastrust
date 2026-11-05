@@ -2013,3 +2013,25 @@ metadata snapshot before its value is moved into the call. Mutable builtins or
 class bindings, unbound or retained method entries, externally called factories
 and unproved publication paths keep their existing native binding/context code.
 This proof changes neither semantic class identity nor backend selection.
+
+Closed ordinary recursive source functions and long acyclic source call chains
+can use source-specific typed heap continuation frames. Each frame contains the
+original function's concrete Rust locals and captured intermediate values; a
+compiled control-flow match resumes the original source blocks. This path emits
+no boxed futures, polling scheduler, universal value carrier, or instruction
+interpreter. Python's current recursion limit and source exception frames remain
+part of every logical call, including tail calls. A Result-returning entry point
+does not imply that its source body is eligible for no-suspension borrowing.
+
+The initial continuation certificate covers closed top-level functions with
+owned scalar arguments, locals, and results; ordinary conditionals, builtin
+list/tuple/range iteration, and proved direct source calls are supported.
+Existing atomic statements retain their established lowering, including shared
+list inplace operations, fused input unpacking, annotations, and sorting.
+Classes, closures, escaped source callbacks, defaults, generators, cleanup
+protocols, and suspension inside assignment/loop targets retain their existing
+native calling convention. This is an upfront capability choice, not a retry
+after failed conversion. The separate native type inference limit can still
+reject sufficiently long dependency chains before this calling convention is
+chosen. Try/exception-state and suspended-place normalization remain separate
+prerequisites for extending this path.

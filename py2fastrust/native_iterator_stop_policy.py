@@ -3,9 +3,9 @@ from contextlib import contextmanager
 
 
 def result(emitter,value):
-    from .native_class_calls import synchronous
+    from .native_class_calls import entry_result
     code='Ok::<Option<'+emitter.rust_type(value.kind)+'>,NativeError>('+value.code+')'
-    return ('(||{'+code+'})()'if synchronous(emitter.model,emitter.plan)else'(async{'+code+'}).await')
+    return ('(||{'+code+'})()'if entry_result(emitter.model,emitter.plan)else'(async{'+code+'}).await')
 
 
 @contextmanager
@@ -39,11 +39,11 @@ def boundary(emitter,node,value,marker,*,clear,owner):
 
 
 def callback_call(emitter,invocation,callee,node):
-    from .native_class_calls import synchronous
+    from .native_class_calls import entry_result
     marker=emitter.iterator_callback_context
     entered,value,error,called=(emitter.fresh()for _ in range(4))
     prefix=''
-    if synchronous(emitter.model,callee):
+    if entry_result(emitter.model,callee):
         prefix='let mut '+entered+'=false;'
         call='class_sync_call(&class_scope,||{'+entered+'=true;'+invocation+'},'+str(node.lineno)+','+emitter.location_code()+')'
         entered_code=entered

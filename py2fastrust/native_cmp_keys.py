@@ -98,14 +98,14 @@ def sort(emitter,node,values,element,reverse,key,site):
     from .native import _string
     from .native_classes import Expression,shape
     from .native_aot_callables import emit_values
-    from .native_class_calls import synchronous
+    from .native_class_calls import entry_result
     record=site.comparators[key.kind]
     first,second,result,order,error=(emitter.fresh()for _ in range(5))
     callback=Expression('('+key.code+').callback.clone()',shape(key.kind.record.callback))
     value=emit_values(emitter,node,record,callback,
         [Expression(values+'['+first+'].clone()',element),Expression(values+'['+second+'].clone()',element)],[],shape(record.result))
     comparison='let '+result+'='+value.code+';Ok::<bool,NativeError>('+_negative(emitter,node,Expression(result,value.kind))+')'
-    asynchronous=not synchronous(emitter.model,emitter.plan)
+    asynchronous=not entry_result(emitter.model,emitter.plan)
     modes=getattr(emitter.model,'cmp_sort_modes',None)
     if modes is None:modes=set();emitter.model.cmp_sort_modes=modes
     modes.add(asynchronous)

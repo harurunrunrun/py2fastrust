@@ -2795,6 +2795,9 @@ class Emitter:
         return "\n".join(data+references)
 
     def generate(self):
+        from .native_typed_continuations import generate as generate_continuation
+        continuation=generate_continuation(self)
+        if continuation is not None:return continuation
         if isinstance(self.plan.node,ast.Lambda):
             value=self.expression(self.plan.node.body)
             body="return Ok("+self.coerce(value,shape(self.plan.result),self.plan.node.body)+");"
@@ -2820,8 +2823,8 @@ class Emitter:
         lexical_initial=self.model.lexical.initialize(self)
         from .native_class_binding_contexts import parameter as class_context_parameter
         signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+class_context_parameter(self.model,self.plan)+(" ,"+",".join(parameters)if parameters else"")
-        from .native_class_calls import synchronous
-        if synchronous(self.model,self.plan):
+        from .native_class_calls import entry_result
+        if entry_result(self.model,self.plan):
             return (f"fn {self.function_name(self.plan)}({signature})->ClassResult<{result}>{{\n"
                     "use std::fmt::Write as _;\n"+(lexical_initial+"\n"if lexical_initial else"")+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n}")
         return (f"fn {self.function_name(self.plan)}({signature})->ClassFuture<{result}>{{Box::pin(async move{{\n"
@@ -3017,8 +3020,13 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_scalar_constants(model)
         from .native_constant_field_projection import prepare as prepare_constant_projection
         prepare_constant_projection(model)
+        from .native_typed_continuations import prepare as prepare_continuations
+        prepare_continuations(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
+        from .native_typed_continuations import runtime as continuation_runtime
+        continuation_support=continuation_runtime(model)
+        if continuation_support:bodies.append(continuation_support)
         layouts=_class_layouts(model,emitters[0])
         layouts=model.iterators.runtime(emitters[0])+"\n"+layouts
         layouts=model.mappings.runtime(emitters[0])+"\n"+layouts
@@ -3130,7 +3138,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)
-    entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if synchronous(model,model.module)
+    from .native_class_calls import entry_result
+    entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if entry_result(model,model.module)
            else "let result=class_execute(scope.clone(),class_function_0(scope.clone()));")
     pieces.append("fn main(){use std::io::Write as _;let scope=ClassScope::new();"+entry+"\n"
                   "std::io::stdout().write_all(scope.io.borrow().output.as_bytes()).unwrap();\n"
