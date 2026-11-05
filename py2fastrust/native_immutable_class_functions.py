@@ -53,4 +53,5 @@ def emit(registry,emitter,node,reference,member,stored):
     from .native_classes import Expression
     # The captured class carries the module of this actual successful class
     # execution, including saved class aliases and failed-import retries.
-    return Expression(f'ClassFunctionRef::F{number}(({reference.code}).module.clone())',stored)
+    from .native_callable_carriers import construct
+    return Expression(construct(registry.model.callable_cells,number,'('+reference.code+').module.clone()'),stored)

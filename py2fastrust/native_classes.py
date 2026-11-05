@@ -1586,7 +1586,9 @@ class Emitter:
         if getattr(value,"_native_class_mapping",False):return self.model.mappings.rust_type(value)
         if getattr(value,"_native_class_generator",False):return f"ClassIterator_{value.record.outer.index}"
         if getattr(value,"_native_class_iterator",False):return f"ClassIterator_{value.index}"
-        if getattr(value,"_native_function_reference",False):return "ClassFunctionRef"
+        if getattr(value,"_native_function_reference",False):
+            from .native_callable_carriers import rust_type
+            return rust_type(self.model,value)
         if getattr(value,"_native_namespace_view",False):return "ClassGlobalsView"
         if isinstance(value,InstanceType):return f"ClassHandle_{self.model.classes[value.name].index}"
         if isinstance(value,ListType):return f"ClassList<{recurse(value.element)}>"
@@ -1636,8 +1638,8 @@ class Emitter:
         if value.kind == kind:return value.code
         if isinstance(value.kind,EmptyType):return f"native_empty({value.code})"
         if getattr(value.kind,"_native_function_reference",False)and getattr(kind,"_native_function_reference",False):
-            if set(value.kind.targets)<=set(kind.targets):return value.code
-            raise ClassUnsupported(node,"this function reference has targets outside the solved receiving family",types=(("value",value.kind),("destination",kind)),proof="finite callable family inclusion")
+            from .native_callable_carriers import convert
+            return convert(self,node,value.kind,kind,value.code)
         if union_kind(value.kind):
             return project(value.kind,value.code,
                 lambda source,code:self.coerce(Expression(f"({code}).clone()",source),kind,node))
@@ -2044,7 +2046,9 @@ class Emitter:
         if sequence_result is not None:return sequence_result
         a,b = domain(left.kind),domain(right.kind)
         if isinstance(operator,(ast.Is,ast.IsNot)):
-            if a==b=="function":code=self.model.callable_cells.identity(left.code,right.code)
+            if a==b=="function":
+                from .native_callable_carriers import comparison
+                code=comparison(self,left,right,identity=True)
             elif a==b and a in {"object","list","iterator","dict_view","cmp_key"}:
                 from .native_value_classes import identity_equal
                 code = (identity_equal(self.model,left.kind,left.code,right.code)if left.kind==right.kind else"false")
@@ -2064,7 +2068,9 @@ class Emitter:
         shared_result=shared_comparison(self,operator,left,right,node)
         if shared_result is not None:return shared_result
         if a==b=="function"and isinstance(operator,(ast.Eq,ast.NotEq)):
-            return f"{left.code}{'!='if isinstance(operator,ast.NotEq)else'=='}{right.code}"
+            from .native_callable_carriers import comparison
+            code=comparison(self,left,right)
+            return '!('+code+')'if isinstance(operator,ast.NotEq)else code
         if not isinstance(operator,(ast.In,ast.NotIn))and(isinstance(left.kind,TupleType)or isinstance(right.kind,TupleType)):
             from .native_tuples import tuple_compare,_scalar
             if not _scalar(left.kind)or not _scalar(right.kind):raise ClassUnsupported(node)

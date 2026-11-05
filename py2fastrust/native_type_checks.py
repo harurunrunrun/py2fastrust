@@ -79,13 +79,16 @@ def emit(emitter, node, arguments):
                 return 'Rc::ptr_eq(&('+candidate.code+').borrow().class_definition,&('+classes.code+'))'
             return source_match(value)
         if function_kind(classes.kind):
-            arms = [f'{variant(identity)}=>{builtin_match(value, identity.name)}'
-                    for identity in classes.kind.builtins if identity.name in TYPE_NAMES]
-            for identity in classes.kind.members:
-                adapter=emitter.model.callable_cells.member_adapters.get(identity.module)
-                if adapter is not None and identity.name in getattr(adapter,'TYPES',()):
-                    arms.append(f'{variant(identity)}=>'+adapter.match_type(emitter,node,value,identity.name))
-            return 'match ' + classes.code + '{' + ','.join(arms + ['_=>' + invalid()]) + '}'
+            from .native_callable_carriers import dispatch
+            from .references import BuiltinIdentity
+            from .native_module_calls import BuiltinRef
+            def choose(identity,payload):
+                if isinstance(identity,BuiltinIdentity)and identity.name in TYPE_NAMES:return builtin_match(value,identity.name)
+                if isinstance(identity,BuiltinRef):
+                    adapter=emitter.model.callable_cells.member_adapters.get(identity.module)
+                    if adapter is not None and identity.name in getattr(adapter,'TYPES',()):return adapter.match_type(emitter,node,value,identity.name)
+                return invalid()
+            return dispatch(emitter,classes.kind,classes.code,choose)
         return invalid()
 
     return Expression(check(classes), 'bool')

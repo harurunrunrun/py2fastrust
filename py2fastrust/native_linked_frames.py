@@ -55,21 +55,22 @@ class LinkedCallableCells(CallableCells):
         return super().candidate(plan,node,environment)
 
     def reference_code(self,emitter,plan):
-        return f"ClassFunctionRef::F{self.definition(plan)}({self.model.module_linker.capture_context(emitter)})"
+        from .native_callable_carriers import construct
+        return construct(self,self.definition(plan),self.model.module_linker.capture_context(emitter))
 
     def lambda_reference_code(self,emitter,plan,instance):
-        return f"ClassFunctionRef::F{self.definition(plan)}({instance},{self.model.module_linker.capture_context(emitter)})"
+        from .native_callable_carriers import construct
+        return construct(self,self.definition(plan),instance,self.model.module_linker.capture_context(emitter))
 
-    def call_pattern(self,definition):
-        lexical="class_selected_environment,"if self.model.lexical.parent_scope(self.plans[definition])or isinstance(self.plans[definition].node,ast.Lambda)else""
-        return f"ClassFunctionRef::F{definition}({lexical}class_defining_module)"
+    def call_pattern(self,definition,kind=None):return super().call_pattern(definition,kind)
 
-    def reference_pattern(self,definition):return f"ClassFunctionRef::F{definition}(..)"
+    def reference_pattern(self,definition,kind=None):return super().reference_pattern(definition,kind)
 
     def lexical_reference_code(self,emitter,plan,owner):
         from .native_function_instances import instanced,reference
-        if instanced(self.model.lexical,plan):return f'ClassFunctionRef::F{self.definition(plan)}('+reference(self.model.lexical,emitter,plan,owner)+','+self.model.module_linker.capture_context(emitter)+')'
-        return f"ClassFunctionRef::F{self.definition(plan)}(({owner}).clone(),{self.model.module_linker.capture_context(emitter)})"
+        from .native_callable_carriers import construct
+        environment=reference(self.model.lexical,emitter,plan,owner)if instanced(self.model.lexical,plan)else'('+owner+').clone()'
+        return construct(self,self.definition(plan),environment,self.model.module_linker.capture_context(emitter))
 
     def call_context_setup(self,emitter,target):
         from .native_call_context_effects import incoming_module
@@ -82,35 +83,8 @@ class LinkedCallableCells(CallableCells):
         return linked_layout(self,definition)
 
     def runtime(self):
-        definitions=sorted(self.used)
-        if not definitions and not self.builtin_used and not self.member_used and not self.bound_methods.used:return ""
-        bound_declarations,bound_variants,bound_equals,bound_identity=self.bound_methods.runtime_parts()
-        variants=[];arms=[]
-        for value in definitions:
-            parent=self.model.lexical.parent_scope(self.plans[value])
-            if isinstance(self.plans[value].node,ast.Lambda):
-                variants.append(f"F{value}(Rc<{self.model.lambda_cells.payload_type(self.plans[value])}>,ClassModuleRef)")
-                arms.append(f"(Self::F{value}(a,m),Self::F{value}(b,n))=>Rc::ptr_eq(a,b)&&Rc::ptr_eq(m,n)")
-            elif parent:
-                from .native_function_instances import instanced,reference_type
-                if instanced(self.model.lexical,self.plans[value]):
-                    variants.append(f'F{value}('+reference_type(self.model.lexical,self.plans[value])+',ClassModuleRef)')
-                    arms.append(f'(Self::F{value}(a,m),Self::F{value}(b,n))=>Rc::ptr_eq(&a.data,&b.data)&&Rc::ptr_eq(&a.environment,&b.environment)&&Rc::ptr_eq(m,n)')
-                else:
-                    variants.append(f"F{value}(Rc<{self.model.lexical.environment_type(parent)}>,ClassModuleRef)")
-                    arms.append(f"(Self::F{value}(a,m),Self::F{value}(b,n))=>Rc::ptr_eq(a,b)&&Rc::ptr_eq(m,n)")
-            else:
-                variants.append(f"F{value}(ClassModuleRef)")
-                arms.append(f"(Self::F{value}(a),Self::F{value}(b))=>Rc::ptr_eq(a,b)")
-        native_variants=["B_"+identity.name for identity in sorted(self.builtin_used,key=lambda item:item.name)]+["M_"+identity.module+"_"+identity.name for identity in sorted(self.member_used,key=lambda item:(item.module,item.name))]
-        variants.extend(bound_variants)
-        arms.extend(bound_equals)
-        variants.extend(native_variants)
-        arms.extend(f"(Self::{name},Self::{name})=>true"for name in native_variants)
-        return (bound_declarations+"\n#[derive(Clone)]\nenum ClassFunctionRef{"+
-                ",".join(variants)+"}\n"
-                "impl PartialEq for ClassFunctionRef{fn eq(&self,other:&Self)->bool{match(self,other){"+','.join(arms)+",_=>false}}}\n"+bound_identity)
-
+        from .native_callable_carriers import runtime
+        return runtime(self.model)
 
 class LinkedModel(Model):
     def __init__(self,linked,filename,integer,string_mode):

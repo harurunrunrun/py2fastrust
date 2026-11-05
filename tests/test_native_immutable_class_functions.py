@@ -191,7 +191,8 @@ class ImmutableClassFunctionProofs(unittest.TestCase):
      result,calls=self.compile(name,mode)
      self.assertTrue(calls)
      for member,code in calls:
-      self.assertIn('ClassFunctionRef::F',code)
+      self.assertIn('ClassCallablePayload_F',code)
+      self.assertNotIn('ClassFunctionRef',code)
       self.assertIn('.module.clone()',code)
       self.assertNotIn('.borrow()',code)
       self.assertNotIn('class_scope.globals',code)

@@ -301,16 +301,14 @@ class ExpandedCalls:
                 self._function_string(emitter, node, Expression(code, kind)))
         if not function_kind(value.kind):return emitter.show(value, node)
         provider = self.model.callable_cells
-        arms = []
-        for definition in value.kind.definitions:
-            target = provider.plans[definition]
-            arms.append(provider.reference_pattern(definition) + "=>" + _string(target.module_name + "." + _function_name(target)))
-        for method in value.kind.methods:
-            target = provider.plans[method.definition]
-            arms.append(provider.bound_methods.reference_pattern(method) + "=>" + _string(target.module_name + "." + _function_name(target)))
-        for identity in value.kind.builtins:arms.append(variant(identity) + "=>" + _string(identity.name + "()"))
-        arms.append('_=>unreachable!("expanded callable contradicts finite proof")')
-        return "match " + value.code + "{" + ",".join(arms) + "}"
+        from .native_callable_carriers import dispatch
+        from .native_bound_methods import BoundMethodTarget
+        def name(identity,payload):
+            if isinstance(identity,(int,BoundMethodTarget)):
+                target=provider.plans[identity if isinstance(identity,int)else identity.definition]
+                return _string(target.module_name+'.'+_function_name(target))
+            return _string(identity.name+'()')
+        return dispatch(emitter,value.kind,value.code,name,borrow=True)
 
     def _materialize(self, emitter, node, site, part, source, callee, vector, element):
         from .native_classes import Expression
@@ -370,28 +368,21 @@ class ExpandedCalls:
                 self._dispatch(emitter, node, site, Expression(code, kind), vector, element, keywords, wanted))
         if function_kind(callee.kind):
             provider = self.model.callable_cells
-            arms = []
-            for definition in callee.kind.definitions:
-                record = site.targets[definition]
-                code = self._emit_target(emitter, node, record, vector, element, keywords, wanted)
-                context = provider.call_context_setup(emitter, record.plan)
-                if context:code = "{" + context + code + "}"
-                arms.append(provider.call_pattern(definition) + "=>" + code)
-            for method in callee.kind.methods:
-                record = site.targets[method]
-                code = self._emit_target(emitter, node, record, vector, element, keywords, wanted)
-                from .native_class_descriptors import ClassMethodTarget,wrap_expanded
-                if isinstance(method,ClassMethodTarget):code=wrap_expanded(provider,emitter,method,code)
-                elif hasattr(self.model, "module_linker"):
-                    code = "{" + self.model.module_linker.call_context(emitter, "class_selected_method.module.clone()") + code + "}"
-                arms.append(provider.bound_methods.call_pattern(method) + "=>" + code)
-            for identity in callee.kind.builtins:
-                if site.builtin_errors.get(identity):
-                    code = self._error(emitter, node, wanted, _string(site.builtin_errors[identity]) + ".to_owned()")
-                else:code = self._print(emitter, node, vector, element, dict(keywords), wanted)
-                arms.append(variant(identity) + "=>" + code)
-            arms.append('_=>unreachable!("expanded callable contradicts finite target proof")')
-            return "match " + callee.code + "{" + ",".join(arms) + "}"
+            from .native_callable_carriers import dispatch,bind_payload
+            from .native_bound_methods import BoundMethodTarget
+            def invoke(identity,payload):
+                if isinstance(identity,(int,BoundMethodTarget)):
+                    record=site.targets[identity]
+                    code=self._emit_target(emitter,node,record,vector,element,keywords,wanted)
+                    if isinstance(identity,int):context=provider.call_context_setup(emitter,record.plan)
+                    else:
+                        from .native_class_descriptors import ClassMethodTarget,wrap_expanded
+                        if isinstance(identity,ClassMethodTarget):return '{'+bind_payload(provider,identity,payload)+wrap_expanded(provider,emitter,identity,code)+'}'
+                        context=self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')if hasattr(self.model,'module_linker')else''
+                    return '{'+bind_payload(provider,identity,payload)+context+code+'}'
+                if site.builtin_errors.get(identity):return self._error(emitter,node,wanted,_string(site.builtin_errors[identity])+'.to_owned()')
+                return self._print(emitter,node,vector,element,dict(keywords),wanted)
+            return dispatch(emitter,callee.kind,callee.code,invoke)
         from .native_class_builtins import _type_name
         name = _type_name(emitter, callee, node)
         return self._error(emitter, node, wanted, f'format!("TypeError: \'{{}}\' object is not callable",{name})')

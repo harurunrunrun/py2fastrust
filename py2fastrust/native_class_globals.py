@@ -447,9 +447,8 @@ def narrow_binding(emitter,node,stored,wanted,loaded):
     def narrow(kind,code):
         if kind==wanted:return code
         if getattr(kind,"_native_function_reference",False)and getattr(wanted,"_native_function_reference",False):
-            if set(kind.targets)<=set(wanted.targets):return code
-            cases="|".join(emitter.model.callable_cells.target_pattern(target)for target in wanted.targets)
-            return f'match {code}{{value@({cases})=>value,_=>unreachable!("local callable contradicts solved control flow")}}'
+            from .native_callable_carriers import convert
+            return convert(emitter,node,kind,wanted,code,narrow=True)
         if union_kind(kind):
             return project(kind,code,lambda branch,value:narrow(branch,f"({value}).clone()"))
         if kind in alternatives(wanted)or wanted=="int_bool"and kind in {"int","bool"}:

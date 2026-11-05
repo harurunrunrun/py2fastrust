@@ -63,7 +63,7 @@ class NativeClassIdentityDemandTests(unittest.TestCase):
             self.assertNotIn('class_value_identity',result.rust_source)
             self.assertIn('class_definition:',result.rust_source)
             self.assertIn('ClassClassRef',result.rust_source)
-            self.assertIn('Rc::ptr_eq(&left.receiver,&right.receiver)',result.rust_source)
+            self.assertIn('Rc::ptr_eq(&left.bound.receiver,&right.bound.receiver)',result.rust_source)
 
     def test_no_pruning_does_not_restore_identity_storage(self):
         for mode in ('i64','i128','bigint'):

@@ -14,8 +14,9 @@ class Layout:
         return 'ClassModuleRef'if self.environment_type is None else '('+self.environment_type+',ClassModuleRef)'
 
     def borrowed_pattern(self):
-        fields='class_payload_module'if self.environment_type is None else'class_payload_environment,class_payload_module'
-        return f'ClassFunctionRef::F{self.definition}('+fields+')'
+        from .native_callable_carriers import payload_type
+        fields='module:class_payload_module'if self.environment_type is None else'environment:class_payload_environment,module:class_payload_module'
+        return payload_type(self.definition)+'{'+fields+'}'
 
     def cloned(self):
         if self.environment_type is None:return 'class_payload_module.clone()'
@@ -127,10 +128,11 @@ def runtime(model):
         assert slot==model.namespace.index(request.name)
         layout=request.layout
         message=_string("NameError: name '"+model.display_name(request.name)+"' is not defined")
+        captured='class_payload_value.module.clone()'
+        if layout.environment_type is not None:captured='(class_payload_value.environment.clone(),'+captured+')'
         code=(f'fn class_global_payload_{slot}_{definition}(scope:&ClassScope)->Result<{layout.rust_type},String>{{'
               f'let class_payload_globals=scope.globals.borrow();'
               f'let class_payload_value=class_payload_globals.value_{slot}.as_ref().ok_or_else(||{message}.to_owned())?;'
-              'Ok(match class_payload_value{'+layout.borrowed_pattern()+'=>'+layout.cloned()+','
-              '_=>unreachable!("callable binding contradicts finite target proof")})}')
+              'Ok('+captured+')}')
         declarations.append(code)
     return '\n'.join(declarations)

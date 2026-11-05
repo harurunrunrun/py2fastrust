@@ -75,7 +75,9 @@ def emit_member(registry,emitter,node,member,class_reference,function):
     fields='receiver:('+class_reference.code+').clone(),function:('+function.code+').clone()'
     from .native_immediate_classmethod import stack_payload
     code=stack_payload(emitter,node,target,fields)
-    if code is None:code='ClassFunctionRef::D'+str(target.definition)+'(std::rc::Rc::new(ClassBoundMethod'+str(target.definition)+'{'+fields+'}))'
+    if code is None:
+        from .native_callable_carriers import construct
+        code=construct(registry.model.callable_cells,target,'std::rc::Rc::new(ClassBoundMethod'+str(target.definition)+'{'+fields+'})')
     return Expression(code,AotFunctionType.from_targets((target,)))
 
 
@@ -89,16 +91,8 @@ def emit_bound(provider,emitter,node,target,site,positional,keywords,wanted,erro
     return emit_values(emitter,node,nested,callee,[receiver]+positional,keywords,wanted,source_call_location=source_call_location).code
 
 
-def runtime_bound(target):
-    tag='D'+str(target.definition)
-    declaration='struct ClassBoundMethod'+str(target.definition)+'{receiver:ClassClassRef,function:ClassFunctionRef}'
-    variant=tag+'(std::rc::Rc<ClassBoundMethod'+str(target.definition)+'>)'
-    equal='(Self::'+tag+'(left),Self::'+tag+'(right))=>std::rc::Rc::ptr_eq(&left.receiver,&right.receiver)&&left.function==right.function'
-    identical='(Self::'+tag+'(left),Self::'+tag+'(right))=>std::rc::Rc::ptr_eq(left,right)'
-    return declaration,variant,equal,identical
-
-
 def wrap_expanded(provider,emitter,target,code):
     method=provider.plans[target.definition]
     context=provider.call_context_setup(emitter,method)
-    return 'match class_selected_method.function.clone(){'+provider.call_pattern(target.definition)+'=>{'+context+code+'},_=>unreachable!("retained classmethod function identity")} '
+    from .native_callable_carriers import bind_payload
+    return '{'+bind_payload(provider,target.definition,'class_selected_method.function.clone()')+context+code+'}'

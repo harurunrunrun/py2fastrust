@@ -164,7 +164,8 @@ class Registry:
             if kind.definitions or kind.methods or kind.members or any(identity.name not in self.BUILTIN_TYPES for identity in kind.builtins):
                 if not self.model.final:return []
                 self.fail(node,'type parameters containing arbitrary callables need their metadata hash/equality protocol')
-            return [(getattr(builtins,identity.name),lambda code,name=identity.name:f'matches!(&({code}),ClassFunctionRef::B_{name})')for identity in kind.builtins]
+            from .native_callable_carriers import test_target
+            return [(getattr(builtins,identity.name),lambda code,target=identity:test_target(kind,code,target))for identity in kind.builtins]
         if isinstance(kind,TupleType):
             nodes=node.elts if isinstance(node,ast.Tuple)else[None]*len(kind.fields)
             members=[self.choices(part,child,plan)for part,child in zip(kind.fields,nodes)]

@@ -27,7 +27,6 @@ class FiniteMethodRead:
 def is_bound_target(target):return isinstance(target,BoundMethodTarget)
 
 
-def variant(target):return 'ClassFunctionRef::D'+str(target.definition)
 
 
 class BoundMethods:
@@ -130,7 +129,8 @@ class BoundMethods:
             context=emitter.fresh()
             setup+='let '+context+'='+receiver.code+'.borrow().class_definition.module.clone();'
             fields+=',module:'+context
-        code=variant(target)+'(std::rc::Rc::new(ClassBoundMethod'+str(target.definition)+'{'+fields+'}))'
+        from .native_callable_carriers import construct
+        code=construct(self.provider,target,'std::rc::Rc::new(ClassBoundMethod'+str(target.definition)+'{'+fields+'})')
         return Expression('{'+setup+code+'}',AotFunctionType.from_targets((target,)))
 
     @staticmethod
@@ -172,28 +172,12 @@ class BoundMethods:
         if self.linked:result='{'+self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')+result+'}'
         return result
 
-    def reference_pattern(self,target):return variant(target)+'(..)'
+    def reference_pattern(self,target,kind=None):
+        from .native_aot_callables import AotFunctionType
+        from .native_callable_carriers import pattern
+        return pattern(self.provider,target,kind or AotFunctionType.from_targets((target,)))
 
-    def call_pattern(self,target):return variant(target)+'(class_selected_method)'
-
-    def runtime_parts(self):
-        declarations=[];variants=[];equals=[];identical=[]
-        for target in sorted(self.used,key=lambda value:value.definition):
-            from .native_class_descriptors import ClassMethodTarget,runtime_bound
-            if isinstance(target,ClassMethodTarget):
-                declaration,variant,equal,identity=runtime_bound(target)
-                declarations.append(declaration);variants.append(variant);equals.append(equal);identical.append(identity)
-                continue
-            owner=self.model.classes[target.owner]
-            tag='D'+str(target.definition)
-            fields='receiver:ClassHandle_'+str(owner.index)
-            if self.linked:fields+=',module:ClassModuleRef'
-            declarations.append('struct ClassBoundMethod'+str(target.definition)+'{'+fields+'}')
-            variants.append(tag+'(std::rc::Rc<ClassBoundMethod'+str(target.definition)+'>)')
-            from .native_value_classes import identity_equal
-            from .native_classes import InstanceType
-            equal=identity_equal(self.model,InstanceType(target.owner),'left.receiver','right.receiver')
-            equals.append('(Self::'+tag+'(left),Self::'+tag+'(right))=>'+equal)
-            identical.append('(Self::'+tag+'(left),Self::'+tag+'(right))=>std::rc::Rc::ptr_eq(left,right)')
-        identity=('impl ClassFunctionRef{fn class_same_identity(&self,other:&Self)->bool{match(self,other){'+','.join(identical)+',_=>self==other}}}')if identical else''
-        return '\n'.join(declarations),variants,equals,identity
+    def call_pattern(self,target,kind=None):
+        from .native_aot_callables import AotFunctionType
+        from .native_callable_carriers import pattern
+        return pattern(self.provider,target,kind or AotFunctionType.from_targets((target,)),call=True)

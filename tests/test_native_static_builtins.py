@@ -91,7 +91,8 @@ class StaticBuiltinExecutionTests(unittest.TestCase):
                         compiled=self.harness.compile(source,mode,release=optimize,prune=optimize)
                         actual=subprocess.run([str(compiled[1])],capture_output=True,text=True,timeout=10)
                         self.assertEqual((actual.returncode,actual.stdout),(expected.returncode,expected.stdout),actual.stderr)
-                        self.assertIn("ClassFunctionRef",compiled[2])
+                        self.assertIn("ClassCallablePayload_B_"+identity,compiled[2])
+                        self.assertNotIn("ClassFunctionRef",compiled[2])
                         if expected.returncode:
                             self.assertEqual(actual.stderr.splitlines()[-1],expected.stderr.splitlines()[-1])
 

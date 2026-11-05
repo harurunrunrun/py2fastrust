@@ -243,19 +243,18 @@ def _type_name(emitter,value,node):
     if tag=="tuple_sequence":return '"tuple"'
     if tag=='dict_view':return _string('dict_'+value.kind.record.mode)
     if tag=="function":
-        from .native_aot_callables import variant
-        arms=[f'{emitter.model.callable_cells.reference_pattern(definition)}=>"function"'for definition in value.kind.definitions]
-        arms.extend(f'{emitter.model.callable_cells.bound_methods.reference_pattern(target)}=>"method"'for target in value.kind.methods)
-        for identity in value.kind.builtins:
-            from .native_type_checks import TYPE_NAMES
-            name="Quitter"if identity.name in {'exit','quit'}else"type"if identity.name in TYPE_NAMES else"builtin_function_or_method"
-            arms.append(f'{variant(identity)}=>{_string(name)}')
-        for identity in value.kind.members:
-            adapter=emitter.model.callable_cells.member_adapters.get(identity.module)
-            name="type"if adapter is not None and identity.name in getattr(adapter,"TYPES",())else"builtin_function_or_method"
-            arms.append(f'{variant(identity)}=>{_string(name)}')
-        arms.append('_=>unreachable!("callable type contradicts finite family")')
-        return f'match {value.code}{{'+','.join(arms)+'}'
+        from .native_callable_carriers import dispatch
+        from .native_bound_methods import BoundMethodTarget
+        from .references import BuiltinIdentity
+        from .native_type_checks import TYPE_NAMES
+        def name(target,payload):
+            if isinstance(target,int):return '"function"'
+            if isinstance(target,BoundMethodTarget):return '"method"'
+            if isinstance(target,BuiltinIdentity):
+                return _string('Quitter'if target.name in {'exit','quit'}else'type'if target.name in TYPE_NAMES else'builtin_function_or_method')
+            adapter=emitter.model.callable_cells.member_adapters.get(target.module)
+            return _string('type'if adapter is not None and target.name in getattr(adapter,'TYPES',())else'builtin_function_or_method')
+        return dispatch(emitter,value.kind,value.code,name,borrow=True)
     return _string({"none":"NoneType"}.get(tag,tag))
 
 

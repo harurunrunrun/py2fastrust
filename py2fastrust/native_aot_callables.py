@@ -25,9 +25,8 @@ def ordered_targets(values):
 
 
 def variant(target):
-    if isinstance(target,BoundMethodTarget):return "ClassFunctionRef::D"+str(target.definition)
-    if isinstance(target,BuiltinRef):return f"ClassFunctionRef::M_{target.module}_{target.name}"
-    return "ClassFunctionRef::B_"+target.name if isinstance(target,BuiltinIdentity)else f"ClassFunctionRef::F{target}"
+    from .native_callable_carriers import payload_type
+    return payload_type(target)+'{}'
 
 
 @dataclass(frozen=True)
@@ -326,20 +325,21 @@ class CallableCells:
         value=Expression(self.reference_code(emitter,self.model.functions[name]),AotFunctionType((definition,)))
         return f"class_scope.globals.borrow_mut().value_{index}=Some({emitter.coerce(value,stored,node)});"
 
-    def reference_code(self,emitter,plan):return f"ClassFunctionRef::F{self.definition(plan)}"
+    def reference_code(self,emitter,plan):
+        from .native_callable_carriers import construct
+        return construct(self,self.definition(plan))
 
     def lambda_reference_code(self,emitter,plan,instance):
-        return f"ClassFunctionRef::F{self.definition(plan)}({instance})"
+        from .native_callable_carriers import construct
+        return construct(self,self.definition(plan),instance)
 
-    def call_pattern(self,definition):
-        result=f"ClassFunctionRef::F{definition}"
-        if self.model.lexical.parent_scope(self.plans[definition])or isinstance(self.plans[definition].node,ast.Lambda):result+="(class_selected_environment)"
-        return result
+    def call_pattern(self,definition,kind=None):
+        from .native_callable_carriers import pattern
+        return pattern(self,definition,kind or AotFunctionType((definition,)),call=True)
 
-    def reference_pattern(self,definition):
-        result=f"ClassFunctionRef::F{definition}"
-        if self.model.lexical.parent_scope(self.plans[definition])or isinstance(self.plans[definition].node,ast.Lambda):result+="(..)"
-        return result
+    def reference_pattern(self,definition,kind=None):
+        from .native_callable_carriers import pattern
+        return pattern(self,definition,kind or AotFunctionType((definition,)))
 
     def target_pattern(self,target):
         """All finite target patterns honor source reference payload hooks."""
@@ -347,8 +347,9 @@ class CallableCells:
 
     def lexical_reference_code(self,emitter,plan,owner):
         from .native_function_instances import instanced,reference
-        if instanced(self.model.lexical,plan):return f'ClassFunctionRef::F{self.definition(plan)}('+reference(self.model.lexical,emitter,plan,owner)+')'
-        return f"ClassFunctionRef::F{self.definition(plan)}(({owner}).clone())"
+        from .native_callable_carriers import construct
+        value=reference(self.model.lexical,emitter,plan,owner)if instanced(self.model.lexical,plan)else'('+owner+').clone()'
+        return construct(self,self.definition(plan),value)
 
     def call_context_setup(self,emitter,target):return ""
 
@@ -357,33 +358,8 @@ class CallableCells:
         return f"{left}=={right}"
 
     def runtime(self):
-        if not self.used and not self.builtin_used and not self.member_used and not self.bound_methods.used:return ""
-        bound_declarations,bound_variants,bound_equals,bound_identity=self.bound_methods.runtime_parts()
-        definitions=sorted(self.used)
-        builtin_variants=["B_"+identity.name for identity in sorted(self.builtin_used,key=lambda item:item.name)]+["M_"+identity.module+"_"+identity.name for identity in sorted(self.member_used,key=lambda item:(item.module,item.name))]
-        if not self.bound_methods.used and not any(self.model.lexical.parent_scope(self.plans[value])or isinstance(self.plans[value].node,ast.Lambda)for value in definitions):
-            return "#[derive(Clone,Copy,PartialEq,Eq)]\nenum ClassFunctionRef{"+",".join([f"F{value}"for value in definitions]+builtin_variants)+"}\n"
-        variants=[];matches=[]
-        for value in definitions:
-            parent=self.model.lexical.parent_scope(self.plans[value])
-            if isinstance(self.plans[value].node,ast.Lambda):
-                variants.append(f"F{value}(std::rc::Rc<{self.model.lambda_cells.payload_type(self.plans[value])}>)")
-                matches.append(f"(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(left,right)")
-            elif parent:
-                from .native_function_instances import instanced,reference_type
-                if instanced(self.model.lexical,self.plans[value]):
-                    variants.append(f'F{value}('+reference_type(self.model.lexical,self.plans[value])+')')
-                    matches.append(f'(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(&left.data,&right.data)&&std::rc::Rc::ptr_eq(&left.environment,&right.environment)')
-                else:
-                    variants.append(f"F{value}(std::rc::Rc<{self.model.lexical.environment_type(parent)}>)")
-                    matches.append(f"(Self::F{value}(left),Self::F{value}(right))=>std::rc::Rc::ptr_eq(left,right)")
-            else:
-                variants.append(f"F{value}");matches.append(f"(Self::F{value},Self::F{value})=>true")
-        variants.extend(builtin_variants)
-        variants.extend(bound_variants)
-        matches.extend(bound_equals)
-        matches.extend(f"(Self::{name},Self::{name})=>true"for name in builtin_variants)
-        return bound_declarations+"\n#[derive(Clone)]\nenum ClassFunctionRef{"+",".join(variants)+"}\nimpl PartialEq for ClassFunctionRef{fn eq(&self,other:&Self)->bool{match(self,other){"+",".join(matches)+",_=>false}}}\nimpl Eq for ClassFunctionRef{}\n"+bound_identity
+        from .native_callable_carriers import runtime
+        return runtime(self.model)
 
     def register_member_adapter(self,module,adapter):
         self.member_adapters[module]=adapter
@@ -595,28 +571,23 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
                                     _Expression(code,kind),positional,keywords,wanted,
                                     source_call_location=source_call_location)
         if function_kind(kind):
-            arms=[]
-            for definition in kind.definitions:
-                target=provider.plans[definition]
-                result=emit_definition_body(emitter,node,site,definition,positional,keywords,wanted,error,
-                    source_call_location=source_call_location)
-                context=provider.call_context_setup(emitter,target)
-                if context:result="{"+context+result+"}"
-                arms.append(provider.call_pattern(definition)+"=>"+result)
-            for target in kind.methods:
-                result=provider.bound_methods.emit(emitter,node,target,site,positional,keywords,wanted,error,source_call_location=source_call_location)
-                arms.append(provider.bound_methods.call_pattern(target)+"=>"+result)
-            from .native_builtin_callables import emit as emit_builtin
-            for identity in kind.builtins:
-                builtin=emit_builtin(emitter,node,identity,site.builtins[identity],positional,keywords)
-                arms.append(f"{variant(identity)}=>{emitter.coerce(builtin,wanted,node)}")
-            for identity in kind.members:
-                adapter,record=site.members[identity]
-                member=adapter.emit(emitter,node,identity,record,positional,keywords)
-                arms.append(f"{variant(identity)}=>{emitter.coerce(member,wanted,node)}")
-            if set(kind.targets)!=(provider.used|provider.builtin_used|provider.member_used|provider.bound_methods.used):
-                arms.append('_=>unreachable!("callable binding contradicts finite target proof")')
-            return "match "+code+"{"+",".join(arms)+"}"
+            from .native_callable_carriers import dispatch,bind_payload
+            def invoke_target(target,payload):
+                if isinstance(target,int):
+                    result=emit_definition_body(emitter,node,site,target,positional,keywords,wanted,error,source_call_location=source_call_location)
+                    context=provider.call_context_setup(emitter,provider.plans[target])
+                    return '{'+bind_payload(provider,target,payload)+context+result+'}'
+                if isinstance(target,BoundMethodTarget):
+                    result=provider.bound_methods.emit(emitter,node,target,site,positional,keywords,wanted,error,source_call_location=source_call_location)
+                    return '{'+bind_payload(provider,target,payload)+result+'}'
+                if isinstance(target,BuiltinIdentity):
+                    from .native_builtin_callables import emit as emit_builtin
+                    builtin=emit_builtin(emitter,node,target,site.builtins[target],positional,keywords)
+                    return emitter.coerce(builtin,wanted,node)
+                adapter,record=site.members[target]
+                member=adapter.emit(emitter,node,target,record,positional,keywords)
+                return emitter.coerce(member,wanted,node)
+            return dispatch(emitter,kind,code,invoke_target)
         names={"int":"int","bool":"bool","str":"str","bytes":"bytes","float":"float","none":"NoneType","list":"list","tuple":"tuple","range":"range","builtin_singleton":"NotImplementedType"}
         from .native_classes import domain
         tag=domain(kind)
@@ -628,4 +599,5 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
             raise ClassUnsupported(node,"this callable alternative needs an object/builtin call protocol not yet implemented",types=(("callee",kind),),proof="callable-object protocol")
         return error(f"TypeError: '{name}' object is not callable")
     code=branch(callee.kind,callee.code)
-    return _Expression(code,wanted)
+    result=emitter.fresh()
+    return _Expression('{let '+result+':'+emitter.rust_type(wanted)+'='+code+';'+result+'}',wanted)

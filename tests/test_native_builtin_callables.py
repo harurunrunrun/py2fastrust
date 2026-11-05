@@ -367,7 +367,7 @@ class NativeBuiltinCallableTests(unittest.TestCase):
         self.assertEqual(family.builtins,(builtin,))
         self.assertEqual(family.members,(member,))
         self.assertEqual(family.targets,ordered_targets((member,builtin,7)))
-        self.assertEqual(variant(member),"ClassFunctionRef::M_math_gcd")
+        self.assertEqual(variant(member),"ClassCallablePayload_M_math_gcd{}")
         self.assertEqual(family.join(AotFunctionType((8,))).definitions,(7,8))
         self.assertTrue(reference_cloneable(family))
         self.assertFalse(immutable(family))
