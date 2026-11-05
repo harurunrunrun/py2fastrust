@@ -205,7 +205,9 @@ class GlobalPayloadProofs(unittest.TestCase):
   for mode in ('i64','i128','bigint'):
    result,baseline,calls=self.compile_pair('missing_global_before_argument',mode)
    self.assertTrue(result.success,result.diagnostics)
-   self.assertTrue(any(name.endswith('later')for name,_ in calls))
+   # A call-only value may have no private module/environment fields. Its
+   # normal exact namespace read still checks existence before arguments.
+   self.assertRegex(result.rust_source,r"fn class_global_(?:get|payload)_[^\n]*NameError: name 'later' is not defined")
  def test_observed_mutable_function_metadata_keeps_positioned_diagnostic(self):
   for mode in ('i64','i128','bigint'):
    result,baseline,calls=self.compile_pair('function_metadata_boundary',mode)

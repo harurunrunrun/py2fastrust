@@ -207,7 +207,7 @@ class PackedFieldProofs(unittest.TestCase):
   owners=[]
   def capture(model):
    prepare(model)
-   owners.extend(dict(index=owner.index,fields=list(owner.fields),packed=owner.index in model.packed_value_fields.selected,initializer=owner.methods.get('__init__').index if owner.methods.get('__init__')is not None else None)for owner in model.classes.values()if owner.used)
+   owners.extend(dict(index=owner.index,fields=list(owner.fields),packed=owner.index in model.packed_value_fields.selected,initializer=owner.methods.get('__init__').index if owner.methods.get('__init__')is not None else None,model=model,definition=owner)for owner in model.classes.values()if owner.used)
    if disabled:model.packed_value_fields.selected.clear()
   with patch('py2fastrust.native_packed_value_fields.prepare',side_effect=capture):
    product=transpile(CASES[name],TranspileOptions(integer=mode,license='none'))
@@ -220,7 +220,12 @@ class PackedFieldProofs(unittest.TestCase):
    self.assertEqual(len(packed),1)
    owner=packed[0]
    for index in range(len(owner['fields'])):
-    self.assertIn(f'field_{index}:std::cell::Cell<NativeInt>',product.rust_source)
+    from py2fastrust.native_constant_field_projection import selected
+    projected=selected(owner['model'],owner['definition'],index)
+    if projected:
+     self.assertEqual(owner['model'].constant_field_projection.fields[owner['index'],index].low,17)
+     self.assertNotIn(f'field_{index}:std::cell::Cell<NativeInt>',product.rust_source)
+    else:self.assertIn(f'field_{index}:std::cell::Cell<NativeInt>',product.rust_source)
     getter=re.search(r'fn class_get_'+str(owner['index'])+'_'+str(index)+r'\([^\n]+',product.rust_source).group()
     self.assertIn('{Ok(',getter)
     self.assertNotIn('ok_or_else',getter)
@@ -230,8 +235,14 @@ class PackedFieldProofs(unittest.TestCase):
   for mode in ('i64','i128','bigint'):
    product,owners=self.compile('primitive_fields_all_modes_0',mode)
    self.assertTrue(any(owner['packed']for owner in owners))
-   for rust_type in ('bool','f64','()'):
-    self.assertIn('std::cell::Cell<'+rust_type+'>',product.rust_source)
+   owner=next(owner for owner in owners if owner['packed'])
+   from py2fastrust.native_constant_field_projection import selected
+   for index,rust_type in enumerate(('bool','f64','()')):
+    if selected(owner['model'],owner['definition'],index):
+     self.assertEqual(rust_type,'bool')
+     self.assertIs(owner['model'].constant_field_projection.fields[owner['index'],index].low,True)
+     self.assertNotIn(f'field_{index}:std::cell::Cell<bool>',product.rust_source)
+    else:self.assertIn('std::cell::Cell<'+rust_type+'>',product.rust_source)
  def test_missing_read_delete_namespace_and_reentry_keep_old_layout(self):
   names=('missing_field_branch_0','preinitialization_read_0',
          'preinitialization_condition_0','class_default_fallback_0',

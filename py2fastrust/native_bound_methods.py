@@ -125,7 +125,8 @@ class BoundMethods:
         from .native_aot_callables import AotFunctionType
         from .native_classes import Expression
         fields='receiver:'+receiver.code
-        if self.linked:
+        from .native_callable_field_demand import demand
+        if self.linked and demand(self.model,target).module:
             context=emitter.fresh()
             setup+='let '+context+'='+receiver.code+'.borrow().class_definition.module.clone();'
             fields+=',module:'+context
@@ -169,7 +170,8 @@ class BoundMethods:
         invocation=emitter.function_name(method)+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'
         from .native_class_calls import call
         result=emitter.coerce(Expression(call(emitter,invocation,method,source_call_location or node),shape(method.result)),wanted,node)
-        if self.linked:result='{'+self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')+result+'}'
+        from .native_callable_field_demand import demand
+        if self.linked and demand(self.model,target).module:result='{'+self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')+result+'}'
         return result
 
     def reference_pattern(self,target,kind=None):

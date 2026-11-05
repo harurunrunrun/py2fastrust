@@ -378,7 +378,8 @@ class ExpandedCalls:
                     else:
                         from .native_class_descriptors import ClassMethodTarget,wrap_expanded
                         if isinstance(identity,ClassMethodTarget):return '{'+bind_payload(provider,identity,payload)+wrap_expanded(provider,emitter,identity,code)+'}'
-                        context=self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')if hasattr(self.model,'module_linker')else''
+                        from .native_callable_field_demand import demand
+                        context=self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')if hasattr(self.model,'module_linker')and demand(self.model,identity).module else''
                     return '{'+bind_payload(provider,identity,payload)+context+code+'}'
                 if site.builtin_errors.get(identity):return self._error(emitter,node,wanted,_string(site.builtin_errors[identity])+'.to_owned()')
                 return self._print(emitter,node,vector,element,dict(keywords),wanted)

@@ -1960,9 +1960,9 @@ Private function-local matrices with structurally fresh rows use recursive `Vec<
 
 Reached native class/frame functions can instantiate independent original-AST bodies for closed argument-type contexts instead of carrying a joined numeric or object union through every call. The original definition still owns callable identity, signature, defaults, module and capture state; instances share semantic object/container effects while keeping separate local/argument/result cells. The initial certificate excludes constructors, decorated/generic functions, variadics, lexical capture environments, nested callable/generator state and mutable container result carriers. Exact scalar, instance and tuple arguments are instantiated with a finite context budget; unproved or widened contexts use their already analyzed ordinary native body. This changes neither backend selection nor source binding/evaluation order and introduces no runtime interpreter.
 
-Parameter-only synchronous frame calls can omit an unused invocation module view and lexical-parent argument after original-source effect analysis. Actual callable module/environment payloads, defaults, function identity, source operator calls, and error frames remain intact. Bodies with captured/global names, nonliteral defaults, nested environments, explicit calls, augmented assignments, or unproved implicit truth/iteration/index protocols keep their ordinary native context.
+Parameter-only synchronous frame calls can omit an unused invocation module view and lexical-parent argument after original-source effect analysis. Defaults, observed function identity, source operator calls and error frames retain their semantics; required module and environment captures use their actual source payloads. Bodies with captured/global names, nonliteral defaults, nested environments, explicit calls, augmented assignments, or unproved implicit truth/iteration/index protocols keep their ordinary native context.
 
-Native callable storage uses the exact proved target family in globals, locals, arguments, fields, defaults and captured cells. A singleton source function, builtin or bound method has its own payload struct; a real finite join has an enum containing only its possible targets. Source payloads retain the actual defining module, lexical/lambda environment and repeated-definition instance data. Bound method payloads retain their actual receiver and function. Capturing these values still precedes explicit arguments, so later binding replacement, shared defaults, errors and identity behave as before. Singleton calls unpack their payload and invoke the compiled target directly; static ordinary function aliases retain their existing direct native specializations.
+Native callable storage uses the exact proved target family in globals, locals, arguments, fields, defaults and captured cells. A singleton source function, builtin or bound method has its own payload struct; a real finite join has an enum containing only its possible targets. Required source captures use the actual defining module, lexical/lambda environment and repeated-definition instance data. Bound method payloads retain their actual receiver and function. Capturing these values still precedes explicit arguments, so later binding replacement, shared defaults, errors and identity behave as before. Singleton calls unpack their payload and invoke the compiled target directly; static ordinary function aliases retain their existing direct native specializations.
 
 A proved private non-Copy class instance can use an owned Rust struct with
 borrowed method receivers instead of an `Rc<RefCell<...>>` object. Selection
@@ -1977,3 +1977,15 @@ calls, conditional field initialization, zero-trip unbound locals and source
 errors retain their order. Shared, escaping and unproved objects keep their
 existing native storage. This first placement certificate excludes class
 record fields and explicit initializer reentry.
+
+Private callable module and lexical-environment captures are omitted when the
+original invocation/default summary proves them unused and every reached value
+consumer has a closed transport/callback or nonobserving role. The certificate
+covers exact native payloads in locals, formals, fields, globals and containers;
+it does not replace source functions with reconstructed current-module values.
+Original definition/default evaluation, binding-existence checks and receiver
+lookup still occur in Python order. Same-target identity/equality, implicit
+container comparisons, hashed keys, metadata, unproved native roles and heap or
+address/lifetime observers retain the required original captures. A saved bound
+method always retains its actual receiver and method-object identity. Recursive,
+suspended or unclosed graphs retain the existing complete native payload.

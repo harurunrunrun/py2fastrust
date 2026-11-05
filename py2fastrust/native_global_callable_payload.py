@@ -85,6 +85,12 @@ def candidate(emitter,node):
     describe=getattr(provider,'call_payload_layout',None)
     layout=None if describe is None else describe(definition)
     if layout is None:return None
+    # A complete exact payload can be empty after source demand analysis.
+    # The old accessor returns module/environment fields specifically; use
+    # the ordinary exact typed namespace read for the new physical schema.
+    from .native_callable_carriers import registry
+    carrier=registry(emitter.model)
+    if carrier.layout(definition).fields!=carrier.logical_layout(definition).fields:return None
     return Request(node,name,namespace.index(name),layout)
 
 

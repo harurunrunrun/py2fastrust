@@ -2981,6 +2981,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_identity_demand(model)
         from .native_call_context_effects import prepare as prepare_context_effects
         prepare_context_effects(model)
+        from .native_callable_field_demand import prepare as prepare_callable_field_demand
+        prepare_callable_field_demand(model)
         from .native_owned_class_lists import prepare as prepare_owned_fields
         prepare_owned_fields(model)
         from .native_owned_object_places import prepare as prepare_owned_objects

@@ -177,7 +177,11 @@ class ImmutableClassFunctionProofs(unittest.TestCase):
   calls=[]
   def observe(registry,emitter,node,reference,member,stored):
    result=None if disabled else emit(registry,emitter,node,reference,member,stored)
-   if result is not None:calls.append((member.name,result.code))
+   if result is not None:
+    from py2fastrust.native_immutable_class_functions import prepared_definition
+    from py2fastrust.native_callable_field_demand import demand
+    number=prepared_definition(registry,member,stored)
+    calls.append((member.name,result.code,demand(registry.model,number).module))
    return result
   # Exercise the callable-reference adapter independently of direct calls.
   with patch('py2fastrust.native_immediate_classmethod.direct_payload',return_value=None),patch('py2fastrust.native_immutable_class_functions.emit',side_effect=observe):
@@ -190,10 +194,11 @@ class ImmutableClassFunctionProofs(unittest.TestCase):
     with self.subTest(name=name,mode=mode):
      result,calls=self.compile(name,mode)
      self.assertTrue(calls)
-     for member,code in calls:
+     for member,code,needs_module in calls:
       self.assertIn('ClassCallablePayload_F',code)
       self.assertNotIn('ClassFunctionRef',code)
-      self.assertIn('.module.clone()',code)
+      if needs_module:self.assertIn('.module.clone()',code)
+      else:self.assertNotIn('.module',code)
       self.assertNotIn('.borrow()',code)
       self.assertNotIn('class_scope.globals',code)
  def test_class_body_rebindings_keep_existing_namespace_lookup(self):

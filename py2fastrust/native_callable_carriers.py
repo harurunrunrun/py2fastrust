@@ -91,7 +91,7 @@ class Registry:
             if before==(len(self.kinds),len(self.targets)):break
         self.finalized=True
 
-    def layout(self,target):
+    def logical_layout(self,target):
         from .native_bound_methods import BoundMethodTarget
         from .native_class_descriptors import ClassMethodTarget
         from .native_value_classes import identity_equal
@@ -105,7 +105,8 @@ class Registry:
                 equal='Rc::ptr_eq(&left.bound.receiver,&right.bound.receiver)&&left.bound.function==right.bound.function'
             else:
                 equal=identity_equal(model,InstanceType(target.owner),'left.bound.receiver','right.bound.receiver')
-                if getattr(provider.bound_methods,'linked',False):equal+='&&Rc::ptr_eq(&left.bound.module,&right.bound.module)'
+                from .native_callable_field_demand import demand
+                if getattr(provider.bound_methods,'linked',False)and demand(model,target).module:equal+='&&Rc::ptr_eq(&left.bound.module,&right.bound.module)'
             return Layout(target,(('bound',field_type),),equal,'Rc::ptr_eq(&left.bound,&right.bound)')
         if isinstance(target,(BuiltinIdentity,BuiltinRef)):
             return Layout(target,(),'true','true')
@@ -129,6 +130,20 @@ class Registry:
         code='&&'.join(equal)or'true'
         return Layout(target,tuple(fields),code,code)
 
+    def layout(self,target):
+        from .native_bound_methods import BoundMethodTarget
+        from .native_callable_field_demand import demand
+        logical=self.logical_layout(target)
+        if isinstance(target,BoundMethodTarget):return logical
+        required=demand(self.model,target)
+        fields=tuple((name,kind)for name,kind in logical.fields
+                     if name not in {'module','environment'}or getattr(required,name))
+        if fields==logical.fields:return logical
+        # The demand certificate rejects every same-target identity/value
+        # consumer before erasing identity-bearing captures. Keep generated
+        # comparisons total, while actual source comparisons retain captures.
+        return Layout(target,fields,'true','true')
+
     def runtime(self):
         provider=self.model.callable_cells
         self.complete()
@@ -144,7 +159,8 @@ class Registry:
             else:
                 owner=self.model.classes[target.owner]
                 fields='receiver:ClassHandle_'+str(owner.index)
-                if getattr(provider.bound_methods,'linked',False):fields+=',module:ClassModuleRef'
+                from .native_callable_field_demand import demand
+                if getattr(provider.bound_methods,'linked',False)and demand(self.model,target).module:fields+=',module:ClassModuleRef'
             declarations.append('struct ClassBoundMethod'+str(target.definition)+'{'+fields+'}')
         for target in tuple(self.targets.values()):
             layout=self.layout(target);name=payload_type(target)
@@ -179,8 +195,10 @@ def construct(provider,target,*values):
     current=registry(provider.model)
     current.register(AotFunctionType.from_targets((target,)))
     layout=current.layout(target)
-    if len(values)!=len(layout.fields):raise RuntimeError('callable payload schema differs from its source capture')
-    return payload_type(target)+'{'+','.join(name+':'+value for(name,_),value in zip(layout.fields,values))+'}'
+    logical=current.logical_layout(target)
+    if len(values)!=len(logical.fields):raise RuntimeError('callable payload schema differs from its original source capture')
+    retained={name for name,_ in layout.fields}
+    return payload_type(target)+'{'+','.join(name+':'+value for(name,_),value in zip(logical.fields,values)if name in retained)+'}'
 
 
 def pattern(provider,target,kind,*,call=False):
