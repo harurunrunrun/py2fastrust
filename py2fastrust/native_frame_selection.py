@@ -193,5 +193,7 @@ def select_frames(unit,*,integer="i64"):
     if positional_requires_frames(unit,analysis):reasons+=("fixed list record positional constraints",)
     from .native_finite_list_writes import requires_frames as finite_list_writes_require_frames
     if finite_list_writes_require_frames(unit,analysis):reasons+=("finite builtin indexed assignment targets",)
+    from .native_owned_matrix_places import requires_frames as matrix_requires_frames
+    if matrix_requires_frames(unit,analysis):reasons+=("private recursive vector matrix places",)
     if not reasons:references=None
     return FrameSelection(bool(reasons),reasons,analysis,recursive,MappingProxyType(targets),references)

@@ -41,6 +41,7 @@ class Proof:
         emitter=self.emitter;kind=self.kind(node)
         if not isinstance(kind,ListType)or kind.element not in SCALARS:return False
         model=emitter.model;name=model.resolved_name(emitter.plan,node)
+        if name in getattr(emitter,'owned_matrices',{}):return False
         if name in getattr(emitter,'owned_local_lists',{}):return False
         if name in getattr(emitter,'record_places',{}):return False
         if model.lexical.field_for(node)is not None or model.namespace.owns(emitter.plan,node):return False

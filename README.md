@@ -166,6 +166,9 @@ homogeneous arrays use `Vec<T>`. Fixed heterogeneous local records and class
 fields can use Rust tuples when stable position types and constant slot uses
 are proved. Lists whose elements can change between known types use a vector
 of a finite element enum.
+Private nested arrays with freshly constructed rows and proved indexed or
+length-only uses can use `Vec<Vec<T>>` and deeper vectors. Repeated shared
+rows, escaping row references and row replacement retain shared storage.
 Direct iteration over a private vector reads one element at a time and sees
 subsequent element updates, appends and pops. Lists with observable aliases or
 unproved ownership retain shared handles so updates and object identity stay
