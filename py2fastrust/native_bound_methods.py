@@ -163,6 +163,8 @@ class BoundMethods:
             from .native_variadic import pack_emission
             binding=method.signature.bind([receiver]+positional,keywords,default_emitter.captured_defaults(method),pack_positional=lambda members:pack_emission(emitter,method,members,node))
         except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
+        from .native_frame_specialization import native_target
+        method=native_target(self.model,method,binding.by_name)
         values=[emitter.coerce(value,shape(method.arguments[name]),node)for name,value in zip(binding.parameters,binding.values)]
         invocation=emitter.function_name(method)+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'
         from .native_class_calls import call

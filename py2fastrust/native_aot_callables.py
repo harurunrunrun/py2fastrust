@@ -562,6 +562,8 @@ def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted
         from .native_variadic import pack_emission
         bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target),pack_positional=lambda members:pack_emission(emitter,target,members,node))
     except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
+    from .native_frame_specialization import native_target
+    target=native_target(emitter.model,target,bound.by_name)
     values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
     invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
     from .native_class_calls import call

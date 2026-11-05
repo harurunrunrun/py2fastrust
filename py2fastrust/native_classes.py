@@ -320,6 +320,8 @@ class Model:
         self.generators=Generators(self)
         from .native_exception_values import Exceptions
         self.exceptions=Exceptions(self)
+        from .native_frame_specialization import Specializations
+        self.specializations=Specializations(self)
 
     def semantic_graph(self,unit):return SemanticGraph(unit)
 
@@ -715,6 +717,8 @@ class Model:
                     merge(plan.result, Cell("none"), plan.node)
                 else:
                     raise ClassUnsupported(plan.node)
+        self.specializations.enable()
+        if self.specializations.enabled:self.infer_until_stable()
         self.final = True
         self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or self.exceptions.raises or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)else None
         self.module.visible_definitions = set()
@@ -1036,11 +1040,12 @@ class Model:
 
     def bind_captured(self,caller,node,callee,argument_cells,keyword_cells,environment):
         """Shared binding for explicit calls and deferred produced arguments."""
-        self.activate_frame(caller,node,callee,environment)
         try:
             from .native_variadic import pack_analysis
             bound={}if callee.class_body is not None else callee.signature.bind(argument_cells,keyword_cells,callee.default_cells,pack_positional=lambda members:pack_analysis(self,callee,members,node)).by_name
         except CallBindingError:raise ClassUnsupported(node)from None
+        callee=self.specializations.select(callee,bound,create=True)
+        self.activate_frame(caller,node,callee,environment)
         for name, value in bound.items():
             if name in getattr(callee,"erased_context_parameters",()):continue
             if not self.namespace.contribute(callee.arguments[name],value,node,force=True):
@@ -2141,6 +2146,9 @@ class Emitter:
                 call_plan=signature.plan(call_arguments,implicit_count=len(arguments),allow_variadic=True)
                 bound=call_plan.capture(argument_value,implicit=arguments,defaults=default_emitter.captured_defaults(callee),pack_positional=lambda members:pack_emission(self,callee,members,node))
             except CallBindingError:raise ClassUnsupported(node)from None
+            if constructor is None:
+                from .native_frame_specialization import native_target
+                callee=native_target(self.model,callee,bound.by_name)
             values=[self.coerce(value,shape(callee.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
         if constructor is not None:
