@@ -2035,3 +2035,14 @@ after failed conversion. The separate native type inference limit can still
 reject sufficiently long dependency chains before this calling convention is
 chosen. Try/exception-state and suspended-place normalization remain separate
 prerequisites for extending this path.
+
+An exact class parameter can also provide the namespace for plain builtin data
+attributes in a synchronous function or a proved canonical classmethod. Such a
+body can omit its unused incoming module view; an immediate private classmethod
+payload then retains the actual captured class without an extra module clone.
+Current class-attribute values, deletion and missing-attribute checks, shared
+lists, indices, defaults and source error frames keep their existing code.
+Actual saved classes therefore retain the namespace of their own import
+generation. Inherited or custom descriptor members, nonliteral defaults,
+observed callable metadata and bodies that read global names keep their existing
+native context.

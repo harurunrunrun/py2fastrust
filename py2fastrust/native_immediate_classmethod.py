@@ -11,6 +11,7 @@ class Request:
     used: bool=False
     direct_definition: int|None=None
     direct_used: bool=False
+    module: bool=True
 
 
 def candidate(emitter,node):
@@ -72,10 +73,13 @@ def direct_payload(emitter,node,reference,member):
     from .native_aot_callables import AotFunctionType
     receiver,module=emitter.fresh(),emitter.fresh()
     request.used=request.direct_used=True
+    from .native_call_context_effects import incoming_module
+    request.module=incoming_module(emitter.model,member.plan)
     # The outer emitter already captured this class exactly once. Hold both
     # receiver and actual defining generation before any explicit argument.
-    code=('{let '+receiver+'='+reference.code+';let '+module+'='+receiver+'.module.clone();('
-          +receiver+','+module+')}')
+    code=('{let '+receiver+'='+reference.code+';'
+          +('let '+module+'='+receiver+'.module.clone();('+receiver+','+module+')'
+            if request.module else receiver)+'}')
     return Expression(code,AotFunctionType.from_targets((request.target,)))
 
 
@@ -87,12 +91,13 @@ def invoke(emitter,node,request,site,callee,positional,keywords,wanted):
         provider=emitter.model.callable_cells
         if request.target in site.errors:return _Expression(error(site.errors[request.target]),wanted)
         from .native_aot_callables import AotFunctionType,CallSite,emit_definition_body
-        receiver=_Expression('class_selected_method.0',request.target._native_receiver_kind)
+        receiver=_Expression('class_selected_method.0'if request.module else'class_selected_method',request.target._native_receiver_kind)
         nested=CallSite(provider.model.cell_for_kind(AotFunctionType((request.direct_definition,))),site.result)
         code=emit_definition_body(emitter,node,nested,request.direct_definition,
             [receiver]+positional,keywords,wanted,error)
         context=provider.call_context_setup(emitter,provider.plans[request.direct_definition])
-        return _Expression('{let class_selected_method='+callee.code+';let class_defining_module=class_selected_method.1;'
+        return _Expression('{let class_selected_method='+callee.code+';'
+            +('let class_defining_module=class_selected_method.1;'if request.module else'')
             +context+code+'}',wanted)
     code=emitter.model.callable_cells.bound_methods.emit(
         emitter,node,request.target,site,positional,keywords,wanted,error)

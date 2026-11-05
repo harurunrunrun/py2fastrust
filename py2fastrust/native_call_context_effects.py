@@ -36,6 +36,16 @@ class Registry:
             self.closed_source=_model_proof(model)
         except (Unproved,GraphUnproved)as error:
             self.reason=str(error);return
+        from .native_classes import shape
+        from .native_module_calls import BuiltinRef
+        from .native_single_execution_metadata import _identities
+        identities=set(model.callable_cells.builtin_used)|set(model.callable_cells.member_used)
+        for cell in model.records.values():identities.update(_identities(shape(cell)))
+        if any(isinstance(identity,BuiltinRef)and(identity.module in {'gc','weakref'}
+                or identity.module=='sys'and identity.name in {'getrefcount','_getframe','_current_frames'})
+                for identity in identities):
+            self.reason='a frame/reference observer requires actual invocation capture ownership'
+            return
         self.bindings={binding.node:binding for binding in model.iter_bindings()}
         self.reason='closed source graph'
         for candidate in model.plans:
@@ -43,7 +53,7 @@ class Registry:
             if plan is None or plan.index in self.summaries:continue
             try:self.prove(plan)
             except Unproved as error:self.summaries[plan.index]=Summary(reason=str(error))
-            else:self.summaries[plan.index]=Summary(False,False,'original parameter/local computation with receiver-context operators')
+            else:self.summaries[plan.index]=Summary(False,False,'original parameter/local computation with actual receiver-context attributes and operators')
 
     def prove(self,plan):
         from .native_classes import shape,InstanceType
@@ -54,7 +64,7 @@ class Registry:
         if not plan.reachable or model.is_module_plan(plan)or not isinstance(plan.node,ast.FunctionDef):
             raise Unproved('not a reached original ordinary function body')
         if not synchronous(model,plan):raise Unproved('suspended or recursive source frame')
-        if plan.node.decorator_list or plan.node.type_params:
+        if plan.node.type_params or plan.node.decorator_list and not self.canonical_classmethod(plan):
             raise Unproved('decorated or parameterized definition metadata is retained')
         if set(plan.defaults)-set(plan.default_literals):
             raise Unproved('binding defaults read the actual module/environment instance')
@@ -96,6 +106,11 @@ class Registry:
             if isinstance(node,ast.Attribute):
                 cell=model.records.get((plan.index,id(node.value)))
                 kind=None if cell is None else shape(cell)
+                from .native_module_linking import ClassReferenceType
+                if isinstance(kind,ClassReferenceType):
+                    if not self.class_parameter_attribute(plan,node,kind):
+                        raise Unproved('class attribute lookup has no exact plain data-member receiver capability')
+                    continue
                 owner=model.classes.get(kind.name)if isinstance(kind,InstanceType)else None
                 if (owner is None or model.resolved_name(plan,node)not in owner.fields
                         or not isinstance(node.ctx,ast.Load)or owner.node.bases or owner.node.keywords or owner.node.decorator_list
@@ -133,6 +148,46 @@ class Registry:
                 identity=isinstance(node,ast.Compare)and all(isinstance(op,(ast.Is,ast.IsNot))for op in node.ops)
                 if not receiver and not identity and not all(self.data_builtin(self.kind(plan,value))for value in operands):
                     raise Unproved('an operator has an unproved implicit value protocol')
+
+    def canonical_classmethod(self,plan):
+        """A validated original descriptor changes binding, not body globals."""
+        from .native_aot_callables import AotFunctionType
+        from .native_classes import shape
+        from .references import BuiltinIdentity
+        namespace=getattr(self.model,'class_namespaces',None)
+        if namespace is None or not getattr(self.model,'final',False):return False
+        members=[member for member in namespace.members.values()
+                 if member.plan is not None and source_plan(member.plan)is plan]
+        if len(members)!=1 or members[0].descriptor!='classmethod':return False
+        owner=members[0].owner
+        if (owner.node.bases or owner.node.keywords or owner.node.decorator_list
+                or owner.node.type_params or owner.body_plan is None
+                or len(plan.node.decorator_list)!=1):return False
+        # Descriptor registration starts provisionally. Require the actual
+        # definition-time solved value as well as that registered binding.
+        value=self.model.records.get((owner.body_plan.index,id(plan.node.decorator_list[0])))
+        kind=None if value is None else shape(value)
+        return isinstance(kind,AotFunctionType)and kind.targets==(BuiltinIdentity('classmethod'),)
+
+    def class_parameter_attribute(self,plan,node,kind):
+        """The unchanged getter uses the actual parameter's module, not Scope."""
+        if not isinstance(node.ctx,ast.Load):return False
+        namespace=getattr(self.model,'class_namespaces',None)
+        if namespace is None:return False
+        owner=namespace.owners.get(kind.definition)
+        if (owner is None or owner.node.bases or owner.node.keywords
+                or owner.node.decorator_list or owner.node.type_params):return False
+        records=namespace.attribute_reads.get((plan.index,id(node)))
+        if records is None or len(records)!=1:return False
+        member=records[0]
+        if (member.owner is not owner or member.plan is not None
+                or member.function_cell is not None
+                or member.name!=self.model.resolved_name(plan,node)):return False
+        stored=dict(self.model.namespace.fields()).get(member.key)
+        # A plain builtin data payload cannot be a custom descriptor or hide
+        # an implicit source callback. Presence, current value and index errors
+        # remain in the original runtime getter; constness is not required.
+        return self.data_builtin(stored)and self.data_builtin(self.kind(plan,node))
 
     def kind(self,plan,node):
         from .native_classes import shape

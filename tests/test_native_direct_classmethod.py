@@ -141,7 +141,7 @@ class DirectClassMethodProofs(unittest.TestCase):
   calls=[]
   def observe(emitter,node,reference,member):
    result=None if disabled else direct_payload(emitter,node,reference,member)
-   if result is not None:calls.append(result.code)
+   if result is not None:calls.append((result.code,emitter.immediate_classmethod_request.module))
    return result
   with patch('py2fastrust.native_immediate_classmethod.direct_payload',side_effect=observe):
    result=transpile(CASES[name],TranspileOptions(integer=mode,license='none'))
@@ -153,9 +153,10 @@ class DirectClassMethodProofs(unittest.TestCase):
     with self.subTest(name=name,mode=mode):
      result,calls=self.convert(name,mode)
      self.assertTrue(calls)
-     self.assertIn('class_selected_method.0',result.rust_source)
-     for code in calls:
-      self.assertIn('.module.clone()',code)
+     for code,module in calls:
+      self.assertEqual(module,name in ('definition_defaults_once','mutable_default'))
+      self.assertEqual('.module.clone()'in code,module)
+      self.assertIn('class_selected_method.0'if module else'class_selected_method',result.rust_source)
       self.assertNotIn('ClassFunctionRef',code)
       self.assertNotIn('ClassBoundMethod',code)
       self.assertNotIn('.borrow()',code)
@@ -164,7 +165,7 @@ class DirectClassMethodProofs(unittest.TestCase):
    with self.subTest(mode=mode):
     result,calls=self.convert('boolean_layout_integer_arguments',mode)
     self.assertTrue(calls)
-    self.assertIn('class_selected_method.0',result.rust_source)
+    self.assertTrue(all(not module for _,module in calls))
  def test_retained_unproved_layout_and_recursive_calls_keep_native_path(self):
   for name in ('retained_only','list_owner_declines','recursive_classmethod_declines_direct_mode'):
    for mode in ('i64','i128','bigint'):
