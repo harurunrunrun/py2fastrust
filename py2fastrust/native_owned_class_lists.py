@@ -279,5 +279,7 @@ def runtime(model,owner,emitter):
         result.append(f'fn {name}_len(owner:{handle})->Result<usize,String>{{let owner=owner.borrow();let values=owner.{field}.as_ref().ok_or_else(||{error}.to_owned())?;Ok(values.len())}}')
         if info.reads:
             result.append(f'fn {name}_get(owner:{handle},index:&NativeInt)->Result<{element},String>{{let result={{let owner=owner.borrow();let values=owner.{field}.as_ref().expect("checked stable field");let offset=class_index(index,values.len())?;values[offset].clone()}};Ok(result)}}')
-        result.append(f'fn {name}_set(owner:{handle},index:&NativeInt,value:{element})->Result<(),String>{{let previous={{let mut owner=owner.borrow_mut();let values=owner.{field}.as_mut().expect("checked stable field");let offset=class_index(index,values.len()).map_err(|_|"IndexError: list assignment index out of range".to_owned())?;std::mem::replace(&mut values[offset],value)}};drop(previous);Ok(())}}')
+        from .native_owned_object_places import selected as owned_object
+        mutable_handle=f'&mut ClassHandle_{number}'if owned_object(model,owner)else handle
+        result.append(f'fn {name}_set(owner:{mutable_handle},index:&NativeInt,value:{element})->Result<(),String>{{let previous={{let mut owner=owner.borrow_mut();let values=owner.{field}.as_mut().expect("checked stable field");let offset=class_index(index,values.len()).map_err(|_|"IndexError: list assignment index out of range".to_owned())?;std::mem::replace(&mut values[offset],value)}};drop(previous);Ok(())}}')
     return '\n'.join(result)

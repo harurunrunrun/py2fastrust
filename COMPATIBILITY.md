@@ -1949,3 +1949,17 @@ Reached native class/frame functions can instantiate independent original-AST bo
 Parameter-only synchronous frame calls can omit an unused invocation module view and lexical-parent argument after original-source effect analysis. Actual callable module/environment payloads, defaults, function identity, source operator calls, and error frames remain intact. Bodies with captured/global names, nonliteral defaults, nested environments, explicit calls, augmented assignments, or unproved implicit truth/iteration/index protocols keep their ordinary native context.
 
 Native callable storage uses the exact proved target family in globals, locals, arguments, fields, defaults and captured cells. A singleton source function, builtin or bound method has its own payload struct; a real finite join has an enum containing only its possible targets. Source payloads retain the actual defining module, lexical/lambda environment and repeated-definition instance data. Bound method payloads retain their actual receiver and function. Capturing these values still precedes explicit arguments, so later binding replacement, shared defaults, errors and identity behave as before. Singleton calls unpack their payload and invoke the compiled target directly; static ordinary function aliases retain their existing direct native specializations.
+
+A proved private non-Copy class instance can use an owned Rust struct with
+borrowed method receivers instead of an `Rc<RefCell<...>>` object. Selection
+requires every instance to originate in one fresh official function-local
+constructor binding, with no whole-object alias, capture, return, parameter
+escape, identity/representation observation or custom lifetime protocol.
+Existing field proofs independently choose embedded vectors or shared child
+handles; vectors are never cloned to simulate object sharing. Method lookup
+and actual defining-module capture precede arguments, while mutable receiver
+loans begin only after arguments have been evaluated. Reentrant method/index
+calls, conditional field initialization, zero-trip unbound locals and source
+errors retain their order. Shared, escaping and unproved objects keep their
+existing native storage. This first placement certificate excludes class
+record fields and explicit initializer reentry.

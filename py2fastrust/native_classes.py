@@ -1789,6 +1789,9 @@ class Emitter:
         return result
 
     def expression(self, node):
+        from .native_owned_object_places import expression as owned_object_expression
+        owned_object=owned_object_expression(self,node)
+        if owned_object is not None:return owned_object
         from .native_owned_matrix_places import read as matrix_read
         matrix=matrix_read(self,node)
         if matrix is not None:return matrix
@@ -2134,7 +2137,12 @@ class Emitter:
     def call_user(self, node, callee, receiver=None, constructor=None,defining_module=None,defining_class=None):
         setup,arguments = [],[]
         if receiver is not None:
-            before,receiver = self.capture(receiver)
+            from .native_owned_object_places import call_receiver as owned_call_receiver
+            owned_receiver=owned_call_receiver(self,node,callee)
+            if owned_receiver is None:
+                before,receiver = self.capture(receiver)
+            else:
+                before,receiver,defining_module=owned_receiver
             setup.append(before)
             arguments.append(receiver)
         try:call_arguments=normalize_call(node)
@@ -2384,6 +2392,9 @@ class Emitter:
         return setup+self.store_reference(reference,value,target)
 
     def reference(self, target):
+        from .native_owned_object_places import reference as owned_object_reference
+        owned_object=owned_object_reference(self,target)
+        if owned_object is not None:return owned_object
         from .native_owned_matrix_places import reference as matrix_reference
         matrix=matrix_reference(self,target)
         if matrix is not None:return matrix
@@ -2447,6 +2458,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]in{'owned_object_field','owned_object_index'}:
+            from .native_owned_object_places import load
+            return load(self,reference,node,kind)
         if reference[0]=='owned_matrix':
             from .native_owned_matrix_places import load
             return load(self,reference,node,kind)
@@ -2503,6 +2517,9 @@ class Emitter:
         return project_element(self,raw,owner.kind.element,requested or kind,node)
 
     def store_reference(self, reference, value, node):
+        if reference[0]in{'owned_object_field','owned_object_index'}:
+            from .native_owned_object_places import store
+            return store(self,reference,value,node)
         if reference[0]=='owned_matrix':
             from .native_owned_matrix_places import store
             return store(self,reference,value,node)
@@ -2545,6 +2562,9 @@ class Emitter:
                          if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
+        from .native_owned_object_places import initialize as initialize_owned_object_field
+        owned_object=initialize_owned_object_field(self,node)
+        if owned_object is not None:return owned_object
         from .native_owned_matrix_places import statement as matrix_statement
         matrix=matrix_statement(self,node)
         if matrix is not None:return matrix
@@ -2753,9 +2773,10 @@ class Emitter:
 
     def declaration(self):
         from .native_value_classes import borrowed_self
+        from .native_owned_object_places import receiver as owned_receiver
         from .native_record_places import physical_type
         from .native_owned_matrix_places import physical_type as matrix_type
-        data=[f"let mut {slot}:"+(f"Option<{matrix_type(self,self.owned_matrices[name].tree)}>"if name in self.owned_matrices else f"Option<{physical_type(self,self.record_places[name])}>"if name in self.record_places else f"Option<Vec<{self.rust_type(kind.element)}>>"if name in self.owned_local_lists else f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()]
+        data=[f"let mut {slot}:"+(f"Option<{matrix_type(self,self.owned_matrices[name].tree)}>"if name in self.owned_matrices else f"Option<{physical_type(self,self.record_places[name])}>"if name in self.record_places else f"Option<Vec<{self.rust_type(kind.element)}>>"if name in self.owned_local_lists else f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()if not owned_receiver(self.model,self.plan,name)]
         references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
         return "\n".join(data+references)
 
@@ -2769,7 +2790,10 @@ class Emitter:
             kind=shape(self.plan.arguments[name]);argument=f"class_argument_{i}"
             from .native_value_classes import borrowed_self
             reference=borrowed_self(self.model,self.plan,name,kind)
-            parameters.append(f"{argument}:"+('&'if reference else'')+self.rust_type(kind))
+            from .native_owned_object_places import receiver as owned_receiver
+            mutable=owned_receiver(self.model,self.plan,name)
+            parameters.append(f"{argument}:"+('&mut 'if mutable else'&'if reference else'')+self.rust_type(kind))
+            if mutable:continue
             captured=self.model.lexical.environments.get(self.model.lexical.scope(self.plan))
             if captured is not None and name in captured.fields:continue
             stored=self.model.namespace.local_kind(self.plan,name)or kind
@@ -2837,6 +2861,8 @@ def _class_layouts(model,emitter):
         if not owner.used:continue
         from .native_copy_scalar_fields import selected,load
         copied=selected(model,owner)
+        from .native_owned_object_places import selected as object_owned
+        owned_object=object_owned(model,owner)
         from .native_value_classes import selected as value_selected
         unboxed=value_selected(model,owner)
         from .native_class_identity_demand import token as identity_token,elided as identity_elided
@@ -2856,6 +2882,9 @@ def _class_layouts(model,emitter):
             result.append(f"#[derive(Clone)]\nstruct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=ClassData_{owner.index};"
                           f"impl ClassData_{owner.index}{{fn borrow(&self)->&Self{{self}}fn borrow_mut(&self)->&Self{{self}}}}"
                           f"impl AsRef<ClassData_{owner.index}> for ClassData_{owner.index}{{fn as_ref(&self)->&Self{{self}}}}")
+        elif owned_object:
+            result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=ClassData_{owner.index};"
+                          f"impl ClassData_{owner.index}{{fn borrow(&self)->&Self{{self}}fn borrow_mut(&mut self)->&mut Self{{self}}}}")
         elif copied:
             result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<ClassData_{owner.index}>;"
                           f"impl ClassData_{owner.index}{{fn borrow(&self)->&Self{{self}}fn borrow_mut(&self)->&Self{{self}}}}")
@@ -2875,7 +2904,7 @@ def _class_layouts(model,emitter):
             result.append(f"fn class_get_{owner.index}_{i}(value:{argument})->Result<{emitter.rust_type(shape(value.cell))},String>{{{getter}}}")
         field_runtime=owned_field_runtime(model,owner,emitter)
         if field_runtime:result.append(field_runtime)
-        if not identity_elided(model,owner):
+        if not identity_elided(model,owner)and not owned_object:
             identity='self.class_value_identity'if unboxed else'Rc::as_ptr(self)as usize'
             result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<{owner.module_name}.{owner.node.name} object at 0x{{:x}}>\",{identity})}}}}")
         constructor=owner.methods.get("__init__")
@@ -2890,13 +2919,14 @@ def _class_layouts(model,emitter):
         initialize=",".join(f"field_{i}:"+('std::cell::Cell::new('+packed_initial(shape(fields[i].cell))+')'if packed else'std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields)))
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
         if has_identity:initialize='class_value_identity'+(','+initialize if initialize else'')
-        body=(f"let object=ClassData_{owner.index}{{{initialize}}};"if unboxed else
+        body=(f"let mut object=ClassData_{owner.index}{{{initialize}}};"if owned_object else
+              f"let object=ClassData_{owner.index}{{{initialize}}};"if unboxed else
               f"let object=Rc::new(ClassData_{owner.index}{{{initialize}}});"if copied else
               f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));")
         body+=gc_registration(model,owner)
         if constructor:
             suffix="?;"if synchronous(model,constructor)else".await?;"
-            receiver='&object'if unboxed else'object.clone()'
+            receiver='&mut object'if owned_object else'&object'if unboxed else'object.clone()'
             body+=f"class_function_{constructor.index}(class_scope.clone(),{receiver}"+(","+",".join(args)if args else"")+ ")"+suffix
         if synchronous(model,constructor):
             result.append(f"fn class_construct_{owner.index}({signature})->ClassResult<ClassHandle_{owner.index}>{{{body}Ok(object)}}")
@@ -2949,6 +2979,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_context_effects(model)
         from .native_owned_class_lists import prepare as prepare_owned_fields
         prepare_owned_fields(model)
+        from .native_owned_object_places import prepare as prepare_owned_objects
+        prepare_owned_objects(model)
         from .native_value_parameter_borrows import prepare as prepare_parameter_borrows
         prepare_parameter_borrows(model)
         from .native_class_reference_borrows import prepare as prepare_class_reference_borrows
