@@ -2144,9 +2144,9 @@ class Emitter:
             values=[self.coerce(value,shape(callee.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
         if constructor is not None:
-            from .native_value_classes import selected as value_selected
+            from .native_class_identity_demand import token as identity_token
             prefix=self.constructor_context_arguments(constructor,defining_class)
-            if value_selected(self.model,constructor):
+            if identity_token(self.model,constructor):
                 identity=self.fresh()
                 setup.append(f'let {identity}='+self.at('class_value_next_id()',node)+';')
                 prefix.append(identity)
@@ -2825,6 +2825,8 @@ def _class_layouts(model,emitter):
         copied=selected(model,owner)
         from .native_value_classes import selected as value_selected
         unboxed=value_selected(model,owner)
+        from .native_class_identity_demand import token as identity_token,elided as identity_elided
+        has_identity=identity_token(model,owner)
         from .native_packed_value_fields import selected as packed_selected,initial as packed_initial,raw as packed_raw
         packed=packed_selected(model,owner)
         fields=list(owner.fields.values())
@@ -2836,7 +2838,7 @@ def _class_layouts(model,emitter):
         if metadata_runtime:result.append(metadata_runtime)
         if extra_member:members=extra_member+(","+members if members else"")
         if unboxed:
-            members='class_value_identity:usize'+(','+members if members else'')
+            if has_identity:members='class_value_identity:usize'+(','+members if members else'')
             result.append(f"#[derive(Clone)]\nstruct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=ClassData_{owner.index};"
                           f"impl ClassData_{owner.index}{{fn borrow(&self)->&Self{{self}}fn borrow_mut(&self)->&Self{{self}}}}"
                           f"impl AsRef<ClassData_{owner.index}> for ClassData_{owner.index}{{fn as_ref(&self)->&Self{{self}}}}")
@@ -2857,20 +2859,21 @@ def _class_layouts(model,emitter):
             result.append(f"fn class_get_{owner.index}_{i}(value:{argument})->Result<{emitter.rust_type(shape(value.cell))},String>{{{getter}}}")
         field_runtime=owned_field_runtime(model,owner,emitter)
         if field_runtime:result.append(field_runtime)
-        identity='self.class_value_identity'if unboxed else'Rc::as_ptr(self)as usize'
-        result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<{owner.module_name}.{owner.node.name} object at 0x{{:x}}>\",{identity})}}}}")
+        if not identity_elided(model,owner):
+            identity='self.class_value_identity'if unboxed else'Rc::as_ptr(self)as usize'
+            result.append(f"impl ClassDisplay for ClassHandle_{owner.index}{{fn class_str(&self)->String{{format!(\"<{owner.module_name}.{owner.node.name} object at 0x{{:x}}>\",{identity})}}}}")
         constructor=owner.methods.get("__init__")
         params=[];args=[]
         if constructor:
             for i,name in enumerate(constructor.signature.parameters[1:]):
                 params.append(f"argument_{i}:{emitter.rust_type(shape(constructor.arguments[name]))}")
                 args.append(f"argument_{i}")
-        if unboxed:params.insert(0,'class_value_identity:usize')
+        if has_identity:params.insert(0,'class_value_identity:usize')
         if extra_parameter:params.insert(0,extra_parameter)
         signature="class_scope:ClassScope"+(","+",".join(params)if params else"")
         initialize=",".join(f"field_{i}:"+('std::cell::Cell::new('+packed_initial(shape(fields[i].cell))+')'if packed else'std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields)))
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
-        if unboxed:initialize='class_value_identity'+(','+initialize if initialize else'')
+        if has_identity:initialize='class_value_identity'+(','+initialize if initialize else'')
         body=(f"let object=ClassData_{owner.index}{{{initialize}}};"if unboxed else
               f"let object=Rc::new(ClassData_{owner.index}{{{initialize}}});"if copied else
               f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));")
@@ -2883,7 +2886,8 @@ def _class_layouts(model,emitter):
             result.append(f"fn class_construct_{owner.index}({signature})->ClassResult<ClassHandle_{owner.index}>{{{body}Ok(object)}}")
         else:
             result.append(f"fn class_construct_{owner.index}({signature})->ClassFuture<ClassHandle_{owner.index}>{{Box::pin(async move{{{body}Ok(object)}})}}")
-    if getattr(getattr(model,'value_classes',None),'selected',()):
+    from .native_class_identity_demand import runtime_needed as identity_runtime_needed
+    if identity_runtime_needed(model):
         from .native_value_classes import RUNTIME
         result.insert(0,RUNTIME)
     return "\n".join(result)
@@ -2923,6 +2927,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         classify(model)
         from .native_value_classes import prepare as prepare_value_classes
         prepare_value_classes(model)
+        from .native_class_identity_demand import prepare as prepare_identity_demand
+        prepare_identity_demand(model)
         from .native_owned_class_lists import prepare as prepare_owned_fields
         prepare_owned_fields(model)
         from .native_value_parameter_borrows import prepare as prepare_parameter_borrows

@@ -70,10 +70,10 @@ def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_lo
             bound=constructor.signature.without_receiver().bind(positional,keywords,default_emitter.captured_defaults(constructor),pack_positional=lambda members:pack_emission(emitter,constructor,members,node))
         except CallBindingError as error:raise ClassUnsupported(node,str(error))from None
         values=[emitter.coerce(value,shape(constructor.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
-    from .native_value_classes import selected as value_selected
+    from .native_class_identity_demand import token as identity_token
     prefix=emitter.constructor_context_arguments(owner,reference.code+'.clone()')
     identity_setup=''
-    if value_selected(emitter.model,owner):
+    if identity_token(emitter.model,owner):
         identity=emitter.fresh()
         identity_setup=f'let {identity}='+emitter.at('class_value_next_id()',source_call_location or node)+';'
         prefix.append(identity)

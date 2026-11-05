@@ -1688,6 +1688,23 @@ Integer fields in BigInt mode retain reference storage. This optimization does
 not specialize a class, module, library, or source name and does not remove
 constructor, callback, namespace, or error effects.
 
+An independent identity-demand certificate can omit private per-instance ID
+storage and its TLS allocator for those value classes. It uses the original
+reached source, solved contained types and canonical callable identities, with
+a closed finite source/import/callback graph and no collector or finalizer.
+Identity, display, hashing, container comparison and retained instance-method
+consumers keep ordinary identity storage. Any retained canonical `id` capability,
+or any unproved value owner, preserves every allocation in the shared logical
+ID sequence, including allocations belonging to other owners. Unrecorded calls
+are never assumed dead: their enclosing original statement must independently
+be excluded by the same reached-statement filter used by native emission.
+Unused default display implementations are omitted with the IDs; no fabricated
+identity or representation is substituted. Actual class-definition metadata,
+classmethod receiver identities, constructor/argument effects, missing-field
+errors and exception frames remain unchanged. Unproved programs keep their
+existing native representation. BigInt integer fields remain reference-backed;
+other Copy fields can use the same identity-demand proof in every integer mode.
+
 Ordinary scalar fields of a proved concrete local instance are read through its
 existing local slot without cloning the receiver. This applies to fixed-width
 integers, booleans, floats and None, while the existing getter retains missing
