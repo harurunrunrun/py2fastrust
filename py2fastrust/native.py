@@ -157,6 +157,7 @@ class _Function:
     signature: FunctionSignature | None = None
     global_names: frozenset[str] | None = None
     absent_globals: set[str] = field(default_factory=set)
+    services: object = None
 
 
 class _FunctionPlans(dict):
@@ -787,9 +788,14 @@ class _Generator:
             self.function.absent_globals.update(variant.absent_globals)
             if isinstance(reference_node,ast.Name)and reference_node.id not in self.function.local_names:
                 self.function.required.add(reference_node.id)
-        if self.function_input:
+        from .native_service_demands import demand as service_demand
+        services = service_demand(variant)
+        if self.function is not None:
+            assert service_demand(self.function).contains(services), "caller service proof misses an actual source callee"
+        if self.function_input and services.input:
             arguments.append("&mut native_input")
-        arguments.append("&mut native_output")
+        if services.output:
+            arguments.append("&mut native_output")
         scope, line = self.scope_code(), self.line_code(node)
         call = f"{variant.rust_name}({', '.join(arguments)})"
         trace = f"{self.expression_trace_id}(error)" if self.expression_trace_id is not None else "error"
@@ -1998,8 +2004,10 @@ class _Specializations:
         if rust_name in self.names:
             rust_name += f"_context_{len(self.names)}"
         self.names.add(rust_name)
+        from .native_service_demands import prepare as service_registry
+        services = service_registry(self).demand(function.node)
         variant = replace(function, rust_name=rust_name, dependencies=set(), required=set(), imports=set(),
-                          global_bindings=globals_at_call,global_names=names,absent_globals=set())
+                          global_bindings=globals_at_call,global_names=names,absent_globals=set(),services=services)
         local = self.generator_type(self.bits, self.functions, variant, self.function_input,
                            self.constructors, self)
         local.string_mode = self.string_mode
@@ -2036,9 +2044,10 @@ class _Specializations:
             else:
                 signature.append(f"{argument}: {rust_type(kind)}")
                 initializers.append(f"{local.bind(name, kind, environment)} = {argument};")
-        if self.function_input:
+        if self.function_input and services.input:
             signature.append("mut native_input: &mut NativeInput")
-        signature.append("mut native_output: &mut String")
+        if services.output:
+            signature.append("mut native_output: &mut String")
         body, remaining = local.statements(function.node.body, environment)
         if remaining is not None:local.return_kinds.add("none")
         from .native_expression_results import join_layouts

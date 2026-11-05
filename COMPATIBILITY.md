@@ -2108,3 +2108,18 @@ rounding and user-defined `__round__`/`__index__` dispatch remain unsupported.
 Finite absent attributes of sealed builtin values raise `AttributeError`; such
 an error arm does not prevent a later inference pass from adding a source
 instance alternative.
+
+
+Ordinary native helpers receive only the input/output services required by their
+original-source body and conservative transitive call facts. Pure helpers can
+have only their Python arguments; output-only helpers keep the output buffer.
+The canonical `input()` operation also retains output because it flushes pending
+output before reading. Captured aliases and every solved callable alternative
+contribute their actual service demand. Unknown identities, incomplete data or
+callback protocols, and unregistered source operations retain the previous
+service ABI.
+
+This changes trailing compiler service arguments, not Python argument capture,
+default binding, global callable generations, source call execution or exception
+frames. A service-demand fact grants no additional no-suspension or ownership
+eligibility. Frame-based helpers retain their separate calling convention.
