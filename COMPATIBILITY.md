@@ -2123,3 +2123,14 @@ This changes trailing compiler service arguments, not Python argument capture,
 default binding, global callable generations, source call execution or exception
 frames. A service-demand fact grants no additional no-suspension or ownership
 eligibility. Frame-based helpers retain their separate calling convention.
+
+Checked source-binding access plans separate immediate-call presence from stored
+callable payloads. A closed same-generation class context can check an immutable
+module function binding before explicit arguments without cloning an unused
+module capture. The original slot and first-class callable representation remain
+unchanged; saved aliases, defaults, actual import generations, missing-name
+errors and argument effects keep their order. Unproved entries, externally
+called factories, builtin fallback, captured environments and namespace/lifetime
+observers retain their existing typed payload capture. Presence and owned reads
+use distinct accessors even for the same binding. This does not prove early
+publication or replace mutable namespace storage with readonly cells.

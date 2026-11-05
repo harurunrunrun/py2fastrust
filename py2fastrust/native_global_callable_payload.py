@@ -123,6 +123,11 @@ def invoke(emitter,node,request,site,callee,positional,keywords,wanted):
     def error(message):
         return emitter.at('Err::<'+emitter.rust_type(wanted)+',String>('+_string(message)+'.to_owned())',node)
     body=emit_definition_body(emitter,node,site,request.layout.definition,positional,keywords,wanted,error)
+    from .native_binding_places import CapturedBinding
+    if isinstance(callee,CapturedBinding):
+        # Access-plan selection already proved the exact same-function entry
+        # and retained its actual defining anchor.  No payload is reconstructed.
+        return _Expression('{let _='+callee.code+';'+body+'}',wanted)
     from .native_class_binding_contexts import same_function_entry
     context=(''if same_function_entry(emitter.model,emitter.plan,node,provider.plans[request.layout.definition])else
              provider.call_context_setup(emitter,provider.plans[request.layout.definition]))
@@ -143,4 +148,6 @@ def runtime(model):
               f'let class_payload_value=class_payload_globals.value_{slot}.as_ref().ok_or_else(||{message}.to_owned())?;'
               'Ok('+captured+')}')
         declarations.append(code)
-    return '\n'.join(declarations)
+    from .native_binding_places import runtime as binding_runtime
+    checked=binding_runtime(model)
+    return '\n'.join(declarations+([checked]if checked else[]))

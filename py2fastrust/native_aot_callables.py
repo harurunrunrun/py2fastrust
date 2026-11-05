@@ -513,7 +513,9 @@ def emit_call(emitter,node):
         immediate=global_call=callee=None;before=''
     else:
         with capture_callee(emitter,node.func)as immediate,capture_global(emitter,node.func)as global_call:
-            before,callee=emitter.capture(emitter.expression(node.func))
+            from .native_binding_places import capture as capture_binding
+            selected=capture_binding(emitter,node,global_call)
+            before,callee=selected if selected is not None else emitter.capture(emitter.expression(node.func))
     lines.append(before)
     arguments=normalize_call(node)
     positional=[];keywords=[]
