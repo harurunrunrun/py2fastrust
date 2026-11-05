@@ -273,10 +273,24 @@ class ScalarHeapSourceTests(unittest.TestCase):
                 self.assertIn('.borrow()',bodies[name])
                 self.assertIn('IndexError: list index out of range',bodies[name])
 
-    def test_actual_field_read_remains_before_constant_result(self):
+    def test_constant_result_keeps_presence_or_independent_storage_proof(self):
         result,registry=self.capture(CASES['literal_constructor_field'][0],'i64')
-        self.assertIn('field_0.get()',result.rust_source)
-        self.assertIn('class_scalar_actual.map(',result.rust_source)
+        from py2fastrust.native_constant_field_projection import selected
+        from py2fastrust.native_packed_value_fields import selected as packed
+        from py2fastrust.native_class_identity_demand import elided
+        owner=next(owner for owner in registry.model.classes.values()if owner.node.name=='Scale')
+        index=list(owner.fields).index('base')
+        if selected(registry.model,owner,index):
+            self.assertTrue(packed(registry.model,owner))
+            self.assertTrue(elided(registry.model,owner))
+            tokens,comments,pairs=_lex(result.rust_source)
+            data=next(result.rust_source[item.start:item.end]
+                      for item in _parse(result.rust_source,tokens,comments,pairs)
+                      if item.kind=='struct'and item.name=='ClassData_'+str(owner.index))
+            self.assertNotIn('field_'+str(index)+':',data)
+        else:
+            self.assertIn('field_'+str(index)+'.get()',result.rust_source)
+            self.assertIn('class_scalar_actual.map(',result.rust_source)
         self.assertIn('(97_i128 as NativeInt)',result.rust_source)
 
     def test_other_context_and_alias_changes_keep_unknown_values(self):

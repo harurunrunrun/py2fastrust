@@ -2871,7 +2871,8 @@ def _class_layouts(model,emitter):
         packed=packed_selected(model,owner)
         fields=list(owner.fields.values())
         from .native_owned_class_lists import selected as owned_field_selected,runtime as owned_field_runtime,physical_type as owned_field_type
-        members=",".join(f"field_{i}:"+(f"Option<{owned_field_type(model,owner,i,emitter)}>"if owned_field_selected(model,owner,i)else f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields))
+        from .native_constant_field_projection import selected as constant_selected,read as constant_read
+        members=",".join(f"field_{i}:"+(f"Option<{owned_field_type(model,owner,i,emitter)}>"if owned_field_selected(model,owner,i)else f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields)if not constant_selected(model,owner,i))
         extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
         from .native_static_class_metadata import layout as metadata_layout
         extra_member,extra_initialize,metadata_runtime=metadata_layout(model,owner,extra_member,extra_initialize)
@@ -2898,9 +2899,12 @@ def _class_layouts(model,emitter):
             message=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{value.name}'")
             argument=f'impl AsRef<ClassHandle_{owner.index}>'if unboxed else f'&ClassHandle_{owner.index}'
             receiver='value.as_ref()'if unboxed else'value'
-            getter='Ok('+packed_raw(receiver,i)+')'if packed else load(model,owner,receiver,i)+f'.ok_or_else(||{message}.to_owned())'
-            from .native_scalar_heap_constants import getter as constant_getter
-            getter=constant_getter(emitter,owner,i,getter)
+            projected=constant_read(model,owner,receiver,i)
+            if projected is not None:getter='Ok('+projected+')'
+            else:
+                getter='Ok('+packed_raw(receiver,i)+')'if packed else load(model,owner,receiver,i)+f'.ok_or_else(||{message}.to_owned())'
+                from .native_scalar_heap_constants import getter as constant_getter
+                getter=constant_getter(emitter,owner,i,getter)
             result.append(f"fn class_get_{owner.index}_{i}(value:{argument})->Result<{emitter.rust_type(shape(value.cell))},String>{{{getter}}}")
         field_runtime=owned_field_runtime(model,owner,emitter)
         if field_runtime:result.append(field_runtime)
@@ -2916,7 +2920,7 @@ def _class_layouts(model,emitter):
         if has_identity:params.insert(0,'class_value_identity:usize')
         if extra_parameter:params.insert(0,extra_parameter)
         signature="class_scope:ClassScope"+(","+",".join(params)if params else"")
-        initialize=",".join(f"field_{i}:"+('std::cell::Cell::new('+packed_initial(shape(fields[i].cell))+')'if packed else'std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields)))
+        initialize=",".join(f"field_{i}:"+('std::cell::Cell::new('+packed_initial(shape(fields[i].cell))+')'if packed else'std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields))if not constant_selected(model,owner,i))
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
         if has_identity:initialize='class_value_identity'+(','+initialize if initialize else'')
         body=(f"let mut object=ClassData_{owner.index}{{{initialize}}};"if owned_object else
@@ -2989,6 +2993,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_packed_fields(model)
         from .native_scalar_heap_constants import prepare as prepare_scalar_constants
         prepare_scalar_constants(model)
+        from .native_constant_field_projection import prepare as prepare_constant_projection
+        prepare_constant_projection(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])

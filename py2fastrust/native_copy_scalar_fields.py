@@ -15,6 +15,9 @@ def selected(model,owner):
 
 
 def load(model,owner,receiver,index):
+    from .native_constant_field_projection import read
+    projected=read(model,owner,receiver,index)
+    if projected is not None:return 'Some('+projected+')'
     from .native_packed_value_fields import selected as packed,raw
     if packed(model,owner):return 'Some('+raw(receiver,index)+')'
     operation='get()'if selected(model,owner)else'clone()'
@@ -22,6 +25,9 @@ def load(model,owner,receiver,index):
 
 
 def store(model,owner,receiver,index,value):
+    from .native_constant_field_projection import store as project_store
+    projected=project_store(model,owner,receiver,index,value)
+    if projected is not None:return projected
     from .native_packed_value_fields import selected as packed
     if packed(model,owner):return f'({receiver}).borrow().field_{index}.set({value});'
     if selected(model,owner):return f'({receiver}).borrow().field_{index}.set(Some({value}));'

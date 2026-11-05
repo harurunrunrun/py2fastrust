@@ -1721,9 +1721,23 @@ original getter succeeds. It retains receiver evaluation, field-presence errors,
 constructors, context operations, callbacks and source exception frames. A list
 whose every possible inserted element agrees can supply a successful-read value
 fact without assuming a nonempty stack or suppressing its runtime lookup.
-Class metadata and physical field slots remain unchanged. Ordinary-path value
+Without a separate storage proof, class metadata and physical field slots remain
+unchanged. Ordinary-path value
 fact integration and proofs eliminating redundant lookups/calls remain unfinished;
 this foundation does not claim their removal or a performance target.
+
+A constant scalar field can omit its physical Copy slot only when independent
+immutable-value, definite-initialization and observer certificates also hold.
+Logical field names/indices and actual class metadata remain intact. Original
+receiver/RHS expressions, constructor/default calls, callbacks and exceptions
+still execute; the erased getter returns a normalized typed constant after its
+actual receiver is captured. Missing or conditionally initialized fields,
+class-member fallbacks, publication-time mutation, deletion, reflection,
+unproved defaults/contexts and reference-backed integers keep their storage.
+Canonical source/builtin identities come from solved callable payloads and
+official bindings, including finite mixed callees; spelling alone never proves
+an observation-safe builtin. This storage change does not establish removal of
+the retained source/runtime calls or a performance target.
 
 Ordinary scalar fields of a proved concrete local instance are read through its
 existing local slot without cloning the receiver. This applies to fixed-width
