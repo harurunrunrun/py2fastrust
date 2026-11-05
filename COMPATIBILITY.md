@@ -2198,3 +2198,16 @@ value objects need no per-element metadata reference. A zero-sized carrier uses
 the same pinned actual class reference; class namespace changes and both clone
 protocols retain their behavior. Unproved generations keep the existing retained
 metadata representation.
+
+Immediate binary, unary and rich-comparison calls may reuse the actual class
+reference already captured for that exact source method lookup. The original
+signature and defaults are bound before matching the source definition and its
+class owner; native specialization keeps that source identity. This removes a
+duplicate metadata projection without changing the captured callable, module
+generation, argument order, reflected phases, source body or error propagation.
+Unmatched targets and descriptor roles retain their existing context transport.
+
+Direct linked-constructor choices are recomputed as binding analysis converges.
+A class alias whose stored kind gains other alternatives uses the existing
+finite captured-call plan, preserving the saved actual class reference and
+non-callable errors after argument evaluation.

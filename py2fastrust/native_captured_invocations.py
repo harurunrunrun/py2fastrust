@@ -27,7 +27,7 @@ class BoundInvocation:
                 + (',' + ','.join(self.values) if self.values else '') + ')')
 
 
-def bind_definition(emitter, node, definition, positional, keywords):
+def bind_definition(emitter, node, definition, positional, keywords, *, captured_class_context=None):
     """Use the original default/signature binder before native target choice."""
     from .call_semantics import CallBindingError
     from .native_classes import ClassUnsupported, shape
@@ -59,7 +59,8 @@ def bind_definition(emitter, node, definition, positional, keywords):
     from .native_call_context_effects import unused_parent
     from .native_class_binding_contexts import invocation as class_context_argument
     context = class_context_argument(emitter.model, target,
-        positional[0].code if positional else None, caller=emitter.plan, node=node)
+        positional[0].code if positional else None, caller=emitter.plan, node=node,
+        captured_class_context=captured_class_context)
     lexical = ((',class_selected_environment.environment.clone()'
                 if is_lambda or has_instance else ',class_selected_environment.clone()')
                if parent and not unused_parent(emitter.model, target) else '')

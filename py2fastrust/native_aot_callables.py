@@ -554,14 +554,14 @@ def emit_call(emitter,node):
     return _Expression("{"+''.join(lines)+result.code+"}",wanted)
 
 
-def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted,error,*,source_call_location=None):
+def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted,error,*,source_call_location=None,captured_class_context=None):
     """Bind and call an original source body in its already selected context."""
     from .native_classes import ClassUnsupported,shape
     provider=emitter.model.callable_cells
     target=provider.plans[definition]
     if definition in site.errors:return error(site.errors[definition])
     from .native_captured_invocations import bind_definition
-    bound=bind_definition(emitter,node,definition,positional,keywords)
+    bound=bind_definition(emitter,node,definition,positional,keywords,captured_class_context=captured_class_context)
     target=bound.target
     invocation=bound.call_code(emitter)
     from .native_class_calls import call
@@ -569,7 +569,7 @@ def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted
     return emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)
 
 
-def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_call_location=None):
+def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_call_location=None,captured_class_context=None):
     """Invoke a captured callable without replaying any source expression."""
     from .native import _Expression,_string
     from .native_classes import ClassUnsupported,shape
@@ -595,7 +595,7 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
             from .native_callable_carriers import dispatch,bind_payload
             def invoke_target(target,payload):
                 if isinstance(target,int):
-                    result=emit_definition_body(emitter,node,site,target,positional,keywords,wanted,error,source_call_location=source_call_location)
+                    result=emit_definition_body(emitter,node,site,target,positional,keywords,wanted,error,source_call_location=source_call_location,captured_class_context=captured_class_context)
                     from .native_class_binding_contexts import same_function_entry
                     context=(''if same_function_entry(emitter.model,emitter.plan,node,provider.plans[target])else
                              provider.call_context_setup(emitter,provider.plans[target]))

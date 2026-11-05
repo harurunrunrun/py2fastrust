@@ -160,7 +160,9 @@ class Operators:
                 before,function=emitter.capture(function);setup+=before
                 args=[Expression(value.code+'.clone()',value.kind)for value in ([second,first]if phase.reverse else[first,second])]
                 from .native_aot_callables import emit_values
-                outcome=emit_values(emitter,node,phase.site,function,args,[],shape(phase.site.result))
+                from .native_class_binding_contexts import CapturedClassContext
+                context=CapturedClassContext(phase.member,Expression(reference,ClassReferenceType(owner.index)))
+                outcome=emit_values(emitter,node,phase.site,function,args,[],shape(phase.site.result),captured_class_context=context)
                 before,outcome=emitter.capture(outcome);setup+=before
                 def select(kind,code):
                     if kind==NOT_IMPLEMENTED:return step(index+1)
@@ -219,7 +221,9 @@ class Operators:
                 setup=f'let {reference}={{{current.code}.borrow().class_definition.clone()}};'
                 fn=self.model.class_namespaces.emit_get(emitter,node,Expression(reference,ClassReferenceType(owner.index)),phase.member)
                 before,fn=emitter.capture(fn);setup+=before
-                result=emit_values(emitter,node,phase.site,fn,[current],[],wanted)
+                from .native_class_binding_contexts import CapturedClassContext
+                context=CapturedClassContext(phase.member,Expression(reference,ClassReferenceType(owner.index)))
+                result=emit_values(emitter,node,phase.site,fn,[current],[],wanted,captured_class_context=context)
                 return '{'+setup+result.code+'}'
             if planned.fallback=='error':
                 template='TypeError: bad operand type for unary '+UNARY[type(operator)][1]+": '{}'"
@@ -303,7 +307,9 @@ class Operators:
                 fn=self.model.class_namespaces.emit_get(emitter,node,Expression(reference,ClassReferenceType(phase.member.owner.index)),phase.member)
                 before,fn=emitter.capture(fn);setup+=before
                 args=[Expression(value.code+'.clone()',value.kind)for value in ([second,first]if phase.reverse else[first,second])]
-                outcome=emit_values(emitter,node,phase.site,fn,args,[],shape(phase.site.result));before,outcome=emitter.capture(outcome);setup+=before
+                from .native_class_binding_contexts import CapturedClassContext
+                context=CapturedClassContext(phase.member,Expression(reference,ClassReferenceType(phase.member.owner.index)))
+                outcome=emit_values(emitter,node,phase.site,fn,args,[],shape(phase.site.result),captured_class_context=context);before,outcome=emitter.capture(outcome);setup+=before
                 def select(kind,code):
                     if kind==NOT_IMPLEMENTED:return step(rank+1)
                     value=Expression('('+code+').clone()',kind)

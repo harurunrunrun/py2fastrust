@@ -20,6 +20,25 @@ class Binding:
     definition: int
 
 
+@dataclass(frozen=True)
+class CapturedClassContext:
+    """An owned actual-class capture already used for this method lookup."""
+    member: object
+    reference: object
+
+    def argument(self, model, plan, context_owner):
+        registry = model.class_binding_contexts
+        member = self.member
+        from .native_module_linking import ClassReferenceType
+        if (member.owner is not context_owner or member.descriptor != 'function'
+                or member.plan is None
+                or registry.source(member.plan) is not registry.source(plan)
+                or self.reference.kind != ClassReferenceType(context_owner.index)
+                or model.class_namespaces.members.get((context_owner.index, member.name)) is not member):
+            return None
+        return ',&(' + self.reference.code + ')'
+
+
 class Registry:
     def __init__(self, model):
         self.model = model
@@ -344,7 +363,7 @@ def parameter(model, plan):
     return ',class_defining_class:&ClassClassRef' if owner(model, plan) is not None else ''
 
 
-def invocation(model, plan, receiver, *, caller=None, node=None):
+def invocation(model, plan, receiver, *, caller=None, node=None, captured_class_context=None):
     context_owner = owner(model, plan)
     if context_owner is None:
         return ''
@@ -354,6 +373,10 @@ def invocation(model, plan, receiver, *, caller=None, node=None):
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node or plan.node, 'a native class context has no certified forwarding entry', proof='actual defining-class context provenance')
         return ',class_defining_class'
+    if captured_class_context is not None:
+        captured = captured_class_context.argument(model, plan, context_owner)
+        if captured is not None:
+            return captured
     from .native_classes import shape
     from .native_value_classes import borrowed_self
     name = plan.runtime_parameters[0]

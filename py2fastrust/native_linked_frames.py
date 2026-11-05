@@ -262,6 +262,10 @@ class LinkedModel(Model):
 
     def call(self,plan,node,environment):
         from .call_semantics import normalize_call,CallBindingError
+        # The callable can widen during the fixed-point analysis. A direct
+        # constructor certificate belongs to the current visit, not an earlier
+        # iteration that had fewer possible bindings.
+        self.module_linker.class_calls.pop((plan.index,id(node)),None)
         known=self.module_linker.pure_cell(plan,node.func,environment)
         if known is not None and known.root().tag is None and not self.final:
             self.expression(plan,node.func,environment)
