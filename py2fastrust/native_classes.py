@@ -2937,6 +2937,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_value_classes(model)
         from .native_class_identity_demand import prepare as prepare_identity_demand
         prepare_identity_demand(model)
+        from .native_call_context_effects import prepare as prepare_context_effects
+        prepare_context_effects(model)
         from .native_owned_class_lists import prepare as prepare_owned_fields
         prepare_owned_fields(model)
         from .native_value_parameter_borrows import prepare as prepare_parameter_borrows

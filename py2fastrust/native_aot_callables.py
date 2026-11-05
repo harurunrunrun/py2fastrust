@@ -565,7 +565,8 @@ def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted
     from .native_frame_specialization import native_target
     target=native_target(emitter.model,target,bound.by_name)
     values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
-    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent else"")+(","+",".join(values)if values else"")+")"
+    from .native_call_context_effects import unused_parent
+    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent and not unused_parent(emitter.model,target)else"")+(","+",".join(values)if values else"")+")"
     from .native_class_calls import call
     from .native_source_returns import emit_result
     return emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)

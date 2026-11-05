@@ -295,6 +295,8 @@ class LexicalCells:
     def environment_type(scope):return f'ClassLexicalEnvironment{scope}'
 
     def signature(self,plan):
+        from .native_call_context_effects import unused_parent
+        if unused_parent(self.model,plan):return ''
         parent=self.parent_scope(plan)
         return ''if not parent else f',class_lexical_parent:std::rc::Rc<{self.environment_type(parent)}>'
 

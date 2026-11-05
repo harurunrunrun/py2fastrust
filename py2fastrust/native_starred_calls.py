@@ -493,7 +493,8 @@ class ExpandedCalls:
         for parameter in signature.keyword_only:
             value = supplied.get(parameter, defaults.get(parameter))
             arguments.append(emitter.coerce(value, shape(target.arguments[parameter]), node))
-        environment = ((",class_selected_environment.environment.clone()" if is_lambda else ",class_selected_environment.clone()") if parent else "")
+        from .native_call_context_effects import unused_parent
+        environment = ((",class_selected_environment.environment.clone()" if is_lambda else ",class_selected_environment.clone()") if parent and not unused_parent(self.model,target) else "")
         invocation = emitter.function_name(target) + "(class_scope.clone()" + environment + ("," + ",".join(arguments) if arguments else "") + ")"
         result = emitter.coerce(Expression(call(emitter, invocation, target, node), shape(target.result)), wanted, node)
         return "{" + checks + result + "}"

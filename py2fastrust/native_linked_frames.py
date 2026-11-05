@@ -72,6 +72,9 @@ class LinkedCallableCells(CallableCells):
         return f"ClassFunctionRef::F{self.definition(plan)}(({owner}).clone(),{self.model.module_linker.capture_context(emitter)})"
 
     def call_context_setup(self,emitter,target):
+        from .native_call_context_effects import incoming_module
+        plan=self.plans[target]if isinstance(target,int)else target
+        if not incoming_module(self.model,plan):return ""
         return self.model.module_linker.call_context(emitter,"class_defining_module")
 
     def call_payload_layout(self,definition):
@@ -333,6 +336,8 @@ class LinkedEmitter(Emitter):
 
     def prepare_call_context(self,callee,receiver,constructor,defining_module=None):
         from .native_classes import InstanceType
+        from .native_call_context_effects import incoming_module
+        if constructor is None and callee is not None and not incoming_module(self.model,callee):return ""
         if defining_module is not None:return f"let class_scope=class_scope.with_module({defining_module});"
         if receiver is not None and isinstance(receiver.kind,InstanceType):
             return f"let class_scope=class_scope.with_module({receiver.code}.borrow().class_definition.module.clone());"
