@@ -2000,3 +2000,16 @@ initial certificate covers exact fixed-width integers, bool, float and None;
 BigInt integers, unions, non-Copy values, captured or mutable parameters,
 suspended/recursive functions and generator-expression bodies retain their
 existing storage.
+
+Immutable plain class bindings can supply an explicit borrowed defining-class
+context to certified synchronous instance methods and their closed same-module
+factories. The certificate uses original binding producers and every reached
+entry, rather than a lexical class number: failed imports can execute the same
+definition with different module globals. Eligible own-class construction and
+immediate builtin type tests use that actual context without another module
+global lookup. Callee lookup, arguments, defaults, constructor bodies and source
+errors retain their original order. A by-value receiver gets an independent
+metadata snapshot before its value is moved into the call. Mutable builtins or
+class bindings, unbound or retained method entries, externally called factories
+and unproved publication paths keep their existing native binding/context code.
+This proof changes neither semantic class identity nor backend selection.

@@ -319,7 +319,8 @@ class LinkedEmitter(Emitter):
 
     def constructor_context_arguments(self,constructor,defining_class):
         if defining_class is None:raise ClassUnsupported(constructor.node,"a linked class call needs its captured defining class object")
-        return [defining_class]
+        from .native_class_binding_contexts import borrowed_constructor
+        return ['&('+defining_class+')'if borrowed_constructor(self.model,constructor)else'('+defining_class+').clone()']
 
     def truth(self,value,node=None):
         from .native_typing_metadata import reject_observation
@@ -540,9 +541,13 @@ class LinkedEmitter(Emitter):
         if record is not None:return record
         owner=self.model.module_linker.class_calls.get((self.plan.index,id(node)))
         if owner is not None:
-            before,reference=self.capture(self.expression(node.func))
+            from .native_class_binding_contexts import direct_constructor
+            same_context=direct_constructor(self,node,owner)
+            if same_context:
+                before='';reference=Expression('class_defining_class',ClassReferenceType(owner.index))
+            else:before,reference=self.capture(self.expression(node.func))
             result=self.call_user(node,owner.methods.get('__init__'),constructor=owner,
-                defining_module=f"{reference.code}.module.clone()",defining_class=f"{reference.code}.clone()")
+                defining_module=None if same_context else f"{reference.code}.module.clone()",defining_class=reference.code)
             from .native_tail_constructor_result import wrap
             wrap(self,node,before)
             return Expression("{"+before+result.code+"}",result.kind)

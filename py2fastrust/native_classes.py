@@ -1962,6 +1962,9 @@ class Emitter:
                 return "{"+setup+"if "+self.truth(value,values[0])+"{"+yes+"}else{"+no+"}}"
             return Expression(combine(node.values),wanted)
         if isinstance(node,ast.Compare):
+            from .native_class_binding_contexts import comparison as class_binding_comparison
+            class_binding=class_binding_comparison(self,node,wanted)
+            if class_binding is not None:return class_binding
             custom=self.model.operators.emit_compare_expression(self,node,wanted)
             if custom is not None:return custom
             values = [node.left]+node.comparators
@@ -2180,7 +2183,9 @@ class Emitter:
             values=prefix+values
         # Constructor futures receive only explicit Python arguments. Their
         # internal __init__ future shares this logical call-stack entry.
-        invocation = name+"(class_scope.clone()"+(" ,"+",".join(values)if values else"")+")"
+        from .native_class_binding_contexts import invocation as class_context_argument
+        defining_context=class_context_argument(self.model,callee,None if receiver is None else receiver.code,caller=self.plan,node=node)if constructor is None else''
+        invocation = name+"(class_scope.clone()"+defining_context+(" ,"+",".join(values)if values else"")+")"
         from .native_class_calls import call as compiled_call
         call = compiled_call(self,invocation,callee,node)
         context=self.prepare_call_context(callee,receiver,constructor,defining_module)
@@ -2256,6 +2261,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_class_binding_contexts import instance_test
+        tested=instance_test(self,node)
+        if tested is not None:return tested
         from .native_owned_class_lists import length as owned_field_length
         owned_length=owned_field_length(self,node)
         if owned_length is not None:return owned_length
@@ -2810,7 +2818,8 @@ class Emitter:
         else:
             tail=f"Err(NativeError{{message:\"RuntimeError: invalid compiled return\".into(),line:{getattr(self.plan.node,'lineno',1)},function:{self.location_code()},frames:Vec::new()}})"
         lexical_initial=self.model.lexical.initialize(self)
-        signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+(" ,"+",".join(parameters)if parameters else"")
+        from .native_class_binding_contexts import parameter as class_context_parameter
+        signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+class_context_parameter(self.model,self.plan)+(" ,"+",".join(parameters)if parameters else"")
         from .native_class_calls import synchronous
         if synchronous(self.model,self.plan):
             return (f"fn {self.function_name(self.plan)}({signature})->ClassResult<{result}>{{\n"
@@ -2880,6 +2889,9 @@ def _class_layouts(model,emitter):
         from .native_constant_field_projection import selected as constant_selected,read as constant_read
         members=",".join(f"field_{i}:"+(f"Option<{owned_field_type(model,owner,i,emitter)}>"if owned_field_selected(model,owner,i)else f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields)if not constant_selected(model,owner,i))
         extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
+        from .native_class_binding_contexts import borrowed_constructor
+        if borrowed_constructor(model,owner)and extra_parameter=='class_definition:ClassClassRef':
+            extra_parameter='class_definition:&ClassClassRef'
         from .native_static_class_metadata import layout as metadata_layout
         extra_member,extra_initialize,metadata_runtime=metadata_layout(model,owner,extra_member,extra_initialize)
         if metadata_runtime:result.append(metadata_runtime)
@@ -2989,6 +3001,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_context_effects(model)
         from .native_callable_field_demand import prepare as prepare_callable_field_demand
         prepare_callable_field_demand(model)
+        from .native_class_binding_contexts import prepare as prepare_class_bindings
+        prepare_class_bindings(model)
         from .native_owned_class_lists import prepare as prepare_owned_fields
         prepare_owned_fields(model)
         from .native_owned_object_places import prepare as prepare_owned_objects

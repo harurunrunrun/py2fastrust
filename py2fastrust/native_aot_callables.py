@@ -502,8 +502,15 @@ def emit_call(emitter,node):
     lines=[]
     from .native_immediate_classmethod import capture_callee,invoke
     from .native_global_callable_payload import capture as capture_global,invoke as invoke_global
-    with capture_callee(emitter,node.func)as immediate,capture_global(emitter,node.func)as global_call:
-        before,callee=emitter.capture(emitter.expression(node.func))
+    from .native_class_binding_contexts import captured_constructor
+    class_constructor=captured_constructor(emitter,node,site)
+    if class_constructor is not None:
+        # Its exact actual class is already retained by the typed entry. The
+        # class-global lookup is proved present; explicit args still follow.
+        immediate=global_call=callee=None;before=''
+    else:
+        with capture_callee(emitter,node.func)as immediate,capture_global(emitter,node.func)as global_call:
+            before,callee=emitter.capture(emitter.expression(node.func))
     lines.append(before)
     arguments=normalize_call(node)
     positional=[];keywords=[]
@@ -512,6 +519,10 @@ def emit_call(emitter,node):
     for argument in arguments.keywords:
         before,value=emitter.capture(emitter.expression(argument.expression));lines.append(before);keywords.append((argument.name,value))
     wanted=emitter.kind(node)
+    if class_constructor is not None:
+        from .native_class_constructor_calls import emit as emit_constructor
+        return _Expression('{'+''.join(lines)+emit_constructor(emitter,node,class_constructor,None,
+            positional,keywords,wanted,defining_context='class_defining_class')+'}',wanted)
     result=(invoke_global(emitter,node,global_call,site,callee,positional,keywords,wanted)
             if global_call is not None and global_call.used
             else invoke(emitter,node,immediate,site,callee,positional,keywords,wanted)
@@ -542,7 +553,9 @@ def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted
     target=native_target(emitter.model,target,bound.by_name)
     values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
     from .native_call_context_effects import unused_parent
-    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent and not unused_parent(emitter.model,target)else"")+(","+",".join(values)if values else"")+")"
+    from .native_class_binding_contexts import invocation as class_context_argument
+    defining_context=class_context_argument(emitter.model,target,positional[0].code if positional else None,caller=emitter.plan,node=node)
+    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent and not unused_parent(emitter.model,target)else"")+defining_context+(","+",".join(values)if values else"")+")"
     from .native_class_calls import call
     from .native_source_returns import emit_result
     return emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)
@@ -575,7 +588,9 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
             def invoke_target(target,payload):
                 if isinstance(target,int):
                     result=emit_definition_body(emitter,node,site,target,positional,keywords,wanted,error,source_call_location=source_call_location)
-                    context=provider.call_context_setup(emitter,provider.plans[target])
+                    from .native_class_binding_contexts import same_function_entry
+                    context=(''if same_function_entry(emitter.model,emitter.plan,node,provider.plans[target])else
+                             provider.call_context_setup(emitter,provider.plans[target]))
                     return '{'+bind_payload(provider,target,payload)+context+result+'}'
                 if isinstance(target,BoundMethodTarget):
                     result=provider.bound_methods.emit(emitter,node,target,site,positional,keywords,wanted,error,source_call_location=source_call_location)

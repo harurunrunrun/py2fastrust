@@ -54,7 +54,7 @@ def analyze_invalid_direct(model,plan,node,owner,reference,arguments,positional,
     return model.remember(plan,node,site.result)
 
 
-def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_location=None):
+def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_location=None,defining_context=None):
     from .native import _string
     from .native_classes import Expression,shape,ClassUnsupported,InstanceType
     from .call_semantics import CallBindingError
@@ -71,7 +71,7 @@ def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_lo
         except CallBindingError as error:raise ClassUnsupported(node,str(error))from None
         values=[emitter.coerce(value,shape(constructor.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
     from .native_class_identity_demand import token as identity_token
-    prefix=emitter.constructor_context_arguments(owner,reference.code+'.clone()')
+    prefix=emitter.constructor_context_arguments(owner,reference.code if defining_context is None else defining_context)
     identity_setup=''
     if identity_token(emitter.model,owner):
         identity=emitter.fresh()
@@ -81,5 +81,6 @@ def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_lo
     invocation='class_construct_'+str(owner.index)+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'
     from .native_class_calls import call
     invocation=call(emitter,invocation,constructor,source_call_location or node)
-    context=emitter.prepare_call_context(constructor,None,owner,reference.code+'.module.clone()')
+    context=(''if defining_context is not None else
+             emitter.prepare_call_context(constructor,None,owner,reference.code+'.module.clone()'))
     return emitter.coerce(Expression('{'+identity_setup+context+invocation+'}',InstanceType(emitter.model.class_key(owner))),wanted,node)

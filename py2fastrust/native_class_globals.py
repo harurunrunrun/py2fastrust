@@ -414,6 +414,9 @@ def define(emitter,node):
 
 def read(emitter,node,wanted):
     from .native_classes import Expression
+    from .native_class_binding_contexts import read as class_binding_read
+    class_binding=class_binding_read(emitter,node,wanted)
+    if class_binding is not None:return class_binding
     namespace=emitter.model.namespace
     name=emitter.model.resolved_name(emitter.plan,node)
     if name not in namespace.active or not namespace.owns(emitter.plan,node):return None
