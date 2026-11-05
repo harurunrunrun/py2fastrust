@@ -250,7 +250,7 @@ class Operators:
         if isinstance(operator,(ast.Is,ast.IsNot)):return None
         a,b=shape(left),shape(right)
         if self._nested_comparison(a)or self._nested_comparison(b):
-            raise ClassUnsupported(node,"this container comparison can invoke user rich-comparison methods; fallible live-element iteration and identity shortcuts are not implemented by the current container comparator",proof="implicit container rich-comparison callback demand")
+            raise ClassUnsupported(node,"this container comparison can invoke user special-method callbacks (__eq__, __ne__, __lt__, __le__, __gt__, __ge__); fallible live-element iteration and identity shortcuts are not implemented by the current container comparator",proof="implicit container rich-comparison callback demand")
         if type(operator)not in COMPARISON:return None
         if not(self._has_comparison(a)or self._has_comparison(b)):return None
         key=plan.index,id(node),index
