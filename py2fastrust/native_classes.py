@@ -2590,7 +2590,9 @@ class Emitter:
             if fused is not None:return fused
             before,old=self.capture(self.load_reference(reference,node.target,old_kind))
             more,right=self.capture(self.expression(node.value))
-            wanted=self.kind(node.target)
+            from .native_record_places import target_kind
+            wanted=target_kind(self,reference,node.target)
+            if wanted is None:wanted=self.kind(node.target)
             if domain(old.kind)=="list"and isinstance(node.op,ast.Add)and domain(right.kind)=="list":
                 operation=f"class_list_extend(&{old.code},&{right.code});"
                 result=Expression(old.code,old.kind)
@@ -2807,8 +2809,8 @@ def _class_layouts(model,emitter):
         from .native_packed_value_fields import selected as packed_selected,initial as packed_initial,raw as packed_raw
         packed=packed_selected(model,owner)
         fields=list(owner.fields.values())
-        from .native_owned_class_lists import selected as owned_field_selected,runtime as owned_field_runtime
-        members=",".join(f"field_{i}:"+(f"Option<Vec<{emitter.rust_type(shape(value.cell).element)}>>"if owned_field_selected(model,owner,i)else f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields))
+        from .native_owned_class_lists import selected as owned_field_selected,runtime as owned_field_runtime,physical_type as owned_field_type
+        members=",".join(f"field_{i}:"+(f"Option<{owned_field_type(model,owner,i,emitter)}>"if owned_field_selected(model,owner,i)else f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields))
         extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
         from .native_static_class_metadata import layout as metadata_layout
         extra_member,extra_initialize,metadata_runtime=metadata_layout(model,owner,extra_member,extra_initialize)

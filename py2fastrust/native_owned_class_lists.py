@@ -168,7 +168,10 @@ class Registry:
         return sites
 
 
-def prepare(model):model.owned_class_lists=Registry(model)
+def prepare(model):
+    model.owned_class_lists=Registry(model)
+    from .native_class_record_fields import prepare as prepare_records
+    prepare_records(model)
 
 
 def selected(model,owner,index):
@@ -184,12 +187,21 @@ def site(emitter,node):
 def prefix(info):return f'class_owned_field_{info.owner.index}_{info.index}'
 
 
+def physical_type(model,owner,index,emitter):
+    from .native_class_record_fields import selected,physical_type as record_type
+    info=model.owned_class_lists.fields[owner.index,index]
+    record=selected(model,info)
+    return record_type(emitter,record)if record is not None else 'Vec<'+emitter.rust_type(info.kind.element)+'>'
+
+
 def reference(emitter,node):
     if not isinstance(node,ast.Subscript):return None
     info=site(emitter,node.value)
     if info is None:return None
     setup,owner=emitter.capture(emitter.expression(node.value.value))
     setup+=emitter.at(prefix(info)+'_ensure(&'+owner.code+')',node.value)+';'
+    from .native_class_record_fields import selected
+    if selected(emitter.model,info)is not None:return setup,('owned_class_index',info,owner,None)
     more,index=emitter.capture(emitter.expression(node.slice))
     return setup+more,('owned_class_index',info,owner,index)
 
@@ -205,6 +217,9 @@ def expression(emitter,node):
 
 def load(emitter,place,node,kind=None):
     _,info,owner,index=place
+    from .native_class_record_fields import selected,load as record_load
+    record=selected(emitter.model,info)
+    if record is not None:return record_load(emitter,record,owner,node,kind)
     code=emitter.at(prefix(info)+'_get(&'+owner.code+',&('+emitter.number(index)+'))',node)
     from .native_list_positions import project_element
     return project_element(emitter,code,info.kind.element,emitter.kind(node)if kind is None else kind,node)
@@ -212,6 +227,9 @@ def load(emitter,place,node,kind=None):
 
 def store(emitter,place,value,node):
     _,info,owner,index=place
+    from .native_class_record_fields import selected,store as record_store
+    record=selected(emitter.model,info)
+    if record is not None:return record_store(emitter,record,owner,value,node)
     code=prefix(info)+'_set(&'+owner.code+',&('+emitter.number(index)+'),'+emitter.coerce(value,info.kind.element,node)+')'
     return emitter.at(code,node)+';'
 
@@ -232,6 +250,9 @@ def initialize(emitter,node):
     if registry is None:return None
     info=registry.initializers.get(node)
     if info is None:return None
+    from .native_class_record_fields import selected,initialize as record_initialize
+    record=selected(emitter.model,info)
+    if record is not None:return record_initialize(emitter,record,node)
     # Intercept the original AST before generic Assign captures/clones its RHS.
     value=emitter.coerce(emitter.expression(node.value),info.kind,node.value)
     vector=emitter.fresh()
@@ -247,6 +268,10 @@ def runtime(model,owner,emitter):
     result=[]
     for (number,index),info in registry.fields.items():
         if number!=owner.index:continue
+        from .native_class_record_fields import selected,runtime as record_runtime
+        record=selected(model,info)
+        if record is not None:
+            result.append(record_runtime(emitter,record));continue
         name=prefix(info);handle=f'&ClassHandle_{number}';element=emitter.rust_type(info.kind.element)
         error=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{owner.fields[info.name].name}'")
         field=f'field_{index}'

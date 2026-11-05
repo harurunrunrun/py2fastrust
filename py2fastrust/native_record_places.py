@@ -99,6 +99,20 @@ def selected(emitter,node):
 def physical_type(emitter,record):return emitter.rust_type(TupleType(record.fields))
 
 
+def target_kind(emitter,reference,node):
+    if reference[0]=='record_slot':
+        _,record,offset=reference
+        if -len(record.fields)<=offset<len(record.fields):return record.fields[offset%len(record.fields)]
+        return None
+    if reference[0]=='owned_class_index':
+        from .native_class_record_fields import selected,offset
+        record=selected(emitter.model,reference[1])
+        if record is not None:
+            field=offset(emitter.model,record,node)
+            if field is not None:return record.fields[field]
+    return None
+
+
 def checked(emitter,record,node,mutable=False):
     from .native import _string
     slot=emitter.slot(record.name,record.kind)

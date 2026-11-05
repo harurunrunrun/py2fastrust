@@ -1885,8 +1885,19 @@ type change. Constant indices, builtin `len`, compatible stores and explicit
 unpack access the physical fields directly. Unpack snapshots all source values
 before target effects; binding and bounds failures retain their source positions.
 Child values keep their existing shallow value/reference ABI. Unproved records,
-class fields, dynamic indices and interprocedural list values retain the existing
-vector or shared-handle storage.
+dynamic indices and interprocedural list values retain the existing vector or
+shared-handle storage.
+
+A fixed-schema heterogeneous class list field can also use a physical tuple in
+its existing object. It first satisfies the nonescaping owned-field proof, then
+requires one original literal, stable concrete slot types and only constant
+integer indices or builtin `len`. Each selected slot has its own typed getter
+and setter, without a vector allocation or a uniform tagged-element accessor.
+Literal elements are evaluated before the target owner, and short owner borrows
+end before callbacks or old-value destruction. Missing fields and bounds errors
+retain their original order. Owner aliases and shared child values preserve
+identity. Whole-list aliases/unpack, runtime indices, field replacement, resize
+or changing slot types retain the existing vector/shared-list representation.
 
 An exact synchronous constructor call returned with the same nominal instance type can forward its compiled Result directly. Argument/callee captures, defaults, actual module context, source call guards and error frames remain in their original order. Non-tail expressions, result type conversions, recursive callers, context-manager control returns and unproved call forms retain their existing native return path.
 

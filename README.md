@@ -161,6 +161,15 @@ with proved immutable payloads retain typed shared row identities across aliases
 ordinary function calls, parent replacement/clearing, and live iteration in all
 integer modes. Flat uniquely owned arrays keep their existing vector storage.
 
+List storage is selected separately from Python's value types. A private
+homogeneous list uses `Vec<T>`. A private fixed-length heterogeneous record
+uses a Rust tuple with a separate type for each position. Lists whose elements
+can change between known types use a vector of a finite element enum.
+Direct iteration over a private vector reads one element at a time and sees
+subsequent element updates, appends and pops. Lists with observable aliases or
+unproved ownership retain shared handles so updates and object identity stay
+consistent with Python.
+
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather
 than a generated Rust instruction offset. These positions remain identical
