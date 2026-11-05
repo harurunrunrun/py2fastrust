@@ -1509,6 +1509,7 @@ class Emitter:
         self.slots = {}
         self.reference_slots = {}
         from .native_primitive_parameter_places import prepare as primitive_parameters
+        self.readonly_owned_parameters={}
         self.primitive_parameters=primitive_parameters(self)
         if model.integer == "bigint":
             from .native_bigint import BigIntGenerator
@@ -1782,6 +1783,9 @@ class Emitter:
         from .native_owned_class_lists import expression as owned_field_expression
         owned_field=owned_field_expression(self,node)
         if owned_field is not None:return owned_field
+        from .native_namespace_read_places import read as namespace_read
+        namespace_value=namespace_read(self,node)
+        if namespace_value is not None:return namespace_value
         from .native_list_end_indices import class_read
         endpoint=class_read(self,node)
         if endpoint is not None:return endpoint
@@ -2779,6 +2783,7 @@ class Emitter:
             body="return Ok("+self.coerce(value,shape(self.plan.result),self.plan.node.body)+");"
         else:body=self.statements(self.plan.node.body)
         parameters=[];initial=[]
+        from .native_primitive_parameter_places import slot_required
         for i,name in enumerate(self.plan.runtime_parameters):
             kind=shape(self.plan.arguments[name]);argument=f"class_argument_{i}"
             from .native_value_classes import borrowed_self
@@ -2786,7 +2791,7 @@ class Emitter:
             from .native_owned_object_places import receiver as owned_receiver
             mutable=owned_receiver(self.model,self.plan,name)
             parameters.append(f"{argument}:"+('&mut 'if mutable else'&'if reference else'')+self.rust_type(kind))
-            if mutable or name in self.primitive_parameters:continue
+            if mutable or not slot_required(self,name,kind):continue
             captured=self.model.lexical.environments.get(self.model.lexical.scope(self.plan))
             if captured is not None and name in captured.fields:continue
             stored=self.model.namespace.local_kind(self.plan,name)or kind
@@ -2821,20 +2826,24 @@ def _text_helpers(runtime):
 
 def _structural_helpers(integer):
     if integer=="bigint":
-        index="let index=index.to_i128().ok_or_else(||\"IndexError: list index out of range\".to_string())?;"
+        index="let index=index.to_i128()?;"
         count="if count.is_negative(){return Ok(0);}let count=count.to_i128().ok_or_else(||\"OverflowError: cannot fit 'int' into an index-sized integer\".to_string())?;"
         recursion="let value=value.to_i128().ok_or_else(||\"OverflowError: Python int too large to convert to C int\".to_string())?;"
         from_usize="Int::from_i128(value as i128)"
     else:
-        index="let index=*index as i128;"
+        index="let index=*index;"
         count="let count=*count as i128;if count<0{return Ok(0);}"
         recursion="let value=*value as i128;"
         from_usize="value as NativeInt"
     return """
-fn class_index(index:&NativeInt,length:usize)->Result<usize,String> {
+fn class_normalize_index(index:&NativeInt,length:usize)->Option<usize> {
     """+index+"""
-    let index=if index<0{(length as i128).checked_add(index)}else{Some(index)};
-    match index{Some(value)if value>=0&&(value as u128)<length as u128=>Ok(value as usize),_=>Err("IndexError: list index out of range".into())}
+    if index<0{usize::try_from(index.unsigned_abs()).ok().and_then(|distance|length.checked_sub(distance))}
+    else{usize::try_from(index).ok()}
+}
+fn class_index(index:&NativeInt,length:usize)->Result<usize,String> {
+    class_normalize_index(index,length).filter(|&offset|offset<length)
+        .ok_or_else(||"IndexError: list index out of range".into())
 }
 fn class_repetition_count(count:&NativeInt)->Result<usize,String>{
     """+count+"""

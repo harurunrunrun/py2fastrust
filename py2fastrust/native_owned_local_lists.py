@@ -251,8 +251,7 @@ def load(emitter,reference,node,kind=None):
     checked_owner=checked(emitter,local,node.value if isinstance(node,ast.Subscript)else node)
     operation=method(node.slice)if isinstance(node,ast.Subscript)else None
     if operation is None:
-        offset_code=emitter.at(f'class_index(&({emitter.number(index)}),{owner}.len())',node)
-        value=f'let {offset}={offset_code};{owner}[{offset}].clone()'
+        value=emitter.at(f'class_slice_get({owner},&({emitter.number(index)})).cloned()',node)
     else:value=emitter.at(result(owner,operation),node)
     code='{'+f'let {owner}={checked_owner};'+value+'}'
     return project_element(emitter,code,local.kind.element,kind or element,node)
@@ -264,9 +263,9 @@ def store(emitter,reference,value,node):
     # particular, a[i] = a[j] must never clone the whole list or overlap loans.
     before,captured=emitter.capture(value)
     owner=emitter.fresh();offset=emitter.fresh()
-    index_code=emitter.at(f'class_index(&({emitter.number(index)}),{owner}.len()).map_err(|_|"IndexError: list assignment index out of range".to_owned())',node)
+    index_code=emitter.at(f'class_slice_get_mut({owner},&({emitter.number(index)}))',node)
     return ('{'+before+f'let {owner}={checked(emitter,local,node,True)};let {offset}={index_code};'
-            +f'{owner}[{offset}]={emitter.coerce(captured,local.kind.element,node)};'+'}')
+            +f'*{offset}={emitter.coerce(captured,local.kind.element,node)};'+'}')
 
 
 def read(emitter,node):

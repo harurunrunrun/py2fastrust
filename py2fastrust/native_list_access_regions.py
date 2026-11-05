@@ -101,8 +101,14 @@ class Region:
     kind:object
     guard:str
     mutable:bool
+    defined:bool=False
+
+    def storage(self,mutable=False):
+        if self.defined:return self.guard
+        return self.guard+('.as_mut().expect("checked mutable list binding")'if mutable else'.as_ref().expect("checked list binding")')
 
     def checked(self,emitter,node):
+        if self.defined:return '(&'+self.guard+')'
         from .native import _string
         label=emitter.model.display_name(self.name)
         message=(f"NameError: name '{label}' is not defined"if emitter.model.is_module_plan(emitter.plan)else
@@ -123,8 +129,11 @@ def scope(emitter,node):
         for name,kind in proof.roots.items():
             guard=emitter.fresh();slot=emitter.slot(name,kind)
             borrow='borrow_mut'if proof.mutable else'borrow'
-            lines.append(f'let mut {guard}={slot}.as_ref().map(|owner|owner.{borrow}());')
-            regions[name]=Region(name,kind,guard,proof.mutable)
+            from .native_primitive_parameter_places import argument
+            direct=argument(emitter,name,kind)
+            if direct is None:lines.append(f'let mut {guard}={slot}.as_ref().map(|owner|owner.{borrow}());')
+            else:lines.append(f'let mut {guard}={direct}.{borrow}();')
+            regions[name]=Region(name,kind,guard,proof.mutable,direct is not None)
     parents.append(regions)
     emitter.list_access_tails[id(node)]=regions
     try:yield ''.join(lines)
@@ -160,15 +169,15 @@ def reference(emitter,node):
 def load(emitter,region,index,node):
     from .native import _Expression
     offset=emitter.fresh()
-    checked=emitter.at(f'class_index(&({emitter.number(index)}),{region.guard}.as_ref().expect("checked list binding").len())',node)
-    code=f'{{let {offset}={checked};{region.guard}.as_ref().expect("checked list binding")[{offset}].clone()}}'
+    checked=emitter.at(f'class_index(&({emitter.number(index)}),{region.storage()}.len())',node)
+    code=f'{{let {offset}={checked};{region.storage()}[{offset}].clone()}}'
     return _Expression(code,region.kind.element)
 
 
 def store(emitter,region,index,value,node):
     offset=emitter.fresh()
-    checked=emitter.at(f'class_index(&({emitter.number(index)}),{region.guard}.as_ref().expect("checked list binding").len()).map_err(|_|"IndexError: list assignment index out of range".to_owned())',node)
-    return f'{{let {offset}={checked};{region.guard}.as_mut().expect("checked mutable list binding")[{offset}]={emitter.coerce(value,region.kind.element,node)};}}'
+    checked=emitter.at(f'class_index(&({emitter.number(index)}),{region.storage()}.len()).map_err(|_|"IndexError: list assignment index out of range".to_owned())',node)
+    return f'{{let {offset}={checked};{region.storage(True)}[{offset}]={emitter.coerce(value,region.kind.element,node)};}}'
 
 
 def augmented(emitter,node,setup,reference,old_kind):
@@ -177,14 +186,14 @@ def augmented(emitter,node,setup,reference,old_kind):
     _,region,index,stored=reference
     if stored!=old_kind or emitter.kind(node.target)!=stored:return None
     offset,previous=emitter.fresh(),emitter.fresh()
-    checked=emitter.at(f'class_index(&({emitter.number(index)}),{region.guard}.as_ref().expect("checked list binding").len())',node.target)
-    before=f'let {offset}={checked};let {previous}={region.guard}.as_ref().expect("checked list binding")[{offset}].clone();'
+    checked=emitter.at(f'class_index(&({emitter.number(index)}),{region.storage()}.len())',node.target)
+    before=f'let {offset}={checked};let {previous}={region.storage()}[{offset}].clone();'
     more,right=emitter.capture(emitter.expression(node.value))
     result=emitter.binary(node.op,_Expression(previous,stored),right,node,stored)
     after,result=emitter.capture(result)
     # This entire region excludes list resizing and rebinding, including the
     # RHS. The checked offset used by the original get remains valid for set.
-    commit=f'{region.guard}.as_mut().expect("checked mutable list binding")[{offset}]={emitter.coerce(result,stored,node.target)};'
+    commit=f'{region.storage(True)}[{offset}]={emitter.coerce(result,stored,node.target)};'
     return '{'+setup+before+more+after+commit+'}'
 
 

@@ -2152,3 +2152,24 @@ certificates. Lexical environments, finite alternatives, implicit callbacks and
 suspending assignment places without an owned transfer rule retain their
 existing conventions. Cleanup and exception payload layouts can coexist with
 independent selected regions.
+
+Readonly source parameter bindings can load from their initialized native Rust
+arguments without optional local storage. The same proof covers closed tuples,
+mutable builtin lists and immutable value carriers, while preserving the normal
+value-cloning rules. Rebinding, deletion, captured environments, namespace or
+lifetime observers, and borrowed physical receivers retain their existing
+storage. List content mutation alone does not rebind its parameter.
+
+Native list element places normalize signed indices and use safe Rust slice
+access for the bounds check, avoiding a second indexing check after validation.
+Negative indices, minimum signed integers, oversized BigInt indices and original
+read/assignment errors retain their Python behavior under the selected integer
+policy. Element reads and writes preserve source evaluation and destruction
+order; no unchecked memory access is introduced.
+
+Typed namespace list reads may borrow a current class or source-module slot
+instead of cloning its list handle when the element and index have closed
+builtin scalar kinds. Member-presence and bounds checks remain at their
+original source positions. Effectful indices and source graphs with collection,
+finalizers, suspension, reflection or reference observers retain the ordinary
+native path; loans end before source exception handling or cleanup.

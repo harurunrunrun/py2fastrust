@@ -90,14 +90,20 @@ fn class_execute<T: 'static>(scope:ClassScope, future:ClassFuture<T>) -> ClassRe
 }
 
 fn class_list<T>(values:Vec<T>) -> ClassList<T> {Rc::new(RefCell::new(values))}
+fn class_slice_get<'a,T>(values:&'a[T],index:&NativeInt)->Result<&'a T,String> {
+    class_normalize_index(index,values.len()).and_then(|offset|values.get(offset))
+        .ok_or_else(||"IndexError: list index out of range".into())
+}
+fn class_slice_get_mut<'a,T>(values:&'a mut[T],index:&NativeInt)->Result<&'a mut T,String> {
+    class_normalize_index(index,values.len()).and_then(|offset|values.get_mut(offset))
+        .ok_or_else(||"IndexError: list assignment index out of range".into())
+}
 fn class_list_get<T:Clone>(values:&ClassList<T>,index:&NativeInt)->Result<T,String> {
-    let values=values.borrow();let index=class_index(index,values.len())?;
-    Ok(values[index].clone())
+    let values=values.borrow();Ok(class_slice_get(&values,index)?.clone())
 }
 fn class_list_set<T>(values:&ClassList<T>,index:&NativeInt,value:T)->Result<(),String> {
     let mut values=values.borrow_mut();
-    let index=class_index(index,values.len()).map_err(|_|"IndexError: list assignment index out of range".to_string())?;
-    values[index]=value;Ok(())
+    *class_slice_get_mut(&mut values,index)?=value;Ok(())
 }
 fn class_list_pop<T>(values:&ClassList<T>,index:&NativeInt)->Result<T,String> {
     let mut values=values.borrow_mut();

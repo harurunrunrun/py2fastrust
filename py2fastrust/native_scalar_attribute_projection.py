@@ -41,7 +41,9 @@ def read(emitter,node):
     from .native import _string
     message=f"UnboundLocalError: cannot access local variable '{model.display_name(name)}' where it is not associated with a value"
     reference=emitter.fresh()
-    checked=emitter.at(f'{slot}.as_ref().ok_or_else(||{_string(message)}.to_owned())',root)
+    from .native_primitive_parameter_places import reference as parameter_reference
+    direct=parameter_reference(emitter,root)
+    checked=direct if direct is not None else emitter.at(f'{slot}.as_ref().ok_or_else(||{_string(message)}.to_owned())',root)
     index=list(owner.fields).index(field)
     loaded=emitter.at(f'class_get_{owner.index}_{index}({reference})',node)
     code='{let '+reference+'='+checked+';'+loaded+'}'
