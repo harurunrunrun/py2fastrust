@@ -2173,3 +2173,15 @@ builtin scalar kinds. Member-presence and bounds checks remain at their
 original source positions. Effectful indices and source graphs with collection,
 finalizers, suspension, reflection or reference observers retain the ordinary
 native path; loans end before source exception handling or cleanup.
+
+Distinct direct module-body function definitions may publish to the same
+Python name. Each original definition keeps its own native plan and default
+storage; saved aliases retain that definition and its actual defining module
+generation. Calls through a redefined name capture the current typed namespace
+payload before arguments. Defaults finish before the new binding is published.
+If any solved possible target of a redefined name has an invalid argument
+binding, the existing captured-call binder is selected before emission to
+produce the real call error after argument effects. This binding-error check
+does not change the existing route when every solved target binds.
+Repeated definitions in lexical scopes or module control-flow blocks still
+require their separate per-execution binding/default-instance implementation.

@@ -180,4 +180,4 @@ def call_target(model,plan,node):
     definitions=selection.call_targets.get((caller,model.unit.ordinal(node)),())
     if len(definitions)!=1:return None
     definition=next(iter(definitions))
-    return next((function for function in model.functions.values()if model.unit.ordinal(function.node)==definition),None)
+    return next((function for function in model.functions.definitions.values()if model.unit.ordinal(function.node)==definition),None)

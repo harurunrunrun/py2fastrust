@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from importlib.resources import files
 from types import SimpleNamespace
 
-from .native import _Expression, _Unsupported, _direct_diagnostic, _string
+from .native import _Expression, _Unsupported, _direct_diagnostic, _string, _FunctionPlans
 from .call_semantics import FunctionSignature, CallBindingError, normalize_call
 from .references import CORE_BUILTINS, BuiltinIdentity, UnknownReference, resolve_static_callable
 from .native_types import (TupleType, TupleSequenceType, ListType, MaybeType, NullableType, UnionType,EmptyType,
@@ -265,7 +265,8 @@ class Model:
         self.string_repr_required = False
         self.unit = unit
         self.trusted_imports = trusted_imports
-        self.classes, self.functions = {}, {}
+        self.classes, self.functions = {}, _FunctionPlans()
+        self.function_families = {}
         self.call_edges = {}
         self.call_edges_by_site = {}
         self.plans = []
@@ -548,6 +549,19 @@ class Model:
         self.plans.append(plan)
         return plan
 
+    def register_function(self, node, key):
+        """Keep each source event separate from its current binding name."""
+        plan = self.functions.definitions.get(node)
+        if plan is not None:return plan
+        plan = self.function(node)
+        self.functions.definitions[node] = plan
+        self.function_families.setdefault(key, []).append(plan)
+        self.functions[key] = plan
+        return plan
+
+    def function_versions(self, name):
+        return tuple(self.function_families.get(name, ()))
+
     def discover(self):
         effects = False
         names = set()
@@ -560,9 +574,9 @@ class Model:
                 self.discover_class(node,self.definition_name(node))
                 names.add(node.name)
             elif isinstance(node, ast.FunctionDef):
-                if node.name in names or node.name in self.global_symbols:
+                if (node.name in names and node.name not in self.functions) or node.name in self.global_symbols:
                     raise ClassUnsupported(node)
-                self.functions[node.name] = self.function(node)
+                self.register_function(node, node.name)
                 names.add(node.name)
             elif isinstance(node, ast.Import):
                 if effects or any(value.name != "sys" for value in node.names) or "sys" not in self.trusted_imports:
@@ -1352,7 +1366,7 @@ class Model:
                 if not self.is_module_plan(plan) and (plan.class_body is None or not isinstance(node,(ast.FunctionDef,ast.ClassDef))):
                     raise ClassUnsupported(node)
                 expected=(self.classes.get(self.definition_name(node))if isinstance(node,ast.ClassDef)else
-                          plan.class_body.methods.get(self.resolved_name(plan,node))if plan.class_body is not None else self.functions.get(self.definition_name(node)))
+                          plan.class_body.methods.get(self.resolved_name(plan,node))if plan.class_body is not None else self.functions.definitions.get(node))
                 if expected is None or expected.node is not node:
                     raise ClassUnsupported(node)
                 registry=getattr(self,"class_namespaces",None)

@@ -36,7 +36,8 @@ class InvocationLedger:
             site=self.model.callable_cells.sites.get((plan.index,id(node)))
             name=self.model.resolved_name(plan,node.func)if isinstance(node.func,ast.Name)else None
             function=self.model.functions.get(name)
-            if function is not None and self.source(function)is callee:
+            if (function is not None and name not in self.model.callable_cells.versioned_names
+                    and self.source(function)is callee):
                 # The caller separately proves this original binding immutable,
                 # call-only and initialized. Captured ABI metadata does not
                 # turn that exact source invocation into an opaque callback.

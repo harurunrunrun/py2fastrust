@@ -81,6 +81,12 @@ def requires_cells(unit,analysis,references=None):
     definitions={unit.ordinal(node)for node in unit.tree.body if isinstance(node,ast.FunctionDef)}
     bindings={binding.node:binding for binding in unit.bindings}
     names={binding.name for binding in unit.bindings if binding.role=="definition"and binding.node in definitions and binding.owner==0}
+    definition_counts={}
+    for definition in definitions:
+        binding=bindings.get(definition)
+        if binding is not None and binding.owner==0:
+            definition_counts[binding.name]=definition_counts.get(binding.name,0)+1
+    versioned_names={name for name,count in definition_counts.items()if count>1}
     from .native_builtin_identities import names as builtin_value_names
     SUPPORTED=builtin_value_names()
     from .native_static_builtins import capture_assignments
@@ -123,7 +129,7 @@ def requires_cells(unit,analysis,references=None):
                 # The existing call-only alias fastpath is complete for valid
                 # fixed signatures. An invalid indirect binding still needs
                 # the runtime call error after evaluating every explicit arg.
-                if binding is not None and(binding.owner!=0 or binding.name not in names):
+                if binding is not None and(binding.owner!=0 or binding.name not in names or binding.name in versioned_names):
                     for definition in targets&definitions:
                         try:unit.signature_for(nodes[definition]).plan(normalize_call(parent))
                         except CallBindingError:return True
@@ -141,7 +147,9 @@ class CallableCells:
         from .native_classes import Cell
         self.model=model
         self.plans=dict(model.lexical.plans)
-        self.definition_cells={name:Cell("function",(self.definition(plan),))for name,plan in model.functions.items()}
+        self.definition_values={self.definition(plan):Cell("function",(self.definition(plan),))
+                                for plan in model.functions.definitions.values()}
+        self.definition_cells={name:self.definition_values[self.definition(plan)]for name,plan in model.functions.items()}
         self.used=set()
         self.builtin_used=set()
         self.member_used=set()
@@ -161,19 +169,26 @@ class CallableCells:
         bindings=model.unit.bindings if model.unit is not None else()
         self.mutable_names={binding.name for binding in bindings
             if model.module_owner(binding.owner) and binding.role not in {"load","parameter","definition"}}
+        self.versioned_names={name for name in model.functions if len(model.function_versions(name))>1}
+        self.mutable_names.update(self.versioned_names)
         self.function_bindings.update(set(model.functions)&self.mutable_names)
         from .native_builtin_identities import names as builtin_value_names
         SUPPORTED=builtin_value_names()
         self.function_bindings.update(name for name in model.functions if self.spelling(name)in SUPPORTED)
-        self.used.update(self.definition(model.functions[name])for name in self.function_bindings)
-        for name,plan in model.functions.items():
-            self.model.namespace.incoming.setdefault(name,{})[("definition",self.definition(plan))]=self.definition_cells[name]
+        self.used.update(self.definition(plan)for name in self.function_bindings for plan in model.function_versions(name))
+        for name in model.functions:
+            for plan in model.function_versions(name):
+                definition=self.definition(plan)
+                self.model.namespace.incoming.setdefault(name,{})[("definition",definition)]=self.definition_values[definition]
 
     def spelling(self,name):
         return self.model.display_name(name)
 
     def definition(self,plan):
         return self.model.unit.ordinal(plan.node)if self.model.unit is not None else plan.index
+
+    def definition_value(self,node):
+        return self.definition_values[self.definition(self.model.functions.definitions[node])]
 
     def owner(self,plan,node):
         if self.model.unit is not None:
@@ -231,7 +246,7 @@ class CallableCells:
                 return schema
         if not(isinstance(node,ast.Name)and self.owns_function(plan,node)):return None
         name=self.model.resolved_name(plan,node)
-        self.used.add(self.definition(self.model.functions[name]))
+        self.used.update(self.definition(target)for target in self.model.function_versions(name))
         schema=self.require_binding(name,node)
         if self.model.is_module_plan(plan) and name in environment:return environment[name]
         return schema
@@ -239,7 +254,7 @@ class CallableCells:
     def stable_direct(self,plan,node,environment=None):
         if not(isinstance(node,ast.Name)and self.owns_function(plan,node)):return False
         name=self.model.resolved_name(plan,node)
-        return node.id==self.spelling(name)and name not in self.mutable_names and self.spelling(name)not in self.model.namespace.builtin_names and name in(plan.visible_definitions or())
+        return node.id==self.spelling(name)and name not in self.versioned_names and name not in self.mutable_names and self.spelling(name)not in self.model.namespace.builtin_names and name in(plan.visible_definitions or())
 
     def candidate(self,plan,node,environment):
         function=node.func
@@ -249,6 +264,8 @@ class CallableCells:
         if canonical_kind(self.model,plan,function,environment)is not None:return True
         if isinstance(function,ast.Name):
             name=self.model.resolved_name(plan,function)
+            if name in self.versioned_names and self.owns_function(plan,function):
+                return True
             if self.stable_direct(plan,function,environment):
                 target=self.model.functions[name]
                 if target.signature.variadic_positional:
@@ -322,10 +339,11 @@ class CallableCells:
         name=self.model.definition_name(node)
         if name not in self.function_bindings or name not in self.model.namespace.active:return ""
         index=self.model.namespace.index(name)
-        definition=self.definition(self.model.functions[name])
+        target=self.model.functions.definitions[node]
+        definition=self.definition(target)
         from .native_classes import Expression
         stored=dict(self.model.namespace.fields())[name]
-        value=Expression(self.reference_code(emitter,self.model.functions[name]),AotFunctionType((definition,)))
+        value=Expression(self.reference_code(emitter,target),AotFunctionType((definition,)))
         return f"class_scope.globals.borrow_mut().value_{index}=Some({emitter.coerce(value,stored,node)});"
 
     def reference_code(self,emitter,plan):

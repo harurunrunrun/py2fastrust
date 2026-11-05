@@ -24,7 +24,7 @@ class LinkedCallableCells(CallableCells):
         self.canonical_builtin_cells={}
         self.linked_builtins=LinkedBuiltinBindings(self)
         self.function_bindings.update(model.functions)
-        self.used.update(self.definition(plan)for plan in model.functions.values())
+        self.used.update(self.definition(plan)for plan in model.functions.definitions.values())
         for name,plan in model.functions.items():
             model.namespace.active.add(name)
             model.namespace.refresh(name,plan.node)
@@ -168,8 +168,8 @@ class LinkedModel(Model):
                     self.namespace.active.add(key)
                 elif isinstance(node,ast.FunctionDef):
                     key=self.definition_name(node)
-                    if key in self.classes or key in self.functions:raise ClassUnsupported(node)
-                    self.functions[key]=self.function(node)
+                    if key in self.classes:raise ClassUnsupported(node)
+                    self.register_function(node,key)
         linker.seed_namespaces()
 
     def expression(self,plan,node,environment):

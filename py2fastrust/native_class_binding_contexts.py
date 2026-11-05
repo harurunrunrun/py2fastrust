@@ -259,7 +259,7 @@ class Registry:
         from .native_module_linking import ClassReferenceType, ModuleType
         from .native_function_instances import instanced
         candidates = {self.source(plan).index: self.source(plan)
-                      for plan in self.model.functions.values() if plan.reachable}
+                      for plan in self.model.functions.definitions.values() if plan.reachable}
         for source in candidates.values():
             if (source.index in self.methods or not isinstance(source.node, ast.FunctionDef)
                     or source.node.decorator_list or source.node.type_params

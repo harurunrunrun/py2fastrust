@@ -112,7 +112,7 @@ class Registry:
         if self.model.exceptions.used:raise Unproved('retained exception payload/origin state needs a continuation policy')
         region=[plan for plan in self.model.plans if plan.reachable and plan is not self.model.module and not synchronous(self.model,plan)]
         if not region:raise Unproved('no ordinary heap continuation region is needed')
-        functions={self.source(plan).node: self.source(plan)for plan in self.model.functions.values()}
+        functions={self.source(plan).node: self.source(plan)for plan in self.model.functions.definitions.values()}
         definition_positions={id(node):index for index,node in enumerate(self.model.tree.body)
                               if isinstance(node,(ast.FunctionDef,ast.ClassDef))}
         last_definition=max(definition_positions.values(),default=-1)

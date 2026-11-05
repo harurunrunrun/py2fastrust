@@ -333,7 +333,7 @@ class Namespace:
             if target is not None and not self.model.module_owner(lexical.parents[lexical.scope(target)]):return(target,)
         if caller.class_body is not None:
             return (caller.class_body.methods[self.model.resolved_name(caller,node)],)
-        return (self.model.functions[self.model.definition_name(node)],)
+        return (self.model.functions.definitions[node],)
 
     def define(self,caller,node,environment):
         if isinstance(node,ast.ClassDef):
@@ -358,7 +358,7 @@ class Namespace:
         provider=getattr(self.model,"callable_cells",None)
         key=self.model.definition_name(node)
         if self.model.is_module_plan(caller) and provider is not None and key in provider.function_bindings:
-            environment[key]=self.module_point(node,provider.definition_cells[key])
+            environment[key]=self.module_point(node,provider.definition_value(node))
             environment.definite.add(key)
 
     def snapshot(self):
