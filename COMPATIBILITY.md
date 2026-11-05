@@ -76,6 +76,12 @@ length in Python 3.14's excess-value error. Lazy producers inspect only the
 first excess item and retain the error without a full-length claim.
 General dynamic callable values and conflicting core-name
 rebinding still require direct implementation.
+Dynamic builtin-list row unpacking is selected from reached allocation facts before
+Rust lowering. Input-built rows support assignment, `for` and comprehension
+unpacking, including `enumerate` nesting. The native iterator adapter checks each
+level before its target stores, reports exact list cardinality errors and retains
+shared row mutations and ordered partial effects in nested targets.
+
 
 `set(iterable)` and set comprehensions consume the same typed streams in every
 integer mode. Exact-set sorting with `key=None` permits traversal whose order

@@ -21,6 +21,26 @@ def requires_frames(unit,analysis):
         scope=unit.nodes[unit.ordinal(node)].scope
         while scope is not None and(scope in logical or unit.scopes[scope].kind=='comprehension'):scope=unit.scopes[scope].parent
         if scope in scopes:return True
+    # The ordinary stream target binder handles fixed tuples, but dynamic
+    # list rows need the ordered native unpack adapter. Ordinary assignment
+    # already has its own length-checked list adapter and keeps that route.
+    from .native_constraints import Allocation,TupleValue
+    from .native_positional_selection import Provenance
+    flow=Provenance(getattr(analysis,'heap',{}))
+    def needs_list(target,value):
+        if not isinstance(target,(ast.Tuple,ast.List)):return False
+        members=flow.resolve(value)
+        if members is None:return False
+        for member in members:
+            if isinstance(member,Allocation)and member.category=='list':return True
+            if isinstance(member,TupleValue)and len(member.fields)==len(target.elts):
+                if any(needs_list(child,field)for child,field in zip(target.elts,member.fields)):return True
+        return False
+    for facts in analysis.scopes.values():
+        for node in nodes.values():
+            if isinstance(node,(ast.For,ast.comprehension)):
+                value=flow.field(facts.values.get(unit.ordinal(node.iter)),'iteration')
+                if needs_list(node.target,value):return True
     return False
 
 
