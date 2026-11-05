@@ -1705,6 +1705,26 @@ errors and exception frames remain unchanged. Unproved programs keep their
 existing native representation. BigInt integer fields remain reference-backed;
 other Copy fields can use the same identity-demand proof in every integer mode.
 
+Compiled frames can also use scalar value facts that are separate from type
+constraints. Original bindings, call parameters/results, instance fields and
+registered list allocation origins contribute to one finite compile-time graph.
+Every official producer and heap mutation must be modeled or widen the affected
+fact to unknown, including imports, assignment expressions, with/loop targets,
+deletion, comprehensions and in-place list extension. Missing inputs and unseeded
+cycles are unknown; only an explicitly empty allocation can certify no elements.
+Different constructor/context values and alias writes keep generic native code.
+Integer literals and each supported operation normalize at the selected width;
+expensive folds are bounded and remain native operations when unproved.
+
+The initial consumer exposes a proved integer/boolean field value after the
+original getter succeeds. It retains receiver evaluation, field-presence errors,
+constructors, context operations, callbacks and source exception frames. A list
+whose every possible inserted element agrees can supply a successful-read value
+fact without assuming a nonempty stack or suppressing its runtime lookup.
+Class metadata and physical field slots remain unchanged. Ordinary-path value
+fact integration and proofs eliminating redundant lookups/calls remain unfinished;
+this foundation does not claim their removal or a performance target.
+
 Ordinary scalar fields of a proved concrete local instance are read through its
 existing local slot without cloning the receiver. This applies to fixed-width
 integers, booleans, floats and None, while the existing getter retains missing

@@ -2870,6 +2870,8 @@ def _class_layouts(model,emitter):
             argument=f'impl AsRef<ClassHandle_{owner.index}>'if unboxed else f'&ClassHandle_{owner.index}'
             receiver='value.as_ref()'if unboxed else'value'
             getter='Ok('+packed_raw(receiver,i)+')'if packed else load(model,owner,receiver,i)+f'.ok_or_else(||{message}.to_owned())'
+            from .native_scalar_heap_constants import getter as constant_getter
+            getter=constant_getter(emitter,owner,i,getter)
             result.append(f"fn class_get_{owner.index}_{i}(value:{argument})->Result<{emitter.rust_type(shape(value.cell))},String>{{{getter}}}")
         field_runtime=owned_field_runtime(model,owner,emitter)
         if field_runtime:result.append(field_runtime)
@@ -2953,6 +2955,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_class_reference_borrows(model)
         from .native_packed_value_fields import prepare as prepare_packed_fields
         prepare_packed_fields(model)
+        from .native_scalar_heap_constants import prepare as prepare_scalar_constants
+        prepare_scalar_constants(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         layouts=_class_layouts(model,emitters[0])
