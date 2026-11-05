@@ -1798,9 +1798,15 @@ Direct indexing, indexed stores, `len`, `append` and `pop` access the vector
 without cloning the outer list handle or taking a RefCell loan for each access.
 Canonical list construction,
 list literals, comprehensions and literal repetition construct vectors directly.
+Direct `for` loops and immediate builtin `enumerate` loops also keep an owned
+vector when the official binding has a single fresh definition and no escaping
+uses. Each pull clones only the current element and releases its Rust reference
+before executing the body, so element writes, `append` and `pop` affect later
+pulls just as in Python. Nested loops retain independent cursors. Rebinding,
+retained iterators and unproved enumeration arguments keep shared storage.
 Captured, returned, aliased, reflectively observed or otherwise unproved list
-bindings retain identity-preserving shared storage. This does not yet infer
-separate field types for heterogeneous lists unpacked as records.
+bindings retain identity-preserving shared storage. Fixed heterogeneous records
+use the separate positional and physical-tuple proofs described below.
 
 Direct builtin `str.upper()` and `str.lower()` calls are supported in ASCII
 mode. `bytes.upper()` and `bytes.lower()` preserve non-ASCII bytes in either

@@ -19,6 +19,25 @@ class Local:
     allocations: tuple
 
 
+def enumerate_source(emitter,node):
+    """An immediate builtin enumerate with an already native integer start."""
+    if (not isinstance(node,ast.Call)or not isinstance(node.func,ast.Name)
+            or node.func.id!='enumerate' or not 1<=len(node.args)<=2
+            or node.keywords
+            or emitter.model.builtin_identity(emitter.plan,node.func,{})!=BuiltinIdentity('enumerate')):return None
+    if len(node.args)==2 and emitter.kind(node.args[1])not in {'int','bool','int_bool'}:return None
+    return node.args[0]
+
+
+def loop_source(emitter,node,parents):
+    """The original immediate iterable consumed by Emitter.for_statement."""
+    parent=parents.get(id(node))
+    if isinstance(parent,ast.For)and parent.iter is node:return parent
+    if enumerate_source(emitter,parent)is not node:return None
+    loop=parents.get(id(parent))
+    return loop if isinstance(loop,ast.For)and loop.iter is parent else None
+
+
 def fresh(emitter,node):
     if isinstance(node,(ast.List,ast.ListComp)):return True
     if (isinstance(node,ast.Call)and isinstance(node.func,ast.Name)
@@ -89,6 +108,7 @@ def prepare(emitter):
         if stored is not None and stored!=kind:continue
         valid=True
         writes=0
+        iterates=False
         allocations=[]
         for binding,node in bindings:
             parent=parents.get(id(node))
@@ -129,10 +149,16 @@ def prepare(emitter):
                           and(plan.index,id(method))in model.sequence_calls
                           and(parent.attr=='append'and len(method.args)==1
                               or parent.attr=='pop'and len(method.args)<=1))
-                if not direct and not length and not mutation:valid=False;break
+                iteration=loop_source(emitter,node,parents)
+                if iteration is not None:iterates=True
+                if not direct and not length and not mutation and iteration is None:valid=False;break
             else:
                 valid=False;break
-        if valid and writes:result[name]=Local(name,kind,(scope,bindings[0][0].name),tuple(allocations))
+        # A Python iterator retains the original allocation after a rebind.
+        # Direct places need no retained handle only when that binding cannot
+        # be replaced during any iteration (captures/deletions already fail).
+        if valid and writes and(not iterates or writes==1):
+            result[name]=Local(name,kind,(scope,bindings[0][0].name),tuple(allocations))
     return result
 
 
@@ -149,6 +175,17 @@ def checked(emitter,local,node,mutable=False):
     slot=emitter.slot(local.name,local.kind)
     message="UnboundLocalError: cannot access local variable '"+emitter.model.display_name(local.name)+"' where it is not associated with a value"
     return emitter.at(f'{slot}.as_{"mut"if mutable else"ref"}().ok_or_else(||{_string(message)}.to_owned())',node)
+
+
+def iteration(emitter,node):
+    from .native_classes import Expression
+    local=selected(emitter,node)
+    if local is None:return None
+    # Evaluate source existence before enumerate's start argument, but retain
+    # no Rust loan across a Python body or callback. Each pull checks the
+    # current length and clones only one element, preserving mutation rules.
+    owner=checked(emitter,local,node)
+    return owner+';',Expression('('+owner+')',local.kind)
 
 
 def allocation(emitter,node,kind):

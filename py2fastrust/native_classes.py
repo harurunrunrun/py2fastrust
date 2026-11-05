@@ -2648,7 +2648,14 @@ class Emitter:
         enumerated=(isinstance(iterable,ast.Call)and isinstance(iterable.func,ast.Name)
                     and iterable.func.id=="enumerate"and domain(self.kind(iterable))=="enumerate")
         source_node=iterable.args[0]if enumerated else iterable
-        setup,source=self.capture(self.expression(source_node))
+        from .native_owned_local_lists import iteration as owned_iteration,enumerate_source
+        owned=owned_iteration(self,source_node)
+        if owned is None and not enumerated:
+            immediate=enumerate_source(self,iterable)
+            if immediate is not None:
+                owned=owned_iteration(self,immediate)
+                if owned is not None:enumerated=True;source_node=immediate
+        setup,source=owned if owned is not None else self.capture(self.expression(source_node))
         from .native_class_iterators import tuple_cursor_required
         if self.model.iterators.needs_source_cursor(source.kind) or tuple_cursor_required(source.kind):
             before,source=self.capture(self.model.iterators.construct(self,node,source));setup+=before
@@ -2676,7 +2683,8 @@ class Emitter:
             index=self.fresh()
             setup+=f"let mut {index}=0_usize;"
             advance=self.at(f"{index}.checked_add(1).ok_or_else(||\"OverflowError: list iterator index overflow\".to_owned())",node)
-            prefix=f"'{label}:loop{{let {current}={{{source.code}.borrow().get({index}).cloned()}};let Some({current})={current} else{{break;}};{index}={advance};"
+            owner=source.code if owned is not None else source.code+'.borrow()'
+            prefix=f"'{label}:loop{{let {current}={{{owner}.get({index}).cloned()}};let Some({current})={current} else{{break;}};{index}={advance};"
             item=Expression(current,source.kind.element)
         elif domain(source.kind)=="tuple_sequence":
             prefix=f"'{label}:for {current} in {source.code}.iter().cloned(){{"
