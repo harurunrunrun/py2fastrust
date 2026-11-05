@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .native_types import ListType,TupleType,UnionType,NullableType,EmptyType,tuple_code
 from .references import BuiltinIdentity
+from .native_physical_list_builtins import static_builtin
 
 
 @dataclass(frozen=True)
@@ -78,8 +79,7 @@ def prepare(emitter):
                 if isinstance(parent.ctx,ast.Del)or index(model,parent.slice)is None:valid=False;break
                 continue
             if (isinstance(parent,ast.Call)and parent.args==[node]and not parent.keywords
-                    and isinstance(parent.func,ast.Name)
-                    and model.builtin_identity(plan,parent.func,{})==BuiltinIdentity('len')):continue
+                    and static_builtin(model,plan,parent.func,'len')):continue
             if (isinstance(parent,ast.Assign)and parent.value is node and len(parent.targets)==1
                     and isinstance(parent.targets[0],(ast.Tuple,ast.List))
                     and not any(isinstance(child,ast.Starred)for child in parent.targets[0].elts)):continue
@@ -166,8 +166,7 @@ def read(emitter,node):
         before,place=indexed
         return Expression('{'+before+load(emitter,place,node).code+'}',emitter.kind(node))
     if (isinstance(node,ast.Call)and len(node.args)==1 and not node.keywords
-            and isinstance(node.func,ast.Name)
-            and emitter.model.builtin_identity(emitter.plan,node.func,{})==BuiltinIdentity('len')):
+            and static_builtin(emitter.model,emitter.plan,node.func,'len')):
         record=selected(emitter,node.args[0])
         if record is not None:return Expression('{'+checked(emitter,record,node.args[0])+';class_from_usize('+str(len(record.fields))+')}',emitter.kind(node))
     return None

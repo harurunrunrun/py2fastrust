@@ -240,8 +240,8 @@ def after_call(model, plan, node):
     from .native_classes import shape
     from .references import BuiltinIdentity
     modeled = bool(model.call_edges_by_site.get((plan.index,id(node))))
-    readonly_length = (isinstance(node.func,ast.Name)
-        and model.builtin_identity(plan,node.func,{})==BuiltinIdentity('len'))
+    from .native_physical_list_builtins import readonly_length as length_effect
+    readonly_length = length_effect(model,plan,node.func)
     if isinstance(node.func,ast.Name):
         identity=model.builtin_identity(plan,node.func,{})
         if isinstance(identity,BuiltinIdentity)and identity.name in {'locals','eval','exec','compile','vars'}:

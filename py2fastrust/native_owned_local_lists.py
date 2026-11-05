@@ -19,6 +19,11 @@ class Local:
     allocations: tuple
 
 
+def static_builtin(emitter,node,name):
+    from .native_physical_list_builtins import static_builtin as proved
+    return proved(emitter.model,emitter.plan,node,name)
+
+
 def enumerate_source(emitter,node):
     """An immediate builtin enumerate with an already native integer start."""
     if (not isinstance(node,ast.Call)or not isinstance(node.func,ast.Name)
@@ -141,8 +146,7 @@ def prepare(emitter):
             elif binding.role=='load':
                 direct=isinstance(parent,ast.Subscript)and parent.value is node and not isinstance(parent.slice,ast.Slice)
                 length=(isinstance(parent,ast.Call)and parent.args==[node]and not parent.keywords
-                        and isinstance(parent.func,ast.Name)
-                        and model.builtin_identity(plan,parent.func,{})==BuiltinIdentity('len'))
+                        and static_builtin(emitter,parent.func,'len'))
                 method=parents.get(id(parent))if isinstance(parent,ast.Attribute)else None
                 mutation=(isinstance(parent,ast.Attribute)and parent.value is node
                           and isinstance(method,ast.Call)and method.func is parent and not method.keywords
@@ -272,8 +276,7 @@ def read(emitter,node):
         before,place=indexed
         return Expression('{'+before+load(emitter,place,node).code+'}',emitter.kind(node))
     if (isinstance(node,ast.Call)and len(node.args)==1 and not node.keywords
-            and isinstance(node.func,ast.Name)
-            and emitter.model.builtin_identity(emitter.plan,node.func,{})==BuiltinIdentity('len')):
+            and static_builtin(emitter,node.func,'len')):
         local=selected(emitter,node.args[0])
         if local is not None:
             return Expression('class_from_usize(('+checked(emitter,local,node.args[0])+').len())','int')

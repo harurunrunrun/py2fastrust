@@ -55,8 +55,8 @@ class Registry:
 
     def builtin_len(self,plan,node):
         if not isinstance(node,ast.Call)or not isinstance(node.func,ast.Name)or len(node.args)!=1 or node.keywords:return False
-        identity=self.model.builtin_identity(plan,node.func,{})
-        if not isinstance(identity,BuiltinIdentity)or identity.name!='len':return False
+        from .native_physical_list_builtins import static_builtin
+        if not static_builtin(self.model,plan,node.func,'len'):return False
         kind=self.kind(plan,node.func)
         targets=getattr(kind,'targets',())
         return not targets or all(isinstance(target,BuiltinIdentity)and target.name=='len'for target in targets)
