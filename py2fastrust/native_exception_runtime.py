@@ -1,6 +1,12 @@
 """Feature-selected exception payload identity, traceback state, and rendering."""
 
 
+def error_record_site(tokens,index):
+    """Distinguish a record declaration/literal from a bare return/impl type."""
+    return (not index or tokens[index-1].text != 'impl') and not (
+        index >= 2 and [part.text for part in tokens[index-2:index]] == ['-', '>'])
+
+
 def runtime(source,model):
     if not model.exceptions.used:return source
     from .rust_pruning import _lex
@@ -8,6 +14,7 @@ def runtime(source,model):
     has_context=model.context_managers.used
     for index,token in enumerate(tokens[:-1]):
         if token.text!='NativeError'or tokens[index+1].text!='{':continue
+        if not error_record_site(tokens,index):continue
         close=tokens[pairs[index+1]];prefix=''if source[:close.start].rstrip().endswith(',')else','
         declaration=index and tokens[index-1].text=='struct'
         if declaration:

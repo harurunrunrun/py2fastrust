@@ -41,6 +41,8 @@ def entry_result(model,plan):
 
 
 def call(emitter,invocation,callee,node,*,propagate=True):
+    from .native_typed_continuations import assert_source_call_lowered
+    assert_source_call_lowered(emitter,callee)
     if getattr(emitter,'iterator_callback_context',None)is not None:
         if not propagate:return None
         from .native_iterator_stop_policy import callback_call

@@ -142,8 +142,12 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         from .native_types import EmptyType
         source=arguments[0]
         from .native_classes import shape
-        if self.iterators.needs_source_cursor(shape(source)):source=Cell(self.iterators.source(plan,node,source))
-        item = self.iterators.demand(plan,node,source,environment).root()
+        from .native_integer_mapping_folds import element as mapping_element
+        item = mapping_element(model,node,source)
+        if item is None:
+            if self.iterators.needs_source_cursor(shape(source)):source=Cell(self.iterators.source(plan,node,source))
+            item = self.iterators.demand(plan,node,source,environment)
+        item = item.root()
         if not isinstance(item.tag,EmptyType)and item.tag not in {None,"int","bool","int_bool"}:
             raise ClassUnsupported(node)
         start=arguments[1]if len(arguments)==2 else Cell("int")
@@ -451,7 +455,11 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         else:
             code=f"{{let mut {accumulator}:Option<{self.rust_type(wanted)}>=None;"
             stream=arguments[0]
-        if stream is not None:
+        from .native_integer_mapping_folds import emit as mapping_fold
+        mapped = mapping_fold(self,node,stream,accumulator,wanted) if name=="sum" else None
+        if mapped is not None:
+            code+=mapped+accumulator+"}"
+        elif stream is not None:
             pull=None
             if self.model.iterators.needs_source_cursor(stream.kind):
                 before,stream=self.capture(self.model.iterators.construct(self,node,stream));code+=before

@@ -29,15 +29,20 @@ class Site:
     arguments:tuple
     destination:object
     resume:int
+    owned_child:bool=False
 
 
 class Registry:
     def __init__(self,model):
         self.model=model;self.plans={};self.reason=None;self.builders={};self.sites=[]
-        self.targets={};self.result_entries=set();self.invocations=None
+        self.targets={};self.result_entries=set();self.invocations=None;self.captured={}
         self.parents={id(child):node for node in model.iter_nodes()for child in ast.iter_child_nodes(node)}
         try:self.prove()
-        except Unproved as error:self.reason=str(error);self.plans.clear();self.targets.clear();return
+        except Unproved as error:
+            self.reason=str(error);self.plans.clear();self.targets.clear()
+            from .native_captured_invocations import install_regions
+            install_regions(self)
+            return
         # Explicitly certify source entries; constructor wrappers remain a
         # separate physical role and must already be bounded/direct here.
         self.result_entries={plan.index for plan in model.plans if plan.reachable
@@ -270,47 +275,55 @@ class Registry:
         if not self.invocations.complete():raise Unproved('the source invocation producer ledger is incomplete')
         # Typed source blocks currently cover ordinary statements. Reject
         # unlowered producers before any source body is emitted.
-        allowed=(ast.Assign,ast.AnnAssign,ast.AugAssign,ast.Expr,ast.Return,ast.If,
-                 ast.For,ast.While,ast.Break,ast.Continue,ast.Pass,ast.Global,ast.Nonlocal,ast.Assert)
         for plan in region:
-            for node in ast.walk(self.source(plan).node):
-                if self.omitted(plan,node):continue
-                if isinstance(node,ast.stmt)and node is not self.source(plan).node and not isinstance(node,allowed):
-                    raise Unproved('an ordinary statement has no typed continuation control rule')
-                if isinstance(node,ast.AugAssign)and not isinstance(node.target,ast.Name)and any((plan.index,id(part))in self.targets and self.targets[plan.index,id(part)].index in self.plans for part in ast.walk(node)if isinstance(part,ast.Call)):
-                    raise Unproved('augmented container places need a suspension-safe captured owner/index')
-                if isinstance(node,ast.AugAssign)and any((plan.index,id(part))in self.targets
-                        and self.targets[plan.index,id(part)].index in self.plans for part in ast.walk(node.value)if isinstance(part,ast.Call)):
-                    previous=self.model.augmented.get((plan.index,id(node)))
-                    if previous is None or shape(previous)not in SCALARS:
-                        raise Unproved('suspending inplace container mutation needs a captured native place')
-                if isinstance(node,(ast.Assign,ast.AnnAssign,ast.AugAssign,ast.For,ast.comprehension)):
-                    targets=node.targets if isinstance(node,ast.Assign)else[node.target]
-                    if any(any((plan.index,id(part))in self.targets and self.targets[plan.index,id(part)].index in self.plans
-                               for part in ast.walk(target)if isinstance(part,ast.Call))for target in targets):
-                        raise Unproved('a suspending assignment target needs a typed place descriptor')
-                if isinstance(node,ast.expr)and any((plan.index,id(part))in self.targets
-                        and self.targets[plan.index,id(part)].index in self.plans for part in ast.walk(node)if isinstance(part,ast.Call)):
-                    if not isinstance(node,(ast.Call,ast.BinOp,ast.UnaryOp,ast.Subscript,ast.Tuple,ast.List,ast.IfExp,ast.BoolOp)):
-                        raise Unproved('this suspending expression has no typed evaluation-order rule')
-                    if isinstance(node,ast.Subscript)and isinstance(node.value,ast.Attribute):
-                        from .native_classes import InstanceType
-                        from .native_owned_class_lists import selected as owned_field
-                        receiver=self.model.records.get((plan.index,id(node.value.value)))
-                        kind=None if receiver is None else shape(receiver)
-                        owner=self.model.classes.get(kind.name)if isinstance(kind,InstanceType)else None
-                        name=self.model.resolved_name(plan,node.value)
-                        if owner is not None and name in owner.fields and owned_field(self.model,owner,list(owner.fields).index(name)):
-                            raise Unproved('a suspending owned class-list read needs an owned place descriptor')
-                    if isinstance(node,ast.Subscript)and isinstance(node.slice,ast.Slice):
-                        raise Unproved('suspending slice bounds need a captured sequence-place rule')
-                if isinstance(node,ast.Assert)and any((plan.index,id(part))in self.targets and self.targets[plan.index,id(part)].index in self.plans for part in ast.walk(node)if isinstance(part,ast.Call)):
-                    raise Unproved('suspending assert message/control needs explicit conditional blocks')
-                if isinstance(node,ast.For):
-                    from .native_classes import domain
-                    cell=self.model.records.get((plan.index,id(node.iter)))
-                    if cell is None or domain(shape(cell))not in {'list','tuple','range'}:
-                        raise Unproved('the builtin iterator cursor is not continuation-normalized')
+            reason=control_reason(self,plan,self.targets,self.plans)
+            if reason is not None:raise Unproved(reason)
+
+
+def control_reason(registry,plan,targets,selected):
+    """One positive control/place matrix shared by every typed region proof."""
+    from .native_classes import shape
+    allowed=(ast.Assign,ast.AnnAssign,ast.AugAssign,ast.Expr,ast.Return,ast.If,
+             ast.For,ast.While,ast.Break,ast.Continue,ast.Pass,ast.Global,ast.Nonlocal,ast.Assert)
+    for node in ast.walk(registry.source(plan).node):
+        if registry.omitted(plan,node):continue
+        if isinstance(node,ast.stmt)and node is not registry.source(plan).node and not isinstance(node,allowed):
+            return ('an ordinary statement has no typed continuation control rule')
+        if isinstance(node,ast.AugAssign)and not isinstance(node.target,ast.Name)and any((plan.index,id(part))in targets and targets[plan.index,id(part)].index in selected for part in ast.walk(node)if isinstance(part,ast.Call)):
+            return ('augmented container places need a suspension-safe captured owner/index')
+        if isinstance(node,ast.AugAssign)and any((plan.index,id(part))in targets
+                and targets[plan.index,id(part)].index in selected for part in ast.walk(node.value)if isinstance(part,ast.Call)):
+            previous=registry.model.augmented.get((plan.index,id(node)))
+            if previous is None or shape(previous)not in SCALARS:
+                return ('suspending inplace container mutation needs a captured native place')
+        if isinstance(node,(ast.Assign,ast.AnnAssign,ast.AugAssign,ast.For,ast.comprehension)):
+            assignment_targets=node.targets if isinstance(node,ast.Assign)else[node.target]
+            if any(any((plan.index,id(part))in targets and targets[plan.index,id(part)].index in selected
+                           for part in ast.walk(target)if isinstance(part,ast.Call))for target in assignment_targets):
+                return ('a suspending assignment target needs a typed place descriptor')
+        if isinstance(node,ast.expr)and any((plan.index,id(part))in targets
+                and targets[plan.index,id(part)].index in selected for part in ast.walk(node)if isinstance(part,ast.Call)):
+            if not isinstance(node,(ast.Call,ast.BinOp,ast.UnaryOp,ast.Subscript,ast.Tuple,ast.List,ast.IfExp,ast.BoolOp)):
+                return ('this suspending expression has no typed evaluation-order rule')
+            if isinstance(node,ast.Subscript)and isinstance(node.value,ast.Attribute):
+                from .native_classes import InstanceType
+                from .native_owned_class_lists import selected as owned_field
+                receiver=registry.model.records.get((plan.index,id(node.value.value)))
+                kind=None if receiver is None else shape(receiver)
+                owner=registry.model.classes.get(kind.name)if isinstance(kind,InstanceType)else None
+                name=registry.model.resolved_name(plan,node.value)
+                if owner is not None and name in owner.fields and owned_field(registry.model,owner,list(owner.fields).index(name)):
+                    return ('a suspending owned class-list read needs an owned place descriptor')
+            if isinstance(node,ast.Subscript)and isinstance(node.slice,ast.Slice):
+                return ('suspending slice bounds need a captured sequence-place rule')
+        if isinstance(node,ast.Assert)and any((plan.index,id(part))in targets and targets[plan.index,id(part)].index in selected for part in ast.walk(node)if isinstance(part,ast.Call)):
+            return ('suspending assert message/control needs explicit conditional blocks')
+        if isinstance(node,ast.For):
+            from .native_classes import domain
+            cell=registry.model.records.get((plan.index,id(node.iter)))
+            if cell is None or domain(shape(cell))not in {'list','tuple','range'}:
+                return ('the builtin iterator cursor is not continuation-normalized')
+    return None
 
 
 class Builder:
@@ -323,6 +336,7 @@ class Builder:
         def captured(instance,node):
             return self.overrides[id(node)]if id(node)in self.overrides else expression(node)
         emitter.slot=MethodType(framed_slot,emitter);emitter.expression=MethodType(captured,emitter)
+        emitter.typed_continuation_builder=self
         self.original_expression=expression
         from .native_classes import shape,Expression
         for index,name in enumerate(self.plan.runtime_parameters):
@@ -404,6 +418,23 @@ class Builder:
         target=self.registry.targets.get((self.plan.index,id(node)))if isinstance(node,ast.Call)else None
         if target is not None and target.index in self.registry.plans:
             destination=self.temp(self.emitter.kind(node));resume=self.new()
+            capture=self.registry.captured.get((self.plan.index,id(node)))
+            if capture is not None:
+                from .native_captured_invocations import bind_definition
+                from .native_callable_carriers import bind_payload
+                site=Site(len(self.registry.sites),self.plan,target,node,(),destination,resume,True)
+                self.registry.sites.append(site)
+                provider=self.emitter.model.callable_cells
+                positional=[values[id(arg)]for arg in node.args]
+                keywords=[(keyword.arg,values[id(keyword.value)])for keyword in node.keywords]
+                binding=bind_definition(self.emitter,node,capture.definition,positional,keywords)
+                if binding.target is not target:
+                    raise Unproved('the analyzed captured native body differs from its bound target')
+                code=('{'+bind_payload(provider,capture.definition,values[id(node.func)].code)
+                      +provider.call_context_setup(self.emitter,binding.source)
+                      +'Ok(ClassNativeStep::Call_'+str(site.index)+'('+binding.frame_code()+'))}')
+                self.emit(code);self.end(('raw',));self.current=resume
+                return destination
             producer=self.registry.invocations.producers[self.plan.index,id(node)]
             site=Site(len(self.registry.sites),self.plan,target,node,tuple(values[id(arg)]for arg in producer.argument_nodes),destination,resume)
             self.registry.sites.append(site);self.end(('call',site));self.current=resume;return destination
@@ -522,6 +553,20 @@ def selected(model,plan):return plan is not None and plan.index in getattr(getat
 def entry_result(model,plan):return plan is not None and plan.index in getattr(getattr(model,'typed_continuations',None),'result_entries',())
 
 
+def assert_source_call_lowered(emitter,callee):
+    if getattr(emitter,'typed_continuation_builder',None)is not None and selected(emitter.model,callee):
+        raise AssertionError('a typed source block attempted to reenter a selected entry wrapper')
+
+
+def validate_transfers(model,registry):
+    expected={(caller,site,target)for(caller,site),targets in model.call_edges_by_site.items()
+              if caller in registry.plans for target in targets if target in registry.plans}
+    actual={(site.caller.index,id(site.node),site.callee.index)for site in registry.sites}
+    if expected!=actual:
+        raise AssertionError(('a selected source activation has no consumed typed transfer',
+                              expected-actual,actual-expected))
+
+
 def generate(emitter):
     registry=getattr(emitter.model,'typed_continuations',None)
     if registry is None or not selected(emitter.model,emitter.plan):return None
@@ -537,11 +582,12 @@ def runtime(model):
     registry=getattr(model,'typed_continuations',None)
     if registry is None or not registry.plans:return ''
     from .native_classes import shape
+    validate_transfers(model,registry)
     builders=registry.builders;result=[builder.frame()for builder in builders.values()]
     result.append('enum ClassNativeState{'+','.join('F_'+str(i)+'(ClassNativeFrame_'+str(i)+',ClassNativePc_'+str(i)+')'for i in builders)+'}')
     result.append('enum ClassNativeReturn{'+','.join('F_'+str(i)+'('+b.emitter.rust_type(shape(b.plan.result))+')'for i,b in builders.items())+'}')
     result.append('enum ClassNativeContinuation{'+','.join('Site_'+str(site.index)+'{frame:ClassNativeFrame_'+str(site.caller.index)+'}'for site in registry.sites)+'}')
-    result.append('enum ClassNativeStep{'+','.join(['Jump_'+str(i)+'(ClassNativePc_'+str(i)+'),Return_'+str(i)+'('+b.emitter.rust_type(shape(b.plan.result))+')'for i,b in builders.items()]+['Call_'+str(site.index)for site in registry.sites])+'}')
+    result.append('enum ClassNativeStep{'+','.join(['Jump_'+str(i)+'(ClassNativePc_'+str(i)+'),Return_'+str(i)+'('+b.emitter.rust_type(shape(b.plan.result))+')'for i,b in builders.items()]+['Call_'+str(site.index)+('(ClassNativeFrame_'+str(site.callee.index)+')'if site.owned_child else'')for site in registry.sites])+'}')
     unwinds=','.join('ClassNativeContinuation::Site_'+str(site.index)+'{..}=>{error.frames.push(('+str(site.node.lineno)+','+builders[site.caller.index].emitter.location_code()+'));}'for site in registry.sites)
     result.append('fn class_native_unwind(stack:&mut Vec<ClassNativeContinuation>,class_scope:&ClassScope,mut error:NativeError)->NativeError{'
                   'while let Some(caller)=stack.pop(){class_scope.control.borrow_mut().depth-=1;match caller{'+unwinds+'}}error}')
@@ -561,9 +607,11 @@ def runtime(model):
             if site.caller.index!=i:continue
             callee=builders[site.callee.index];args=[e.coerce(value,shape(callee.plan.arguments[name]),site.node)for name,value in zip(callee.plan.runtime_parameters,site.arguments)]
             error='NativeError{message:"RecursionError: maximum recursion depth exceeded".into(),line:'+str(site.node.lineno)+',function:'+e.location_code()+',frames:Vec::new()}'
-            steps.append('ClassNativeStep::Call_'+str(site.index)+'=>{if class_scope.control.borrow().depth>=class_scope.control.borrow().limit{let error='+error+';'+unwind_code()+'}'
+            head='ClassNativeStep::Call_'+str(site.index)+('(child)'if site.owned_child else'')
+            child=''if site.owned_child else('let child=ClassNativeFrame_'+str(site.callee.index)+'::new(class_scope.clone()'+(','+','.join(args)if args else'')+');')
+            steps.append(head+'=>{if class_scope.control.borrow().depth>=class_scope.control.borrow().limit{let error='+error+';'+unwind_code()+'}'
                          'if stack.try_reserve(1).is_err(){let error=NativeError{message:"MemoryError: cannot allocate native call frame".into(),line:'+str(site.node.lineno)+',function:'+e.location_code()+',frames:Vec::new()};'+unwind_code()+'}'
-                         'let child=ClassNativeFrame_'+str(site.callee.index)+'::new(class_scope.clone()'+(','+','.join(args)if args else'')+');class_scope.control.borrow_mut().depth+=1;stack.push(ClassNativeContinuation::Site_'+str(site.index)+'{frame});state=ClassNativeState::F_'+str(site.callee.index)+'(child,ClassNativePc_'+str(site.callee.index)+'::B0);continue;}')
+                         +child+'class_scope.control.borrow_mut().depth+=1;stack.push(ClassNativeContinuation::Site_'+str(site.index)+'{frame});state=ClassNativeState::F_'+str(site.callee.index)+'(child,ClassNativePc_'+str(site.callee.index)+'::B0);continue;}')
         state_arms.append('ClassNativeState::F_'+str(i)+'(mut frame,pc)=>{let class_scope=frame.scope.clone();let outcome:ClassResult<ClassNativeStep>=(||{'+b.body()+'})();match outcome{Err(error)=>{'+unwind_code()+'},Ok(step)=>match step{'+','.join(steps)+',_=>unreachable!("native step owner")}}}')
     body=','.join(state_arms)
     imports='use std::fmt::Write as _;'if 'write!'in body else''

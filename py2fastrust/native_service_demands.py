@@ -194,6 +194,9 @@ class Registry:
             node = pending.pop()
             if isinstance(node, ast.Call):
                 demand = demand.join(self.call(definition, node, scope))
+            elif isinstance(node, ast.keyword):
+                if not isinstance(node.arg, str):
+                    demand = demand.join(self.unknown(definition, node, 'mapping argument expansion has no closed service role'))
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 if node.value is not None and any(isinstance(part, (ast.Tuple, ast.List, ast.Subscript))

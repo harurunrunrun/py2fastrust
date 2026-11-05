@@ -2134,3 +2134,21 @@ called factories, builtin fallback, captured environments and namespace/lifetime
 observers retain their existing typed payload capture. Presence and owned reads
 use distinct accessors even for the same binding. This does not prove early
 publication or replace mutable namespace storage with readonly cells.
+
+Named keyword labels in ordinary source calls do not require IO services. Their values retain their original evaluation order and transitive service demands. Mapping argument expansion (`**mapping`) retains the conservative service ABI until its expansion protocol is certified.
+
+`sum()` supports builtin integer and boolean elements in typed sets, dictionaries (keys), and live dictionary key/value views, including captured builtin calls and `start=`. Both arguments finish evaluation before iteration starts. Empty iterables preserve a boolean start; nonempty boolean/integer folds use integer addition with the selected wrapping or BigInt policy. Floating-point and user-defined addition protocols remain outside this adapter.
+
+Closed singleton source-call regions can use owned typed continuation frames
+even when another reached component needs the existing asynchronous adapter.
+The compiler checks the complete explicit and implicit producer graph, source
+control and target evaluation rules, and every physical frame argument before
+selecting a region. Transfers capture the actual callable before arguments and
+use its original signature/default binder and actual defining module; they do
+not reconstruct a current module from a cache. A selected recursive component
+uses one native driver, with the existing logical recursion depth and traceback
+frames. Physical `Result` entry points do not grant `NoSuspend` or borrowing
+certificates. Lexical environments, finite alternatives, implicit callbacks and
+suspending assignment places without an owned transfer rule retain their
+existing conventions. Cleanup and exception payload layouts can coexist with
+independent selected regions.

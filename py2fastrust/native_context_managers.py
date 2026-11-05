@@ -216,9 +216,11 @@ def runtime(source,model):
     """Select richer error layout only for reached native cleanup regions."""
     if not model.context_managers.used:return source
     from .rust_pruning import _lex
+    from .native_exception_runtime import error_record_site
     tokens,_,pairs=_lex(source);edits=[];declarations=0;constructors=0
     for index,token in enumerate(tokens[:-1]):
         if token.text!='NativeError'or tokens[index+1].text!='{':continue
+        if not error_record_site(tokens,index):continue
         close=tokens[pairs[index+1]]
         prefix=''if source[:close.start].rstrip().endswith(',')else','
         if index and tokens[index-1].text=='struct':

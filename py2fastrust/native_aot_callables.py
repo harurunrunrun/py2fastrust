@@ -542,25 +542,10 @@ def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted
     provider=emitter.model.callable_cells
     target=provider.plans[definition]
     if definition in site.errors:return error(site.errors[definition])
-    default_emitter=emitter.model.emitter(target)
-    parent=emitter.model.lexical.parent_scope(target)
-    is_lambda=isinstance(target.node,ast.Lambda)
-    from .native_function_instances import instanced
-    has_instance=instanced(emitter.model.lexical,target)
-    if is_lambda:default_emitter.lambda_instance_override="class_selected_environment"
-    if has_instance:default_emitter.function_instance_override='class_selected_environment.data'
-    if parent:default_emitter.lexical_environment_override="class_selected_environment.environment"if is_lambda or has_instance else"class_selected_environment"
-    try:
-        from .native_variadic import pack_emission
-        bound=target.signature.bind(positional,keywords,default_emitter.captured_defaults(target),pack_positional=lambda members:pack_emission(emitter,target,members,node))
-    except CallBindingError as failure:raise ClassUnsupported(node,str(failure))from None
-    from .native_frame_specialization import native_target
-    target=native_target(emitter.model,target,bound.by_name)
-    values=[emitter.coerce(value,shape(target.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
-    from .native_call_context_effects import unused_parent
-    from .native_class_binding_contexts import invocation as class_context_argument
-    defining_context=class_context_argument(emitter.model,target,positional[0].code if positional else None,caller=emitter.plan,node=node)
-    invocation=emitter.function_name(target)+"(class_scope.clone()"+((",class_selected_environment.environment.clone()"if is_lambda or has_instance else",class_selected_environment.clone()")if parent and not unused_parent(emitter.model,target)else"")+defining_context+(","+",".join(values)if values else"")+")"
+    from .native_captured_invocations import bind_definition
+    bound=bind_definition(emitter,node,definition,positional,keywords)
+    target=bound.target
+    invocation=bound.call_code(emitter)
     from .native_class_calls import call
     from .native_source_returns import emit_result
     return emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)
