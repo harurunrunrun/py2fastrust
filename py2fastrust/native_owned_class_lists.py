@@ -199,7 +199,9 @@ def reference(emitter,node):
     info=site(emitter,node.value)
     if info is None:return None
     setup,owner=emitter.capture(emitter.expression(node.value.value))
-    setup+=emitter.at(prefix(info)+'_ensure(&'+owner.code+')',node.value)+';'
+    from .native_initialized_owned_fields import selected as initialized
+    if not initialized(emitter.model,info.owner,info.index):
+        setup+=emitter.at(prefix(info)+'_ensure(&'+owner.code+')',node.value)+';'
     from .native_class_record_fields import selected
     if selected(emitter.model,info)is not None:return setup,('owned_class_index',info,owner,None)
     more,index=emitter.capture(emitter.expression(node.slice))
@@ -241,6 +243,9 @@ def length(emitter,node):
     info=site(emitter,node.args[0])
     if info is None:return None
     before,owner=emitter.capture(emitter.expression(node.args[0].value))
+    from .native_initialized_owned_fields import selected as initialized
+    if initialized(emitter.model,info.owner,info.index):
+        return Expression('{'+before+'class_from_usize('+owner.code+'.borrow().field_'+str(info.index)+'.len())}',emitter.kind(node))
     code=emitter.at(prefix(info)+'_len(&'+owner.code+')',node.args[0])
     return Expression('{'+before+'class_from_usize('+code+')}',emitter.kind(node))
 
@@ -258,7 +263,8 @@ def initialize(emitter,node):
     vector=emitter.fresh()
     code=f'let {vector}=match Rc::try_unwrap({value}){{Ok(value)=>value.into_inner(),Err(_)=>unreachable!("fresh builtin field list escaped")}};'
     more,owner=emitter.capture(emitter.expression(info.target.value))
-    return '{'+code+more+f'{owner.code}.borrow_mut().field_{info.index}=Some({vector});'+'}'
+    from .native_initialized_owned_fields import wrap
+    return '{'+code+more+f'{owner.code}.borrow_mut().field_{info.index}='+wrap(emitter.model,info.owner,info.index,vector)+';'+'}'
 
 
 def runtime(model,owner,emitter):
@@ -275,11 +281,16 @@ def runtime(model,owner,emitter):
         name=prefix(info);handle=f'&ClassHandle_{number}';element=emitter.rust_type(info.kind.element)
         error=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{owner.fields[info.name].name}'")
         field=f'field_{index}'
-        result.append(f'fn {name}_ensure(owner:{handle})->Result<(),String>{{if owner.borrow().{field}.is_some(){{Ok(())}}else{{Err({error}.to_owned())}}}}')
-        result.append(f'fn {name}_len(owner:{handle})->Result<usize,String>{{let owner=owner.borrow();let values=owner.{field}.as_ref().ok_or_else(||{error}.to_owned())?;Ok(values.len())}}')
+        from .native_initialized_owned_fields import selected as initialized
+        plain=initialized(model,owner,index)
+        if not plain:
+            result.append(f'fn {name}_ensure(owner:{handle})->Result<(),String>{{if owner.borrow().{field}.is_some(){{Ok(())}}else{{Err({error}.to_owned())}}}}')
+            result.append(f'fn {name}_len(owner:{handle})->Result<usize,String>{{let owner=owner.borrow();let values=owner.{field}.as_ref().ok_or_else(||{error}.to_owned())?;Ok(values.len())}}')
+        shared='&owner.'+field if plain else'owner.'+field+'.as_ref().expect("checked stable field")'
+        mutable='&mut owner.'+field if plain else'owner.'+field+'.as_mut().expect("checked stable field")'
         if info.reads:
-            result.append(f'fn {name}_get(owner:{handle},index:&NativeInt)->Result<{element},String>{{let result={{let owner=owner.borrow();let values=owner.{field}.as_ref().expect("checked stable field");class_slice_get(values,index)?.clone()}};Ok(result)}}')
+            result.append(f'fn {name}_get(owner:{handle},index:&NativeInt)->Result<{element},String>{{let result={{let owner=owner.borrow();let values={shared};class_slice_get(values,index)?.clone()}};Ok(result)}}')
         from .native_owned_object_places import selected as owned_object
         mutable_handle=f'&mut ClassHandle_{number}'if owned_object(model,owner)else handle
-        result.append(f'fn {name}_set(owner:{mutable_handle},index:&NativeInt,value:{element})->Result<(),String>{{let previous={{let mut owner=owner.borrow_mut();let values=owner.{field}.as_mut().expect("checked stable field");std::mem::replace(class_slice_get_mut(values,index)?,value)}};drop(previous);Ok(())}}')
+        result.append(f'fn {name}_set(owner:{mutable_handle},index:&NativeInt,value:{element})->Result<(),String>{{let previous={{let mut owner=owner.borrow_mut();let values={mutable};std::mem::replace(class_slice_get_mut(values,index)?,value)}};drop(previous);Ok(())}}')
     return '\n'.join(result)

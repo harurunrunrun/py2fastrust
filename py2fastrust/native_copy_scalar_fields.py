@@ -15,6 +15,8 @@ def selected(model,owner):
 
 
 def load(model,owner,receiver,index):
+    from .native_initialized_owned_fields import selected as initialized
+    if initialized(model,owner,index):return f'Some(({receiver}).borrow().field_{index}.clone())'
     from .native_constant_field_projection import read
     projected=read(model,owner,receiver,index)
     if projected is not None:return 'Some('+projected+')'
@@ -25,6 +27,8 @@ def load(model,owner,receiver,index):
 
 
 def store(model,owner,receiver,index,value):
+    from .native_initialized_owned_fields import selected as initialized
+    if initialized(model,owner,index):return f'({receiver}).borrow_mut().field_{index}={value};'
     from .native_constant_field_projection import store as project_store
     projected=project_store(model,owner,receiver,index,value)
     if projected is not None:return projected

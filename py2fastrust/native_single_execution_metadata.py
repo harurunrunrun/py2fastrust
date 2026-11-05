@@ -134,19 +134,21 @@ def apply(source, model):
 
 PLAIN_RUNTIME = r'''
 #[derive(Clone)]
-struct ClassValueMetadata___INDEX__(&'static ClassClassRef);
+struct ClassValueMetadata___INDEX__;
 impl std::ops::Deref for ClassValueMetadata___INDEX__ {
  type Target=ClassClassRef;
- fn deref(&self)->&ClassClassRef {self.0}
+ fn deref(&self)->&ClassClassRef {
+  CLASS_VALUE_METADATA___INDEX__.with(|slot|*slot.get().expect("retained class metadata"))
+ }
 }
 impl ClassValueMetadata___INDEX__ {
- fn clone(&self)->ClassClassRef {Rc::clone(self.0)}
+ fn clone(&self)->ClassClassRef {Rc::clone(std::ops::Deref::deref(self))}
 }
 thread_local! {
  static CLASS_VALUE_METADATA___INDEX__:std::cell::OnceCell<&'static ClassClassRef>=std::cell::OnceCell::new();
 }
 fn class_value_metadata___INDEX__(value:&ClassClassRef)->ClassValueMetadata___INDEX__ {
- let pinned=CLASS_VALUE_METADATA___INDEX__.with(|slot|*slot.get_or_init(||Box::leak(Box::new(value.clone()))));
- ClassValueMetadata___INDEX__(pinned)
+ CLASS_VALUE_METADATA___INDEX__.with(|slot|{slot.get_or_init(||Box::leak(Box::new(value.clone())));});
+ ClassValueMetadata___INDEX__
 }
 '''

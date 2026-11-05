@@ -2185,3 +2185,16 @@ produce the real call error after argument effects. This binding-error check
 does not change the existing route when every solved target binds.
 Repeated definitions in lexical scopes or module control-flow blocks still
 require their separate per-execution binding/default-instance implementation.
+
+Private owned objects can store proved initialized scalar and vector fields as
+their concrete Rust types. Ordered constructor and method summaries check every
+read before initialization and every normal constructor exit, including branch,
+loop and argument evaluation order. Partial reads, missing conditional fields,
+unknown cleanup, escaping receivers and lifetime observers retain their original
+presence checks. Internal allocation-free placeholders are never source values.
+
+When the existing certificate proves one actual class generation, immutable
+value objects need no per-element metadata reference. A zero-sized carrier uses
+the same pinned actual class reference; class namespace changes and both clone
+protocols retain their behavior. Unproved generations keep the existing retained
+metadata representation.

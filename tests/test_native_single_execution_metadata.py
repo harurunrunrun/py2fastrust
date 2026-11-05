@@ -110,10 +110,11 @@ class NativeSingleExecutionMetadataTests(unittest.TestCase):
         self.assertTrue(result.success, result.diagnostics)
         return result.rust_source
 
-    def test_direct_module_chain_uses_plain_reference_in_all_integer_modes(self):
+    def test_direct_module_chain_uses_zero_size_metadata_in_all_integer_modes(self):
         for mode in ("i64", "i128", "bigint"):
             source = self.compile_project("plain_module_chain", mode)
-            self.assertIn("(&'static ClassClassRef)", source)
+            self.assertRegex(source, r"struct ClassValueMetadata_\d+;")
+            self.assertNotIn("(&'static ClassClassRef)", source)
             self.assertNotIn("(Option<ClassClassRef>)", source)
 
     def test_control_flow_imports_keep_owned_capable_metadata(self):

@@ -241,7 +241,10 @@ def reference(emitter,node):
     from .native_owned_class_lists import site,prefix
     info=site(emitter,node.value)
     if info is None:return None
-    setup=root.check()+emitter.at(prefix(info)+'_ensure('+root.shared()+')',node.value)+';'
+    from .native_initialized_owned_fields import selected as initialized
+    setup=root.check()
+    if not initialized(emitter.model,info.owner,info.index):
+        setup+=emitter.at(prefix(info)+'_ensure('+root.shared()+')',node.value)+';'
     more,index=emitter.capture(emitter.expression(node.slice))
     return setup+more,('owned_object_index',root,info,index)
 
@@ -262,7 +265,9 @@ def store(emitter,ref,value,node):
     if ref[0]=='owned_object_field':
         _,root,index,kind=ref
         previous=emitter.fresh()
-        return '{let '+previous+'={let owner='+root.mutable()+';std::mem::replace(&mut owner.field_'+str(index)+',Some('+emitter.coerce(value,kind,node)+'))};drop('+previous+');}'
+        from .native_initialized_owned_fields import wrap
+        stored=wrap(emitter.model,root.owner,index,emitter.coerce(value,kind,node))
+        return '{let '+previous+'={let owner='+root.mutable()+';std::mem::replace(&mut owner.field_'+str(index)+','+stored+')};drop('+previous+');}'
     _,root,info,index=ref
     from .native_owned_class_lists import prefix
     return emitter.at(prefix(info)+'_set('+root.mutable()+',&('+emitter.number(index)+'),'+emitter.coerce(value,info.kind.element,node)+')',node)+';'
@@ -282,7 +287,8 @@ def initialize(emitter,node):
     from .native_owned_local_lists import allocation
     value=allocation(emitter,node.value,info.kind)
     captured=emitter.fresh()
-    return '{let '+captured+'='+value.code+';'+root.check()+root.mutable()+'.field_'+str(info.index)+'=Some('+captured+');}'
+    from .native_initialized_owned_fields import wrap
+    return '{let '+captured+'='+value.code+';'+root.check()+root.mutable()+'.field_'+str(info.index)+'='+wrap(emitter.model,info.owner,info.index,captured)+';}'
 
 
 def call_receiver(emitter,node,callee):

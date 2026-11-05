@@ -199,7 +199,7 @@ class NativeOwnedObjectPlaceTests(unittest.TestCase):
                     self.assertEqual(len(owners), 1)
                     number = owners[0]
                     self.assertNotIn("type ClassHandle_" + number + "=Rc<", rust)
-                    self.assertIn("Option<Vec<NativeInt>>", rust)
+                    self.assertRegex(rust, r"field_\d+:(?:Option<)?Vec<NativeInt>")
                     self.assertIn("class_argument_0:&mut ClassHandle_" + number, rust)
                     self.assertNotIn("#[derive(Clone)]\nstruct ClassData_" + number, rust)
                     constructor = re.search(r"fn class_construct_" + number + r"\([^\n]+", rust).group()

@@ -2889,7 +2889,8 @@ def _class_layouts(model,emitter):
         fields=list(owner.fields.values())
         from .native_owned_class_lists import selected as owned_field_selected,runtime as owned_field_runtime,physical_type as owned_field_type
         from .native_constant_field_projection import selected as constant_selected,read as constant_read
-        members=",".join(f"field_{i}:"+(f"Option<{owned_field_type(model,owner,i,emitter)}>"if owned_field_selected(model,owner,i)else f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields)if not constant_selected(model,owner,i))
+        from .native_initialized_owned_fields import selected as initialized_field,initial as initialized_default
+        members=",".join(f"field_{i}:"+((owned_field_type(model,owner,i,emitter)if owned_field_selected(model,owner,i)else emitter.rust_type(shape(value.cell)))if initialized_field(model,owner,i)else f"Option<{owned_field_type(model,owner,i,emitter)}>"if owned_field_selected(model,owner,i)else f"std::cell::Cell<{emitter.rust_type(shape(value.cell)if packed else MaybeType(shape(value.cell)))}>"if copied else emitter.rust_type(MaybeType(shape(value.cell))))for i,value in enumerate(fields)if not constant_selected(model,owner,i))
         extra_member,extra_parameter,extra_initialize=model.class_runtime_context(owner)
         from .native_class_binding_contexts import borrowed_constructor
         if borrowed_constructor(model,owner)and extra_parameter=='class_definition:ClassClassRef':
@@ -2921,6 +2922,7 @@ def _class_layouts(model,emitter):
             receiver='value.as_ref()'if unboxed else'value'
             projected=constant_read(model,owner,receiver,i)
             if projected is not None:getter='Ok('+projected+')'
+            elif initialized_field(model,owner,i):getter=f'Ok(({receiver}).borrow().field_{i}.clone())'
             else:
                 getter='Ok('+packed_raw(receiver,i)+')'if packed else load(model,owner,receiver,i)+f'.ok_or_else(||{message}.to_owned())'
                 from .native_scalar_heap_constants import getter as constant_getter
@@ -2940,7 +2942,7 @@ def _class_layouts(model,emitter):
         if has_identity:params.insert(0,'class_value_identity:usize')
         if extra_parameter:params.insert(0,extra_parameter)
         signature="class_scope:ClassScope"+(","+",".join(params)if params else"")
-        initialize=",".join(f"field_{i}:"+('std::cell::Cell::new('+packed_initial(shape(fields[i].cell))+')'if packed else'std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields))if not constant_selected(model,owner,i))
+        initialize=",".join(f"field_{i}:"+(initialized_default(model,owner,i)if initialized_field(model,owner,i)else'std::cell::Cell::new('+packed_initial(shape(fields[i].cell))+')'if packed else'std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields))if not constant_selected(model,owner,i))
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
         if has_identity:initialize='class_value_identity'+(','+initialize if initialize else'')
         body=(f"let mut object=ClassData_{owner.index}{{{initialize}}};"if owned_object else
@@ -3009,6 +3011,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_owned_fields(model)
         from .native_owned_object_places import prepare as prepare_owned_objects
         prepare_owned_objects(model)
+        from .native_initialized_owned_fields import prepare as prepare_initialized_fields
+        prepare_initialized_fields(model)
         from .native_value_parameter_borrows import prepare as prepare_parameter_borrows
         prepare_parameter_borrows(model)
         from .native_class_reference_borrows import prepare as prepare_class_reference_borrows
