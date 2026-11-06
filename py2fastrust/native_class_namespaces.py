@@ -359,7 +359,7 @@ class ClassNamespaces:
               +f"match {value}{{Some(value)=>{narrow_binding(emitter,node,stored,wanted,'value').code},None=>{failure}}}}}")
         return Expression(code,wanted)
 
-    def emit_get(self,emitter,node,reference,member):
+    def emit_get(self,emitter,node,reference,member,*,instance=False):
         from .native_classes import Expression
         from .native import _string
         index=self.model.namespace.index(member.key)
@@ -367,7 +367,9 @@ class ClassNamespaces:
         from .native_immutable_class_functions import emit
         immutable=emit(self,emitter,node,reference,member,stored)
         if immutable is not None:return immutable
-        message=f"AttributeError: type object '{member.owner.node.name}' has no attribute '{member.name}'"
+        recipient=(f"'{member.owner.node.name}' object"if instance else
+                   f"type object '{member.owner.node.name}'")
+        message=f"AttributeError: {recipient} has no attribute '{member.name}'"
         loaded=emitter.at(f'{{let value={reference.code}.module.borrow().value_{index}.clone();value.ok_or_else(||{_string(message)}.to_owned())}}',node)
         return Expression(loaded,stored)
 
@@ -383,7 +385,7 @@ class ClassNamespaces:
             reference=emitter.fresh()
             setup=f"let {reference}={{{receiver.code}.borrow().class_definition.clone()}};"
             class_reference=Expression(reference,ClassReferenceType(member.owner.index))
-            loaded=self.emit_get(emitter,node,class_reference,member)
+            loaded=self.emit_get(emitter,node,class_reference,member,instance=True)
             if member.plan is not None:
                 from .native_class_descriptors import emit_member
                 before,function=emitter.capture(loaded)

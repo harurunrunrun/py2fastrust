@@ -78,7 +78,13 @@ def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_lo
         identity_setup=f'let {identity}='+emitter.at('class_value_next_id()',source_call_location or node)+';'
         prefix.append(identity)
     values=prefix+values
-    invocation='class_construct_'+str(owner.index)+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'
+    from .native_source_state import call_arguments
+    state_values=call_arguments(emitter,node,constructor)if constructor is not None else None
+    name='class_construct_'+str(owner.index)
+    if state_values is not None:
+        name='class_state_construct_'+str(owner.index)
+        values.extend(state_values)
+    invocation=name+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'
     from .native_class_calls import call
     invocation=call(emitter,invocation,constructor,source_call_location or node)
     context=(''if defining_context is not None else

@@ -563,10 +563,15 @@ def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted
     from .native_captured_invocations import bind_definition
     bound=bind_definition(emitter,node,definition,positional,keywords,captured_class_context=captured_class_context)
     target=bound.target
-    invocation=bound.call_code(emitter)
+    from .native_source_state import bound_call
+    invocation,state_output=bound_call(emitter,node,bound)
     from .native_class_calls import call
     from .native_source_returns import emit_result
-    return emit_result(emitter,node,target,call(emitter,invocation,target,source_call_location or node),wanted)
+    called=call(emitter,invocation,target,source_call_location or node)
+    if state_output is not None:
+        value,witness=emitter.fresh(),emitter.fresh()
+        called='{let ('+value+','+witness+')='+called+';'+state_output+'='+witness+';'+value+'}'
+    return emit_result(emitter,node,target,called,wanted)
 
 
 def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_call_location=None,captured_class_context=None):

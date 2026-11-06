@@ -15,6 +15,27 @@ class Unproved(Exception):
     pass
 
 
+def _native_reader_call(model, plan, node, result):
+    """Recognize the core Model's captured standard-stream call contract.
+
+    These exact intrinsic Cells originate from typed stdin/read attributes.
+    A spelling, output kind, descriptor domain or source callable alternative
+    alone does not prove the nonreentrant zero-argument native operation.
+    """
+    if not isinstance(node.func, ast.Name) or node.args or node.keywords:
+        return False
+    cell = model.records.get((plan.index, id(node.func)))
+    if cell is None:
+        return False
+    root = cell.root()
+    tag = root.tag
+    if type(tag) is not str or tag not in {'reader_text', 'reader_bytes', 'read_text', 'read_bytes'} or root.args:
+        return False
+    from .native_classes import shape, domain
+    return (domain(shape(root)) == tag
+            and shape(result) == ('bytes' if tag in {'reader_bytes', 'read_bytes'} else 'str'))
+
+
 def _model_proof(model):
     from .native_classes import shape, domain, InstanceType
     from .native_class_calls import synchronous
@@ -100,6 +121,8 @@ def _model_proof(model):
                 continue
         kind_cell = model.records.get((index, id(function)))
         kind = None if kind_cell is None else shape(kind_cell)
+        if _native_reader_call(model, plan, node, cell):
+            continue
         if isinstance(kind, ClassReferenceType):
             continue
         result = shape(cell)
@@ -263,7 +286,17 @@ def apply(source, model):
             key = item.start
             by_name[item.name].add(key)
             bodies[key] = (item, *_body(tokens, pairs, positions[item.start], item.end))
-        source_symbols = {name for name in by_name if name.startswith('class_function_') or name.startswith('class_construct_')}
+        from .native_source_symbols import function_plans, constructor_names
+        source_plans = function_plans(model)
+        constructors = constructor_names(model)
+        source_symbols = set(source_plans) | constructors
+        for name in by_name:
+            if (name.startswith(('class_function_', 'class_state_function_', 'class_state_enter_'))
+                    and name not in source_plans):
+                raise Unproved('a physical source activation has no registered solved plan')
+            if (name.startswith(('class_construct_', 'class_state_construct_'))
+                    and name not in constructors):
+                raise Unproved('a physical constructor has no registered source owner')
         for i, token in enumerate(tokens[:-1]):
             if token.text in source_symbols and tokens[i+1].text != '(':
                 raise Unproved('a physical source-function address escapes the closed call graph')
@@ -290,13 +323,13 @@ def apply(source, model):
         # many such spans may be simultaneously active. The extra activation
         # covers terminal constructors and native adapter import frames.
         source_entries = {key for key, (item, _, _) in bodies.items()
-                          if item.name.startswith('class_function_')}
+                          if item.name in source_plans}
         ranks = {}
         for key in source_entries:
-            suffix = bodies[key][0].name[len('class_function_'):]
-            if not suffix.isdigit() or int(suffix) not in model.native_call_heights:
+            plan = source_plans[bodies[key][0].name]
+            if plan.index not in model.native_call_heights:
                 raise Unproved('a physical source activation lacks an exact semantic rank')
-            ranks[key] = model.native_call_heights[int(suffix)]
+            ranks[key] = model.native_call_heights[plan.index]
         transitions = set()
         for caller in source_entries:
             pending, visited = list(edges[caller]), set()

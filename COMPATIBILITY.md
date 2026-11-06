@@ -2211,3 +2211,51 @@ Direct linked-constructor choices are recomputed as binding analysis converges.
 A class alias whose stored kind gains other alternatives uses the existing
 finite captured-call plan, preserving the saved actual class reference and
 non-callable errors after argument evaluation.
+
+
+Native source-state witnesses can carry an actual successful source append's
+Copy scalar through a closed `with` body into private helper and constructor
+entries. The initial certificate requires a closed synchronous graph, unique
+module generations, plain namespace list slots, complete alias and callable
+role effects, and no observable capture/drop changes. Mutations and unproved
+alias, callback, iterator or producer effects invalidate the affected witnesses.
+The checked append,
+pop, binding/default logic, error frames and cleanup still execute normally.
+The original list receiver and lookup remain checked unless an official readonly
+class-reference formal and the same live witness prove that the binding and
+namespace slot are still present on the same actual class generation. Other
+receivers retain their complete evaluation and errors. Private entries use the same physical
+execution-context borrow proof as ordinary native entries, retaining ownership
+for escaping, suspended or otherwise unproved uses. BigInt integer payloads
+and other non-Copy witnesses retain the existing checked path. This is an
+optional optimization certificate and does not select a different backend or
+reject an existing source when unproved.
+
+Completed scalar list reads can be carried through registered native input,
+text, type-test, unpacking and immediate comprehension phases when their full
+native and source effects preserve the tracked list. Callback transport checks
+every phase against all transported facts; temporary receiver changes during
+sorting cannot reuse an earlier value. Ordered definition/default and assertion
+transfers preserve the successful source edge without evaluating lazy annotations
+or failure-only messages. Nested ordinary functions use the existing unused-parent
+certificate and retain their original callable payload, binder and defaults.
+Unknown protocols and lazy cursors retain checked native operations.
+
+Saved standard-input reader aliases participate in the same closed native-call
+proof as their direct forms. Only the exact registered reader carrier, zero-argument
+call and matching result representation qualify; source methods and mixed callable
+alternatives retain their existing source-call graph and observer checks.
+
+Ordinary `for` loops use their registered iterator creation and pull effects;
+they do not truth-test the iterable. Complete pull, target and body effects
+are checked before carrying facts over a backedge. Identity tests retain operand
+effects without inventing an equality callback. Normal successors are distinct
+from terminating `return` and `raise` edges. Augmented assignment includes the
+target, right operand, in-place operation and final store effects.
+
+Eligible private entries are all registered before their bodies are analyzed,
+so source definition order does not decide whether a call can carry a witness.
+Declared entry variants share the original source plan's binding, call-height
+and parameter-borrow certificates. The existing physical Rust shape, escape,
+destructor and bounded-call checks still apply; unknown entry shapes retain
+their checked native representation.

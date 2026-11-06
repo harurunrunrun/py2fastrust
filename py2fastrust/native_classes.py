@@ -1782,6 +1782,9 @@ class Emitter:
         return result
 
     def expression(self, node):
+        from .native_source_state import total_read
+        state_value=total_read(self,node)
+        if state_value is not None:return state_value
         from .native_owned_object_places import expression as owned_object_expression
         owned_object=owned_object_expression(self,node)
         if owned_object is not None:return owned_object
@@ -2134,6 +2137,9 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def function_name(self, plan):
+        from .native_source_state import function_name
+        state_name=function_name(self,plan)
+        if state_name is not None:return state_name
         return f"class_function_{plan.index}"
 
     def call_user(self, node, callee, receiver=None, constructor=None,defining_module=None,defining_class=None):
@@ -2167,6 +2173,11 @@ class Emitter:
                 callee=native_target(self.model,callee,bound.by_name)
             values=[self.coerce(value,shape(callee.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
+        from .native_source_state import call_arguments
+        state_arguments=call_arguments(self,node,callee)if callee is not None else None
+        if state_arguments is not None:
+            name=(f"class_state_construct_{constructor.index}"if constructor is not None else f"class_state_function_{callee.index}")
+            values.extend(state_arguments)
         if constructor is not None:
             from .native_class_identity_demand import token as identity_token
             prefix=self.constructor_context_arguments(constructor,defining_class)
@@ -2252,7 +2263,9 @@ class Emitter:
             raise ClassUnsupported(node,"the class-aware sequence path only captures None for list.sort key; retaining and invoking a user key callable once per element is not implemented",types=(("key",bound["key"].kind),),proof="key callable capture and ordered once-per-element evaluation")
         result=lower(adapter,storage,method,bound,node,{},sort_key=None)
         temporary=self.fresh()
-        return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};{temporary}"+"}",result.kind,self.kind(node),node)
+        from .native_source_state import append_export
+        exported=append_export(self,node,method,bound)
+        return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};"+exported+temporary+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
         from .native_class_binding_contexts import instance_test
@@ -2569,6 +2582,9 @@ class Emitter:
                          if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
+        from .native_source_state import explicit_return
+        state_return=explicit_return(self,node)
+        if state_return is not None:return state_return
         from .native_owned_object_places import initialize as initialize_owned_object_field
         owned_object=initialize_owned_object_field(self,node)
         if owned_object is not None:return owned_object
@@ -2818,6 +2834,10 @@ class Emitter:
         lexical_initial=self.model.lexical.initialize(self)
         from .native_class_binding_contexts import parameter as class_context_parameter
         signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+class_context_parameter(self.model,self.plan)+(" ,"+",".join(parameters)if parameters else"")
+        from .native_source_state import extra_parameters,producer_result
+        signature+=extra_parameters(self)
+        result,tail,state_initial=producer_result(self,result,tail)
+        lexical_initial=state_initial+lexical_initial
         from .native_class_calls import entry_result
         if entry_result(self.model,self.plan):
             return (f"fn {self.function_name(self.plan)}({signature})->ClassResult<{result}>{{\n"
@@ -2950,6 +2970,7 @@ def _class_layouts(model,emitter):
               f"let object=Rc::new(ClassData_{owner.index}{{{initialize}}});"if copied else
               f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));")
         body+=gc_registration(model,owner)
+        allocation_body=body
         if constructor:
             suffix="?;"if synchronous(model,constructor)else".await?;"
             receiver='&mut object'if owned_object else'&object'if unboxed else'object.clone()'
@@ -2958,6 +2979,10 @@ def _class_layouts(model,emitter):
             result.append(f"fn class_construct_{owner.index}({signature})->ClassResult<ClassHandle_{owner.index}>{{{body}Ok(object)}}")
         else:
             result.append(f"fn class_construct_{owner.index}({signature})->ClassFuture<ClassHandle_{owner.index}>{{Box::pin(async move{{{body}Ok(object)}})}}")
+        if constructor:
+            from .native_source_state import constructor as state_constructor
+            state_body=state_constructor(model,emitter,owner,signature,allocation_body,receiver,args)
+            if state_body:result.append(state_body)
     from .native_class_identity_demand import runtime_needed as identity_runtime_needed
     if identity_runtime_needed(model):
         from .native_value_classes import RUNTIME
@@ -3025,8 +3050,12 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_constant_projection(model)
         from .native_typed_continuations import prepare as prepare_continuations
         prepare_continuations(model)
+        from .native_source_state import prepare as prepare_source_state
+        prepare_source_state(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
+        from .native_source_state import bodies as source_state_bodies
+        bodies.extend(source_state_bodies(model))
         from .native_typed_continuations import runtime as continuation_runtime
         continuation_support=continuation_runtime(model)
         if continuation_support:bodies.append(continuation_support)

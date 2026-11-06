@@ -148,14 +148,30 @@ class ContextManagers:
             before,exit_function=emitter.capture(self.model.class_namespaces.emit_get(emitter,node,class_reference,record.exit_member));setup+=before
             before,enter_function=emitter.capture(self.model.class_namespaces.emit_get(emitter,node,class_reference,record.enter_member));setup+=before
             retained_manager=Expression(manager.code+".clone()",manager.kind)
-            entered=emit_values(emitter,node,record.enter_site,enter_function,[retained_manager],[],shape(record.enter_site.result),source_call_location=item.context_expr)
+            state=getattr(self.model,'source_state',None)
+            producer=None if state is None else state.bridges.get((emitter.plan.index,id(node)))
+            witness=emitter.fresh()if producer is not None else None
+            previous_request=getattr(emitter,'source_state_enter_request',None)
+            if producer is not None:
+                setup+='let '+witness+':'+emitter.rust_type(producer.slot.kind)+';'
+                emitter.source_state_enter_request=producer,witness
+            try:
+                entered=emit_values(emitter,node,record.enter_site,enter_function,[retained_manager],[],shape(record.enter_site.result),source_call_location=item.context_expr)
+            finally:
+                emitter.source_state_enter_request=previous_request
             before,value=emitter.capture(entered);setup+=before
             boundaries=getattr(emitter,'context_flow_boundaries',None)
             if boundaries is None:boundaries=emitter.context_flow_boundaries=[]
             depth=len(emitter.loops)
             boundaries.append(depth)
-            body=emitter.assign(item.optional_vars,value)if item.optional_vars is not None else ''
-            body+=emit_item(index+1)if index+1<len(records)else emitter.statements(node.body)
+            previous_state=getattr(emitter,'source_state_active',None)
+            if producer is not None:
+                emitter.source_state_active=(state.modes['with',emitter.plan.index,id(node)],{producer.slot.key:witness})
+            try:
+                body=emitter.assign(item.optional_vars,value)if item.optional_vars is not None else ''
+                body+=emit_item(index+1)if index+1<len(records)else emitter.statements(node.body)
+            finally:
+                emitter.source_state_active=previous_state
             boundaries.pop()
             outcome=emitter.fresh();cleanup=emitter.fresh();exit_value=emitter.fresh()
             body+='Ok(ClassWithFlow::Normal)'

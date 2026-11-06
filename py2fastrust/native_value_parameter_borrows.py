@@ -135,8 +135,16 @@ def apply(source, model, *, registry_name="value_parameter_borrows"):
                    and 'Drop' in item.references for item in items):
                 dropping.add(owner)
         wanted = {}
+        from .native_source_symbols import function_plans
+        variants = {}
+        for symbol, plan in function_plans(model).items():
+            variants.setdefault(plan.index, []).append(symbol)
         for (plan, position), owner in registry.parameters.items():
+            # Keep the existing standalone physical-pass contract: its
+            # registry already certifies ordinary source function parameters.
             wanted.setdefault(f'class_function_{plan}', {})[f'class_argument_{position}'] = owner
+            for symbol in variants.get(plan, ()):
+                wanted.setdefault(symbol, {})[f'class_argument_{position}'] = owner
         definitions = {}
         for i, token in enumerate(tokens[:-1]):
             if token.text not in wanted or not i or tokens[i-1].text != 'fn':
