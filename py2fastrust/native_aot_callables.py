@@ -521,7 +521,7 @@ def emit_call(emitter,node):
     site=provider.sites.get((emitter.plan.index,id(node)))
     if site is None:return None
     lines=[]
-    from .native_immediate_classmethod import capture_callee,invoke
+    from .native_immediate_classmethod import capture_callee,capture_operand,invoke
     from .native_global_callable_payload import capture as capture_global,invoke as invoke_global
     from .native_class_binding_contexts import captured_constructor
     class_constructor=captured_constructor(emitter,node,site)
@@ -532,7 +532,8 @@ def emit_call(emitter,node):
     else:
         with capture_callee(emitter,node.func)as immediate,capture_global(emitter,node.func)as global_call:
             from .native_binding_places import capture as capture_binding
-            selected=capture_binding(emitter,node,global_call)
+            selected=capture_operand(emitter,node,immediate)
+            if selected is None:selected=capture_binding(emitter,node,global_call)
             before,callee=selected if selected is not None else emitter.capture(emitter.expression(node.func))
     lines.append(before)
     arguments=normalize_call(node)

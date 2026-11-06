@@ -259,9 +259,10 @@ class Registry:
         from .native_class_calls import synchronous
         from .native_classes import shape
         if (not synchronous(self.model, plan) or not isinstance(plan.node, ast.FunctionDef)
-                or shape(plan.result) != 'none' or plan.node.type_params
+                or plan.node.type_params
                 or self.model.lexical.parent_scope(plan) is not None):
             return None
+        result_kind = shape(plan.result)
         appends = []
         returned = False
         for statement in plan.node.body:
@@ -269,10 +270,32 @@ class Registry:
                 return None
             if isinstance(statement, ast.Pass):
                 continue
-            if isinstance(statement, ast.Return) and (statement.value is None
-                    or isinstance(statement.value, ast.Constant) and statement.value.value is None):
+            if isinstance(statement, ast.Return):
                 if not appends:
                     return None
+                value = statement.value
+                if (value is None or isinstance(value, ast.Constant) and value.value is None):
+                    if result_kind != 'none':
+                        return None
+                else:
+                    if not isinstance(value, ast.Name) or not isinstance(value.ctx, ast.Load):
+                        return None
+                    from .native_primitive_parameter_places import readonly_parameter
+                    scope = self.model.lexical.scope(source(plan))
+                    binding = self.model.lexical.binding(value)
+                    name = self.model.resolved_name(plan, value)
+                    argument = plan.arguments.get(name)
+                    captured = self.model.lexical.environments.get(scope)
+                    if (binding is None or binding.role != 'load' or binding.owner != scope
+                            or binding.name != name
+                            or self.model.lexical.execution_scope(binding.scope) != scope
+                            or name not in plan.runtime_parameters or argument is None
+                            or shape(argument) != result_kind or self.kind(plan, value) != result_kind
+                            or not readonly_parameter(self.model.unit, self.rows, scope, name)
+                            or self.model.namespace.owns(plan, value)
+                            or self.model.lexical.field_for(value) is not None
+                            or captured is not None and name in captured.fields):
+                        return None
                 returned = True
                 continue
             call = statement.value if isinstance(statement, ast.Expr) else None
@@ -284,7 +307,7 @@ class Registry:
             if slot is None or self.kind(plan, call.args[0]) != slot.kind:
                 return None
             appends.append(Producer(plan, call, slot))
-        return appends[0] if len(appends) == 1 else None
+        return appends[0] if len(appends) == 1 and (returned or result_kind == 'none') else None
 
     def aliases_value(self, cell, seen=frozenset()):
         from .native_list_positions import allocation_origins
@@ -908,6 +931,8 @@ class Registry:
 
 def prepare(model):
     model.source_state = Registry(model)
+    from .native_operand_demands import prepare as prepare_operand_demands
+    prepare_operand_demands(model)
 
 
 def registry(emitter):
@@ -962,14 +987,22 @@ def producer_result(emitter, result, tail):
     if producer is None:
         return result, tail, ''
     kind = emitter.rust_type(producer.slot.kind)
-    return '(' + result + ',' + kind + ')', 'Ok(((),class_state_effect_value))', 'let class_state_effect_value:' + kind + ';'
+    from .native_classes import Expression, shape
+    from .native_types import alternatives
+    result_kind = shape(emitter.plan.result)
+    if 'none' in alternatives(result_kind):
+        value = emitter.coerce(Expression('()', 'none'), result_kind, emitter.plan.node)
+        tail = 'Ok((' + value + ',class_state_effect_value))'
+    return '(' + result + ',' + kind + ')', tail, 'let class_state_effect_value:' + kind + ';'
 
 
 def explicit_return(emitter, node):
     if getattr(emitter, 'source_state_producer', None) is None:
         return None
     if isinstance(node, ast.Return):
-        return 'return Ok(((),class_state_effect_value));'
+        from .native_classes import Expression, shape
+        value = Expression('()', 'none') if node.value is None else emitter.expression(node.value)
+        return 'return Ok((' + emitter.coerce(value, shape(emitter.plan.result), node) + ',class_state_effect_value));'
     return None
 
 
@@ -1002,6 +1035,10 @@ def bound_call(emitter, node, bound):
                       + bound.extra_context + (',' + ','.join(bound.values) if bound.values else '') + ')')
         return invocation, output
     extra = call_arguments(emitter, node, bound.target)
+    from .native_operand_demands import call_projection
+    projection = call_projection(emitter, node, bound.target)
+    if getattr(bound, 'projection', None) is not projection:
+        raise AssertionError('private operand projection lost its exact call permission')
     if extra is None:
         return bound.call_code(emitter), None
     return (private_name(bound.target) + '(class_scope.clone()' + bound.extra_context

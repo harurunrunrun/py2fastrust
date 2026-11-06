@@ -57,6 +57,17 @@ def capture_callee(emitter,node):
     finally:emitter.immediate_classmethod_request=previous
 
 
+def capture_operand(emitter,node,request):
+    """Capture only the approved effects of a private class receiver."""
+    if request is None or request.direct_definition is None:return None
+    from .native_operand_demands import capture_access
+    captured=capture_access(emitter,node,request)
+    if captured is None:return None
+    request.used=request.direct_used=True
+    request.module=False
+    return captured
+
+
 def stack_payload(emitter,node,target,fields):
     request=getattr(emitter,'immediate_classmethod_request',None)
     if request is None or request.node is not node or request.target!=target:return None
@@ -91,6 +102,13 @@ def invoke(emitter,node,request,site,callee,positional,keywords,wanted):
         provider=emitter.model.callable_cells
         if request.target in site.errors:return _Expression(error(site.errors[request.target]),wanted)
         from .native_aot_callables import AotFunctionType,CallSite,emit_definition_body
+        from .native_operand_demands import ClassOperand
+        if isinstance(callee,ClassOperand):
+            nested=CallSite(provider.model.cell_for_kind(AotFunctionType((request.direct_definition,))),site.result)
+            code=emit_definition_body(emitter,node,nested,request.direct_definition,
+                [callee]+positional,keywords,wanted,error)
+            context=provider.call_context_setup(emitter,provider.plans[request.direct_definition])
+            return _Expression('{'+context+code+'}',wanted)
         receiver=_Expression('class_selected_method.0'if request.module else'class_selected_method',request.target._native_receiver_kind)
         nested=CallSite(provider.model.cell_for_kind(AotFunctionType((request.direct_definition,))),site.result)
         code=emit_definition_body(emitter,node,nested,request.direct_definition,

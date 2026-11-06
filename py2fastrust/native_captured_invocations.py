@@ -13,13 +13,18 @@ class BoundInvocation:
     target: object
     values: tuple
     extra_context: str
+    projection: object = None
 
     def call_code(self, emitter):
+        if self.projection is not None:
+            raise ValueError('a projected invocation needs its certified private entry')
         return (emitter.function_name(self.target) + '(class_scope.clone()'
                 + self.extra_context
                 + (',' + ','.join(self.values) if self.values else '') + ')')
 
     def frame_code(self):
+        if self.projection is not None:
+            raise ValueError('a projected invocation has no ordinary frame ABI')
         if self.extra_context:
             raise ValueError('this invocation needs additional owned frame ABI fields')
         return ('ClassNativeFrame_' + str(self.target.index)
@@ -54,17 +59,30 @@ def bind_definition(emitter, node, definition, positional, keywords, *, captured
         raise ClassUnsupported(node, str(failure)) from None
     from .native_frame_specialization import native_target
     target = native_target(emitter.model, source, bound.by_name)
-    values = tuple(emitter.coerce(value, shape(target.arguments[name]), node)
-                   for name, value in zip(bound.parameters, bound.values))
+    from .native_operand_demands import ClassOperand, bound_projection
+    projection = bound_projection(emitter, node, source, target, bound)
+    erased = projection.erased_names if projection is not None else frozenset()
+    values = []
+    for name, value in zip(bound.parameters, bound.values):
+        if name in erased:
+            continue
+        if isinstance(value, ClassOperand):
+            raise ValueError('a code-less operand cannot enter a value parameter')
+        values.append(emitter.coerce(value, shape(target.arguments[name]), node))
     from .native_call_context_effects import unused_parent
-    from .native_class_binding_contexts import invocation as class_context_argument
+    from .native_class_binding_contexts import invocation as class_context_argument, parameter as class_context_parameter
+    receiver = None
+    if positional and class_context_parameter(emitter.model, target):
+        if isinstance(positional[0], ClassOperand):
+            raise ValueError('a code-less operand cannot supply class context')
+        receiver = positional[0].code
     context = class_context_argument(emitter.model, target,
-        positional[0].code if positional else None, caller=emitter.plan, node=node,
+        receiver, caller=emitter.plan, node=node,
         captured_class_context=captured_class_context)
     lexical = ((',class_selected_environment.environment.clone()'
                 if is_lambda or has_instance else ',class_selected_environment.clone()')
                if parent and not unused_parent(emitter.model, target) else '')
-    return BoundInvocation(source, target, values, lexical + context)
+    return BoundInvocation(source, target, tuple(values), lexical + context, projection)
 
 
 @dataclass(frozen=True)
