@@ -272,11 +272,17 @@ class ContextEffectProofs(unittest.TestCase):
    self.assertTrue(all(summary.incoming_module for _,summary in self.named(observed,'__add__')))
    self.assertNotEqual(result.rust_source,baseline.rust_source)
  def test_globals_capture_defaults_and_inner_environment_retain_context(self):
-  for name,function in [('foreign_global_argument_mutation','calculate'),('captured_environment_versions','calculate'),('nonliteral_default_effects','calculate'),('captured_sibling_function','outer'),('nested_factory_body','outer')]:
+  for name,function in [('foreign_global_argument_mutation','calculate'),('nonliteral_default_effects','calculate'),('captured_sibling_function','outer'),('nested_factory_body','outer')]:
    result,baseline,observed=self.compile_pair(name)
    self.assertTrue(result.success,result.diagnostics)
    summaries=self.named(observed,function);self.assertTrue(summaries)
    self.assertTrue(all(summary.incoming_module and summary.lexical_parent for _,summary in summaries))
+ def test_scalar_lexical_reads_retain_the_parent_without_module_switching(self):
+  for mode in ('i64','i128','bigint'):
+   result,baseline,observed=self.compile_pair('captured_environment_versions',mode)
+   self.assertTrue(result.success,result.diagnostics)
+   summaries=self.named(observed,'calculate');self.assertTrue(summaries)
+   self.assertTrue(all(not summary.incoming_module and summary.lexical_parent for _,summary in summaries))
  def test_augmented_source_protocol_keeps_ordinary_context(self):
   result,baseline,observed=self.compile_pair('foreign_inplace_operator')
   self.assertTrue(result.success,result.diagnostics)

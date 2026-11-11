@@ -314,6 +314,8 @@ class LexicalCells:
         environment,name,schema=field;index=sorted(environment.fields).index(name)
         owner=self.expression_environment(emitter,environment.scope)
         code=f'class_lexical_get_{environment.scope}_{index}(&({owner})).ok_or_else(||{_string(self.error_message(emitter,node))}.to_owned())'
+        from .native_scalar_heap_constants import lexical_getter
+        code=lexical_getter(emitter,node,shape(schema),code)
         value=Expression(emitter.at(code,node),shape(schema))
         if(emitter.plan.index,id(node))in getattr(self.model,'guarded_lexical_reads',()):
             from .native_class_globals import narrow_binding

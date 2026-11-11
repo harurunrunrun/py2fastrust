@@ -625,6 +625,18 @@ class Registry:
 def prepare(model):model.scalar_heap_constants=Registry(model)
 
 
+def lexical_getter(emitter,node,kind,code):
+    registry=getattr(emitter.model,'scalar_heap_constants',None)
+    if registry is None or registry.reason is not None:return code
+    key=registry.binding(emitter.plan,node)
+    fact=None if key is None else registry.graph.constant(key)
+    if fact is None or fact.kind!=kind or kind not in {'int','bool'}:return code
+    literal=emitter.literal(fact.low)if kind=='int'else str(fact.low).lower()
+    # A value fact does not prove initialization. Preserve the original getter
+    # and its error before exposing the constant payload to Rust optimization.
+    return '('+code+').map(|class_scalar_actual|{let _=class_scalar_actual;'+literal+'})'
+
+
 def getter(emitter,owner,index,code):
     registry=getattr(emitter.model,'scalar_heap_constants',None)
     fact=None if registry is None else registry.fields.get((owner.index,index))

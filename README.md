@@ -174,6 +174,14 @@ subsequent element updates, appends and pops. Lists with observable aliases or
 unproved ownership retain shared handles so updates and object identity stay
 consistent with Python.
 
+Callback context analysis separates the defining module from live lexical
+captures. A callback that only reads captured builtin scalars keeps its actual
+closure cells without switching the caller's module namespace. Plain receiver
+methods and captured source-callable payloads acquire their own defining contexts.
+Proved fixed-width constant divisors lower to wrapping floor arithmetic while
+preserving both original operand evaluations and unbound-name errors. Short
+closed leaf bodies expose their typed arithmetic to Rust's optimizer.
+
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather
 than a generated Rust instruction offset. These positions remain identical

@@ -1,4 +1,4 @@
-"""Original-source certificates for parameter-only native callback contexts.
+"""Original-source certificates for independent native invocation contexts.
 
 Callable payloads retain their actual defining module/environment and identity.
 Only the invocation's unused module view and lexical-parent argument disappear.
@@ -51,9 +51,9 @@ class Registry:
         for candidate in model.plans:
             plan=source_plan(candidate)
             if plan is None or plan.index in self.summaries:continue
-            try:self.prove(plan)
+            try:parent=self.prove(plan)
             except Unproved as error:self.summaries[plan.index]=Summary(reason=str(error))
-            else:self.summaries[plan.index]=Summary(False,False,'original parameter/local computation with actual receiver-context attributes and operators')
+            else:self.summaries[plan.index]=Summary(False,parent,'original parameter/local computation with actual receiver contexts and retained scalar lexical reads')
 
     def prove(self,plan):
         from .native_classes import shape,InstanceType
@@ -77,8 +77,11 @@ class Registry:
         if plan.signature.variadic_positional or plan.signature.variadic_keyword:
             raise Unproved('variadic binding context is retained')
         scope=model.lexical.scope(plan)
+        parent=False
+        called_attributes={id(node.func)for node in model.value_classes.own_nodes(plan)
+                           if isinstance(node,ast.Call)and isinstance(node.func,ast.Attribute)}
         allowed=(ast.Return,ast.Assign,ast.AnnAssign,ast.If,ast.For,ast.While,
-                 ast.Break,ast.Continue,ast.Pass,ast.Expr,ast.Name,ast.Constant,ast.Tuple,
+                 ast.Break,ast.Continue,ast.Pass,ast.Expr,ast.Name,ast.Constant,ast.Tuple,ast.Call,ast.keyword,
                  ast.List,ast.Subscript,ast.Slice,ast.Attribute,ast.BinOp,ast.UnaryOp,
                  ast.BoolOp,ast.Compare,ast.IfExp,ast.Load,ast.Store,ast.operator,
                  ast.unaryop,ast.boolop,ast.cmpop)
@@ -88,20 +91,29 @@ class Registry:
             if isinstance(node,ast.Name):
                 ordinal=model.unit.node_ordinals.get(id(node))
                 binding=self.bindings.get(ordinal)
-                if binding is None or binding.owner!=scope or binding.scope!=scope:
-                    raise Unproved('a name reads/writes another module or lexical scope')
-                if model.namespace.owns(plan,node)or model.lexical.field_for(node)is not None:
+                if binding is None:raise Unproved('a name has no official binding owner')
+                lexical=model.lexical.field_for(node)
+                if binding.owner!=scope or binding.scope!=scope:
+                    if (binding.scope!=scope or not isinstance(node.ctx,ast.Load)or lexical is None
+                            or self.kind(plan,node)not in {'int','bool','int_bool','float','str','bytes','none'}):
+                        raise Unproved('a name reads/writes an unproved module or lexical scope')
+                    parent=True
+                elif lexical is not None:
+                    raise Unproved('a local name accesses a captured environment slot')
+                if model.namespace.owns(plan,node):
                     raise Unproved('a name accesses a captured namespace/environment slot')
                 if isinstance(node.ctx,ast.Load)and(plan.index,id(node))not in model.records:
                     raise Unproved('a source name lacks solved point facts')
             if isinstance(node,(ast.Assign,ast.AnnAssign,ast.AugAssign)):
                 targets=node.targets if isinstance(node,ast.Assign)else[node.target]
                 def local_target(target):
-                    return isinstance(target,ast.Name)or isinstance(target,(ast.Tuple,ast.List))and all(local_target(child)for child in target.elts)
+                    return (isinstance(target,ast.Name)or isinstance(target,(ast.Tuple,ast.List))and all(local_target(child)for child in target.elts)
+                            or isinstance(target,ast.Subscript)and not isinstance(target.slice,ast.Slice)
+                            and isinstance(self.kind(plan,target.value),ListType))
                 if not all(local_target(target)for target in targets):
                     raise Unproved('mutation or protocol stores require the ordinary context')
                 value=node.value
-                if any(not self.unpack_builtin(target,self.kind(plan,value))for target in targets):
+                if any(isinstance(target,(ast.Tuple,ast.List))and not self.unpack_builtin(target,self.kind(plan,value))for target in targets):
                     raise Unproved('unpacking may invoke an unproved iterable protocol')
             if isinstance(node,ast.Attribute):
                 cell=model.records.get((plan.index,id(node.value)))
@@ -112,13 +124,36 @@ class Registry:
                         raise Unproved('class attribute lookup has no exact plain data-member receiver capability')
                     continue
                 owner=model.classes.get(kind.name)if isinstance(kind,InstanceType)else None
-                if (owner is None or model.resolved_name(plan,node)not in owner.fields
+                method=(None if owner is None else owner.methods.get(model.resolved_name(plan,node)))
+                direct_method=(id(node)in called_attributes and method is not None and not method.node.decorator_list)
+                if (owner is None or model.resolved_name(plan,node)not in owner.fields and not direct_method
                         or not isinstance(node.ctx,ast.Load)or owner.node.bases or owner.node.keywords or owner.node.decorator_list
                         or any(name in owner.methods for name in ('__getattribute__','__getattr__'))):
                     raise Unproved('attribute lookup has no plain parameter-field capability')
                 namespace=getattr(model,'class_namespaces',None)
-                if namespace is not None and(owner.index,model.resolved_name(plan,node))in namespace.members:
+                member=None if namespace is None else namespace.members.get((owner.index,model.resolved_name(plan,node)))
+                if direct_method and member is not None and (member.plan is not method or member.descriptor!='function'):
+                    raise Unproved('a method lookup has an unproved descriptor binding')
+                if not direct_method and namespace is not None and(owner.index,model.resolved_name(plan,node))in namespace.members:
                     raise Unproved('a descriptor/class namespace field is retained')
+            if isinstance(node,ast.Call):
+                # Source callable payloads and plain instance methods acquire
+                # the callee's actual module/environment in the existing binder.
+                # No caller module is needed to invoke those captured values.
+                from .native_aot_callables import AotFunctionType
+                callee=self.kind(plan,node.func)
+                captured=(isinstance(callee,AotFunctionType)and bool(callee.definitions)
+                          and not(callee.builtins or callee.members or callee.methods))
+                method=False
+                if isinstance(node.func,ast.Attribute):
+                    receiver=self.kind(plan,node.func.value)
+                    owner=model.classes.get(receiver.name)if isinstance(receiver,InstanceType)else None
+                    target=None if owner is None else owner.methods.get(model.resolved_name(plan,node.func))
+                    method=(target is not None and not target.node.decorator_list
+                            and not(owner.node.bases or owner.node.keywords or owner.node.decorator_list)
+                            and not any(name in owner.methods for name in ('__getattribute__','__getattr__')))
+                if not(captured or method):
+                    raise Unproved('a call has no actual source callable or plain receiver context')
             if isinstance(node,ast.Subscript):
                 cell=model.records.get((plan.index,id(node.value)))
                 kind=None if cell is None else shape(cell)
@@ -148,6 +183,8 @@ class Registry:
                 identity=isinstance(node,ast.Compare)and all(isinstance(op,(ast.Is,ast.IsNot))for op in node.ops)
                 if not receiver and not identity and not all(self.data_builtin(self.kind(plan,value))for value in operands):
                     raise Unproved('an operator has an unproved implicit value protocol')
+
+        return parent
 
     def canonical_classmethod(self,plan):
         """A validated original descriptor changes binding, not body globals."""
@@ -266,3 +303,12 @@ def incoming_module(model,plan):return summary(model,plan).incoming_module
 
 
 def unused_parent(model,plan):return not summary(model,plan).lexical_parent
+
+
+def small_entry(model,plan):
+    """Expose short, closed source bodies to Rust without flattening loops."""
+    if incoming_module(model,plan):return False
+    from .native_class_calls import synchronous
+    if not synchronous(model,plan):return False
+    nodes=list(model.value_classes.own_nodes(plan))
+    return (len(nodes)<=96 and not any(isinstance(node,(ast.For,ast.While,ast.Call))for node in nodes))

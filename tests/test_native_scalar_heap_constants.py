@@ -279,13 +279,30 @@ class ScalarHeapSourceTests(unittest.TestCase):
             tokens,comments,pairs=_lex(result.rust_source)
             bodies={item.name:result.rust_source[item.start:item.end]
                     for item in _parse(result.rust_source,tokens,comments,pairs)if item.kind=='fn'}
+            from py2fastrust.native_source_symbols import function_plans
+            symbols=function_plans(model)
             for caller,callee in calls:
-                name=Emitter.function_name(None,callee)
-                self.assertIn(name+'(',bodies[Emitter.function_name(None,caller)])
-                # Negative-index lookup is lowered directly to Vec::last in
-                # this path; an optional class_list_get helper is not required.
-                self.assertIn('.borrow()',bodies[name])
-                self.assertIn('IndexError: list index out of range',bodies[name])
+                caller_names=[name for name,plan in symbols.items()if plan is caller and name in bodies]
+                callee_names=[name for name,plan in symbols.items()if plan is callee and name in bodies]
+                self.assertTrue(caller_names);self.assertTrue(callee_names)
+                self.assertTrue(any(name+'('in bodies[caller_name]for caller_name in caller_names for name in callee_names))
+                name=callee_names[0]
+                if name.startswith('class_state_function_'):
+                    # A declared private entry receives the independently
+                    # initialized source stack value. Its producer retains
+                    # presence/NoWrite checks; this leaf need not reread it.
+                    state=model.source_state
+                    self.assertIsNone(state.barrier)
+                    self.assertTrue(state.bridges)
+                    abi=state.abis[callee.index]
+                    self.assertIs(abi.plan,callee)
+                    self.assertTrue(any(slot.owner is session and slot.kind=='int' for slot in abi.slots))
+                    self.assertIn('class_state_value_',bodies[name])
+                    self.assertTrue(any(producer.slot in abi.slots for producer in state.producers.values()))
+                else:
+                    # Negative-index lookup may lower directly to Vec::last.
+                    self.assertIn('.borrow()',bodies[name])
+                    self.assertIn('IndexError: list index out of range',bodies[name])
 
     def test_constant_result_keeps_presence_or_independent_storage_proof(self):
         result,registry=self.capture(CASES['literal_constructor_field'][0],'i64')

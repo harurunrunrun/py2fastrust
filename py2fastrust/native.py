@@ -1164,6 +1164,10 @@ class _Generator:
                 a, b = bool(left.constant), bool(right.constant)
                 constant = a & b if isinstance(operator, ast.BitAnd) else a | b if isinstance(operator, ast.BitOr) else a ^ b
             return _Expression(f"(({left.code}) {symbol} ({right.code}))", "bool", constant)
+        from .native_constant_divisors import code as constant_divisor
+        if self.bits in {64,128}and right.constant is not None and left.constant is None:
+            divided=constant_divisor(self,operator,left,right,right.constant)
+            if divided is not None:return _Expression(divided,"int")
         a, b = self.number(left), self.number(right)
         simple = {ast.Add: "wrapping_add", ast.Sub: "wrapping_sub", ast.Mult: "wrapping_mul"}
         bitwise = {ast.BitAnd: "&", ast.BitOr: "|", ast.BitXor: "^"}

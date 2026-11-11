@@ -2006,6 +2006,9 @@ class Emitter:
         return self.binary_builtin(operator,left,right,node,wanted)
 
     def binary_builtin(self, operator, left, right, node, wanted):
+        from .native_constant_divisors import frame as constant_divisor
+        divided=constant_divisor(self,operator,left,right,node,wanted)
+        if divided is not None:return divided
         from .native_primitive_ops import emit,classify
         primitive_tags={"int","bool","int_bool","float","str","bytes","none","function","globals_dict","range","list","tuple"}
         if (union_kind(left.kind)or union_kind(right.kind)or domain(left.kind)in primitive_tags
@@ -2849,7 +2852,9 @@ class Emitter:
         lexical_initial=state_initial+lexical_initial
         from .native_class_calls import entry_result
         if entry_result(self.model,self.plan):
-            return (f"fn {self.function_name(self.plan)}({signature})->ClassResult<{result}>{{\n"
+            from .native_call_context_effects import small_entry
+            inline="#[inline(always)]\n"if small_entry(self.model,self.plan)else""
+            return (inline+f"fn {self.function_name(self.plan)}({signature})->ClassResult<{result}>{{\n"
                     "use std::fmt::Write as _;\n"+(lexical_initial+"\n"if lexical_initial else"")+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n}")
         return (f"fn {self.function_name(self.plan)}({signature})->ClassFuture<{result}>{{Box::pin(async move{{\n"
                 "use std::fmt::Write as _;\n"+(lexical_initial+"\n"if lexical_initial else"")+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n})}")
