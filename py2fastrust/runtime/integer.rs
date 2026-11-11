@@ -633,11 +633,55 @@ impl Int {
         (quotient, remainder)
     }
 
+    fn exact_big_word_add(negative:bool,digits:&[u32],value:i128)->Option<Self>{
+        let magnitude=value.unsigned_abs();
+        if magnitude>u32::MAX as u128{return None;}
+        let mut output=digits.to_vec();
+        let mut pending=magnitude as u64;
+        if negative==(value<0){
+            for digit in &mut output{
+                if pending==0{break;}
+                let total=*digit as u64+pending;
+                *digit=total as u32;pending=total>>32;
+            }
+            if pending!=0{output.push(pending as u32);}
+        }else{
+            for digit in &mut output{
+                if pending==0{break;}
+                let previous=*digit as u64;
+                *digit=previous.wrapping_sub(pending)as u32;
+                pending=u64::from(previous<pending);
+            }
+            debug_assert_eq!(pending,0);
+        }
+        Some(Self::exact_parts(negative,output))
+    }
+    fn exact_big_word_mul(negative:bool,digits:&[u32],value:i128)->Option<Self>{
+        let magnitude=value.unsigned_abs();
+        if magnitude>u32::MAX as u128{return None;}
+        if magnitude==0{return Some(Self::exact_small(0));}
+        let capacity=digits.len().checked_add(1).expect("big integer length overflow");
+        let mut output=Vec::with_capacity(capacity);
+        let mut carry=0_u64;
+        for digit in digits{
+            let total=(*digit as u64)*(magnitude as u64)+carry;
+            output.push(total as u32);carry=total>>32;
+        }
+        if carry!=0{output.push(carry as u32);}
+        Some(Self::exact_parts(negative^(value<0),output))
+    }
     fn exact_add(&self, other: &Self) -> Self {
         if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
             if let Some(n) = a.checked_add(*b) {
                 return Self::exact_small(n);
             }
+        }
+        match (&self.0,&other.0){
+            (IntRepr::Big{negative,digits},IntRepr::Small(value))|
+            (IntRepr::Small(value),IntRepr::Big{negative,digits})=>{
+                if let Some(result)=Self::exact_big_word_add(*negative,digits,*value){return result;}
+            },
+            _=>{},
         }
         let a = self.magnitude();
         let b = other.magnitude();
@@ -665,6 +709,13 @@ impl Int {
             if let Some(n) = a.checked_mul(*b) {
                 return Self::exact_small(n);
             }
+        }
+        match (&self.0,&other.0){
+            (IntRepr::Big{negative,digits},IntRepr::Small(value))|
+            (IntRepr::Small(value),IntRepr::Big{negative,digits})=>{
+                if let Some(result)=Self::exact_big_word_mul(*negative,digits,*value){return result;}
+            },
+            _=>{},
         }
         Self::exact_parts(
             self.is_negative() ^ other.is_negative(),

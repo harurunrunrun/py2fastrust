@@ -50,9 +50,15 @@ def mapping_handles(unit,analysis):
             if isinstance(kind,(DictType,SetType))and frame_storable(kind):
                 if not key_kind(kind.key)and key_supported(kind.key):return True
                 if isinstance(kind,DictType)and not immutable(kind.value):return True
+    from .native_mapping_view_consumers import immediate,ordinary_compatible
+    parents = {id(child): parent for parent in ast.walk(unit.tree) for child in ast.iter_child_nodes(parent)}
+    compatible=None
     for node in ast.walk(unit.tree):
         if isinstance(node,ast.Call)and isinstance(node.func,ast.Attribute)and node.func.attr in {'keys','items','values'}:
-            if any(isinstance(kind,DictType)and frame_storable(kind)for kind in kinds.get(unit.ordinal(node.func.value),())):return True
+            if any(isinstance(kind,DictType)and frame_storable(kind)for kind in kinds.get(unit.ordinal(node.func.value),())):
+                if not immediate(unit,analysis,node,parents):return True
+                if compatible is None:compatible=ordinary_compatible(unit,analysis,kinds,parents)
+                if not compatible:return True
         if not isinstance(node,ast.Assign):continue
         choices=kinds.get(unit.ordinal(node.value),())
         if not any(isinstance(kind,(DictType,SetType))and frame_storable(kind)for kind in choices):continue

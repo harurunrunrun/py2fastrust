@@ -88,7 +88,7 @@ print(outer(7))
 def inner(value):
     return value**2
 '''
-        self.assertIsNone(try_generate_native(source,"main.py","bigint"))
+        self.differential(source)
 
     def test_return_paths_loops_and_branch_joins(self):
         source='''def solve(n):
@@ -118,10 +118,11 @@ print(solve(int(input())),positive(int(input())))
     return a+b+int(c)
 print(f(),f(True,c=False))
 ''')
-        for source in ['def f(x=1//0):return x\nprint(f())\n',
-                       'def f(x=len([int(input())])):return x\nprint(f())\n',
-                       'def f(x=int(input())):return x\nprint(f())\n']:
-            self.assertIsNone(try_generate_native(source,"main.py","bigint"))
+        self.differential('def f(x=1//0):return x\nprint(f())\n')
+        for source in ('def f(x=len([int(input())])):return x\nprint(f())\n',
+                       'def f(x=int(input())):return x\nprint(f())\n'):
+            with self.subTest(source=source):
+                self.differential(source,['7\n','bad\n'])
 
     def test_statement_function_and_main_guard(self):
         source='''def solve():
@@ -161,11 +162,11 @@ print(read(int(input()),int(input())),int(input()))
 '''
         self.differential(source,["7\n9\n11\n"])
 
-    def test_unproved_recursion_aliases_mutable_defaults_and_global_effects(self):
+    def test_recursion_mutable_defaults_and_global_effects_execute_directly(self):
         for source in ['def f(n):\n return 1 if n<=0 else n*f(n-1)\nprint(f(7))\n',
                        'def a(x):return b(x)\ndef b(x):return a(x)\nprint(a(1))\n',
                        'def f(x=[]):return x\nprint(f())\n',
                        'x=7\ndef f():return x\nprint(f())\n',
                        'def f(x):\n global value\n value=x\nf(1)\n']:
             with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source,"main.py","bigint"))
+                self.differential(source)

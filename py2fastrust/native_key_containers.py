@@ -8,9 +8,9 @@ from .native_key_types import DictType,SetType,KeyInfo,canonical_tuple,compatibl
 
 HELPERS = r'''
 #[derive(Clone)]
-struct NativeKeySet<K,C> { entries:Vec<K>, index:std::collections::HashMap<C,usize> }
+struct NativeKeySet<K,C> { entries:Vec<K>, index:std::collections::HashMap<C,usize,NativeKeyBuildHasher> }
 impl<K,C:Eq+std::hash::Hash> NativeKeySet<K,C> {
-    fn new()->Self {Self {entries:Vec::new(),index:std::collections::HashMap::new()}}
+    fn new()->Self {Self {entries:Vec::new(),index:std::collections::HashMap::with_hasher(NativeKeyBuildHasher::default())}}
     fn len(&self)->usize {self.entries.len()}
     fn is_empty(&self)->bool {self.entries.is_empty()}
     fn clear(&mut self){self.entries.clear();self.index.clear();}
@@ -23,9 +23,9 @@ impl<K,C:Eq+std::hash::Hash> NativeKeySet<K,C> {
     }
 }
 #[derive(Clone)]
-struct NativeKeyDict<K,V,C> { entries:NativeDictionaryEntries<(K,V)>, index:std::collections::HashMap<C,usize> }
+struct NativeKeyDict<K,V,C> { entries:NativeDictionaryEntries<(K,V)>, index:std::collections::HashMap<C,usize,NativeKeyBuildHasher> }
 impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
-    fn new()->Self {Self {entries:NativeDictionaryEntries::new(),index:std::collections::HashMap::new()}}
+    fn new()->Self {Self {entries:NativeDictionaryEntries::new(),index:std::collections::HashMap::with_hasher(NativeKeyBuildHasher::default())}}
     fn len(&self)->usize {self.entries.len()}
     fn is_empty(&self)->bool {self.entries.is_empty()}
     fn clear(&mut self){self.entries.clear();self.index.clear();}
@@ -52,6 +52,9 @@ impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
     }
 }
 '''
+
+from .native_key_hashing import HELPERS as HASH_HELPERS
+HELPERS = HASH_HELPERS + HELPERS
 
 BIG_HASH = r'''
 impl std::hash::Hash for Int {

@@ -8,7 +8,7 @@ fn native_dict_insert<T>(entries:&mut NativeDictionaryEntries<T>,value:T)->Resul
     entries.try_reserve(1).map_err(|_|"MemoryError: cannot allocate dictionary entries".to_owned())?;
     entries.push(value);Ok(index)
 }
-fn native_dict_remove<T,C>(entries:&mut NativeDictionaryEntries<T>,index:&mut std::collections::HashMap<C,usize>,slot:usize)->T{
+fn native_dict_remove<T,C,S>(entries:&mut NativeDictionaryEntries<T>,index:&mut std::collections::HashMap<C,usize,S>,slot:usize)->T{
     let value=entries.remove(slot);
     for offset in index.values_mut(){if *offset>slot{*offset-=1;}}
     value
@@ -89,7 +89,7 @@ impl<T> IntoIterator for NativeOrderedEntries<T>{
     fn into_iter(self)->Self::IntoIter{NativeOrderedIntoIter{entries:self}}
 }
 fn native_dict_insert<T>(entries:&mut NativeDictionaryEntries<T>,value:T)->Result<usize,String>{entries.insert(value)}
-fn native_dict_remove<T,C>(entries:&mut NativeDictionaryEntries<T>,_index:&mut std::collections::HashMap<C,usize>,slot:usize)->T{entries.remove(slot)}
+fn native_dict_remove<T,C,S>(entries:&mut NativeDictionaryEntries<T>,_index:&mut std::collections::HashMap<C,usize,S>,slot:usize)->T{entries.remove(slot)}
 '''
 
 

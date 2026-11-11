@@ -133,6 +133,23 @@ class IntegerTests(unittest.TestCase):
                 cases += [(f"neg\t{x}", wrap(-a, bits)), (f"abs\t{x}", wrap(abs(a), bits)), (f"invert\t{x}", wrap(~a, bits)), (f"bits\t{x}", f"{a.bit_length()},{a.bit_count()}")]
             self.check_cases(bits, cases)
 
+    def test_signed_word_operands_and_small_representation_transitions(self):
+        rng=random.Random(20261112)
+        large=[sign*((1<<bits)+delta) for bits in (127,128,129,255,256,511,1024)
+            for delta in (-1,0,1) for sign in (-1,1)]
+        large += [rng.getrandbits(rng.randrange(130,1600))*rng.choice((-1,1)) for _ in range(50)]
+        words=[0,1,-1,2,-2,(1<<31)-1,1<<31,(1<<32)-1,-((1<<32)-1),1<<32,-(1<<32)]
+        words += [rng.randrange(-(1<<32),(1<<32)) for _ in range(12)]
+        for bits in (0,64,128):
+            cases=[]
+            for raw_a in large:
+                for raw_b in words:
+                    a,b=wrap(raw_a,bits),wrap(raw_b,bits)
+                    for first,second,x,y in ((raw_a,raw_b,a,b),(raw_b,raw_a,b,a)):
+                        cases.extend((f'{op}\t{first}\t{second}',wrap(result,bits))
+                            for op,result in (('add',x+y),('sub',x-y),('mul',x*y)))
+            self.check_cases(bits,cases)
+
     def test_long_division_trial_correction(self):
         rng = random.Random(317032)
         cases = []

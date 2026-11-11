@@ -145,7 +145,9 @@ def _sort_code(g,owner,element,node,environment,reverse,key,*,forbidden_owners=(
     left,right = g.temporary(),g.temporary()
     if key is None:
         comparison = _ordering(g,_Expression(f"(*{left})",element),_Expression(f"(*{right})",element),node)
-        return f"{owner}.sort_by(|{left},{right}|{{let native_order={comparison};if {reverse} {{native_order.reverse()}}else{{native_order}}}});"
+        from .native_integer_value_sorting import unstable
+        method='sort_unstable_by'if unstable(g,element)else'sort_by'
+        return f"{owner}.{method}(|{left},{right}|{{let native_order={comparison};if {reverse} {{native_order.reverse()}}else{{native_order}}}});"
     item = g.temporary()
     from .native_callbacks import InlineLambda,invoke
     if isinstance(key,InlineLambda):

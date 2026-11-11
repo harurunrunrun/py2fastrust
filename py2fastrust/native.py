@@ -313,12 +313,12 @@ _DICT_HELPERS = r'''
 // Python insertion order while the hash index provides expected O(1) lookup.
 struct NativeDict {
     entries: NativeDictionaryEntries<(NativeInt, NativeInt)>,
-    index: std::collections::HashMap<NativeInt, usize>,
+    index: std::collections::HashMap<NativeInt, usize, NativeKeyBuildHasher>,
 }
 impl NativeDict {
     fn clear(&mut self) { self.entries.clear(); self.index.clear(); }
     fn new() -> Self {
-        Self { entries: NativeDictionaryEntries::new(), index: std::collections::HashMap::new() }
+        Self { entries: NativeDictionaryEntries::new(), index: std::collections::HashMap::with_hasher(NativeKeyBuildHasher::default()) }
     }
     #[inline]
     fn len(&self) -> usize { self.entries.len() }
@@ -2204,6 +2204,9 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     if generator.has_key_containers or generator.has_dicts:
         from .native_ordered_entries import helpers as dictionary_entries
         result.append(dictionary_entries(getattr(generator,"has_mapping_delete",False)))
+    if generator.has_dicts and not generator.has_key_containers:
+        from .native_key_hashing import HELPERS as HASH_HELPERS
+        result.append(HASH_HELPERS)
     if generator.has_key_containers:
         from .native_key_containers import HELPERS as KEY_HELPERS
         result.append(KEY_HELPERS)
