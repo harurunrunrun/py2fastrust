@@ -102,7 +102,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             slot = f"native_var_{len(self.bindings)}"
             self.bindings[slot] = kind
             return slot
-        if unmaybe(kind) not in {"int", "bool", "int_bool", "list_int", "deque_int", "str", "bytes", "none"}:
+        if unmaybe(kind) not in {"int", "bool", "int_bool", "list_int", "matrix_int", "deque_int", "str", "bytes", "none"}:
             raise _Unsupported
         return super().slot(kind)
 
@@ -257,6 +257,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
             binding = environment.get(node.id)
             if isinstance(binding, _Binding) and isinstance(binding.info, _ListInfo):
                 return _Expression(binding.slot,"list_int",owned=False,length=binding.info.length)
+            if isinstance(binding, _Binding) and binding.kind == "matrix_int":
+                return super().expression(node, environment)
             if isinstance(binding,_Binding)and deque_type(binding.kind):
                 return super().expression(node,environment)
             if isinstance(binding, _Binding) and (is_maybe(binding.kind) or isinstance(binding.kind,EmptyType)):

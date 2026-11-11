@@ -74,15 +74,27 @@ class BigIntLists:
             inside[target] = _Binding(item, "int")
             filters = [self.condition(condition, inside) for condition in generator.ifs]
             element = self.expression(node.elt, inside)
-            if element.kind != "int":
+            if element.kind == "int":
+                kind, rust_element = "list_int", "Int"
+                insertion = self.at(f"native_big_list_push(&mut {result},{element.code})",node) + ";"
+            elif element.kind == "list_int" and element.owned:
+                from .native_typed_lists import _enable
+                _enable(self)
+                kind, rust_element = "matrix_int", "Vec<Int>"
+                insertion = self.at(f"native_typed_push(&mut {result},{element.code})",node) + ";"
+            else:
                 raise _Unsupported
-            insertion = self.at(f"native_big_list_push(&mut {result},{element.code})",node) + ";"
             for condition in reversed(filters):
                 insertion = f"if {self.truth(condition)} {{{insertion}}}"
             self.has_lists = True
-            return _Expression(f"{{{setup} let mut {result}=Vec::<Int>::new(); for {item} in {iterator} {{{insertion}}} {result}}}", "list_int")
+            return _Expression(f"{{{setup} let mut {result}=Vec::<{rust_element}>::new(); for {item} in {iterator} {{{insertion}}} {result}}}", kind)
         if isinstance(node, ast.List):
             values = [self.expression(value, environment) for value in node.elts]
+            if values and all(value.kind == "list_int" and value.owned for value in values):
+                from .native_typed_lists import _enable
+                _enable(self)
+                code=self.at("native_typed_literal(["+",".join(value.code for value in values)+"])",node)
+                return _Expression(code,"matrix_int",length=len(values))
             if any(value.kind != "int" for value in values):
                 raise _Unsupported
             self.has_lists = True
@@ -91,6 +103,12 @@ class BigIntLists:
             if isinstance(node.slice, ast.Slice):
                 raise _Unsupported
             values = self.expression(node.value, environment)
+            if values.kind == "matrix_int":
+                if not isinstance(node.value, ast.Name):
+                    raise _Unsupported
+                from .native_sequence_storage import row_expression
+                index = self.expression(node.slice, environment)
+                return row_expression(self,node,values,index,environment)
             if values.kind != "list_int":
                 raise _Unsupported
             index = self.expression(node.slice, environment)
@@ -128,7 +146,7 @@ class BigIntLists:
             return _Expression(code, "list_int", length=value.length)
         if name == "len" and len(node.args) == 1:
             value = self.expression(node.args[0], environment)
-            if value.kind != "list_int":
+            if value.kind not in {"list_int", "matrix_int"}:
                 raise _Unsupported
             return _Expression(f"Int::from_i128(({value.code}).len() as i128)", "int", value.length)
         if name == "sum" and 1 <= len(node.args) <= 2:

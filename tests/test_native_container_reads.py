@@ -127,18 +127,19 @@ print(sum(values,values.popleft()),len(values),sum(values))
 ''', ("",), modes=("i64", "i128"))
 
     def test_callbacks_cannot_silently_replace_a_deferred_binding(self):
-        # Namespace mutation still needs shared binding identities. These are
-        # explicit unsupported boundaries, not successful feature acceptance.
-        sources = (
-            'values=[3,1]\ndef change():\n global values\n values=[9]\n return None\nprint(sorted(values,key=change()))\n',
-            'values=set([3,1])\ndef change():\n global values\n values=set([9])\n return None\nprint(sorted(values,key=change()))\n',
-            'values=[3,1]\nprint(sum(values,(values:=[9])[0]))\n',
-        )
+        # This assignment-expression consumer is still an unsupported boundary.
+        sources = ('values=[3,1]\nprint(sum(values,(values:=[9])[0]))\n',)
         for mode in ("i64", "i128", "bigint"):
             for source in sources:
                 result = transpile(source, TranspileOptions(integer=mode))
                 self.assertFalse(result.success)
                 self.assertEqual(result.diagnostics[0].code, "E006")
+
+    def test_rebinding_callbacks_preserve_the_already_captured_source(self):
+        for source in (
+                'values=[3,1]\ndef change():\n global values\n values=[9]\n return None\nprint(sorted(values,key=change()))\n',
+                'values=set([3,1])\ndef change():\n global values\n values=set([9])\n return None\nprint(sorted(values,key=change()))\n'):
+            self.exercise(source, ("",))
 
 
 if __name__ == "__main__":

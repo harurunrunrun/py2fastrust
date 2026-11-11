@@ -1084,11 +1084,13 @@ class Solver:
         def shared_lists(kind):
             return shared_payload(kind)or isinstance(kind,ListType)and shared_lists(kind.element)
         shared={part for part in self.shared_references if shared_lists(self.kind(value(part)))}
+        from .native_unique_nested_lists import allocations as unique_nested_allocations
+        unique_nested=unique_nested_allocations(self)
         for allocation in self.allocations.values():
             if allocation.category!="list" or not shared_lists(self.kind(value(allocation))):continue
             children=self.provenance(self.field(allocation,"element"))
             nested={part for part in children.alternatives if isinstance(part,Allocation) and part.category=="list"}
-            if nested:shared.add(allocation);shared.update(nested)
+            if nested and allocation not in unique_nested:shared.add(allocation);shared.update(nested)
         # A same-shape binding merge must retain one physical reference
         # representation on every incoming path once any alternative is shared.
         groups=[self.provenance(item).alternatives for item in self.records.values()]
