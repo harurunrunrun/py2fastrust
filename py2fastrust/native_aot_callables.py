@@ -563,6 +563,11 @@ def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted
     if definition in site.errors:return error(site.errors[definition])
     from .native_captured_invocations import bind_definition
     bound=bind_definition(emitter,node,definition,positional,keywords,captured_class_context=captured_class_context)
+    return emit_bound_definition_body(emitter,node,bound,wanted,source_call_location=source_call_location)
+
+
+def emit_bound_definition_body(emitter,node,bound,wanted,*,source_call_location=None):
+    """Emit one already-bound original invocation, including its selected ABI."""
     target=bound.target
     from .native_source_state import bound_call
     invocation,state_output=bound_call(emitter,node,bound)

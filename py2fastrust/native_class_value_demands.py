@@ -110,7 +110,6 @@ def direct_operator(emitter, node, phase, arguments, wanted):
     from .native_classes import Expression, shape
     from .native_immutable_class_functions import definition
     from .native_private_module_demands import module_unused
-    from .native_call_context_effects import source_plan
     number = definition(emitter.model, phase.member, shape(phase.member.function_cell))
     if (number is None or phase.member.owner.index not in getattr(emitter.model, 'published_metadata', ())
             or tuple(getattr(shape(phase.site.callee), 'definitions', ())) != (number,) or phase.site.errors):
@@ -120,13 +119,12 @@ def direct_operator(emitter, node, phase, arguments, wanted):
     active = getattr(emitter, 'source_state_active', None)
     if active is None or not module_unused(emitter, node, source):
         return None
-    targets = [state.abis[index].plan for index in active[0].calls.get(id(node), ())
-               if index in state.abis and source_plan(state.abis[index].plan) is source_plan(source)]
-    if not targets or not all(private(emitter, node, target) for target in targets):
+    from .native_captured_invocations import bind_definition
+    bound = bind_definition(emitter, node, number, arguments, [])
+    # The original binder selects a concrete specialization from these actual
+    # captured operands. Other source signatures at this execution point are
+    # not invoked, so their different value demands cannot block this entry.
+    if not private(emitter, node, bound.target):
         return None
-    from .native_aot_callables import emit_definition_body
-    from .native import _string
-    def error(message):
-        return emitter.at('Err::<'+emitter.rust_type(wanted)+',String>('+_string(message)+'.to_owned())', node)
-    return Expression(emit_definition_body(emitter, node, phase.site, number,
-        arguments, [], wanted, error), wanted)
+    from .native_aot_callables import emit_bound_definition_body
+    return Expression(emit_bound_definition_body(emitter, node, bound, wanted), wanted)
