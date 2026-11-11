@@ -48,6 +48,16 @@ def prepare(model):
             continue
         erased = set()
         for node in nodes:
+            if (isinstance(node,ast.Call) and isinstance(node.func,ast.Name)
+                    and id(node) in mode.calls
+                    and (plan.index,id(node.func)) in model.records
+                    and shape(model.records[plan.index,id(node.func)]) is not None):
+                from .native_global_callable_payload import candidate as global_candidate
+                from .native_binding_places import access_plan
+                request = global_candidate(emitter,node.func)
+                access = access_plan(emitter,node,request)
+                if access is not None and access.publication is not None:
+                    erased.add(id(node.func))
             if (not isinstance(node, ast.Call) or id(node) not in mode.calls
                     or not isinstance(node.func, ast.Attribute)
                     or not isinstance(node.func.value, ast.Name)):

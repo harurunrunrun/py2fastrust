@@ -16,6 +16,7 @@ class BindingPlace:
 class InvocationAccessPlan:
     place: BindingPlace
     mode: str = 'check_presence'
+    publication: object = None
 
     @property
     def key(self):
@@ -70,13 +71,18 @@ def access_plan(emitter, node, request):
         return None
     place = BindingPlace(request.name, request.slot, request.layout.definition,
                          event, rows[0].owner)
-    return InvocationAccessPlan(place)
+    from .native_source_module_publication import certify
+    publication = certify(model,emitter.plan,target)
+    return InvocationAccessPlan(place,'source_published',publication) if publication is not None else InvocationAccessPlan(place)
 
 
 def capture(emitter, node, request):
     plan = access_plan(emitter, node, request)
     if plan is None:
         return None
+    if plan.publication is not None:
+        request.used = True
+        return '',CapturedBinding('()',plan)
     accessors = getattr(emitter.model, 'binding_place_accessors', None)
     if accessors is None:
         accessors = {}
