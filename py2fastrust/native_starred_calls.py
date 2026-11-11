@@ -485,8 +485,9 @@ class ExpandedCalls:
         for parameter in signature.keyword_only:
             value = supplied.get(parameter, defaults.get(parameter))
             arguments.append(emitter.coerce(value, shape(target.arguments[parameter]), node))
-        from .native_call_context_effects import unused_parent
-        environment = ((",class_selected_environment.environment.clone()" if is_lambda else ",class_selected_environment.clone()") if parent and not unused_parent(self.model,target) else "")
+        from .native_call_context_effects import lexical_argument
+        owner="class_selected_environment.environment"if is_lambda else"class_selected_environment"
+        environment=lexical_argument(self.model,target,owner)if parent else""
         invocation = emitter.function_name(target) + "(class_scope.clone()" + environment + ("," + ",".join(arguments) if arguments else "") + ")"
         result = emitter.coerce(Expression(call(emitter, invocation, target, node), shape(target.result)), wanted, node)
         return "{" + checks + result + "}"

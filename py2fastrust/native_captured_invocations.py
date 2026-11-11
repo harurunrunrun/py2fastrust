@@ -69,7 +69,6 @@ def bind_definition(emitter, node, definition, positional, keywords, *, captured
         if isinstance(value, ClassOperand):
             raise ValueError('a code-less operand cannot enter a value parameter')
         values.append(emitter.coerce(value, shape(target.arguments[name]), node))
-    from .native_call_context_effects import unused_parent
     from .native_class_binding_contexts import invocation as class_context_argument, parameter as class_context_parameter
     from .native_class_value_demands import private as private_class_context
     receiver = None
@@ -81,9 +80,9 @@ def bind_definition(emitter, node, definition, positional, keywords, *, captured
         receiver, caller=emitter.plan, node=node,
         captured_class_context=captured_class_context,
         private=private_class_context(emitter,node,target))
-    lexical = ((',class_selected_environment.environment.clone()'
-                if is_lambda or has_instance else ',class_selected_environment.clone()')
-               if parent and not unused_parent(emitter.model, target) else '')
+    from .native_call_context_effects import lexical_argument
+    environment='class_selected_environment.environment'if is_lambda or has_instance else'class_selected_environment'
+    lexical=lexical_argument(emitter.model,target,environment)if parent else''
     return BoundInvocation(source, target, tuple(values), lexical + context, projection)
 
 

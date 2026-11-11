@@ -295,10 +295,10 @@ class LexicalCells:
     def environment_type(scope):return f'ClassLexicalEnvironment{scope}'
 
     def signature(self,plan):
-        from .native_call_context_effects import unused_parent
+        from .native_call_context_effects import unused_parent,borrowed_parent
         if unused_parent(self.model,plan):return ''
         parent=self.parent_scope(plan)
-        return ''if not parent else f',class_lexical_parent:std::rc::Rc<{self.environment_type(parent)}>'
+        return ''if not parent else f',class_lexical_parent:'+('&'if borrowed_parent(self.model,plan)else'')+f'std::rc::Rc<{self.environment_type(parent)}>'
 
     def error_message(self,emitter,node):
         binding=self.binding(node);name=binding.name

@@ -312,3 +312,13 @@ def small_entry(model,plan):
     if not synchronous(model,plan):return False
     nodes=list(model.value_classes.own_nodes(plan))
     return (len(nodes)<=96 and not any(isinstance(node,(ast.For,ast.While,ast.Call))for node in nodes))
+
+
+def borrowed_parent(model,plan):
+    """A synchronous closed leaf cannot retain the invocation's parent handle."""
+    return summary(model,plan).lexical_parent and small_entry(model,plan)
+
+
+def lexical_argument(model,plan,environment):
+    if unused_parent(model,plan):return ''
+    return ',&('+environment+')'if borrowed_parent(model,plan)else ','+environment+'.clone()'
