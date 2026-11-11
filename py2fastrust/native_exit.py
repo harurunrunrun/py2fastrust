@@ -119,7 +119,8 @@ def emit(emitter,node,identity,arguments,keywords,wanted):
             import _sitebuiltins,dis
             function=_sitebuiltins.Quitter.__call__.__code__
             line=next(instruction.positions.lineno for instruction in dis.get_instructions(function)if instruction.opname=='RAISE_VARARGS')
-            setup+=f'{failure}.frames.push(({failure}.line,{failure}.function));{failure}.line={line};{failure}.function=({_string(function.co_filename)},"__call__");'
+            frame=emitter.fresh()
+            setup+=f'let {frame}=({failure}.line,{failure}.function);{failure}.frames.push({frame});{failure}.line={line};{failure}.function=({_string(function.co_filename)},"__call__");'
         setup+=f'Err::<{emitter.rust_type(wanted)},NativeError>({failure})?'
         return '{'+setup+'}'
     def normalized(kind,code):
