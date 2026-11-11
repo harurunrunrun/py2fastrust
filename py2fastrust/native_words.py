@@ -14,6 +14,18 @@ fn native_words_space(character:char)->bool {
     character.is_whitespace()||('\u{1c}'..='\u{1f}').contains(&character)
 }
 fn native_words_byte_space(byte:u8)->bool {matches!(byte,9..=13|32)}
+fn native_unpack_integer_words<const N:usize,I,F,C>(words:I,mut parse:F,mut consumer_error:C)->Result<[NativeInt;N],NativeError>
+where I:IntoIterator,F:FnMut(I::Item)->Result<NativeInt,NativeError>,C:FnMut(String)->NativeError {
+    let mut values:[Option<NativeInt>;N]=std::array::from_fn(|_|None);
+    let mut length=0;
+    for word in words {
+        let value=parse(word)?;
+        if length==N{return Err(consumer_error(format!("ValueError: too many values to unpack (expected {})",N)));}
+        values[length]=Some(value);length+=1;
+    }
+    if length<N{return Err(consumer_error(format!("ValueError: not enough values to unpack (expected {}, got {})",N,length)));}
+    Ok(values.map(Option::unwrap))
+}
 fn native_collect_integer_words<I,F,C>(words:I,mut parse:F,expected:Option<usize>,mut consumer_error:C)->Result<Vec<NativeInt>,NativeError>
 where I:IntoIterator,F:FnMut(I::Item)->Result<NativeInt,NativeError>,C:FnMut(String)->NativeError {
     let mut values=Vec::new();
@@ -138,8 +150,12 @@ class IntegerWords:
         consumer_error=f"native_at::<()>(Err(native_failure),{line},{_scope_code(current.name)})"
         if current.trace_id is not None:consumer_error+=f".map_err(&{current.trace_id})"
         consumer_error+=".unwrap_err()"
-        call=(f"native_collect_integer_words({self.source.cursor},|native_word|{parsed},{limit},"
-              f"|native_failure|{consumer_error})?")
+        if expected is not None and expected <= 32:
+            call=(f"native_unpack_integer_words::<{expected},_,_,_>({self.source.cursor},|native_word|{parsed},"
+                  f"|native_failure|{consumer_error})?")
+        else:
+            call=(f"native_collect_integer_words({self.source.cursor},|native_word|{parsed},{limit},"
+                  f"|native_failure|{consumer_error})?")
         return self.prefix(g,caller,line)+call
 
 
