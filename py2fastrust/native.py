@@ -186,12 +186,9 @@ def _string(value):
     return "".join(out) + '"'
 
 
-_HELPERS = r'''
-#[derive(Debug)]
-struct NativeError { message: String, line: usize, function: &'static str, frames: Vec<(usize, &'static str)> }
-fn native_at<T>(result: Result<T, String>, line: usize, function: &'static str) -> Result<T, NativeError> {
-    result.map_err(|message| NativeError { message, line, function, frames: Vec::new() })
-}
+from .native_error_support import RUNTIME as _ERROR_HELPERS
+
+_HELPERS = _ERROR_HELPERS + r'''
 #[inline]
 fn native_divmod(a: NativeInt, b: NativeInt) -> Result<(NativeInt, NativeInt), String> {
     if b == 0 { return Err("ZeroDivisionError: division by zero".into()); }

@@ -141,13 +141,11 @@ def emit(emitter,node,identity,arguments,keywords,wanted):
 def runtime(source,model):
     if not getattr(model,'native_exit_used',False):return source
     from .rust_pruning import _lex
+    from .native_exception_runtime import error_record_site
     tokens,_,pairs=_lex(source);edits=[]
     for index,token in enumerate(tokens[:-1]):
-        if token.text!='NativeError'or tokens[index+1].text!='{':continue
-        # Function return types and impl targets also precede a brace. Match
-        # arms use =>, while a return type uses ->; the latter is not a value.
-        if index and tokens[index-1].text in {'impl','for'}:continue
-        if index>=2 and tokens[index-2].text=='-'and tokens[index-1].text=='>':continue
+        if token.text!='NativeErrorData'or tokens[index+1].text!='{':continue
+        if not error_record_site(tokens,index):continue
         close=tokens[pairs[index+1]]
         prefix=''if source[:close.start].rstrip().endswith(',')else','
         field='native_exit:Option<NativeExit>'if index and tokens[index-1].text=='struct'else'native_exit:None'

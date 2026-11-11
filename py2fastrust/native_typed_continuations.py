@@ -539,7 +539,7 @@ class Builder:
             elif tag=='branch':tail='Ok(ClassNativeStep::Jump_'+str(i)+'(if '+end[1]+'{ClassNativePc_'+str(i)+'::B'+str(end[2])+'}else{ClassNativePc_'+str(i)+'::B'+str(end[3])+'}))'
             elif tag=='call':tail='Ok(ClassNativeStep::Call_'+str(end[1].index)+')'
             elif tag=='return':tail='Ok(ClassNativeStep::Return_'+str(i)+'('+end[1]+'))'
-            elif tag=='invalid_return':tail='Err(NativeError{message:"RuntimeError: invalid compiled return".into(),line:'+str(getattr(self.plan.node,'lineno',1))+',function:'+self.emitter.location_code()+',frames:Vec::new()})'
+            elif tag=='invalid_return':tail='Err(native_error("RuntimeError: invalid compiled return".into(),'+str(getattr(self.plan.node,'lineno',1))+','+self.emitter.location_code()+'))'
             elif tag=='unreachable':tail='unreachable!("native unreachable block")'
             else:tail=''
             arms.append('ClassNativePc_'+str(i)+'::B'+str(index)+'=>{'+''.join(block.code)+tail+'}')
@@ -606,11 +606,11 @@ def runtime(model):
         for site in registry.sites:
             if site.caller.index!=i:continue
             callee=builders[site.callee.index];args=[e.coerce(value,shape(callee.plan.arguments[name]),site.node)for name,value in zip(callee.plan.runtime_parameters,site.arguments)]
-            error='NativeError{message:"RecursionError: maximum recursion depth exceeded".into(),line:'+str(site.node.lineno)+',function:'+e.location_code()+',frames:Vec::new()}'
+            error='native_error("RecursionError: maximum recursion depth exceeded".into(),'+str(site.node.lineno)+','+e.location_code()+')'
             head='ClassNativeStep::Call_'+str(site.index)+('(child)'if site.owned_child else'')
             child=''if site.owned_child else('let child=ClassNativeFrame_'+str(site.callee.index)+'::new(class_scope.clone()'+(','+','.join(args)if args else'')+');')
             steps.append(head+'=>{if class_scope.control.borrow().depth>=class_scope.control.borrow().limit{let error='+error+';'+unwind_code()+'}'
-                         'if stack.try_reserve(1).is_err(){let error=NativeError{message:"MemoryError: cannot allocate native call frame".into(),line:'+str(site.node.lineno)+',function:'+e.location_code()+',frames:Vec::new()};'+unwind_code()+'}'
+                         'if stack.try_reserve(1).is_err(){let error=native_error("MemoryError: cannot allocate native call frame".into(),'+str(site.node.lineno)+','+e.location_code()+');'+unwind_code()+'}'
                          +child+'class_scope.control.borrow_mut().depth+=1;stack.push(ClassNativeContinuation::Site_'+str(site.index)+'{frame});state=ClassNativeState::F_'+str(site.callee.index)+'(child,ClassNativePc_'+str(site.callee.index)+'::B0);continue;}')
         state_arms.append('ClassNativeState::F_'+str(i)+'(mut frame,pc)=>{let class_scope=frame.scope.clone();let outcome:ClassResult<ClassNativeStep>=(||{'+b.body()+'})();match outcome{Err(error)=>{'+unwind_code()+'},Ok(step)=>match step{'+','.join(steps)+',_=>unreachable!("native step owner")}}}')
     body=','.join(state_arms)

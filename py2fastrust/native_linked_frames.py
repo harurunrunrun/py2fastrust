@@ -612,6 +612,8 @@ def render_linked_runtime(model,source):
                           'function: ClassLocation, frames: Vec<(usize, ClassLocation)>')
     source=source.replace("function: &'static str) -> Result<T, NativeError>",
                           'function: ClassLocation) -> Result<T, NativeError>')
+    source=source.replace("function: &'static str)->NativeError",
+                          'function: ClassLocation)->NativeError')
     source=source.replace("caller:&'static str",'caller:ClassLocation').replace("caller: &'static str",'caller:ClassLocation')
     source=source.replace(f'{_string(model.filename)},line,function);','function.0,line,function.1);')
     source=source.replace(f'{_string(model.filename)},error.line,error.function,error.message);',

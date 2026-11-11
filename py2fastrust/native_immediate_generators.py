@@ -217,12 +217,12 @@ class Generators:
         invoke=('(||{Ok::<'+emitter.rust_type(wanted)+',NativeError>('+body+')})()'if entry_result(self.model,emitter.plan)
                 else '(async{Ok::<'+emitter.rust_type(wanted)+',NativeError>('+body+')}).await')
         stop=(f'error=class_exception_generator_stop(error,{node.lineno},{caller_location});'if self.model.exceptions.used else
-              f'error=NativeError{{message:"RuntimeError: generator raised StopIteration".to_owned(),line:{node.lineno},function:{caller_location},frames:Vec::new()}};')
+              f'error=native_error("RuntimeError: generator raised StopIteration".to_owned(),{node.lineno},{caller_location});')
         catch=(f'{invoke}.map_err(|mut error|{{if {stage}{{'
-               f'if error.message=="StopIteration"||error.message.starts_with("StopIteration:"){{error=NativeError{{message:"RuntimeError: generator raised StopIteration".to_owned(),line:{node.lineno},function:{caller_location},frames:Vec::new()}};}}'
+               f'if error.message=="StopIteration"||error.message.starts_with("StopIteration:"){{error=native_error("RuntimeError: generator raised StopIteration".to_owned(),{node.lineno},{caller_location});}}'
                f'else{{error.frames.push(({node.lineno},{caller_location}));}}}}error}})?')
         if self.model.exceptions.used:
-            original=f'error=NativeError{{message:"RuntimeError: generator raised StopIteration".to_owned(),line:{node.lineno},function:{caller_location},frames:Vec::new()}};'
+            original=f'error=native_error("RuntimeError: generator raised StopIteration".to_owned(),{node.lineno},{caller_location});'
             catch=catch.replace(original,stop)
             from .native_exception_values import is_stop
             catch=catch.replace('error.message=="StopIteration"||error.message.starts_with("StopIteration:")',is_stop(emitter,'error'))
@@ -239,7 +239,7 @@ class Generators:
 impl Drop for ClassGeneratorDepth{fn drop(&mut self){self.0.borrow_mut().generator_depth-=1;}}
 fn class_generator_enter(scope:&ClassScope,line:usize,caller:&'static str)->ClassResult<ClassGeneratorDepth>{
  {let mut control=scope.control.borrow_mut();
- if control.depth.saturating_add(control.generator_depth)>=control.limit{return Err(NativeError{message:"RecursionError: maximum recursion depth exceeded".into(),line,function:caller,frames:Vec::new()});}
+ if control.depth.saturating_add(control.generator_depth)>=control.limit{return Err(native_error("RecursionError: maximum recursion depth exceeded".into(),line,caller));}
  control.generator_depth+=1;}
  Ok(ClassGeneratorDepth(scope.control.clone()))
 }\n'''

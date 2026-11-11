@@ -2837,7 +2837,7 @@ class Emitter:
         if "none"in alternatives(shape(self.plan.result)):
             tail="Ok("+self.coerce(Expression("()","none"),shape(self.plan.result),self.plan.node)+")"
         else:
-            tail=f"Err(NativeError{{message:\"RuntimeError: invalid compiled return\".into(),line:{getattr(self.plan.node,'lineno',1)},function:{self.location_code()},frames:Vec::new()}})"
+            tail=f"Err(native_error(\"RuntimeError: invalid compiled return\".into(),{getattr(self.plan.node,'lineno',1)},{self.location_code()}))"
         lexical_initial=self.model.lexical.initialize(self)
         from .native_class_binding_contexts import parameter as class_context_parameter
         signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+class_context_parameter(self.model,self.plan)+(" ,"+",".join(parameters)if parameters else"")

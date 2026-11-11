@@ -229,18 +229,22 @@ class CapturedInvocationProofTests(CapturedInvocationProjects):
 
 
 class ErrorLayoutInteropTests(unittest.TestCase):
-    SOURCE = ('struct NativeError{message:String,line:usize,function:&\'static str,frames:Vec<()>}'
-              'fn pass(mut error:NativeError)->NativeError{error}'
-              'impl NativeError{fn touch(&self){}}'
-              'fn make(flag:bool)->NativeError{if flag{NativeError{message:String::new(),line:1,function:"f",frames:Vec::new()}}'
-              'else{NativeError{message:String::new(),line:2,function:"g",frames:Vec::new()}}}'
+    SOURCE = ('struct NativeErrorData{message:String,line:usize,function:&\'static str,frames:Vec<()>}'
+              'fn pass(mut error:NativeErrorData)->NativeErrorData{error}'
+              'fn borrowed(error:&NativeErrorData)->&NativeErrorData{error}'
+              'fn borrowed_mut(error:&mut NativeErrorData)->&mut NativeErrorData{error}'
+              'impl NativeErrorData{fn touch(&self){}}'
+              'fn make(flag:bool)->NativeErrorData{if flag{NativeErrorData{message:String::new(),line:1,function:"f",frames:Vec::new()}}'
+              'else{NativeErrorData{message:String::new(),line:2,function:"g",frames:Vec::new()}}}'
               'fn main(){let result:Result<(),NativeError>=Ok(());if let Err(error)=result {}}')
 
     def test_cleanup_layout_leaves_return_types_and_impl_blocks_intact(self):
         from py2fastrust.native_context_managers import runtime
         source = runtime(self.SOURCE, SimpleNamespace(context_managers=SimpleNamespace(used=True)))
-        self.assertIn('->NativeError{error}', source)
-        self.assertIn('impl NativeError{fn touch(&self){}}', source)
+        self.assertIn('->NativeErrorData{error}', source)
+        self.assertIn('->&NativeErrorData{error}', source)
+        self.assertIn('->&mut NativeErrorData{error}', source)
+        self.assertIn('impl NativeErrorData{fn touch(&self){}}', source)
         self.assertIn('frames:Vec<()>,context:Option<Box<NativeError>>', source)
         self.assertIn('frames:Vec::new(),context:None', source)
         self.assertEqual(source.count('frames:Vec::new(),context:None'), 2)
@@ -250,8 +254,10 @@ class ErrorLayoutInteropTests(unittest.TestCase):
         model = SimpleNamespace(exceptions=SimpleNamespace(used=True, records={}),
                                 context_managers=SimpleNamespace(used=False), filename='source.py')
         source = runtime(self.SOURCE, model)
-        self.assertIn('->NativeError{error}', source)
-        self.assertIn('impl NativeError{fn touch(&self){}}', source)
+        self.assertIn('->NativeErrorData{error}', source)
+        self.assertIn('->&NativeErrorData{error}', source)
+        self.assertIn('->&mut NativeErrorData{error}', source)
+        self.assertIn('impl NativeErrorData{fn touch(&self){}}', source)
         self.assertIn('frames:Vec::new(),exception_kind:None', source)
         self.assertEqual(source.count('frames:Vec::new(),exception_kind:None'), 2)
 

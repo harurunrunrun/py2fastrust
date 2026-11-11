@@ -30,8 +30,7 @@ fn class_sync_call<T>(scope:&ClassScope,call:impl FnOnce()->ClassResult<T>,line:
     {
         let mut control=scope.control.borrow_mut();
         if control.depth>=control.limit {
-            return Err(NativeError{message:"RecursionError: maximum recursion depth exceeded".into(),
-                line,function:caller,frames:Vec::new()});
+            return Err(native_error("RecursionError: maximum recursion depth exceeded".into(),line,caller));
         }
         control.depth+=1;
     }
@@ -58,8 +57,7 @@ impl<T: 'static> Future for ClassCall<T> {
         if let Some(future)=this.future.take() {
             let mut control=this.scope.control.borrow_mut();
             if control.depth>=control.limit {
-                return Poll::Ready(Err(NativeError {message:"RecursionError: maximum recursion depth exceeded".into(),
-                    line:this.line,function:this.caller,frames:Vec::new()}));
+                return Poll::Ready(Err(native_error("RecursionError: maximum recursion depth exceeded".into(),this.line,this.caller)));
             }
             let result=this.result.clone();
             control.child=Some(Box::pin(async move {let value=future.await;*result.borrow_mut()=Some(value);}));

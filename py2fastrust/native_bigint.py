@@ -25,12 +25,9 @@ from .native_bigint_lists import BigIntLists, HELPERS as LIST_HELPERS
 from .native_bigint_text import BigIntText, HELPERS as BIG_TEXT_HELPERS
 
 
-_HELPERS = r'''
-#[derive(Debug)]
-struct NativeError { message: String, line: usize, function: &'static str, frames: Vec<(usize, &'static str)> }
-fn native_at<T>(result: Result<T, String>, line: usize, function: &'static str) -> Result<T, NativeError> {
-    result.map_err(|message| NativeError { message, line, function, frames: Vec::new() })
-}
+from .native_error_support import RUNTIME as _ERROR_HELPERS
+
+_HELPERS = _ERROR_HELPERS + r'''
 // Each range owns its cursor. The Python target can be rebound independently.
 struct NativeRange { cursor: Int, stop: Int, step: Int, ascending: bool }
 impl NativeRange {

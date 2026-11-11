@@ -3,8 +3,11 @@
 
 def error_record_site(tokens,index):
     """Distinguish a record declaration/literal from a bare return/impl type."""
-    return (not index or tokens[index-1].text != 'impl') and not (
-        index >= 2 and [part.text for part in tokens[index-2:index]] == ['-', '>'])
+    if index and tokens[index-1].text=='struct':return True
+    if index+3>=len(tokens):return False
+    # Error data records are nonempty named-field records. Function bodies
+    # following owned, reference or mutable-reference return types are not.
+    return tokens[index+2].kind=='identifier'and tokens[index+3].text in {':',','}
 
 
 def runtime(source,model):
@@ -13,14 +16,13 @@ def runtime(source,model):
     tokens,_,pairs=_lex(source);edits=[];declarations=0;constructors=0
     has_context=model.context_managers.used
     for index,token in enumerate(tokens[:-1]):
-        if token.text!='NativeError'or tokens[index+1].text!='{':continue
+        if token.text!='NativeErrorData'or tokens[index+1].text!='{':continue
         if not error_record_site(tokens,index):continue
         close=tokens[pairs[index+1]];prefix=''if source[:close.start].rstrip().endswith(',')else','
         declaration=index and tokens[index-1].text=='struct'
         if declaration:
             fields='exception_kind:Option<ClassExceptionKind>,payload:Option<Rc<dyn ClassExceptionPayload>>,origin:Option<Rc<RefCell<Option<NativeError>>>>,cause:Option<Box<NativeError>>,origin_visible:bool'
             if not has_context:fields+=',context:Option<Box<NativeError>>'
-            edits.append((tokens[index-1].start,tokens[index-1].start,'#[derive(Clone)]\n'))
             declarations+=1
         else:
             fields='exception_kind:None,payload:None,origin:None,cause:None,origin_visible:true'
@@ -59,7 +61,8 @@ fn class_exception_message(error:&NativeError)->String{
 }
 fn class_exception_is_stop(error:&NativeError)->bool{error.exception_kind==Some(ClassExceptionKind::StopIteration)}
 fn class_exception_stop_iteration<T>(line:usize,function:__LOCATION__,origin_visible:bool)->ClassResult<T>{
- Err(NativeError{message:"StopIteration".to_owned(),line,function,frames:Vec::new(),context:None,exception_kind:Some(ClassExceptionKind::StopIteration),payload:None,origin:None,cause:None,origin_visible})
+ let mut error=native_error("StopIteration".to_owned(),line,function);
+ error.exception_kind=Some(ClassExceptionKind::StopIteration);error.origin_visible=origin_visible;Err(error)
 }
 fn class_exception_sync(error:&NativeError){
  if let Some(state)=&error.origin{let mut snapshot=error.clone();snapshot.origin=None;*state.borrow_mut()=Some(snapshot);}
@@ -76,7 +79,7 @@ impl NativeError{
 }
 fn class_exception_raise(payload:Rc<dyn ClassExceptionPayload>,origin:Rc<RefCell<Option<NativeError>>>,line:usize,function:__LOCATION__)->NativeError{
  let previous={origin.borrow().clone()};
- let mut error=match previous{Some(mut error)=>{error.frames.push((line,function));error},None=>NativeError{message:String::new(),line,function,frames:Vec::new(),context:None,exception_kind:None,payload:None,origin:None,cause:None,origin_visible:true}};
+ let mut error=match previous{Some(mut error)=>{error.frames.push((line,function));error},None=>native_error(String::new(),line,function)};
  error.exception_kind=Some(payload.class_kind());error.message=payload.class_message();error.payload=Some(payload);error.origin=Some(origin);class_exception_sync(&error);error
 }
 fn class_exception_same_origin(left:&NativeError,right:&NativeError)->bool{
@@ -94,7 +97,9 @@ fn class_exception_attach_context(error:&mut NativeError,previous:NativeError){
  error.context=Some(Box::new(current));class_exception_sync(error);
 }
 fn class_exception_generator_stop(previous:NativeError,line:usize,function:__LOCATION__)->NativeError{
- NativeError{message:"RuntimeError: generator raised StopIteration".to_owned(),line,function,frames:Vec::new(),context:Some(Box::new(previous.clone())),exception_kind:Some(ClassExceptionKind::RuntimeError),payload:None,origin:None,cause:Some(Box::new(previous)),origin_visible:true}
+ let mut error=native_error("RuntimeError: generator raised StopIteration".to_owned(),line,function);
+ error.context=Some(Box::new(previous.clone()));error.exception_kind=Some(ClassExceptionKind::RuntimeError);
+ error.cause=Some(Box::new(previous));error
 }
 fn class_exception_render_error(error:&NativeError){
  class_exception_render_inner(error,&mut std::collections::HashSet::new());

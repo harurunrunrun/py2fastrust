@@ -235,7 +235,7 @@ def runtime(source,model):
     from .native_exception_runtime import error_record_site
     tokens,_,pairs=_lex(source);edits=[];declarations=0;constructors=0
     for index,token in enumerate(tokens[:-1]):
-        if token.text!='NativeError'or tokens[index+1].text!='{':continue
+        if token.text!='NativeErrorData'or tokens[index+1].text!='{':continue
         if not error_record_site(tokens,index):continue
         close=tokens[pairs[index+1]]
         prefix=''if source[:close.start].rstrip().endswith(',')else','
@@ -254,8 +254,8 @@ def runtime(source,model):
     source+='''
 enum ClassWithFlow<T>{Normal,Return(T),Break,Continue}
 fn class_with_attach_context(error:&mut NativeError,previous:NativeError){
- let mut current=error;
- while let Some(ref mut context)=current.context{current=context;}
+ let mut current=error.0.as_mut();
+ while let Some(ref mut context)=current.context{current=context.0.as_mut();}
  current.context=Some(Box::new(previous));
 }
 fn class_with_render_error(error:&NativeError){
