@@ -72,6 +72,12 @@ def coerce_structural(expression,kind,coerce):
             return expression.code
         if not isinstance(expression.kind,ListType):
             raise _Unsupported
+        from .native_types import EMPTY,rust_type
+        if type(expression.kind)is ListType and type(kind)is ListType and expression.kind.element==EMPTY:
+            # NativeEmpty has no inhabitants, so this private vector has no
+            # elements. Keep the checked source evaluation and any live borrow;
+            # consuming its storage would invalidate an active loop iterator.
+            return f"{{let _=&({expression.code}); Vec::<{rust_type(kind.element)}>::new()}}"
         item=coerce(_Expression("native_tuple_item",expression.kind.element),kind.element)
         return f"({expression.code}).into_iter().map(|native_tuple_item|{item}).collect::<Vec<_>>()"
     return None

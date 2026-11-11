@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from py2fastrust.native import try_generate_native
 from py2fastrust import TranspileOptions, transpile
@@ -28,8 +29,12 @@ class NativeTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def compile(self, source, integer="i64"):
-        rust = try_generate_native(source, "native_input.py", integer, string_mode=self.string_mode)
-        self.assertIsNotNone(rust, source)
+        with patch("py2fastrust.codegen.generate", side_effect=AssertionError("general backend entered")):
+            result = transpile(source, TranspileOptions(filename="native_input.py", integer=integer,
+                                                       string_mode=self.string_mode, license="none"))
+        self.assertTrue(result.success, result.diagnostics)
+        self.assertEqual(result.backend, "native")
+        rust = result.rust_source
         self.assertNotIn("enum Value", rust)
         self.assertNotIn("enum Op", rust)
         self.assertNotIn("Runtime::new", rust)
@@ -50,6 +55,29 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(actual.returncode, expected.returncode, actual.stderr + "\n" + expected.stderr)
             if actual.returncode:
                 self.assertEqual(actual.stderr.splitlines()[-1].split(":")[0], expected.stderr.splitlines()[-1].split(":")[0])
+
+    def check_source_cases(self, cases, supported, *, compile_only=()):
+        # The acceptance set is explicit: a new missing lowering must fail,
+        # and a newly implemented case must acquire runtime differential tests.
+        for index, source in enumerate(cases):
+            with self.subTest(index=index, source=source):
+                if index in supported:
+                    if index in compile_only:
+                        self.compile(source)
+                    else:
+                        self.differential(source, ("", "0\n", "1\n0\n", "3\n0\n"))
+                else:
+                    with patch("py2fastrust.codegen.generate", side_effect=AssertionError("general backend entered")):
+                        result = transpile(source, TranspileOptions(filename="boundary.py", license="none"))
+                    self.assertFalse(result.success)
+                    self.assertIsNone(result.rust_source)
+                    self.assertTrue(result.diagnostics)
+                    for diagnostic in result.diagnostics:
+                        self.assertEqual(diagnostic.code, "E006")
+                        self.assertEqual(diagnostic.filename, "boundary.py")
+                        self.assertGreaterEqual(diagnostic.line, 1)
+                        self.assertGreaterEqual(diagnostic.column, 1)
+                        self.assertGreater(len(diagnostic.message), 25)
 
     def test_arithmetic_inputs_and_native_loops(self):
         source = '''
@@ -133,6 +161,7 @@ print(int(input()))
         self.differential(source, ("2\n5\n9\n1\n7\n8\n", "5\n2\n1\n9\n7\n8\n"))
 
     def test_input_line_and_print_boundaries(self):
+        self.string_mode = "unicode"
         source = '''
 a = int(input())
 b = int(input())
@@ -160,6 +189,7 @@ print(True, False, sep="", end="\\b\\f")
                          expected.stderr.splitlines()[-1].split(b':')[0])
 
     def test_input_map_unpack_and_typed_list(self):
+        self.string_mode = "unicode"
         source = '''
 n, m = map(int, input().split())
 a = list(map(int, input().split()))
@@ -188,12 +218,12 @@ print(len(a), sum(a), x, y)
         self.differential("a=[1]\na.extend([2])\nx,y=a\nprint(x,y)")
         self.differential("a=[1]\nx,y=a\nprint(x,y)")
         self.differential("a=[1,2,3]\nx,y=a\nprint(x,y)")
-        # Body mutation is supported only when no iterator observes that list.
-        self.assertIsNone(try_generate_native("a=[1]\nfor x in a:\n a.append(x)\n", "x.py", "i64"))
+        # The original unbounded live-iteration case is compiled, never run.
+        self.compile("a=[1]\nfor x in a:\n a.append(x)\n")
 
     def test_loop_list_cardinality_is_not_reused_as_a_proof(self):
         source = "a=[1]\nfor i in range(1):\n a=[]\nfor x in a:\n pass\nprint(x)\n"
-        self.assertIsNone(try_generate_native(source, "x.py", "i64"))
+        self.differential(source)
         source = "a=[]\ni=0\nwhile i<3:\n a.append(i)\n i+=1\nprint(len(a),sum(a))\n"
         self.differential(source)
 
@@ -310,7 +340,7 @@ print(b[0],b[1],b[-1],len(b))
         self.differential("a=[]*(-3)\nb=[0]*0\nprint(len(a),len(b),sum(a))")
         self.differential("a=[]*(2**100)\nprint(len(a))", integer="i128")
 
-    def test_integer_list_alias_and_mutation_fallback(self):
+    def test_integer_list_aliases_and_remaining_diagnostics(self):
         rejected = [
             "a=[1]\nb=a\nprint(b[0])", "a=b=[1]\nprint(a[0])",
             "a=[1]\na[0]=True", "a=[True,1]", "a=[[1]]*2",
@@ -322,9 +352,7 @@ print(b[0],b[1],b[-1],len(b))
             "a=[i for i in range(3)]\nprint(i)",
             "a=[i for i in range(3) for j in range(2)]", "a=[1]\nfor a in a:\n pass",
         ]
-        for source in rejected:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+        self.check_source_cases(rejected, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16], compile_only=(8,))
         self.differential("a=[1]\na=2\nprint(a)")
         self.differential("a=[1]\nb=a[0:1]\nb.append(2)\nprint(*a)\nprint(*b)")
         self.differential("a=[]\nprint(sum(a, True))")
@@ -460,7 +488,7 @@ print(d[0],d[-1],len(d))
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(result.stdout,'2 5\n0 2\n-1 3\n6 3 2\n')
 
-    def test_dictionary_ownership_view_and_mutation_fallback(self):
+    def test_dictionary_views_aliases_and_remaining_diagnostics(self):
         rejected = [
             'd={1:2}\ne=d', 'd=e={}', 'dict=1\nd={}',
             'd={True:2}', 'd={1:True}', 'd={}\nd[True]=3', 'd={}\nd[1]=True',
@@ -483,9 +511,7 @@ print(d[0],d[-1],len(d))
             'd={1:2}\nfor d in d:\n pass', 'd={1:2}\nd|={3:4}',
             'd={1:2}\nd[1:2]=3', 'd={1:2}\ndel d[1]',
         ]
-        for source in rejected:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source,'fallback.py','i64'))
+        self.check_source_cases(rejected, [0, 1, 3, 4, 5, 6, 7, 9, 12, 13, 14, 15, 16, 17, 18, 24, 29, 30, 31, 33, 34, 35, 38])
 
         self.differential("d={1:2}\nd=3\nprint(d)")
 
@@ -503,11 +529,9 @@ print(d[0],d[-1],len(d))
             'a=[5]\nfor i in range(2):\n for value in a:\n  pass\n print(value)\n a=[]',
             'd={1:1}\ni=0\nwhile 2**(len(d)-1):\n print(i)\n d={}\n i+=1\n if i==2:\n  break',
         ]
-        for source in rejected:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source,'fallback.py','i64'))
+        self.check_source_cases(rejected, [0, 1, 5])
 
-    def test_conservative_fallback(self):
+    def test_direct_source_and_positioned_diagnostic_boundaries(self):
         rejected = [
             "print(x)\nx=1", "x=x+1", "if int(input()):\n x=1\nprint(x)",
             "for i in range(int(input())):\n pass\nprint(i)",
@@ -521,9 +545,7 @@ print(d[0],d[-1],len(d))
             "print(input('prompt'))", "print(1, flush=int(input()))", "print(*(1,2))",
             "for i in range(3):\n pass\nelse:\n print(1)", "del x", "print(1 is 1)",
         ]
-        for source in rejected:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+        self.check_source_cases(rejected, [2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 20, 21])
         self.assertIsNotNone(try_generate_native("print(1)", "fallback.py", "bigint"))
         self.differential("x=1\nx=True\nprint(x)")
         self.differential("x=1\nx='hi'\nprint(x)")
@@ -547,7 +569,7 @@ solve()
         result = transpile(source)
         self.assertTrue(result.success, result.diagnostics)
         self.assertEqual(result.backend, "native")
-        self.assertEqual(transpile(source, TranspileOptions(optimize=False)).backend, "aot")
+        self.assertEqual(transpile(source, TranspileOptions(optimize=False)).backend, "native")
 
     def test_guarded_entry_wrapper_with_docstrings_and_arrays(self):
         source = '''
@@ -596,7 +618,7 @@ solve()
 '''
         self.differential(source, ("1\n8\n2\n", "1\n8\n0\n", "0\n9\n"))
 
-    def test_entry_wrapper_rejects_observable_or_dynamic_functions(self):
+    def test_entry_functions_and_remaining_diagnostic_cases(self):
         rejected = [
             "def solve()->None:\n print(1)\nsolve()",
             "def solve[T]():\n print(1)\nsolve()",
@@ -612,9 +634,7 @@ solve()
             "def int():\n print(int(input()))\nint()",
             "def __name__():\n print(1)\nif __name__=='__main__':\n __name__()",
         ]
-        for source in rejected:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source,"fallback.py","i64"))
+        self.check_source_cases(rejected, [0, 7, 9, 11])
         for source in ("def solve(x=1):\n print(x)\nsolve()",
                        "def solve():\n print(1)\nsolve()\nprint(2)"):
             self.differential(source)

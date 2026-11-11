@@ -13,15 +13,7 @@ from py2fastrust.native import try_generate_native
 from py2fastrust.native_bigint import try_generate_bigint
 
 
-class StrictDirectTests(unittest.TestCase):
-    def assert_direct(self, result):
-        self.assertTrue(result.success, result.diagnostics)
-        self.assertEqual(result.backend, "native")
-        for marker in ("enum Value", "struct Runtime", "enum Op", "fn step(", "struct PegParser"):
-            self.assertNotIn(marker, result.rust_source)
-
-    def test_unsupported_normal_python_never_selects_general_codegen(self):
-        sources = (
+SOURCE_CASES = (
             "def outer(x):\n def inner():return x\n return inner\nprint(outer(3)())\n",
             "values=[1]\nalias=values\nalias.append(2)\nprint(values)\n",
             "def recurse(n):return recurse(n-1) if n else 0\nprint(recurse(3))\n",
@@ -29,13 +21,27 @@ class StrictDirectTests(unittest.TestCase):
             "print(eval('1+2'))\n",
             "def sequence():yield 1\nprint(list(sequence()))\n",
         )
+
+
+class StrictDirectTests(unittest.TestCase):
+    def assert_direct(self, result):
+        self.assertTrue(result.success, result.diagnostics)
+        self.assertEqual(result.backend, "native")
+        for marker in ("enum Value", "struct Runtime", "enum Op", "fn step(", "struct PegParser"):
+            self.assertNotIn(marker, result.rust_source)
+
+    def test_supported_and_remaining_python_never_selects_general_codegen(self):
+        sources = SOURCE_CASES
         with patch("py2fastrust.codegen.generate", side_effect=AssertionError("general backend entered")) as general:
             for integer in ("i64", "i128", "bigint"):
                 for optimize in (False, True):
-                    for source in sources:
+                    for index, source in enumerate(sources):
                         with self.subTest(integer=integer, optimize=optimize, source=source):
                             result = transpile(source, TranspileOptions(integer=integer, optimize=optimize,
                                                                        filename="fresh_solution.py"))
+                            if index < 3:
+                                self.assert_direct(result)
+                                continue
                             self.assertFalse(result.success)
                             self.assertIsNone(result.rust_source)
                             self.assertEqual(result.diagnostics[0].code, "E006")
@@ -75,7 +81,7 @@ class StrictDirectTests(unittest.TestCase):
                     integer=integer, filename="nested/source.py"))
                 diagnostic = result.diagnostics[0]
                 self.assertEqual((diagnostic.filename, diagnostic.line, diagnostic.column, diagnostic.code),
-                                 ("nested/source.py", 3, 1, "E006"))
+                                 ("nested/source.py", 3, 15, "E006"))
                 result = transpile("ready=3\nvalue=object()\n", TranspileOptions(
                     integer=integer, filename="nested/source.py"))
                 self.assertEqual((result.diagnostics[0].line, result.diagnostics[0].column), (2, 7))
@@ -146,7 +152,7 @@ class StrictDirectTests(unittest.TestCase):
             result = subprocess.run([sys.executable, "-m", "py2fastrust", str(source), "--no-optimize", "-o", str(output)],
                                     text=True, capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-            self.assertIn(f"{source}:3:1: E006:", result.stderr)
+            self.assertIn(f"{source}:3:19: E006:", result.stderr)
             self.assertEqual(result.stdout, "")
             self.assertEqual(output.read_text(), "keep")
 
@@ -167,6 +173,12 @@ class StrictDirectTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
 class DirectNoOptimizeExecutionTests(unittest.TestCase):
+    def test_original_capture_alias_and_recursion_sources_execute_directly(self):
+        from tests import test_native_module_linking as modules
+        for source in SOURCE_CASES[:3]:
+            with self.subTest(source=source):
+                modules.NativeLinkedModuleTests.exercise(self, {'main.py':source})
+
     def test_all_integer_modes_compile_and_execute_without_optimization(self):
         source = "A,B,C=map(int,input().split())\nanswer=max(0,(C-A+B-1)//B)\nprint(answer)\n"
         with tempfile.TemporaryDirectory(prefix="pytors-direct-noopt-") as directory:
