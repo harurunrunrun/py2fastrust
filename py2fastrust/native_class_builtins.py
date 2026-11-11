@@ -290,12 +290,12 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         else:
             code = self.at(f"class_read_text(&class_scope,{str(name!='read_text').lower()},{str(name=='input').lower()})",node)
     elif name == "print":
-        sep = keywords.get("sep",Expression('" ".to_owned()','str'))
-        end = keywords.get("end",Expression('"\\n".to_owned()','str'))
+        sep = keywords.get("sep",Expression('" "','str'))
+        end = keywords.get("end",Expression('"\\n"','str'))
         if sep.kind == 'none':
-            sep = Expression('" ".to_owned()','str')
+            sep = Expression('" "','str')
         if end.kind == 'none':
-            end = Expression('"\\n".to_owned()','str')
+            end = Expression('"\\n"','str')
         for key,value in (("sep",sep),("end",end)):
             if value.kind!='str':
                 name=_type_name(emitter,value,node)
@@ -306,7 +306,18 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         for i,value in enumerate(arguments):
             if i:
                 pieces.append(f"class_scope.io.borrow_mut().output.push_str(&{sep.code});")
-            pieces.append(f"class_scope.io.borrow_mut().output.push_str(&({self.show(value,node)}));")
+            if value.kind=='int' and self.model.integer!='bigint':
+                captured=self.fresh()
+                pieces.append('{'+f'let {captured}={value.code};use std::fmt::Write as _;'
+                    f'write!(&mut class_scope.io.borrow_mut().output,"{{}}",{captured}).expect("String formatting failed");'+'}')
+            elif value.kind in {'str','bool','none'}:
+                captured=self.fresh()
+                text=(f'&({captured})' if value.kind=='str' else
+                      f'if {captured}{{"True"}}else{{"False"}}' if value.kind=='bool' else '"None"')
+                binding=f'let _={value.code};' if value.kind=='none' else f'let {captured}={value.code};'
+                pieces.append('{'+binding+f'class_scope.io.borrow_mut().output.push_str({text});'+'}')
+            else:
+                pieces.append(f"class_scope.io.borrow_mut().output.push_str(&({self.show(value,node)}));")
         pieces.append(f"class_scope.io.borrow_mut().output.push_str(&{end.code});")
         if "flush"in keywords:
             flush = self.truth(keywords["flush"])
