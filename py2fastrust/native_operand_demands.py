@@ -27,6 +27,7 @@ class ClassAccess:
     name: str
     slot: int
     projections: tuple
+    binding: object = None
 
 
 @dataclass(frozen=True)
@@ -248,9 +249,18 @@ def capture_access(emitter, node, request):
         projections.append(projection)
     from .native import _string
     slot = model.namespace.index(key)
+    from .native_source_class_bindings import certify
+    binding = None
+    for projection in projections:
+        for state_slot in state.abis[projection.plan.index].slots:
+            binding = certify(state,state_slot,key)
+            if binding is not None:break
+        if binding is not None:break
     access = ClassAccess(emitter.plan, node, mode, request.direct_definition,
-                         kind, key, slot, tuple(projections))
+                         kind, key, slot, tuple(projections),binding)
     registry.accesses.append(access)
+    if binding is not None:
+        return '',ClassOperand(kind,access)
     message = _string("NameError: name '" + model.display_name(key) + "' is not defined")
     check = ('{let class_operand_namespace=class_scope.globals.borrow();'
              + 'class_operand_namespace.value_' + str(slot)
