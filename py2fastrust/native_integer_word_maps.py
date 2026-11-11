@@ -107,6 +107,7 @@ def parse_immediate(emitter,node,count=None,*,consumer=None,shared=False):
     from .native_types import ListType
     from .call_semantics import normalize_call
     if domain(emitter.kind(node))!='map_int'or not isinstance(node,ast.Call)or len(node.args)!=2:return None
+    if any(keyword.arg!='strict'for keyword in node.keywords):return None
     source=node.args[1]
     if not isinstance(source,ast.Call)or not isinstance(source.func,ast.Attribute):return None
     if (emitter.plan.index,id(source))not in getattr(emitter.model,'text_split_sites',{}):return None
@@ -124,14 +125,48 @@ def parse_immediate(emitter,node,count=None,*,consumer=None,shared=False):
         if argument.name is None:positional.append(value)
         else:keywords[argument.name]=value
     wanted=ListType('int')
+    stack=count is not None and count<=32 and not shared
+    def map_options():
+        code=''
+        for keyword in node.keywords:
+            before,value=emitter.capture(emitter.expression(keyword.value));code+=before
+            code+='let _='+emitter.truth(value)+';'
+        return code
     def collect(kind,text,cursor,reverse):
         words,part,base,values,first,length,word=(emitter.fresh()for _ in range(7))
         view=f'({text}).as_str()'if kind=='str'else f'({text}).as_slice()'
         parse='class_parse_text'if kind=='str'else'class_parse_bytes'
+        if stack:
+            size=count+1
+            total,start=emitter.fresh(),emitter.fresh()
+            body=(f'let {base}=({view}).as_ptr()as usize;'
+                f'let mut {words}:[Option<(usize,usize)>;{size}]=std::array::from_fn(|_|None);'
+                f'let mut {total}=0_usize;')
+            if reverse:body+=f'let mut {start}=0_usize;'
+            body+=(f'for {part} in {cursor}{{if {total}<{size}{{'
+                f'{words}[{total}]=Some(({part}.as_ptr()as usize-{base},{part}.len()));{total}+=1;}}')
+            if reverse:
+                body+=(f'else{{{words}[{start}]=Some(({part}.as_ptr()as usize-{base},{part}.len()));'
+                    f'{start}=({start}+1)%{size};}}')
+            body+='}'+map_options()
+            body+=f'let mut {values}:[Option<NativeInt>;{count}]=std::array::from_fn(|_|None);'
+            index=emitter.fresh()
+            position=(f'if {index}<{total}{{{words}[({start}+{total}-1-{index})%{size}]}}else{{None}}'
+                if reverse else f'{words}[{index}]')
+            position=emitter.at('('+position+f').ok_or_else(||format!("ValueError: not enough values to unpack (expected {count}, got {{}})",{index}))',consumer)
+            parsed=emitter.at(f'{parse}({word})',consumer)
+            body+=(f'for {index} in 0..{count}{{let ({first},{length})={position};'
+                f'let {word}=&({view})[{first}..{first}+{length}];{values}[{index}]=Some({parsed});}}')
+            extra_position=(f'{words}[({start}+{total}-1-{count})%{size}]'if reverse else f'{words}[{count}]')
+            extra=emitter.at(f'Err::<(),String>("ValueError: too many values to unpack (expected {count})".to_owned())',consumer)
+            body+=(f'if {total}>{count}{{let ({first},{length})=({extra_position}).unwrap();'
+                f'let {word}=&({view})[{first}..{first}+{length}];let _={parsed};{extra};}}')
+            return '{'+body+f'{values}.map(Option::unwrap)'+'}'
         reserve=emitter.at(f'{words}.try_reserve(1).map_err(|_|"MemoryError: cannot allocate split words".to_owned())',source)
         body=(f'let {base}=({view}).as_ptr()as usize;let mut {words}=Vec::<(usize,usize)>::new();'
               f'for {part} in {cursor}{{{reserve};{words}.push(({part}.as_ptr()as usize-{base},{part}.len()));}}')
         if reverse:body+=f'{words}.reverse();'
+        body+=map_options()
         limit=f'{words}.len()'if count is None else str(count)
         body+=f'let mut {values}=Vec::<NativeInt>::new();'
         body+=emitter.at(f'{values}.try_reserve_exact({limit}).map_err(|_|"MemoryError: cannot allocate integers".to_owned())',consumer)+';'
@@ -144,11 +179,11 @@ def parse_immediate(emitter,node,count=None,*,consumer=None,shared=False):
             body+=f'for {index} in 0..{count}{{let ({first},{length})={position};let {word}=&({view})[{first}..{first}+{length}];{values}.push({parsed});}}'
             extra=emitter.at(f'Err::<(),String>("ValueError: too many values to unpack (expected {count})".to_owned())',consumer)
             body+=f'if let Some(({first},{length}))={words}.get({count}).copied(){{let {word}=&({view})[{first}..{first}+{length}];let _={parsed};{extra};}}'
-        return '{'+body+f'class_list({values})'+'}'
+        return '{'+body+(f'class_list({values})'if shared else values)+'}'
     from .native_class_splits import emit
-    result=emit(emitter,source,receiver,positional,keywords,wanted,collector=collect)
+    result=emit(emitter,source,receiver,positional,keywords,wanted,collector=collect,
+        result_rust_type=f'[NativeInt;{count}]'if stack else None if shared else 'Vec<NativeInt>')
     code='{'+setup+result.code+'}'
-    if not shared:code='Rc::try_unwrap('+code+').unwrap_or_else(|_|unreachable!()).into_inner()'
     return code
 
 

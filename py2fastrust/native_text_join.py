@@ -63,6 +63,9 @@ def analyze(model,plan,node,receiver,arguments,keywords,environment):
     if not kinds or not all(kind in {'str','bytes'}for kind in kinds):return None
     error='keywords'if keywords else'count'if len(arguments)!=1 else None
     if error is None and kinds==('str',)and shape(arguments[0])==ListType('str'):
+        # A previous fixed-point iteration may have seen an unresolved source.
+        # The exact builtin list now uses the existing direct join adapter.
+        _sites(model).pop((plan.index,id(node)),None)
         return None
     site=JoinSite(error=error)
     _sites(model)[(plan.index,id(node))]=site

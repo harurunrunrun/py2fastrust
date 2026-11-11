@@ -88,14 +88,17 @@ def maximum(emitter,node,value):
     return project(value.kind,value.code,branch)if union_kind(value.kind)else branch(value.kind,value.code)
 
 
-def emit(emitter,node,receiver,arguments,keywords,wanted,*,collector=None):
+def emit(emitter,node,receiver,arguments,keywords,wanted,*,collector=None,result_rust_type=None):
     from .native_classes import Expression,ClassUnsupported,domain
     from .native_class_builtins import _error,_type_name
     from .native_unions import union_kind,project
     site=_sites(emitter.model).get((emitter.plan.index,id(node)))
     if site is None:return None
     bound,error=bind(site.name,arguments,list(keywords.items()),{'sep':Expression('()','none'),'maxsplit':Expression(emitter.literal(-1),'int',-1)})
-    if error:return _error(emitter,node,wanted,'"'+error+'".to_owned()')
+    def failure(message):
+        if result_rust_type is None:return _error(emitter,node,wanted,message).code
+        return emitter.at(f'Err::<{result_rust_type},String>({message})',node)
+    if error:return Expression(failure('"'+error+'".to_owned()'),wanted)
     limit=emitter.fresh();before='let '+limit+'='+maximum(emitter,node,bound['maxsplit'])+';'
     separator=bound['sep'];reverse=site.name=='rsplit'
     def owner_branch(kind,text):
@@ -105,7 +108,7 @@ def emit(emitter,node,receiver,arguments,keywords,wanted,*,collector=None):
                     raise ClassUnsupported(node,'this bytes separator needs a user buffer protocol; split supports only captured builtin bytes or None',types=(('separator',sep_kind),),proof='split builtin separator representation')
                 typename=_type_name(emitter,Expression(sep,sep_kind),node)
                 message='format!("TypeError: must be str or None, not {}",'+typename+')'if kind=='str'else'format!("TypeError: a bytes-like object is required, not \'{}\'",'+typename+')'
-                return _error(emitter,node,wanted,message).code
+                return failure(message)
             factory=('NativeReverseWords'if reverse else'NativeWords')if kind=='str'else('NativeReverseByteWords'if reverse else'NativeByteWords')
             sep_code='None'if sep_kind=='none'else'Some(('+sep+').as_str())'if kind=='str'else'Some(('+sep+').as_slice())'
             cursor=emitter.at(factory+'::new(&('+text+'),'+sep_code+','+limit+' as i128)',node)
