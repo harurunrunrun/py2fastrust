@@ -159,27 +159,7 @@ def emit(emitter, target, value,*,assign_target=None):
         setup+='let mut '+values+':Vec<'+emitter.rust_type(pulled.kind)+'>=Vec::new();'
         reserve=emitter.at(values+'.try_reserve(1).map_err(|_|"MemoryError: cannot allocate unpacked remainder".to_owned())',target)
         setup+='while let Some('+item+')=('+pulled.code+'){'+reserve+';'+values+'.push('+item+');}'
-        minimum=expected-1;tail=expected-record.star-1
-        message=_string(f'ValueError: not enough values to unpack (expected at least {minimum}, got {{}})')
-        setup+='if '+values+'.len()<'+str(minimum)+'{'+emitter.at('Err::<(),String>(format!('+message+','+values+'.len()))',target)+';}'
-        members=[]
-        for i,node in enumerate(target.elts):
-            if i==record.star:members.append(None);continue
-            index=str(i)if i<record.star else values+'.len()-'+str(expected-i)
-            before,member=emitter.capture(Expression(values+'['+index+'].clone()',pulled.kind));setup+=before;members.append(member)
-        if tail:setup+=values+'.truncate('+values+'.len()-'+str(tail)+');'
-        if record.star:setup+=values+'.drain(..'+str(record.star)+');'
-        kind=shape(record.rest)
-        if kind.element!=pulled.kind:
-            converted,current=(emitter.fresh()for _ in range(2))
-            setup+='let mut '+converted+':Vec<'+emitter.rust_type(kind.element)+'>=Vec::new();'
-            setup+=emitter.at(converted+'.try_reserve_exact('+values+'.len()).map_err(|_|"MemoryError: cannot allocate unpacked remainder".to_owned())',target)+';'
-            item=emitter.coerce(Expression(current,pulled.kind),kind.element,target)
-            setup+='for '+current+' in '+values+'{'+converted+'.push('+item+');}'
-            values=converted
-        before,remainder=emitter.capture(Expression('class_list('+values+')',kind));setup+=before;members[record.star]=remainder
-        return setup+''.join(assign(node.value if isinstance(node,ast.Starred)else node,member)
-                             for node,member in zip(target.elts,members))
+        return setup+emit_star_values(emitter,target,record,values,pulled.kind,assign_target=assign_target)
     members = []
     for index in range(expected):
         name = emitter.fresh()
@@ -191,3 +171,31 @@ def emit(emitter, target, value,*,assign_target=None):
     excess = emitter.at(f'Err::<(),String>({_string(message)}.to_owned())', target)
     setup += f"if ({pulled.code}).is_some(){{{excess};}}"
     return setup + "".join(assign(node, member) for node, member in zip(target.elts, members))
+
+
+def emit_star_values(emitter,target,record,values,item_kind,*,assign_target=None):
+    """Bind a completed native value snapshot before evaluating any target."""
+    from .native import _string
+    from .native_classes import Expression,shape
+    assign=assign_target or emitter.assign
+    expected=len(target.elts);minimum=expected-1;tail=expected-record.star-1
+    message=_string(f'ValueError: not enough values to unpack (expected at least {minimum}, got {{}})')
+    setup='if '+values+'.len()<'+str(minimum)+'{'+emitter.at('Err::<(),String>(format!('+message+','+values+'.len()))',target)+';}'
+    members=[]
+    for i,node in enumerate(target.elts):
+        if i==record.star:members.append(None);continue
+        index=str(i)if i<record.star else values+'.len()-'+str(expected-i)
+        before,member=emitter.capture(Expression(values+'['+index+'].clone()',item_kind));setup+=before;members.append(member)
+    if tail:setup+=values+'.truncate('+values+'.len()-'+str(tail)+');'
+    if record.star:setup+=values+'.drain(..'+str(record.star)+');'
+    kind=shape(record.rest)
+    if kind.element!=item_kind:
+        converted,current=(emitter.fresh()for _ in range(2))
+        setup+='let mut '+converted+':Vec<'+emitter.rust_type(kind.element)+'>=Vec::new();'
+        setup+=emitter.at(converted+'.try_reserve_exact('+values+'.len()).map_err(|_|"MemoryError: cannot allocate unpacked remainder".to_owned())',target)+';'
+        item=emitter.coerce(Expression(current,item_kind),kind.element,target)
+        setup+='for '+current+' in '+values+'{'+converted+'.push('+item+');}'
+        values=converted
+    before,remainder=emitter.capture(Expression('class_list('+values+')',kind));setup+=before;members[record.star]=remainder
+    return setup+''.join(assign(node.value if isinstance(node,ast.Starred)else node,member)
+                         for node,member in zip(target.elts,members))

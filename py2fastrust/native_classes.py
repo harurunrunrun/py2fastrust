@@ -2640,6 +2640,9 @@ class Emitter:
         if isinstance(node,ast.Assign):
             from .native_frame_references import alias_assignment
             if alias_assignment(self.model,self.plan,node):return ''
+            from .native_integer_word_maps import emit_unpack_assignment
+            unpacked_words=emit_unpack_assignment(self,node)
+            if unpacked_words is not None:return unpacked_words
             if domain(self.kind(node.value))=="map_int":
                 if len(node.targets)!=1 or not isinstance(node.targets[0],(ast.Tuple,ast.List)):
                     raise ClassUnsupported(node)

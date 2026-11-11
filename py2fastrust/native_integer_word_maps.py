@@ -106,7 +106,13 @@ def parse_immediate(emitter,node,count=None,*,consumer=None,shared=False):
     from .native_classes import domain
     from .native_types import ListType
     from .call_semantics import normalize_call
-    if domain(emitter.kind(node))!='map_int'or not isinstance(node,ast.Call)or len(node.args)!=2:return None
+    if not isinstance(node,ast.Call)or len(node.args)!=2:return None
+    kind=emitter.kind(node)
+    if domain(kind)!='map_int':
+        from .native_class_iterators import iterator_kind
+        if not iterator_kind(kind):return None
+        record=kind.record
+        if not isinstance(getattr(record,'adapter',None),IntegerWordMap)or record.node is not node:return None
     if any(keyword.arg!='strict'for keyword in node.keywords):return None
     source=node.args[1]
     if not isinstance(source,ast.Call)or not isinstance(source.func,ast.Attribute):return None
@@ -136,6 +142,13 @@ def parse_immediate(emitter,node,count=None,*,consumer=None,shared=False):
         words,part,base,values,first,length,word=(emitter.fresh()for _ in range(7))
         view=f'({text}).as_str()'if kind=='str'else f'({text}).as_slice()'
         parse='class_parse_text'if kind=='str'else'class_parse_bytes'
+        if count is None and not reverse:
+            cursor_name=emitter.fresh()
+            parsed=emitter.at(f'{parse}({part})',consumer)
+            reserve=emitter.at(f'{values}.try_reserve(1).map_err(|_|"MemoryError: cannot allocate integers".to_owned())',consumer)
+            body=f'let {cursor_name}={cursor};'+map_options()+f'let mut {values}=Vec::<NativeInt>::new();'
+            body+=f'for {part} in {cursor_name}{{let {word}={parsed};{reserve};{values}.push({word});}}'
+            return '{'+body+(f'class_list({values})'if shared else values)+'}'
         if stack:
             size=count+1
             total,start=emitter.fresh(),emitter.fresh()
@@ -185,6 +198,30 @@ def parse_immediate(emitter,node,count=None,*,consumer=None,shared=False):
         result_rust_type=f'[NativeInt;{count}]'if stack else None if shared else 'Vec<NativeInt>')
     code='{'+setup+result.code+'}'
     return code
+
+
+def emit_unpack_assignment(emitter,node):
+    """Consume a fresh canonical integer-word map without materializing it."""
+    from .native_class_iterators import iterator_kind
+    if not isinstance(node,ast.Assign)or len(node.targets)!=1:return None
+    target=node.targets[0]
+    if not isinstance(target,(ast.Tuple,ast.List)):return None
+    kind=emitter.kind(node.value)
+    if not iterator_kind(kind):return None
+    if kind.record.node is not node.value or not isinstance(getattr(kind.record,'adapter',None),IntegerWordMap):return None
+    record=getattr(emitter.model,'unpack_sites',{}).get((emitter.plan.index,id(target)))
+    from .native_class_unpacking import Unpack,emit_star_values
+    if not isinstance(record,Unpack)or record.fields is not None:return None
+    count=None if record.star is not None else len(target.elts)
+    parsed=parse_immediate(emitter,node.value,count,consumer=target)
+    if parsed is None:return None
+    values=emitter.fresh()
+    setup=f'let '+('mut 'if record.star is not None else'')+f'{values}={parsed};'
+    if record.star is not None:
+        return setup+emit_star_values(emitter,target,record,values,'int')
+    from .native_classes import Expression
+    return setup+''.join(emitter.assign(child,Expression(f'{values}[{index}].clone()','int'))
+                         for index,child in enumerate(target.elts))
 
 
 def emit_immediate_list(emitter,node,wanted):
