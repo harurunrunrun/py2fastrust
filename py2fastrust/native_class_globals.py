@@ -62,7 +62,9 @@ class Namespace:
         from .native_class_storage import check_merge,contains_cell
         left,right=destination.root(),source.root()
         if not(force or self.is_flow(right)or left in self.flow_cells):return False
-        if not complete(shape(right)):return False
+        if not complete(shape(right)):
+            from .native_pending_list_evidence import contribute as pending_list
+            return pending_list(self,destination,source,node)
         if left is right:return True
         if destination.parent is not None:
             destination.parent=None
