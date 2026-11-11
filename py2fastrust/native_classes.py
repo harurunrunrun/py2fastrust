@@ -3046,6 +3046,11 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_context_effects(model)
         from .native_callable_field_demand import prepare as prepare_callable_field_demand
         prepare_callable_field_demand(model)
+        from .native_scalar_heap_constants import prepare as prepare_scalar_constants
+        prepare_scalar_constants(model)
+        model.initialized_lexical_scalars.refine_contexts()
+        if model.callable_field_demand is not None:
+            model.callable_field_demand.refresh_contexts()
         from .native_class_binding_contexts import prepare as prepare_class_bindings
         prepare_class_bindings(model)
         from .native_owned_class_lists import prepare as prepare_owned_fields
@@ -3060,8 +3065,6 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_class_reference_borrows(model)
         from .native_packed_value_fields import prepare as prepare_packed_fields
         prepare_packed_fields(model)
-        from .native_scalar_heap_constants import prepare as prepare_scalar_constants
-        prepare_scalar_constants(model)
         from .native_constant_field_projection import prepare as prepare_constant_projection
         prepare_constant_projection(model)
         from .native_typed_continuations import prepare as prepare_continuations

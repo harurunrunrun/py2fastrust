@@ -47,8 +47,12 @@ class Registry:
             self.barrier=str(error)
             return
         self.observe_uses()
+        self.refresh_contexts()
+
+    def refresh_contexts(self):
+        if self.barrier is not None:return
+        model=self.model;provider=model.callable_cells
         from .native_aot_callables import ordered_targets
-        provider=model.callable_cells
         targets=ordered_targets(tuple(provider.used)+tuple(provider.bound_methods.used))
         from .native_bound_methods import BoundMethodTarget
         from .native_call_context_effects import summary

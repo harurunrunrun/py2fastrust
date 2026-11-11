@@ -622,7 +622,10 @@ class Registry:
                     self.graph.unknown(destination)
 
 
-def prepare(model):model.scalar_heap_constants=Registry(model)
+def prepare(model):
+    model.scalar_heap_constants=Registry(model)
+    from .native_initialized_lexical_scalars import Registry as Initialized
+    model.initialized_lexical_scalars=Initialized(model,model.scalar_heap_constants)
 
 
 def lexical_getter(emitter,node,kind,code):
@@ -632,6 +635,9 @@ def lexical_getter(emitter,node,kind,code):
     fact=None if key is None else registry.graph.constant(key)
     if fact is None or fact.kind!=kind or kind not in {'int','bool'}:return code
     literal=emitter.literal(fact.low)if kind=='int'else str(fact.low).lower()
+    from .native_initialized_lexical_scalars import selected
+    if selected(emitter,node):
+        return 'Ok::<'+emitter.rust_type(kind)+',String>('+literal+')'
     # A value fact does not prove initialization. Preserve the original getter
     # and its error before exposing the constant payload to Rust optimization.
     return '('+code+').map(|class_scalar_actual|{let _=class_scalar_actual;'+literal+'})'

@@ -272,10 +272,10 @@ class CallableFieldDemandProofs(unittest.TestCase):
    rows=layouts(model,'square');self.assertTrue(rows)
    self.assertTrue(all(logical.fields==physical.fields and required.environment for _,logical,physical,required in rows))
  def test_live_cells_and_nonliteral_default_binding_retain_source_demand(self):
-  for name,function in [('live_free_cell_after_later_argument_effect','add'),('default_state_and_definition_effects','square')]:
+  for name,function,module in [('live_free_cell_after_later_argument_effect','add',False),('default_state_and_definition_effects','square',True)]:
    _,_,model=self.checked(name)
    rows=layouts(model,function);self.assertTrue(rows)
-   self.assertTrue(all(required.module and required.environment for _,_,_,required in rows))
+   self.assertTrue(all(required.module==module and required.environment for _,_,_,required in rows))
  def test_bound_receiver_remains_while_proved_private_module_disappears(self):
   result,_,model=self.checked('foreign_saved_bound_reader')
   carrier=registry(model);targets=[target for target in carrier.targets.values()if isinstance(target,BoundMethodTarget)]
@@ -299,6 +299,9 @@ class CallableFieldDemandProofs(unittest.TestCase):
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class CallableFieldDemandExecution(unittest.TestCase):
  def exercise(self,name):execution.NativeLinkedModuleTests.exercise(self,PROJECTS[name])
+ def test_actual_live_cell_after_argument_and_evaluated_defaults(self):
+  for name in ('live_free_cell_after_later_argument_effect','default_state_and_definition_effects'):
+   with self.subTest(name=name):self.exercise(name)
  def test_actual_foreign_field_parameter_and_bound_receiver(self):
   for name in ('foreign_parameter_field_callback','foreign_saved_bound_reader'):
    with self.subTest(name=name):self.exercise(name)
