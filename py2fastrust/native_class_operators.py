@@ -153,6 +153,16 @@ class Operators:
                 phase=branch.phases[index]
                 manager=second if phase.reverse else first
                 owner=phase.member.owner
+                args=[Expression(value.code+'.clone()',value.kind)for value in ([second,first]if phase.reverse else[first,second])]
+                from .native_class_value_demands import direct_operator
+                direct=direct_operator(emitter,node,phase,args,shape(phase.site.result))
+                if direct is not None:
+                    before,outcome=emitter.capture(direct)
+                    def select_direct(kind,code):
+                        if kind==NOT_IMPLEMENTED:return step(index+1)
+                        return emitter.coerce(Expression('('+code+').clone()',kind),wanted,node)
+                    code=project(outcome.kind,outcome.code,select_direct)if union_kind(outcome.kind)else select_direct(outcome.kind,outcome.code)
+                    return '{'+before+code+'}'
                 from .native_module_linking import ClassReferenceType
                 reference=emitter.fresh()
                 setup=f'let {reference}={{{manager.code}.borrow().class_definition.clone()}};'

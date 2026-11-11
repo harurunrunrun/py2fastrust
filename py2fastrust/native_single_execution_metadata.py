@@ -111,7 +111,9 @@ def certify(model):
 def apply(source, model):
     from .native_static_class_metadata import RUNTIME, once
     from .native_value_classes import selected
-    info = {'eligible': False, 'specialized_owners': []}
+    published = sorted(getattr(model, 'published_metadata', ()))
+    info = {'eligible': False, 'specialized_owners': list(published),
+            'published_at_definition': published}
     model.single_execution_metadata = info
     try:
         info.update(certify(model))

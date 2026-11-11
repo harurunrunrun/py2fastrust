@@ -156,6 +156,41 @@ SOURCES.update({'conditional_expression_early_read': ('class Array:\n'
                                                 'main()\n',
                                                 ['3\n', '0\n'])})
 
+SOURCES.update({
+ 'callback_read_before_assignment': ('''def calc(index): return index + 2
+class Sample:
+ def __init__(self, n, function):
+  self.data = [0] * n
+  self.fill()
+  self.function = function
+ def fill(self):
+  for index in range(len(self.data)):
+   self.data[index] = self.function(index)
+ def read(self): return len(self.data)
+def main():
+ sample = Sample(int(input()), calc)
+ print(sample.read())
+main()
+''', ['0\n','2\n','-1\n']),
+ 'callback_requires_live_capture': ('''def make(bias):
+ def calc(index): return index + bias
+ return calc
+class Sample:
+ def __init__(self, function):
+  self.function = function
+  self.data = [0, 0]
+  self.fill()
+ def fill(self):
+  for index in range(len(self.data)):
+   self.data[index] = self.function(index)
+ def read(self): return self.data[0] + self.data[1]
+def main():
+ sample = Sample(make(int(input())))
+ print(sample.read())
+main()
+''', ['7\n','-2\n']),
+})
+
 def inspect_source(name,integer='i64'):
     observed=[]
     original=Emitter.generate
@@ -207,7 +242,13 @@ class InitializedOwnedFieldProofs(unittest.TestCase):
 
     def test_stored_callback_cannot_reach_the_private_owner(self):
         _,fields=self.fields('stored_callback_after_field_initialization')
-        self.assertEqual(fields,{'size','data'})
+        self.assertEqual(fields,{'size','data','operation'})
+
+    def test_callback_read_before_store_and_live_capture_keep_optional_storage(self):
+        for name in ('callback_read_before_assignment','callback_requires_live_capture'):
+            with self.subTest(name=name):
+                _,fields=self.fields(name)
+                self.assertNotIn('function',fields)
 
     def test_helper_and_both_branch_initialization_are_proved(self):
         _,fields=self.fields('helper_initializes_scalar')
@@ -236,3 +277,6 @@ class InitializedOwnedFieldExecution(unittest.TestCase):
 
     def test_adversarial_expression_order_and_stored_callback(self):
         self.run_sources(('conditional_expression_early_read','dictionary_pair_order','stored_callback_after_field_initialization'))
+
+    def test_callback_presence_and_actual_namespace_in_all_integer_modes(self):
+        self.run_sources(('callback_read_before_assignment','callback_requires_live_capture'))

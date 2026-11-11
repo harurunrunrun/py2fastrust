@@ -71,6 +71,7 @@ def bind_definition(emitter, node, definition, positional, keywords, *, captured
         values.append(emitter.coerce(value, shape(target.arguments[name]), node))
     from .native_call_context_effects import unused_parent
     from .native_class_binding_contexts import invocation as class_context_argument, parameter as class_context_parameter
+    from .native_class_value_demands import private as private_class_context
     receiver = None
     if positional and class_context_parameter(emitter.model, target):
         if isinstance(positional[0], ClassOperand):
@@ -78,7 +79,8 @@ def bind_definition(emitter, node, definition, positional, keywords, *, captured
         receiver = positional[0].code
     context = class_context_argument(emitter.model, target,
         receiver, caller=emitter.plan, node=node,
-        captured_class_context=captured_class_context)
+        captured_class_context=captured_class_context,
+        private=private_class_context(emitter,node,target))
     lexical = ((',class_selected_environment.environment.clone()'
                 if is_lambda or has_instance else ',class_selected_environment.clone()')
                if parent and not unused_parent(emitter.model, target) else '')

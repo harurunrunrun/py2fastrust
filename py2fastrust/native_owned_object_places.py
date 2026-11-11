@@ -299,7 +299,9 @@ def call_receiver(emitter,node,callee):
     if not registry.canonical_method(emitter.plan,node,root.owner):return None
     from .native_classes import Expression,InstanceType
     setup=root.check();module=None
-    if getattr(emitter.model,'module_linker',None)is not None:
+    from .native_private_module_demands import module_unused
+    if (getattr(emitter.model,'module_linker',None)is not None
+            and not module_unused(emitter,node,callee)):
         module=emitter.fresh()
         setup+='let '+module+'={'+root.shared()+'.borrow().class_definition.module.clone()};'
     return setup,Expression(root.mutable(),InstanceType(emitter.model.class_key(root.owner))),module

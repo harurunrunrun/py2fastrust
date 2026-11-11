@@ -312,9 +312,11 @@ class LinkedEmitter(Emitter):
         from .native import _string
         return f"({_string(self.plan.source_unit.filename)},{_string(getattr(self,'logical_scope',self.plan.scope))})"
 
-    def prepare_call_context(self,callee,receiver,constructor,defining_module=None):
+    def prepare_call_context(self,callee,receiver,constructor,defining_module=None,*,node=None):
         from .native_classes import InstanceType
         from .native_call_context_effects import incoming_module
+        from .native_private_module_demands import module_unused
+        if callee is not None and node is not None and module_unused(self,node,callee):return ""
         if constructor is None and callee is not None and not incoming_module(self.model,callee):return ""
         if defining_module is not None:return f"let class_scope=class_scope.with_module({defining_module});"
         if receiver is not None and isinstance(receiver.kind,InstanceType):
@@ -573,7 +575,8 @@ class LinkedEmitter(Emitter):
             value=f"Rc::new(ClassClassReference{{definition:{owner.index},module:class_scope.globals.clone()}})"
             wanted=dict(self.model.namespace.fields())[key]
             stored=self.coerce(Expression(created+'.clone()',ClassReferenceType(owner.index)),wanted,node)
-            return result+f"let {created}={value};class_scope.globals.borrow_mut().value_{index}=Some({stored});"+self.model.class_namespaces.named_tuples.emit_retain_definition(self,node,owner,created)
+            from .native_published_metadata import publication
+            return result+f"let {created}={value};"+publication(self,owner,created)+f"class_scope.globals.borrow_mut().value_{index}=Some({stored});"+self.model.class_namespaces.named_tuples.emit_retain_definition(self,node,owner,created)
         return result
 
     def assign_name(self,target,value):

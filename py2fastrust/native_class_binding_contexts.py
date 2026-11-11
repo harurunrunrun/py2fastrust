@@ -359,11 +359,15 @@ def owner(model, plan):
     return None if registry is None else registry.method_owner(plan)
 
 
-def parameter(model, plan):
+def parameter(model, plan, *, private=False):
+    if private and plan.index in getattr(model, 'erased_class_contexts', ()):
+        return ''
     return ',class_defining_class:&ClassClassRef' if owner(model, plan) is not None else ''
 
 
-def invocation(model, plan, receiver, *, caller=None, node=None, captured_class_context=None):
+def invocation(model, plan, receiver, *, caller=None, node=None, captured_class_context=None, private=False):
+    if private and plan.index in getattr(model, 'erased_class_contexts', ()):
+        return ''
     context_owner = owner(model, plan)
     if context_owner is None:
         return ''
@@ -449,6 +453,10 @@ def comparison(emitter, node, wanted):
     setup, argument = emitter.capture(emitter.expression(call.args[0]))
     test = ('Rc::ptr_eq(&('+argument.code+').borrow().class_definition,class_defining_class)'
             if isinstance(kind, InstanceType) else 'false')
+    if isinstance(kind, InstanceType):
+        from .native_sealed_class_identity import match
+        same = match(emitter.model,emitter.plan,emitter.model.classes.get(kind.name))
+        if same is not None:test = 'true' if same else 'false'
     if isinstance(node.ops[0], ast.IsNot):
         test = '!('+test+')'
     return Expression('{'+setup+test+'}', wanted)
@@ -474,5 +482,9 @@ def instance_test(emitter, node):
     setup, argument = emitter.capture(emitter.expression(node.args[0]))
     test = ('Rc::ptr_eq(&('+argument.code+').borrow().class_definition,class_defining_class)'
             if isinstance(kind, InstanceType) else 'false')
+    if isinstance(kind, InstanceType):
+        from .native_sealed_class_identity import match
+        same = match(emitter.model,emitter.plan,actual)
+        if same is not None:test = 'true' if same else 'false'
     return Expression('{'+setup+test+'}', emitter.kind(node))
 

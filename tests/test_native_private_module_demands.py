@@ -34,6 +34,20 @@ with Context(int(input())):
  print((value * 3).value)
 '''
 
+DIRECT_LIBRARY = BASE + '''class Worker:
+ def __init__(self): self.items = [2, 3]
+ def inner(self, factor): return self.items[0] * factor + Context.current()
+ def outer(self, factor): return self.inner(factor)
+'''
+DIRECT_MAIN = '''from arithmetic import Context, Worker
+OFFSET = 900
+def main():
+ with Context(int(input())):
+  worker = Worker()
+  print(worker.outer(3))
+main()
+'''
+
 
 class PrivateCallPointContracts(unittest.TestCase):
     def fixture(self):
@@ -63,7 +77,7 @@ class PrivateCallPointContracts(unittest.TestCase):
 
 
 class PrivateDemandEvidence(unittest.TestCase):
-    def convert(self, library):
+    def convert(self, library, source=MAIN):
         seen = []
         original = demands.prepare
         def observe(model):
@@ -75,7 +89,7 @@ class PrivateDemandEvidence(unittest.TestCase):
             root = Path(temporary)
             (root / 'arithmetic.py').write_text(library)
             with patch.object(demands, 'prepare', observe):
-                result = transpile(MAIN, TranspileOptions(filename=str(root / 'main.py'), license='none'))
+                result = transpile(source, TranspileOptions(filename=str(root / 'main.py'), license='none'))
         self.assertTrue(result.success, result.diagnostics)
         self.assertTrue(seen)
         model = seen[-1]
@@ -101,21 +115,46 @@ class PrivateDemandEvidence(unittest.TestCase):
         self.assertFalse(entries['current'])
         self.assertFalse(entries['__mul__'])
 
+    def test_direct_method_invocation_reuses_only_an_independent_module_view(self):
+        from py2fastrust.native_linked_frames import LinkedEmitter as Emitter
+        original=Emitter.prepare_call_context
+        observed=[]
+        def context(emitter,callee,receiver,constructor,defining_module=None,*,node=None):
+            result=original(emitter,callee,receiver,constructor,defining_module,node=node)
+            if (callee is not None and source_plan(callee).node.name=='inner'
+                    and getattr(emitter,'source_state_active',None) is not None):
+                observed.append(result)
+            return result
+        library=DIRECT_LIBRARY
+        main=DIRECT_MAIN
+        with patch.object(Emitter,'prepare_call_context',context):
+            self.convert(library,main)
+        self.assertTrue(observed)
+        self.assertTrue(all(value=='' for value in observed))
+        observed.clear()
+        library='OFFSET = 11\n'+library.replace(
+            'self.items[0] * factor + Context.current()',
+            'self.items[0] * factor + Context.current() + OFFSET')
+        with patch.object(Emitter,'prepare_call_context',context):
+            self.convert(library,main)
+        self.assertTrue(observed)
+        self.assertTrue(all('with_module' in value for value in observed))
+
 
 @unittest.skipUnless(helpers.shutil.which('rustc'), 'rustc is required')
 class PrivateDemandExecution(unittest.TestCase):
     setUpClass = classmethod(helpers.NativeLambdaCallbackTests.setUpClass.__func__)
     tearDownClass = classmethod(helpers.NativeLambdaCallbackTests.tearDownClass.__func__)
-    def exercise(self, library, inputs):
-        root = Path(self.directory.name) / hashlib.sha256(library.encode()).hexdigest()
+    def exercise(self, library, inputs, source=MAIN):
+        root = Path(self.directory.name) / hashlib.sha256((library+source).encode()).hexdigest()
         root.mkdir()
         main = root / 'main.py'
-        main.write_text(MAIN)
+        main.write_text(source)
         (root / 'arithmetic.py').write_text(library)
         expected = [subprocess.run([sys.executable, '-B', str(main)],
                     input=data, text=True, capture_output=True, timeout=10) for data in inputs]
         for mode in ('i64', 'i128', 'bigint'):
-            converted = transpile(MAIN, TranspileOptions(filename=str(main), integer=mode, license='none'))
+            converted = transpile(source, TranspileOptions(filename=str(main), integer=mode, license='none'))
             self.assertTrue(converted.success, converted.diagnostics)
             for optimized in (False, True):
                 rust = root / (mode + ('_opt' if optimized else '_debug') + '.rs')
@@ -141,6 +180,15 @@ class PrivateDemandExecution(unittest.TestCase):
         library = 'OFFSET = 11\n' + BASE.replace(
             'Quantity(self.value * factor)', 'Quantity(self.value * factor + OFFSET)')
         self.exercise(library, ('7\n', '-2\n'))
+
+    def test_direct_method_and_global_read_keep_their_original_module(self):
+        source=DIRECT_MAIN
+        library=DIRECT_LIBRARY
+        self.exercise(library,('7\n','-2\n'),source)
+        biased='OFFSET = 11\n'+library.replace(
+            'self.items[0] * factor + Context.current()',
+            'self.items[0] * factor + Context.current() + OFFSET')
+        self.exercise(biased,('7\n','-2\n'),source)
 
 
 if __name__ == '__main__':

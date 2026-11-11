@@ -14,6 +14,10 @@ def layout(model,owner,member,initialize):
             or member!='class_definition:ClassClassRef'
             or initialize!='class_definition:class_definition.clone()'):
         return member,initialize,''
+    from .native_published_metadata import layout as published_layout
+    published = published_layout(model,owner)
+    if published is not None:
+        return published
     index=str(owner.index)
     name='class_value_metadata_'+index
     runtime=RUNTIME.replace('__INDEX__',index)

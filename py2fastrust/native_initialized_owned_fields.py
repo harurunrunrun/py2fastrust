@@ -50,6 +50,15 @@ class Registry:
     def initial(self,owner,index,kind):
         if kind=='int':return 'Int::from_i128(0)'if self.model.integer=='bigint'else'0'
         if kind in {'bool','float','none'}:return {'bool':'false','float':'0.0_f64','none':'()'}[kind]
+        from .native_aot_callables import AotFunctionType
+        if isinstance(kind,AotFunctionType) and len(kind.targets)==1:
+            from .native_callable_carriers import registry,payload_type
+            target=kind.targets[0]
+            if not registry(self.model).layout(target).fields:
+                # This private zero-size placeholder is never a source value:
+                # the same ordered must analysis still proves every original
+                # read follows assignment, including constructor method calls.
+                return payload_type(target)+'{}'
         from .native_owned_class_lists import selected
         from .native_class_record_fields import selected as record
         info=selected(self.model,owner,index)

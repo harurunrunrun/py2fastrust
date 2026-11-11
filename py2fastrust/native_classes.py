@@ -1616,7 +1616,7 @@ class Emitter:
 
     def location_code(self):return _string(getattr(self,'logical_scope',self.plan.scope))
 
-    def prepare_call_context(self,callee,receiver,constructor,defining_module=None):return ""
+    def prepare_call_context(self,callee,receiver,constructor,defining_module=None,*,node=None):return ""
 
     def constructor_context_arguments(self,constructor,defining_class):return []
 
@@ -2180,7 +2180,9 @@ class Emitter:
             values.extend(state_arguments)
         if constructor is not None:
             from .native_class_identity_demand import token as identity_token
-            prefix=self.constructor_context_arguments(constructor,defining_class)
+            from .native_class_value_demands import marker_constructor
+            prefix=([] if state_arguments is not None and marker_constructor(self.model,constructor)
+                    else self.constructor_context_arguments(constructor,defining_class))
             if identity_token(self.model,constructor):
                 identity=self.fresh()
                 setup.append(f'let {identity}='+self.at('class_value_next_id()',node)+';')
@@ -2189,11 +2191,11 @@ class Emitter:
         # Constructor futures receive only explicit Python arguments. Their
         # internal __init__ future shares this logical call-stack entry.
         from .native_class_binding_contexts import invocation as class_context_argument
-        defining_context=class_context_argument(self.model,callee,None if receiver is None else receiver.code,caller=self.plan,node=node)if constructor is None else''
+        defining_context=class_context_argument(self.model,callee,None if receiver is None else receiver.code,caller=self.plan,node=node,private=state_arguments is not None)if constructor is None else''
         invocation = name+"(class_scope.clone()"+defining_context+(" ,"+",".join(values)if values else"")+")"
         from .native_class_calls import call as compiled_call
         call = compiled_call(self,invocation,callee,node)
-        context=self.prepare_call_context(callee,receiver,constructor,defining_module)
+        context=self.prepare_call_context(callee,receiver,constructor,defining_module,node=node)
         code="{"+"\n".join(setup)+context+call+"}"
         if constructor is not None:
             from .native_tail_constructor_result import register
@@ -2840,7 +2842,7 @@ class Emitter:
             tail=f"Err(native_error(\"RuntimeError: invalid compiled return\".into(),{getattr(self.plan.node,'lineno',1)},{self.location_code()}))"
         lexical_initial=self.model.lexical.initialize(self)
         from .native_class_binding_contexts import parameter as class_context_parameter
-        signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+class_context_parameter(self.model,self.plan)+(" ,"+",".join(parameters)if parameters else"")
+        signature="class_scope:ClassScope"+self.model.lexical.signature(self.plan)+class_context_parameter(self.model,self.plan,private=getattr(self,'source_state_private',False))+(" ,"+",".join(parameters)if parameters else"")
         from .native_source_state import extra_parameters,producer_result
         signature+=extra_parameters(self)
         result,tail,state_initial=producer_result(self,result,tail)
@@ -2988,7 +2990,9 @@ def _class_layouts(model,emitter):
             result.append(f"fn class_construct_{owner.index}({signature})->ClassFuture<ClassHandle_{owner.index}>{{Box::pin(async move{{{body}Ok(object)}})}}")
         if constructor:
             from .native_source_state import constructor as state_constructor
-            state_body=state_constructor(model,emitter,owner,signature,allocation_body,receiver,args)
+            marker_params=[parameter for parameter in params if parameter!=extra_parameter]
+            marker_signature="class_scope:ClassScope"+(","+",".join(marker_params)if marker_params else"")
+            state_body=state_constructor(model,emitter,owner,signature,allocation_body,receiver,args,marker_signature=marker_signature)
             if state_body:result.append(state_body)
     from .native_class_identity_demand import runtime_needed as identity_runtime_needed
     if identity_runtime_needed(model):
@@ -3061,6 +3065,10 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_source_state(model)
         from .native_private_module_demands import prepare as prepare_private_module_demands
         prepare_private_module_demands(model)
+        from .native_published_metadata import prepare as prepare_published_metadata
+        prepare_published_metadata(model)
+        from .native_class_value_demands import prepare as prepare_class_value_demands
+        prepare_class_value_demands(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         from .native_source_state import bodies as source_state_bodies

@@ -1065,12 +1065,16 @@ def bodies(model):
     return output
 
 
-def constructor(model, emitter, owner, signature, allocation, receiver, arguments):
+def constructor(model, emitter, owner, signature, allocation, receiver, arguments, *, marker_signature=None):
     state = getattr(model, 'source_state', None)
     plan = owner.methods.get('__init__')
     abi = None if state is None or not state.bridges or plan is None else state.abis.get(plan.index)
     if abi is None:
         return ''
+    from .native_class_value_demands import marker_constructor
+    if marker_constructor(model,owner):
+        assert marker_signature is not None
+        signature=marker_signature
     parameters = ''.join(',class_state_value_' + str(i) + ':' + emitter.rust_type(slot.kind)
                          for i, slot in enumerate(abi.slots))
     call = private_name(plan) + '(class_scope.clone(),' + receiver

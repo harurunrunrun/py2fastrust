@@ -71,15 +71,17 @@ def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_lo
         except CallBindingError as error:raise ClassUnsupported(node,str(error))from None
         values=[emitter.coerce(value,shape(constructor.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
     from .native_class_identity_demand import token as identity_token
-    prefix=emitter.constructor_context_arguments(owner,reference.code if defining_context is None else defining_context)
+    from .native_source_state import call_arguments
+    state_values=call_arguments(emitter,node,constructor)if constructor is not None else None
+    from .native_class_value_demands import marker_constructor
+    prefix=([] if state_values is not None and marker_constructor(emitter.model,owner)
+            else emitter.constructor_context_arguments(owner,reference.code if defining_context is None else defining_context))
     identity_setup=''
     if identity_token(emitter.model,owner):
         identity=emitter.fresh()
         identity_setup=f'let {identity}='+emitter.at('class_value_next_id()',source_call_location or node)+';'
         prefix.append(identity)
     values=prefix+values
-    from .native_source_state import call_arguments
-    state_values=call_arguments(emitter,node,constructor)if constructor is not None else None
     name='class_construct_'+str(owner.index)
     if state_values is not None:
         name='class_state_construct_'+str(owner.index)
@@ -88,5 +90,5 @@ def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_lo
     from .native_class_calls import call
     invocation=call(emitter,invocation,constructor,source_call_location or node)
     context=(''if defining_context is not None else
-             emitter.prepare_call_context(constructor,None,owner,reference.code+'.module.clone()'))
+             emitter.prepare_call_context(constructor,None,owner,reference.code+'.module.clone()',node=node))
     return emitter.coerce(Expression('{'+identity_setup+context+invocation+'}',InstanceType(emitter.model.class_key(owner))),wanted,node)
