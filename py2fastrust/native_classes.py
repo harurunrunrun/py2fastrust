@@ -3059,6 +3059,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_continuations(model)
         from .native_source_state import prepare as prepare_source_state
         prepare_source_state(model)
+        from .native_private_module_demands import prepare as prepare_private_module_demands
+        prepare_private_module_demands(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         from .native_source_state import bodies as source_state_bodies

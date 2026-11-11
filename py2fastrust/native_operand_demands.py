@@ -194,7 +194,7 @@ def bound_projection(emitter, node, source, target, binding):
     return projection
 
 
-def capture_access(emitter, node, request):
+def capture_access(emitter, node, request, *, record=True):
     """Check the original global class Name before any explicit arguments."""
     registry = getattr(emitter.model, 'operand_demands', None)
     active = getattr(emitter, 'source_state_active', None)
@@ -258,7 +258,8 @@ def capture_access(emitter, node, request):
         if binding is not None:break
     access = ClassAccess(emitter.plan, node, mode, request.direct_definition,
                          kind, key, slot, tuple(projections),binding)
-    registry.accesses.append(access)
+    if record:
+        registry.accesses.append(access)
     if binding is not None:
         return '',ClassOperand(kind,access)
     message = _string("NameError: name '" + model.display_name(key) + "' is not defined")

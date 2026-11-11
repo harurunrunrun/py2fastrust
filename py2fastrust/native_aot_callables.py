@@ -603,7 +603,9 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
                 if isinstance(target,int):
                     result=emit_definition_body(emitter,node,site,target,positional,keywords,wanted,error,source_call_location=source_call_location,captured_class_context=captured_class_context)
                     from .native_class_binding_contexts import same_function_entry
-                    context=(''if same_function_entry(emitter.model,emitter.plan,node,provider.plans[target])else
+                    from .native_private_module_demands import module_unused
+                    context=(''if (same_function_entry(emitter.model,emitter.plan,node,provider.plans[target])
+                                   or module_unused(emitter,node,provider.plans[target]))else
                              provider.call_context_setup(emitter,provider.plans[target]))
                     return '{'+bind_payload(provider,target,payload)+context+result+'}'
                 if isinstance(target,BoundMethodTarget):
