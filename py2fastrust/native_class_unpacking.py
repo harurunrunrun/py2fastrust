@@ -196,6 +196,12 @@ def emit_star_values(emitter,target,record,values,item_kind,*,assign_target=None
         item=emitter.coerce(Expression(current,item_kind),kind.element,target)
         setup+='for '+current+' in '+values+'{'+converted+'.push('+item+');}'
         values=converted
-    before,remainder=emitter.capture(Expression('class_list('+values+')',kind));setup+=before;members[record.star]=remainder
-    return setup+''.join(assign(node.value if isinstance(node,ast.Starred)else node,member)
-                         for node,member in zip(target.elts,members))
+    from .native_owned_local_lists import selected
+    local=selected(emitter,target.elts[record.star].value)
+    before,remainder=emitter.capture(Expression(values if local is not None else 'class_list('+values+')',kind))
+    setup+=before;members[record.star]=remainder
+    for index,(node,member)in enumerate(zip(target.elts,members)):
+        if index==record.star and local is not None:
+            setup+=f'{emitter.slot(local.name,local.kind)}=Some({member.code});'
+        else:setup+=assign(node.value if isinstance(node,ast.Starred)else node,member)
+    return setup

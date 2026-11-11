@@ -80,6 +80,25 @@ def observes_frames(model):
     return False
 
 
+def starred_producer(emitter,node,parents):
+    """The native unpack plan creates a new list at its starred target."""
+    star=parents.get(id(node))
+    if not isinstance(star,ast.Starred)or star.value is not node:return None
+    target=parents.get(id(star));statement=parents.get(id(target))
+    if (not isinstance(target,(ast.Tuple,ast.List))or not isinstance(statement,ast.Assign)
+            or statement.targets!=[target]):return None
+    from .native_class_unpacking import Unpack
+    record=getattr(emitter.model,'unpack_sites',{}).get((emitter.plan.index,id(target)))
+    if not isinstance(record,Unpack)or record.fields is not None or record.rest is None:return None
+    return star,record
+
+
+def unpack_consumer(node,parent):
+    return (isinstance(parent,ast.Assign)and parent.value is node and len(parent.targets)==1
+            and isinstance(parent.targets[0],(ast.Tuple,ast.List))
+            and not any(isinstance(child,ast.Starred)for child in parent.targets[0].elts))
+
+
 def prepare(emitter):
     from .native_classes import shape
     model,plan=emitter.model,emitter.plan
@@ -121,6 +140,14 @@ def prepare(emitter):
                     or model.namespace.owns(plan,node)):
                 valid=False;break
             if binding.role=='store':
+                producer=starred_producer(emitter,node,parents)
+                if producer is not None:
+                    star,record=producer
+                    if shape(record.rest)!=kind:valid=False;break
+                    allocation_site=unit.node_ordinals.get(id(star))
+                    if allocation_site is None:valid=False;break
+                    allocations.append(allocation_site);writes+=1
+                    continue
                 if (not isinstance(parent,(ast.Assign,ast.AnnAssign))
                         or isinstance(parent,ast.Assign)and(parent.targets!=[node])
                         or isinstance(parent,ast.AnnAssign)and parent.target is not node
@@ -155,7 +182,7 @@ def prepare(emitter):
                               or parent.attr=='pop'and len(method.args)<=1))
                 iteration=loop_source(emitter,node,parents)
                 if iteration is not None:iterates=True
-                if not direct and not length and not mutation and iteration is None:valid=False;break
+                if not direct and not length and not mutation and iteration is None and not unpack_consumer(node,parent):valid=False;break
             else:
                 valid=False;break
         # A Python iterator retains the original allocation after a rebind.
@@ -225,6 +252,18 @@ def allocation(emitter,node,kind):
 
 
 def statement(emitter,node):
+    if isinstance(node,ast.Assign)and unpack_consumer(node.value,node):
+        local=selected(emitter,node.value)
+        if local is not None:
+            from .native_classes import Expression
+            target=node.targets[0];count=len(target.elts)
+            owner,values=emitter.fresh(),emitter.fresh()
+            length=emitter.at(f'class_unpack_length({owner}.len(),{count})',target)
+            snapshot=(f'std::array::from_fn::<_,{count},_>(|index|{owner}[index].clone())'
+                      if count<=32 else f'(*{owner}).clone()')
+            setup=f'let {values}={{let {owner}={checked(emitter,local,node.value)};{length};{snapshot}}};'
+            return setup+''.join(emitter.assign(child,Expression(f'{values}[{index}].clone()',local.kind.element))
+                                 for index,child in enumerate(target.elts))
     if isinstance(node,ast.Assign)and len(node.targets)==1:target=node.targets[0]
     elif isinstance(node,ast.AnnAssign)and node.value is not None:target=node.target
     else:return None

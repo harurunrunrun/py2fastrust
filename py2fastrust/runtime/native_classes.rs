@@ -133,10 +133,14 @@ fn class_list_extend<T:Clone>(values:&ClassList<T>,other:&ClassList<T>) {
 fn class_list_concat<T:Clone>(values:&ClassList<T>,other:&ClassList<T>)->ClassList<T> {
     let mut result=values.borrow().clone();result.extend(other.borrow().iter().cloned());class_list(result)
 }
+fn class_unpack_length(length:usize,count:usize)->Result<(),String> {
+    if length<count{return Err(format!("ValueError: not enough values to unpack (expected {count}, got {length})"));}
+    if length>count{return Err(format!("ValueError: too many values to unpack (expected {count}, got {length})"));}
+    Ok(())
+}
 fn class_unpack<T:Clone>(values:&ClassList<T>,count:usize)->Result<Vec<T>,String> {
     let values=values.borrow();
-    if values.len()<count{return Err(format!("ValueError: not enough values to unpack (expected {count}, got {})",values.len()));}
-    if values.len()>count{return Err(format!("ValueError: too many values to unpack (expected {count}, got {})",values.len()));}
+    class_unpack_length(values.len(),count)?;
     Ok(values.clone())
 }
 
