@@ -100,6 +100,8 @@ def owned_kind(model,kind):
     from .native_classes import InstanceType,shape
     from .native_owned_object_places import selected as unique_owned
     if kind in {'int','bool','int_bool','none','float','str','bytes'}:return True
+    from .native_types import ListType,TupleType
+    if type(kind)in {ListType,TupleType}:return flat_field(kind)
     if type(kind)is not InstanceType:return False
     owner=model.classes.get(kind.name)
     return(owner is not None and not unique_owned(model,owner)

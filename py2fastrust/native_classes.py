@@ -2828,19 +2828,18 @@ class Emitter:
     def declaration(self):
         from .native_value_classes import borrowed_self
         from .native_owned_object_places import receiver as owned_receiver
-        from .native_record_places import physical_type
-        from .native_owned_matrix_places import physical_type as matrix_type
+        from .native_local_storage import rust_type as local_storage_type
         from .native_primitive_parameter_places import slot_required
         from .native_operand_demands import private_projection
         projection=private_projection(self)
         erased=projection.erased_names if projection is not None else frozenset()
-        data=[f"let mut {slot}:"+(f"Option<{matrix_type(self,self.owned_matrices[name].tree)}>"if name in self.owned_matrices else f"Option<{physical_type(self,self.record_places[name])}>"if name in self.record_places else f"Option<Vec<{self.rust_type(kind.element)}>>"if name in self.owned_local_lists else f"Option<&{self.rust_type(kind)}>"if borrowed_self(self.model,self.plan,name,kind)else self.rust_type(MaybeType(kind)))+"=None;"for(name,kind),slot in self.slots.items()if name not in erased and not owned_receiver(self.model,self.plan,name)and slot_required(self,name,kind)]
+        data=[f"let mut {slot}:Option<"+(f"&{self.rust_type(kind)}"if borrowed_self(self.model,self.plan,name,kind)else local_storage_type(self,name,kind))+">=None;"for(name,kind),slot in self.slots.items()if name not in erased and not owned_receiver(self.model,self.plan,name)and slot_required(self,name,kind)]
         references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
         return "\n".join(data+references)
 
     def generate(self):
         from .native_typed_continuations import generate as generate_continuation
-        continuation=generate_continuation(self)
+        continuation=None if getattr(self,'native_direct_body',False)else generate_continuation(self)
         if continuation is not None:return continuation
         from .native_operand_demands import private_projection
         projection=private_projection(self)

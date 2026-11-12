@@ -522,7 +522,8 @@ class Builder:
     def frame(self):
         from .native_classes import shape
         e=self.emitter;i=self.plan.index
-        fields={name:'Option<'+e.rust_type(kind)+'>'for(_,kind),name in e.slots.items()}
+        from .native_local_storage import rust_type as local_storage_type
+        fields={name:'Option<'+local_storage_type(e,binding,kind)+'>'for(binding,kind),name in e.slots.items()}
         fields.update((name,'Option<'+e.rust_type(kind)+'>')for name,kind in self.temps.items());fields.update((name,kind)for name,(kind,_)in self.extra.items())
         params=','.join('argument_'+str(n)+':'+e.rust_type(kind)for n,kind in enumerate(shape(self.plan.arguments[name])for name in self.plan.runtime_parameters))
         initial={name:'None'for name in fields};initial.update((name,value)for name,(_,value)in self.extra.items());initial.update((name,'Some('+value+')')for name,value in self.arguments)
@@ -543,7 +544,13 @@ class Builder:
             elif tag=='unreachable':tail='unreachable!("native unreachable block")'
             else:tail=''
             arms.append('ClassNativePc_'+str(i)+'::B'+str(index)+'=>{'+''.join(block.code)+tail+'}')
-        return 'match pc{'+','.join(arms)+'}'
+        # A source branch changes only this activation's block. Returning it
+        # to the call driver would move the entire largest region frame at
+        # every if/loop edge, even though no Python call has taken place.
+        return ('let mut pc=pc;loop{let block:ClassResult<ClassNativeStep>='
+                '(||{match pc{'+','.join(arms)+'}})();match block{'
+                'Ok(ClassNativeStep::Jump_'+str(i)+'(next))=>{pc=next;},'
+                'outcome=>break outcome}}')
 
 
 def prepare(model):model.typed_continuations=Registry(model)
@@ -571,10 +578,24 @@ def generate(emitter):
     registry=getattr(emitter.model,'typed_continuations',None)
     if registry is None or not selected(emitter.model,emitter.plan):return None
     from .native_classes import shape
+    # Closed original-source entries already have an ordinary typed Result
+    # ABI. Use Rust calls for a bounded physical stack segment; only deeper
+    # calls need explicit source frames. Captured entries can have additional
+    # environment/context fields and keep their separately proved frame ABI.
+    direct='';direct_call=''
+    if registry.reason is None:
+        ordinary=emitter.model.emitter(emitter.plan)
+        ordinary.native_direct_body=True
+        direct=ordinary.generate()
+        name=ordinary.function_name(emitter.plan)
+        direct=direct.replace('fn '+name+'(','fn '+name+'_direct(',1)
+        arguments=','.join('class_argument_'+str(n)for n in range(len(emitter.plan.runtime_parameters)))
+        direct_call=('if let Some(_segment)=class_native_enter(){return '+name+'_direct(class_scope'
+                     +(','+arguments if arguments else'')+');}')
     builder=Builder(registry,emitter);registry.builders[emitter.plan.index]=builder;i=emitter.plan.index
     params=','.join('class_argument_'+str(n)+':'+emitter.rust_type(shape(emitter.plan.arguments[name]))for n,name in enumerate(emitter.plan.runtime_parameters))
     args=','.join('class_argument_'+str(n)for n in range(len(emitter.plan.runtime_parameters)))
-    return ('fn '+emitter.function_name(emitter.plan)+'(class_scope:ClassScope'+(','+params if params else'')+')->ClassResult<'+emitter.rust_type(shape(emitter.plan.result))+'> {'
+    return (direct+'\nfn '+emitter.function_name(emitter.plan)+'(class_scope:ClassScope'+(','+params if params else'')+')->ClassResult<'+emitter.rust_type(shape(emitter.plan.result))+'> {'+direct_call+
             'match class_native_region(ClassNativeState::F_'+str(i)+'(ClassNativeFrame_'+str(i)+'::new(class_scope'+(','+args if args else'')+'),ClassNativePc_'+str(i)+'::B0))?{ClassNativeReturn::F_'+str(i)+'(value)=>Ok(value),_=>unreachable!("native root return")}}')
 
 
@@ -584,6 +605,13 @@ def runtime(model):
     from .native_classes import shape
     validate_transfers(model,registry)
     builders=registry.builders;result=[builder.frame()for builder in builders.values()]
+    if registry.reason is None:
+        from .native_class_calls import MAX_NATIVE_CALL_DEPTH
+        result.append('''thread_local!{static CLASS_NATIVE_DEPTH:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
+struct ClassNativeSegment;
+impl Drop for ClassNativeSegment{fn drop(&mut self){CLASS_NATIVE_DEPTH.with(|depth|depth.set(depth.get()-1));}}
+fn class_native_enter()->Option<ClassNativeSegment>{CLASS_NATIVE_DEPTH.with(|depth|{
+if depth.get()>='''+str(MAX_NATIVE_CALL_DEPTH)+'''{None}else{depth.set(depth.get()+1);Some(ClassNativeSegment)}})}''')
     result.append('enum ClassNativeState{'+','.join('F_'+str(i)+'(ClassNativeFrame_'+str(i)+',ClassNativePc_'+str(i)+')'for i in builders)+'}')
     result.append('enum ClassNativeReturn{'+','.join('F_'+str(i)+'('+b.emitter.rust_type(shape(b.plan.result))+')'for i,b in builders.items())+'}')
     result.append('enum ClassNativeContinuation{'+','.join('Site_'+str(site.index)+'{frame:ClassNativeFrame_'+str(site.caller.index)+'}'for site in registry.sites)+'}')

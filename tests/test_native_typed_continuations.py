@@ -316,7 +316,7 @@ class TypedContinuationProofTests(unittest.TestCase):
         for name in ('tree_subtree_sizes','memoized_composition_dp','mutual_game_states',
                      'tail_recursive_accumulator','long_acyclic_module_data_40',
                      'recursive_boolean_short_circuit','condition_boolop','condition_not_boolop',
-                     'recursive_range_loop_else_break'):
+                     'recursive_range_loop_else_break','used_class_recursive_prefix'):
             for mode in ('i64','i128','bigint'):
                 with self.subTest(source=name,integer=mode):
                     result,model=self.capture(name,mode)
@@ -327,12 +327,12 @@ class TypedContinuationProofTests(unittest.TestCase):
 
     def test_unclosed_source_features_preserve_previous_native_products(self):
         for name in ('recursive_map_callback','captured_recursive_function','recursive_with_cleanup',
-                     'used_class_recursive_prefix','unused_default_calls_recursion',
+                     'unused_default_calls_recursion',
                      'type_change_keeps_old_path','comparison_suspend_keeps_old_path',
                      'call_before_later_definition','for_recursive_target_with_direct_edge'):
             with self.subTest(source=name):
                 result,model=self.capture(name)
-                self.assertFalse(model.typed_continuations.plans)
+                self.assertFalse(bool(model.typed_continuations.plans),model.typed_continuations.reason)
                 self.assertTrue(model.typed_continuations.reason)
                 with patch.object(continuations,'prepare',lambda model:setattr(model,'typed_continuations',None)):
                     prior=transpile(SOURCES[name][0],TranspileOptions(license='none'))

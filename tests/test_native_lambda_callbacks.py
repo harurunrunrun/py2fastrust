@@ -12,6 +12,18 @@ import unittest
 from py2fastrust import TranspileOptions, transpile
 
 
+def traceback_frames(stderr):
+    frames=[]
+    for line in stderr.splitlines():
+        frame=re.search(r'File ".*?", line (\d+), in (.+)',line)
+        repeated=re.search(r'\[Previous line repeated (\d+) more times\]',line)
+        if frame:frames.append(frame.groups())
+        elif repeated:
+            assert frames,stderr
+            frames.extend([frames[-1]]*int(repeated[1]))
+    return frames
+
+
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
 class NativeLambdaCallbackTests(unittest.TestCase):
     @classmethod
@@ -52,9 +64,8 @@ class NativeLambdaCallbackTests(unittest.TestCase):
                         if expected.returncode:
                             self.assertEqual(actual.stderr.splitlines()[-1].split(":")[0],
                                              expected.stderr.splitlines()[-1].split(":")[0])
-                            pattern = r'File ".*?", line (\d+), in ([^\n]+)'
-                            self.assertEqual(re.findall(pattern, actual.stderr),
-                                             re.findall(pattern, expected.stderr))
+                            self.assertEqual(traceback_frames(actual.stderr),
+                                             traceback_frames(expected.stderr))
 
     def test_sort_and_sorted_stable_tuple_keys(self):
         self.exercise('''values=[(2,0),(1,3),(2,4),(1,5)]
