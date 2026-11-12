@@ -35,6 +35,12 @@ CASES={
 
 
 class TextFormatProtocolTests(unittest.TestCase):
+    def test_empty_primitive_specs_do_not_retain_specification_runtime(self):
+        result=transpile('print("{} {} {name}".format(3,True,name="x"))\n')
+        self.assertTrue(result.success,result.diagnostics)
+        self.assertNotIn('fn native_format_integer',result.rust_source)
+        self.assertNotIn('fn native_integer_spec',result.rust_source)
+
     def test_unimplemented_template_protocols_are_explicit(self):
         for source,detail in (
             ('template="{}"\nprint(template.format(3))\n','nonliteral template'),

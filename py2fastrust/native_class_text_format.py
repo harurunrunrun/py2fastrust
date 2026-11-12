@@ -116,6 +116,10 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
                 if part.conversion is not None:
                     before,value=emitter.capture(conversion(emitter,node,value,ord(part.conversion)))
                     code.append(before)
+                if part.specification==('',)and value.kind in {'int','bool','int_bool','str'}:
+                    rendered=conversion(emitter,node,value,115)
+                    code.append(f'{result}.push_str(&({rendered.code}));')
+                    continue
                 before,specification=emitter.capture(build(part.specification));code.append(before)
                 formatted=format_value(emitter,node,value,specification)
                 code.append(f'{result}.push_str(&({formatted.code}));')
