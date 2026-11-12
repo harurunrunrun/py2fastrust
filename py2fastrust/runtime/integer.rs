@@ -509,9 +509,56 @@ impl Int {
         Self::trim(&mut out);
         out
     }
-    fn nat_mul(a: &[u32], b: &[u32]) -> Vec<u32> {
+    fn nat_add_shifted(out: &mut [u32], value: &[u32], shift: usize) {
+        let mut carry = 0u64;
+        for (i, &word) in value.iter().enumerate() {
+            let sum = out[shift + i] as u64 + word as u64 + carry;
+            out[shift + i] = sum as u32;
+            carry = sum >> 32;
+        }
+        let mut i = shift + value.len();
+        while carry != 0 {
+            let sum = out[i] as u64 + carry;
+            out[i] = sum as u32;
+            carry = sum >> 32;
+            i += 1;
+        }
+    }
+    fn nat_mul(mut a: &[u32], mut b: &[u32]) -> Vec<u32> {
+        while a.last() == Some(&0) { a = &a[..a.len() - 1]; }
+        while b.last() == Some(&0) { b = &b[..b.len() - 1]; }
         if a.is_empty() || b.is_empty() {
             return Vec::new();
+        }
+        let shorter = a.len().min(b.len());
+        let longer = a.len().max(b.len());
+        if shorter >= 64 && longer - shorter > shorter {
+            let (long, short) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+            let mut out = vec![0u32; a.len() + b.len() + 1];
+            for (block, chunk) in long.chunks(shorter).enumerate() {
+                let part = Self::nat_mul(chunk, short);
+                Self::nat_add_shifted(&mut out, &part, block * shorter);
+            }
+            Self::trim(&mut out);
+            return out;
+        }
+        if shorter >= 64 && longer - shorter <= shorter {
+            let split = longer / 2;
+            let (a0, a1) = a.split_at(split);
+            let (b0, b1) = b.split_at(split);
+            let low = Self::nat_mul(a0, b0);
+            let high = Self::nat_mul(a1, b1);
+            let sum_a = Self::nat_add(a0, a1);
+            let sum_b = Self::nat_add(b0, b1);
+            let cross = Self::nat_mul(&sum_a, &sum_b);
+            let cross = Self::nat_sub(&cross, &low);
+            let cross = Self::nat_sub(&cross, &high);
+            let mut out = vec![0u32; a.len() + b.len() + 1];
+            Self::nat_add_shifted(&mut out, &low, 0);
+            Self::nat_add_shifted(&mut out, &cross, split);
+            Self::nat_add_shifted(&mut out, &high, 2 * split);
+            Self::trim(&mut out);
+            return out;
         }
         let mut out = vec![0u32; a.len() + b.len()];
         for (i, &x) in a.iter().enumerate() {
@@ -827,6 +874,7 @@ impl Int {
         }
         out
     }
+    #[inline]
     fn bitop(&self, other: &Self, op: u8) -> Self {
         if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
             return Self::from_i128(match op {
@@ -834,6 +882,38 @@ impl Int {
                 1 => a | b,
                 _ => a ^ b,
             });
+        }
+        if op == 0 {
+            let masked = match (&self.0, &other.0) {
+                (IntRepr::Big { negative, digits }, IntRepr::Small(mask)) if *mask >= 0 => Some((*negative, digits, *mask as u128)),
+                (IntRepr::Small(mask), IntRepr::Big { negative, digits }) if *mask >= 0 => Some((*negative, digits, *mask as u128)),
+                _ => None,
+            };
+            if let Some((negative, digits, mask)) = masked {
+                let mut value = 0u128;
+                for (i, &word) in digits.iter().take(4).enumerate() {
+                    value |= (word as u128) << (32 * i);
+                }
+                if negative { value = value.wrapping_neg(); }
+                return Self::from_i128((value & mask) as i128);
+            }
+        }
+        if !self.is_negative() && !other.is_negative() {
+            let a = self.magnitude();
+            let b = other.magnitude();
+            let length = if op == 0 { a.len().min(b.len()) } else { a.len().max(b.len()) };
+            let mut out = Vec::with_capacity(length);
+            match op {
+                0 => out.extend(a.iter().zip(b.iter()).map(|(&x, &y)| x & y)),
+                1 => out.extend(a.iter().zip(b.iter()).map(|(&x, &y)| x | y)),
+                _ => out.extend(a.iter().zip(b.iter()).map(|(&x, &y)| x ^ y)),
+            }
+            if op != 0 {
+                let common = a.len().min(b.len());
+                if a.len() > common { out.extend_from_slice(&a[common..]); }
+                else { out.extend_from_slice(&b[common..]); }
+            }
+            return Self::parts(false, out);
         }
         let words = self.bit_length().max(other.bit_length()) / 32 + 1;
         let mut a = self.twos(words);
