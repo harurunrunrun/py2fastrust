@@ -108,7 +108,8 @@ class ClassNamespaces:
         member=self.local_member(plan,node)
         if member is None:return False
         self.named_tuples.local_store_guard(member.owner,member.name,node)
-        if self.special_name(member.name):
+        from .native_source_display import bind_alias
+        if self.special_name(member.name)and not bind_alias(self,plan,node,value):
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,f"class-body metadata assignment {member.name!r} requires its compiler/metaclass namespace validation; that metadata protocol is not implemented",proof="class compiler metadata initialization and validation")
         self.contribute(member,value,node)
@@ -130,8 +131,10 @@ class ClassNamespaces:
     def read_name(self,plan,node,environment):
         if(plan.class_body is not None and self.special_name(node.id)
                 and node.id not in {'__name__','__file__','__package__','__cached__'}):
+            from .native_source_display import method_read
             from .native_classes import ClassUnsupported
-            raise ClassUnsupported(node,f"class-body metadata reference {node.id!r} requires the compiler-initialized class namespace and its metadata lookup protocol; that protocol is not implemented",proof="class compiler metadata initialization and lookup")
+            if not method_read(self,plan,node,environment):
+                raise ClassUnsupported(node,f"class-body metadata reference {node.id!r} requires the compiler-initialized class namespace and its metadata lookup protocol; that protocol is not implemented",proof="class compiler metadata initialization and lookup")
         member=self.local_member(plan,node)
         if member is None:return None
         if member.plan is not None and member.descriptor!="function":
@@ -156,7 +159,8 @@ class ClassNamespaces:
         member.observed=True
         provider=getattr(self.model,"callable_cells",None)
         if provider is not None:provider.used.add(provider.definition(member.plan))
-        self.contribute(member,member.function_cell,member.plan.node,"method_definition")
+        if not getattr(member,'source_function_alias',False):
+            self.contribute(member,member.function_cell,member.plan.node,"method_definition")
 
     def definition_event(self,plan,node,environment):
         if plan.class_body is None:return
@@ -245,12 +249,15 @@ class ClassNamespaces:
         for choice in choices:
             member=self.member(self.owners[choice.definition],self.model.resolved_name(plan,node))
             self.named_tuples.class_member_guard(member.owner,member.name,node)
+            if getattr(member,'source_binding_deleted',False):
+                from .native_classes import ClassUnsupported
+                raise ClassUnsupported(node,'class function attribute '+repr(member.name)+' is deleted during class publication; reading that removed function slot through its class reference is not implemented',proof='deleted class function attribute lookup')
             self.check_metadata(member,node)
             if member.plan is not None:
                 self.observe_method(member,node)
                 from .native_class_descriptors import analyze_member
                 value=analyze_member(self,plan,node,member,receiver,environment)
-                if value is None:value=member.function_cell
+                if value is None:value=self.field(member,node)
             else:value=self.field(member,node)
             self.model.namespace.contribute(result,value,node,force=True)
             records.append(member)
@@ -275,7 +282,7 @@ class ClassNamespaces:
     def check_metadata(member,node):
         from .native_classes import ClassUnsupported
         from .native_module_linking import ANNOTATION_METADATA
-        if ClassNamespaces.special_name(member.name):
+        if ClassNamespaces.special_name(member.name)and member.plan is None:
             raise ClassUnsupported(node,f"class attribute {member.name!r} requires its Python class/annotation metadata descriptor; that metadata protocol is not implemented",proof="class metadata descriptor semantics")
 
     def analyze_delete(self,plan,node,environment):
@@ -283,6 +290,10 @@ class ClassNamespaces:
         if isinstance(node,ast.Name):
             member=self.local_member(plan,node)
             if member is None:return False
+            from .native_source_display import SLOTS
+            if member.name in SLOTS:
+                raise ClassUnsupported(node,'deleting source display slot '+repr(member.name)+' during class publication requires restoring inherited/default slot lookup; that optional display-slot publication protocol is not implemented',proof='deleted source display slot fallback')
+            if member.plan is not None:member.source_binding_deleted=True
             self.field(member,node)
             environment.pop(member.name,None)
             environment.definite.discard(member.name)

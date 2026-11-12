@@ -60,6 +60,20 @@ Original operand evaluation and i128 wrapping before the remainder are
 retained. A small remainder alone never proves that an earlier product fits;
 unknown, wider or custom-operator values keep the ordinary native i128 path.
 
+Ordinary source `__str__` and `__repr__` methods now serve direct string/repr
+calls, printing and supported formatting consumers through their original
+function references. Plain same-class function aliases retain identity and
+publication order. Print captures argument expressions before formatting them,
+but converts and writes each argument in Python order without holding an I/O
+borrow across callbacks. Lists release element leases around source repr calls
+and observe later mutations; list and dynamic-tuple recursion guards retain the
+original container identity and unwind on errors.
+
+Unsupported descriptor/publication replacements, custom mapping/deque repr
+callbacks and recursive fixed-tuple/NamedTuple display without stable tuple
+identity remain specific diagnostics. Nonrecursive supported tuple displays
+retain ordinary formatting and source-method return-type errors.
+
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14
 order: an explicit `!s`/`!r`/`!a` conversion runs before spec expressions, while

@@ -627,16 +627,22 @@ class Model:
                 registry.register_child(owner,member,child)
                 continue
             if registry is not None and registry.class_statement(member):continue
-            if not isinstance(member,ast.FunctionDef):raise ClassUnsupported(member)
+            if not isinstance(member,ast.FunctionDef):
+                if isinstance(member,ast.If):
+                    raise ClassUnsupported(member,'conditional class-body publication needs optional class-slot binding and fallback semantics; that class publication control flow is not implemented',proof='conditional class namespace publication')
+                raise ClassUnsupported(member)
             from .native_class_operators import SUPPORTED_SLOTS
             if member.name.startswith("__")and member.name.endswith("__")and member.name not in {"__init__","__enter__","__exit__"}|SUPPORTED_SLOTS:
                 protocol="truth-value"if member.name in {"__bool__","__len__"}else"special-method"
                 raise ClassUnsupported(member,f"class {node.name!r} defines {member.name}; native {protocol} protocol dispatch for this override is not implemented",operation=f"special method {node.name+'.'+member.name!r}",proof=f"Python {member.name} protocol dispatch")
             name=self.unit.name_for(member)if self.unit is not None else mangle(member.name,node.name)
-            if name in owner.methods:raise ClassUnsupported(member)
+            if name in owner.methods:
+                raise ClassUnsupported(member,'source class function '+repr(member.name)+' is defined more than once; preserving each class-body function publication and its captured aliases/defaults requires a versioned class-function plan that is not implemented',proof='versioned class function publication')
             receiver_kind=registry.receiver_kind(owner,member)if registry is not None else None
             owner.methods[name]=self.function(member,owner,receiver_kind=receiver_kind)
             if registry is not None:registry.register_method(owner,name,owner.methods[name])
+        from .native_source_display import plan_aliases as plan_display_aliases
+        plan_display_aliases(self,owner)
         if (registry is not None or any(name not in method.default_literals for method in owner.methods.values()for name in method.defaults)
                 or any(class_body_effect(member)for member in node.body)):
             body=FunctionPlan(node,len(self.plans),owner,class_body=owner)
@@ -1164,12 +1170,14 @@ class Model:
             split=analyze_split(self,plan,node,receiver,arguments,keywords)
             if split is not None:return split
             from .native_class_text_ops import analyze as analyze_text_operation
-            text_operation=analyze_text_operation(self,plan,node,receiver,arguments,keywords)
+            text_operation=analyze_text_operation(self,plan,node,receiver,arguments,keywords,environment)
             if text_operation is not None:return text_operation
             mapped=self.mappings.analyze_method(plan,node,receiver,arguments,keywords,environment)
             if mapped is not None:return mapped
             if receiver.tag == "object":
                 owner = self.classes[receiver.args[0]]
+                from .native_source_display import guard_direct_method
+                guard_direct_method(self,owner,self.resolved_name(plan,function),function)
                 method = owner.methods.get(self.resolved_name(plan,function))
                 if method is None:
                     raise ClassUnsupported(function)
@@ -1759,6 +1767,9 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        from .native_source_display import show as source_show
+        source=source_show(self,value,node,representation)
+        if source is not None:return source
         if getattr(value.kind,'_native_exception_class',False)or getattr(value.kind,'_native_exception_value',False):
             from .native_exception_values import show
             return show(self,value,node,representation)

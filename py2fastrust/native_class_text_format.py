@@ -76,7 +76,7 @@ class UnsupportedField(ValueError):
     pass
 
 
-def analyze(model,plan,node,receiver,arguments,keywords):
+def analyze(model,plan,node,receiver,arguments,keywords,environment=None):
     from .native_classes import ClassUnsupported,shape
     if node.func.attr!='format'or shape(receiver)!='str':return None
     if not isinstance(node.func.value,ast.Constant)or not isinstance(node.func.value.value,str):
@@ -90,6 +90,20 @@ def analyze(model,plan,node,receiver,arguments,keywords):
         raise ClassUnsupported(node,'str.format field '+repr(str(error))+' needs typed attribute or subscript traversal; this adapter currently supports positional/named root fields, conversions and nested specifications',proof='string format field traversal')from None
     if not hasattr(model,'text_format_sites'):model.text_format_sites={}
     model.text_format_sites[(plan.index,id(node))]=FormatSite(parts)
+    if environment is not None:
+        from .native_source_display import analyze as analyze_display
+        named=dict(keywords)
+        def observers(parts):
+            for part in parts:
+                if isinstance(part,Failure):break
+                if not isinstance(part,Field):continue
+                value=arguments[part.name]if isinstance(part.name,int)else named[part.name]
+                if part.conversion is not None:
+                    analyze_display(model,plan,node,value,environment,part.conversion in {'r','a'})
+                observers(part.specification)
+                if part.conversion is None and not(all(isinstance(child,str)for child in part.specification)and bool(''.join(part.specification))):
+                    analyze_display(model,plan,node,value,environment)
+        observers(parts)
     # Every argument is analyzed by the ordinary call path. Their field types
     # can settle through constructor/loop inference before final emission.
     return model.cell(plan,node,'str')
@@ -123,5 +137,6 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
                 before,specification=emitter.capture(build(part.specification));code.append(before)
                 formatted=format_value(emitter,node,value,specification)
                 code.append(f'{result}.push_str(&({formatted.code}));')
-        return Expression('{'+''.join(code)+f'NativeText::from({result})'+'}','str')
+        constant=''.join(parts)if all(isinstance(part,str)for part in parts)else None
+        return Expression('{'+''.join(code)+f'NativeText::from({result})'+'}','str',constant)
     return build(site.parts)

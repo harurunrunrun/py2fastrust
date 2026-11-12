@@ -16,8 +16,13 @@ def requires_frames(unit,analysis):
 def analyze_joined(model,plan,node,environment):
     for child in node.values:
         if isinstance(child,ast.FormattedValue):
-            model.expression(plan,child.value,environment)
+            value=model.expression(plan,child.value,environment)
+            from .native_source_display import analyze as analyze_display
+            if child.conversion!=-1:analyze_display(model,plan,child,value,environment,child.conversion in (114,97))
             if child.format_spec is not None:model.expression(plan,child.format_spec,environment)
+            nonempty=(child.format_spec is not None and all(isinstance(part,ast.Constant)and isinstance(part.value,str)for part in child.format_spec.values)
+                      and bool(''.join(part.value for part in child.format_spec.values)))
+            if child.conversion==-1 and not nonempty:analyze_display(model,plan,child,value,environment)
         else:model.expression(plan,child,environment)
     return model.cell(plan,node,'str')
 
@@ -44,8 +49,8 @@ def _display_protocol(emitter,node,kind,representation,seen):
         if tag=='object':
             methods=emitter.model.classes[child.name].methods
             names=('__repr__',)if representation else('__str__','__repr__')
-            if any(name in methods for name in names):
-                raise ClassUnsupported(node,'displaying this class instance requires its source-defined '+('/'.join(names))+' special-method dispatch; that display protocol is not implemented',proof='instance display special-method dispatch')
+            # Source observers are analyzed at their original call/format site.
+            # Emitter.show consumes that exact canonical callback proof.
         elif isinstance(child,(ListType,TupleSequenceType)):
             _display_protocol(emitter,node,child.element,True,seen)
         elif isinstance(child,TupleType):
@@ -72,7 +77,8 @@ def emit_joined(emitter,node):
                 value=format_value(emitter,child,value,specification)
         else:raise AssertionError('unexpected official JoinedStr child')
         parts.append(f'{result}.push_str(&({value.code}));')
-    return Expression('{'+''.join(parts)+f'NativeText::from({result})'+'}','str')
+    constant=''.join(child.value for child in node.values)if all(isinstance(child,ast.Constant)and isinstance(child.value,str)for child in node.values)else None
+    return Expression('{'+''.join(parts)+f'NativeText::from({result})'+'}','str',constant)
 
 
 def format_value(emitter,node,value,specification):
@@ -99,10 +105,12 @@ def format_value(emitter,node,value,specification):
     else:
         if tag=='object':
             owner=emitter.model.classes[value.kind.name]
-            if any(name in owner.methods for name in ('__format__','__str__','__repr__')):
+            if '__format__'in owner.methods:
                 raise ClassUnsupported(node,'formatting this class instance requires its source-defined __format__/__str__/__repr__ method dispatch; that formatting protocol is not implemented',proof='instance formatting special-method dispatch')
-        shown=emitter.show(value,node);name=_type_name(emitter,value,node)
+        name=_type_name(emitter,value,node)
         failure=_error(emitter,node,'str',f'format!("TypeError: unsupported format string passed to {{}}.__format__",{name})').code
+        if tag=='object'and isinstance(specification.constant,str)and specification.constant:return Expression(failure,'str')
+        shown=emitter.show(value,node)
         return Expression(f'if ({spec}).is_empty(){{NativeText::from({shown})}}else{{{failure}}}','str')
     return Expression(f'NativeText::from({code})','str')
 
@@ -110,12 +118,18 @@ def format_value(emitter,node,value,specification):
 def emit_builtin(emitter,node,name,arguments,keywords,wanted):
     from .native_classes import Expression
     if name in {'repr','ascii'}:return conversion(emitter,node,arguments[0],114 if name=='repr'else 97)
-    specification=arguments[1]if len(arguments)>1 else Expression('NativeText::new()','str')
+    specification=arguments[1]if len(arguments)>1 else Expression('NativeText::new()','str','')
+    if (name=='format'and len(arguments)==len(node.args)and len(node.args)>1
+            and not any(isinstance(argument,ast.Starred)for argument in node.args)
+            and isinstance(node.args[1],ast.Constant)and isinstance(node.args[1].value,str)):
+        specification=Expression(specification.code,specification.kind,node.args[1].value)
     return format_value(emitter,node,arguments[0],specification)
 
 
 def runtime(model):
     result=[]
+    from .native_source_display import runtime as display_runtime
+    result.append(display_runtime(model))
     if getattr(model,'formatting_required',False):result.append(_helpers(model.integer,model.string_mode))
     if getattr(model,'format_ascii_required',False):result.append(ASCII)
     return '\n'.join(result)

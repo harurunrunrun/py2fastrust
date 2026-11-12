@@ -56,9 +56,9 @@ def requires_frames(unit,analysis):
     return False
 
 
-def analyze(model,plan,node,receiver,arguments,keywords):
+def analyze(model,plan,node,receiver,arguments,keywords,environment=None):
     from .native_class_text_format import analyze as analyze_format
-    formatted=analyze_format(model,plan,node,receiver,arguments,keywords)
+    formatted=analyze_format(model,plan,node,receiver,arguments,keywords,environment)
     if formatted is not None:return formatted
     from .native_ascii_text_case import analyze as analyze_case
     changed=analyze_case(model,plan,node,receiver,arguments,keywords)

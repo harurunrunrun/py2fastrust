@@ -32,7 +32,15 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         from .native_integer_base import analyze as analyze_integer_base
         explicit=analyze_integer_base(model,plan,node,arguments,keywords,factory=cell)
         if explicit is not None:return explicit
-    if name in {"format","repr","ascii"}:return cell("str")
+    if name in {"format","repr","ascii"}:
+        nonempty_format=(name=='format'and len(arguments)==len(node.args)and len(node.args)>1
+                         and not any(isinstance(argument,ast.Starred)for argument in node.args)
+                         and isinstance(node.args[1],ast.Constant)
+                         and isinstance(node.args[1].value,str)and bool(node.args[1].value))
+        if arguments and not nonempty_format:
+            from .native_source_display import analyze as analyze_display
+            analyze_display(model,plan,node,arguments[0],environment,name in {'repr','ascii'})
+        return cell("str")
     if name in {'ord','bin','oct','hex'}:
         from .native_character_builtins import analyze as analyze_character
         return analyze_character(model,plan,node,name,arguments,keywords,factory=cell)
@@ -63,10 +71,17 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name == "print":
         if any(key not in {"sep","end","file","flush"} for key,_ in keywords):
             raise ClassUnsupported(node)
+        from .native_source_display import analyze as analyze_display
+        from .native_classes import shape
+        if all(key not in {'sep','end'}or shape(value)in {None,'str','none'}for key,value in keywords):
+            for argument in arguments:analyze_display(model,plan,node,argument,environment)
         return cell("none")
     if name == "input" and not arguments and not keywords:
         return cell("str")
     if name in {"int","str","bool","float"} and len(arguments) <= 1 and not keywords:
+        if name=='str'and arguments:
+            from .native_source_display import analyze as analyze_display
+            analyze_display(model,plan,node,arguments[0],environment)
         return cell({"int":"int","str":"str","bool":"bool","float":"float"}[name])
     if name == "len" and len(arguments) == 1 and not keywords:
         return cell("int")
@@ -240,16 +255,33 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=F
 def _type_name(emitter,value,node):
     from .native_classes import domain
     from .native import _string
+    from .native_module_linking import ClassReferenceType,ModuleType
+    if isinstance(value.kind,ClassReferenceType):return '"type"'
+    if isinstance(value.kind,ModuleType):return '"module"'
     if hasattr(value.kind,'_native_python_type_name'):return _string(value.kind._native_python_type_name)
+    if getattr(value.kind,'_native_builtin_singleton',False):return _string(value.kind.type_name)
     tag=domain(value.kind)
     if tag=='cmp_key':return '"functools.KeyWrapper"'
     if tag=="int_bool":return f'match {value.code}{{NativeScalar::Int(_)=>"int",NativeScalar::Bool(_)=>"bool"}}'
     if tag=="object":return _string(emitter.model.classes[value.kind.name].node.name)
     if tag=="globals_dict":return '"dict"'
-    if getattr(value.kind,'_native_class_mapping',False)and value.kind.record.flavor in {'Counter','defaultdict'}:return _string(value.kind.record.flavor)
+    if getattr(value.kind,'_native_class_deque',False):return '"collections.deque"'
+    if getattr(value.kind,'_native_class_mapping',False)and value.kind.record.flavor in {'Counter','defaultdict'}:
+        return _string('collections.defaultdict'if value.kind.record.flavor=='defaultdict'else'Counter')
     if tag=="iterator"and value.kind.record.operation in {"filter","map","zip","enumerate"}:
         return _string(value.kind.record.operation)
     if tag=="iterator"and hasattr(value.kind.record,"tool"):return _string("itertools."+value.kind.record.tool)
+    if tag=="iterator"and value.kind.record.operation=='source_generator':return '"generator"'
+    if tag=="iterator"and value.kind.record.operation=='source':
+        from .native_classes import shape
+        source=domain(shape(value.kind.record.source))
+        if source in {'list','tuple','tuple_sequence','bytes'}:
+            return _string({'list':'list_iterator','tuple':'tuple_iterator','tuple_sequence':'tuple_iterator','bytes':'bytes_iterator'}[source])
+    if tag=="iterator"and value.kind.record.operation=='reverse':
+        from .native_classes import shape
+        source=domain(shape(value.kind.record.source))
+        if source in {'list','tuple','tuple_sequence','str','bytes'}:
+            return _string('list_reverseiterator'if source=='list'else'reversed')
     if tag=="tuple_sequence":return '"tuple"'
     if tag=='dict_view':return _string('dict_'+value.kind.record.mode)
     if tag=="function":
@@ -322,7 +354,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
                 binding=f'let _={value.code};' if value.kind=='none' else f'let {captured}={value.code};'
                 pieces.append('{'+binding+f'class_scope.io.borrow_mut().output.push_str({text});'+'}')
             else:
-                pieces.append(f"class_scope.io.borrow_mut().output.push_str(&({self.show(value,node)}));")
+                rendered=self.fresh()
+                pieces.append(f"let {rendered}={self.show(value,node)};class_scope.io.borrow_mut().output.push_str(&{rendered});")
         pieces.append(f"class_scope.io.borrow_mut().output.push_str(&{end.code});")
         if "flush"in keywords:
             flush = self.truth(keywords["flush"])

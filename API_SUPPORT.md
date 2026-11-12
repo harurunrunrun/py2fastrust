@@ -50,6 +50,13 @@ instructions while retaining the selected integer policy and both operand
 evaluations. Exact pre-modulo bounds are required; guards invalidated by
 assignments/callbacks and unproved or wider values retain native i128 arithmetic.
 
+Source `__str__`/`__repr__` methods and plain same-class aliases have native
+callback paths for printing, string/repr conversion and supported formatting.
+Argument evaluation, partial output, mutation and errors keep Python ordering;
+list/dynamic-tuple display releases borrows around callbacks and guards repr
+recursion. Unsupported publication/descriptor cases, custom mapping/deque repr
+callbacks and recursive tuples lacking stable identity remain diagnostics.
+
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
 Size checks precede blocking reads. Binary reads retain raw bytes, and default

@@ -58,6 +58,8 @@ class BoundMethods:
         for kind in alternatives(shape(receiver)):
             if isinstance(kind,InstanceType):
                 owner=self.model.classes[kind.name];method=owner.methods.get(name)
+                from .native_source_display import guard_direct_method
+                guard_direct_method(self.model,owner,name,node)
                 registry=getattr(self.model,'class_namespaces',None)
                 member=registry.members.get((owner.index,name))if registry is not None else None
                 if method is not None:
@@ -91,6 +93,8 @@ class BoundMethods:
                 raise ClassUnsupported(node,"reading this bound-method attribute needs method-object metadata lookup and forwarding to its underlying function; the typed callable retains its receiver and supports calls, but this attribute lookup adapter is not implemented",operation="bound method attribute "+repr(node.attr),types=(("receiver",shape(receiver)),),proof="bound method metadata and function-attribute lookup")
             return None
         owner=self.model.classes[receiver.args[0]]
+        from .native_source_display import guard_direct_method
+        guard_direct_method(self.model,owner,self.model.resolved_name(plan,node),node)
         method=owner.methods.get(self.model.resolved_name(plan,node))
         if method is None:return None
         target=BoundMethodTarget(self.provider.definition(method),receiver.args[0])
