@@ -289,6 +289,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 return _Expression(f"({number}).invert()","int",None if value.constant is None else ~value.constant)
             raise _Unsupported
         if isinstance(node, ast.BinOp):
+            from .native_integer_windows import direct as integer_window
+            window=integer_window(self,node,environment)
+            if window is not None:return window
             return self.binary(node.op,self.expression(node.left,environment),self.expression(node.right,environment),node)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             function = environment.get(node.func.id)

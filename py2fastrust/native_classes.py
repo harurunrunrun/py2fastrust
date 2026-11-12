@@ -1939,6 +1939,9 @@ class Emitter:
                 raise ClassUnsupported(node)
             return Expression(f"{{{setup}{index_setup}{code}}}",wanted)
         if isinstance(node,ast.BinOp):
+            from .native_integer_windows import frame as integer_window
+            window=integer_window(self,node)
+            if window is not None:return window
             setup,left = self.capture(self.expression(node.left))
             more,right = self.capture(self.expression(node.right))
             result = self.binary(node.op,left,right,node,wanted)

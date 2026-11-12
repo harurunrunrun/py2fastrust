@@ -974,6 +974,27 @@ impl Int {
             .exact_add(&Self::exact_small(-1))
             .normalized()
     }
+    fn shr_mask(&self, shift: &Self, mask: u128) -> Result<Self, String> {
+        if shift.is_negative() {
+            return Err("ValueError: negative shift count".into());
+        }
+        if let IntRepr::Big { negative: false, digits } = &self.0 {
+            let Some(bits) = shift.to_usize() else { return Ok(Self::from_i128(0)); };
+            let start = bits / 32;
+            if start >= digits.len() { return Ok(Self::from_i128(0)); }
+            let within = bits % 32;
+            let mut low = 0u128;
+            for limb in 0..4 {
+                let index = start + limb;
+                let a = digits.get(index).copied().unwrap_or(0) as u64;
+                let b = digits.get(index + 1).copied().unwrap_or(0) as u64;
+                let word = if within == 0 { a as u32 } else { ((a >> within) | (b << (32 - within))) as u32 };
+                low |= (word as u128) << (32 * limb);
+            }
+            return Ok(Self::from_i128((low & mask) as i128));
+        }
+        self.shr(shift).map(|value| value.bitand(&Self::from_i128(mask as i128)))
+    }
     fn shl(&self, shift: &Self) -> Result<Self, String> {
         if shift.is_negative() {
             return Err("ValueError: negative shift count".into());
