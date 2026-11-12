@@ -80,7 +80,7 @@ def _integral(emitter, number, digits):
                 'if class_round_unit>class_round_twice{Int::from_i128(0)}else{'
                 'let(class_round_q,class_round_r)=class_round_magnitude.divmod(&class_round_unit).unwrap();'
                 'let class_round_half=class_round_unit.divmod(&Int::from_i128(2)).unwrap().0;'
-                'let class_round_odd=!class_round_q.divmod(&Int::from_i128(2)).unwrap().1.is_zero();'
+                'let class_round_odd=!class_round_q.modulo(&Int::from_i128(2)).unwrap().is_zero();'
                 'let class_round_q=if class_round_r>class_round_half||'
                 '(class_round_r==class_round_half&&class_round_odd){class_round_q.add(&Int::from_i128(1))}else{class_round_q};'
                 'let class_round_result=class_round_q.mul(&class_round_unit);'

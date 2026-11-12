@@ -5,6 +5,7 @@ import random
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -19,6 +20,7 @@ fn main() {
         let run = || -> Result<String, String> {
             let op = f[0];
             if op == "parse" { return Int::parse(f[1], f[2].parse().unwrap()).map(|x| x.to_string()); }
+            if op == "decimalhex" { return Int::parse_ascii(f[1].as_bytes(), 16).map(|x| x.to_string()); }
             if op == "fromfloat" {
                 return Int::from_f64(f64::from_bits(u64::from_str_radix(f[1], 16).unwrap())).map(|x| x.to_string());
             }
@@ -48,6 +50,14 @@ fn main() {
                 "sub" => a.sub(&b).to_string(),
                 "mul" => a.mul(&b).to_string(),
                 "divmod" => { let (q, r) = a.divmod(&b)?; format!("{},{}", q, r) },
+                "mod" => a.modulo(&b)?.to_string(),
+                "aliasbits" => {
+                    let original = a.clone();
+                    let right = b.clone();
+                    let mut values = [a.clone(), a.clone(), a.clone()];
+                    for (op, value) in values.iter_mut().enumerate() { value.bitop_assign(&right, op as u8); }
+                    format!("{},{},{},{},{},{}", original, right, values[0], values[1], values[2], a.neg())
+                },
                 "and" => a.bitand(&b).to_string(),
                 "or" => a.bitor(&b).to_string(),
                 "xor" => a.bitxor(&b).to_string(),
@@ -129,6 +139,7 @@ class IntegerTests(unittest.TestCase):
                 else:
                     expected = "ERR:ZeroDivisionError"
                 cases.append((f"divmod\t{x}\t{y}", expected))
+                cases.append((f"mod\t{x}\t{y}", wrap(a % b, bits) if b else "ERR:ZeroDivisionError"))
                 cases.append((f"cmp\t{x}\t{y}", (a > b) - (a < b)))
             for x in boundary:
                 a = wrap(x, bits)
@@ -268,6 +279,77 @@ class IntegerTests(unittest.TestCase):
                         x = sign * ((1 << power) + offset)
                         cases.append((f"parse\t{x}\t10", wrap(x, bits)))
             self.check_cases(bits, cases)
+
+    def test_shared_integer_values_remain_immutable(self):
+        rng = random.Random(20261113)
+        values = [0, 1, -1, -(1 << 127), (1 << 127) - 1, 1 << 127]
+        values += [sign * ((1 << size) + offset) for size in (128, 129, 256, 1024)
+                   for sign in (-1, 1) for offset in (-1, 0, 1)]
+        pairs = [(x, y) for x in values for y in (x, -x, 0, 1, -1, (1 << 126) - 1)]
+        pairs += [(rng.getrandbits(1300), rng.getrandbits(1500)) for _ in range(80)]
+        for bits in (0, 64, 128):
+            cases = []
+            for x, y in pairs:
+                a, b = wrap(x, bits), wrap(y, bits)
+                expected = ','.join(str(wrap(result, bits)) for result in (a, b, a & b, a | b, a ^ b, -a))
+                cases.append((f'aliasbits\t{x}\t{y}', expected))
+            self.check_cases(bits, cases)
+
+    def test_word_remainders_and_modular_inverses(self):
+        rng = random.Random(20261114)
+        values = [0, 1, -1, -(1 << 63), -(1 << 127), (1 << 127) - 1]
+        values += [rng.getrandbits(size) * sign for size in (128, 129, 256, 4096)
+                   for sign in (-1, 1) for _ in range(4)]
+        divisors = [sign * value for value in (1, 2, 3, 65537, 1000000007, (1 << 32) - 1,
+                    1 << 32, (1 << 63) - 1, 1 << 63, (1 << 127) - 1) for sign in (-1, 1)] + [0]
+        for bits in (0, 64, 128):
+            cases = []
+            for x in values:
+                for y in divisors:
+                    a, b = wrap(x, bits), wrap(y, bits)
+                    cases.append((f'mod\t{x}\t{y}', wrap(a % b, bits) if b else 'ERR:ZeroDivisionError'))
+            for x in values[:12]:
+                for y in divisors[:14]:
+                    for exponent in (-129, -1, 0, 1, 63, (1 << 135) + 1, -((1 << 140) + 7)):
+                        a, b, modulus = (wrap(n, bits) for n in (x, exponent, y))
+                        try:
+                            expected = wrap(pow(a, b, modulus), bits)
+                        except ValueError:
+                            expected = 'ERR:ValueError'
+                        cases.append((f'modpow\t{x}\t{exponent}\t{y}', expected))
+            self.check_cases(bits, cases)
+
+    def test_chunked_parsing_preserves_bases_and_validation(self):
+        rng = random.Random(20261115)
+        alphabet = '0123456789abcdefghijklmnopqrstuvwxyz'
+        rows = []
+        for base in range(2, 37):
+            for length in (1, 7, 8, 9, 10, 17, 31, 32, 33, 40, 129, 600):
+                text = ''.join(rng.choice(alphabet[:base]) for _ in range(length))
+                rows += [(text, base), ('-' + text, base), ('_'.join(text), base)]
+        rows += [(text, 10) for text in ('１２３４５６７８９０' * 20, '٠١٢٣٤٥٦٧٨٩' * 20)]
+        invalid = ['1__234567890', '123456789_', '_123456789', '123456789a']
+        for bits in (0, 64, 128):
+            cases = [(f'parse\t{text}\t{base}', wrap(int(text, base), bits)) for text, base in rows]
+            cases += [(f'parse\t{text}\t10', 'ERR:ValueError') for text in invalid]
+            self.check_cases(bits, cases)
+
+    def test_large_decimal_output_preserves_zero_blocks_and_signs(self):
+        rng = random.Random(20261116)
+        values = [0]
+        for digits in (9, 18, 36, 72, 144, 288, 576, 1152, 2304, 4608):
+            values += [10**digits + offset for offset in (-1, 0, 1)]
+        values += [rng.getrandbits(size) for size in (1023, 1024, 1025, 2048, 8192, 16384, 32768, 65536)
+                   for _ in range(3)]
+        previous = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(0)
+        try:
+            for bits in (0, 64, 128):
+                cases = [(f'decimalhex\t{sign * value:x}', str(wrap(sign * value, bits)))
+                         for value in values for sign in (-1, 1)]
+                self.check_cases(bits, cases)
+        finally:
+            sys.set_int_max_str_digits(previous)
 
     def test_exact_integer_float_comparisons(self):
         rng = random.Random(7654321)

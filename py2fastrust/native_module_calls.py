@@ -35,7 +35,7 @@ MATH_HELPERS = r'''
 fn native_math_abs(value:&Int)->Int {if value.is_negative(){value.exact_neg()}else{value.clone()}}
 fn native_math_gcd_pair(a:&Int,b:&Int)->Int {
     let mut a=native_math_abs(a);let mut b=native_math_abs(b);
-    while !b.is_zero(){let r=a.exact_divmod(&b).unwrap().1;a=b;b=r;}a
+    while !b.is_zero(){let r=a.exact_remainder(&b).unwrap();a=b;b=r;}a
 }
 fn native_math_gcd(values:&[Int])->Int {
     values.iter().fold(Int::exact_small(0),|g,value|native_math_gcd_pair(&g,value))

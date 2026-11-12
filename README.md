@@ -209,6 +209,14 @@ Canonical integer `str` maps join by writing directly to one string buffer,
 without allocating a string for each element. Saved map cursors retain their
 actual shared iteration state; custom callbacks keep their original calls.
 
+BigInt keeps values that fit signed `i128` inline. Larger immutable values share
+their limb storage across assignments, argument snapshots and sign changes.
+Bitwise updates copy shared limbs before writing, so other references retain
+their original values. Remainders do not construct a discarded quotient, and
+word-sized moduli use limb reduction with a precomputed reciprocal. Modular
+powers with a 32-bit modulus use exact native products. Nonbinary input is
+parsed in digit groups, while large decimal output splits into smaller blocks.
+
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather
 than a generated Rust instruction offset. These positions remain identical

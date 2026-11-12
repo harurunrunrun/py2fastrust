@@ -77,11 +77,11 @@ impl NativeReverseRange{
         let one=Int::from_i128(1);
         let cursor=if !active{source.start.clone()}else if !source.step.is_negative(){
             let distance=source.stop.sub(&source.start);
-            let remainder=distance.sub(&one).divmod(&source.step).unwrap().1;
+            let remainder=distance.sub(&one).modulo(&source.step).unwrap();
             source.stop.sub(&one).sub(&remainder)
         }else{
             let distance=source.start.sub(&source.stop);
-            let remainder=distance.sub(&one).divmod(&source.step.abs()).unwrap().1;
+            let remainder=distance.sub(&one).modulo(&source.step.abs()).unwrap();
             source.stop.add(&one).add(&remainder)
         };
         Self{cursor,first:source.start.clone(),step:source.step.clone(),active}

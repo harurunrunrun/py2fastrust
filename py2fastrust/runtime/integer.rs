@@ -20,7 +20,7 @@ impl Clone for Int {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum IntRepr {
     Small(i128),
-    Big { negative: bool, digits: Vec<u32> },
+    Big { negative: bool, digits: std::rc::Rc<Vec<u32>> },
 }
 
 impl Int {
@@ -44,7 +44,7 @@ impl Int {
 
     fn magnitude(&self) -> std::borrow::Cow<'_, [u32]> {
         match &self.0 {
-            IntRepr::Big { digits, .. } => std::borrow::Cow::Borrowed(digits),
+            IntRepr::Big { digits, .. } => std::borrow::Cow::Borrowed(digits.as_slice()),
             IntRepr::Small(value) => {
                 let mut n = value.unsigned_abs();
                 let mut result = Vec::new();
@@ -57,24 +57,48 @@ impl Int {
         }
     }
 
-    fn exact_parts(negative: bool, mut digits: Vec<u32>) -> Self {
-        Self::trim(&mut digits);
+    fn small_parts(negative: bool, digits: &[u32]) -> Option<i128> {
         if digits.len() <= 4 {
             let mut n = 0u128;
             for &limb in digits.iter().rev() {
                 n = (n << 32) | limb as u128;
             }
             if n == 0 {
-                return Self::exact_small(0);
+                return Some(0);
             }
             if negative && n <= 1u128 << 127 {
-                return Self::exact_small((0u128.wrapping_sub(n)) as i128);
+                return Some((0u128.wrapping_sub(n)) as i128);
             }
             if !negative && n <= i128::MAX as u128 {
-                return Self::exact_small(n as i128);
+                return Some(n as i128);
             }
         }
+        None
+    }
+
+    fn exact_parts(negative: bool, mut digits: Vec<u32>) -> Self {
+        Self::trim(&mut digits);
+        if let Some(value) = Self::small_parts(negative, &digits) {
+            return Self::exact_small(value);
+        }
+        Self(IntRepr::Big { negative, digits: std::rc::Rc::new(digits) })
+    }
+
+    fn shared_parts(negative: bool, mut digits: std::rc::Rc<Vec<u32>>) -> Self {
+        if digits.last() == Some(&0) {
+            Self::trim(std::rc::Rc::make_mut(&mut digits));
+        }
+        if let Some(value) = Self::small_parts(negative, &digits) {
+            return Self::exact_small(value);
+        }
         Self(IntRepr::Big { negative, digits })
+    }
+
+    fn owned_digits(digits: std::rc::Rc<Vec<u32>>) -> Vec<u32> {
+        match std::rc::Rc::try_unwrap(digits) {
+            Ok(value) => value,
+            Err(shared) => (*shared).clone(),
+        }
     }
 
     fn parts(negative: bool, digits: Vec<u32>) -> Self {
@@ -98,7 +122,7 @@ impl Int {
         }
         match self.0 {
             IntRepr::Small(n) => Self::from_i128(n),
-            IntRepr::Big { negative, digits } => Self::parts(negative, digits),
+            IntRepr::Big { negative, digits } => Self::parts(negative, Self::owned_digits(digits)),
         }
     }
 
@@ -460,12 +484,14 @@ impl Int {
         output.extend(std::iter::repeat_n(fill, after));
         Ok(Some(output))
     }
+    #[inline(always)]
     fn bit_length(&self) -> usize {
         match &self.0 {
             IntRepr::Small(n) => 128 - n.unsigned_abs().leading_zeros() as usize,
             IntRepr::Big { digits, .. } => Self::nat_bits(digits),
         }
     }
+    #[inline(always)]
     fn bit_count(&self) -> usize {
         match &self.0 {
             IntRepr::Small(n) => n.unsigned_abs().count_ones() as usize,
@@ -563,9 +589,9 @@ impl Int {
         let mut out = vec![0u32; a.len() + b.len()];
         for (i, &x) in a.iter().enumerate() {
             let mut carry = 0u64;
-            for (j, &y) in b.iter().enumerate() {
-                let n = x as u64 * y as u64 + out[i + j] as u64 + carry;
-                out[i + j] = n as u32;
+            for (word, &y) in out[i..i + b.len()].iter_mut().zip(b) {
+                let n = x as u64 * y as u64 + *word as u64 + carry;
+                *word = n as u32;
                 carry = n >> 32;
             }
             out[i + b.len()] = carry as u32;
@@ -623,13 +649,92 @@ impl Int {
         (out, rem as u32)
     }
 
+    fn nat_rem_small(a: &[u32], divisor: u32) -> u32 {
+        if divisor.is_power_of_two() {
+            return a.first().copied().unwrap_or(0) & (divisor - 1);
+        }
+        let divisor = divisor as u64;
+        let reciprocal = u64::MAX / divisor;
+        let mut rem = 0u64;
+        for &word in a.iter().rev() {
+            let value = (rem << 32) | word as u64;
+            let quotient = ((value as u128 * reciprocal as u128) >> 64) as u64;
+            rem = value - quotient * divisor;
+            if rem >= divisor { rem -= divisor; }
+        }
+        rem as u32
+    }
+
+    #[inline(always)]
+    fn nat_div_small_inplace(a: &mut Vec<u32>, divisor: u32) -> u32 {
+        let mut rem = 0u64;
+        for word in a.iter_mut().rev() {
+            let value = (rem << 32) | *word as u64;
+            *word = (value / divisor as u64) as u32;
+            rem = value % divisor as u64;
+        }
+        Self::trim(a);
+        rem as u32
+    }
+
+    fn nat_decimal_chunks(digits: &[u32], powers: &[Vec<u32>], output: &mut Vec<u32>) {
+        if digits.len() <= 32 || powers.is_empty() {
+            let mut remaining = digits.to_vec();
+            while !remaining.is_empty() {
+                output.push(Self::nat_div_small_inplace(&mut remaining, 1_000_000_000));
+            }
+            return;
+        }
+        let half = Self::nat_bits(digits) / 2;
+        let mut index = 0;
+        while index + 1 < powers.len() && Self::nat_bits(&powers[index + 1]) <= half { index += 1; }
+        let (q, r) = Self::nat_divmod(digits, &powers[index]);
+        let start = output.len();
+        Self::nat_decimal_chunks(&r, &powers[..index], output);
+        output.resize(start + (1usize << index), 0);
+        Self::nat_decimal_chunks(&q, &powers[..=index], output);
+    }
+
+    fn accumulate_digits(digits: &mut Vec<u32>, small: &mut u128, base: u32, value: u32) {
+        if INT_BITS != 0 {
+            *small = small.wrapping_mul(base as u128).wrapping_add(value as u128);
+            return;
+        }
+        if digits.is_empty() {
+            if let Some(result) = small.checked_mul(base as u128).and_then(|x| x.checked_add(value as u128)) {
+                *small = result;
+                return;
+            }
+            let mut magnitude = *small;
+            while magnitude != 0 {
+                digits.push(magnitude as u32);
+                magnitude >>= 32;
+            }
+        }
+        let mut carry = value as u64;
+        for word in digits.iter_mut() {
+            let result = *word as u64 * base as u64 + carry;
+            *word = result as u32;
+            carry = result >> 32;
+        }
+        if carry != 0 { digits.push(carry as u32); }
+    }
+
     // Knuth's normalized long division, with base 2^32 and 64-bit trial quotients.
     fn nat_divmod(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
+        Self::nat_divrem(a, b, true)
+    }
+
+    fn nat_divrem(a: &[u32], b: &[u32], want_quotient: bool) -> (Vec<u32>, Vec<u32>) {
         debug_assert!(!b.is_empty());
         if Self::nat_cmp(a, b) == std::cmp::Ordering::Less {
             return (Vec::new(), a.to_vec());
         }
         if b.len() == 1 {
+            if !want_quotient {
+                let r = Self::nat_rem_small(a, b[0]);
+                return (Vec::new(), if r == 0 { Vec::new() } else { vec![r] });
+            }
             let (q, r) = Self::nat_div_small(a, b[0]);
             return (q, if r == 0 { Vec::new() } else { vec![r] });
         }
@@ -639,41 +744,43 @@ impl Int {
         u.resize(a.len() + 1, 0);
         let n = b.len();
         let m = a.len() - n;
+        let divisor = &v[..n];
         let base = 1u64 << 32;
-        let mut quotient = vec![0u32; m + 1];
+        let mut quotient = if want_quotient { vec![0u32; m + 1] } else { Vec::new() };
         for j in (0..=m).rev() {
-            let numerator = ((u[j + n] as u64) << 32) | u[j + n - 1] as u64;
-            let top = v[n - 1] as u64;
+            let (window, high) = u[j..j + n + 1].split_at_mut(n);
+            let numerator = ((high[0] as u64) << 32) | window[n - 1] as u64;
+            let top = divisor[n - 1] as u64;
             let mut qhat = numerator / top;
             if qhat >= base {
                 qhat = base - 1;
             }
             let mut rhat = numerator - qhat * top;
-            while rhat < base && qhat * v[n - 2] as u64 > (rhat << 32) + u[j + n - 2] as u64 {
+            while rhat < base && qhat * divisor[n - 2] as u64 > (rhat << 32) + window[n - 2] as u64 {
                 qhat -= 1;
                 rhat += top;
             }
             let mut borrow = 0u64;
-            for i in 0..n {
-                let product = qhat * v[i] as u64 + borrow;
+            for (word, &vword) in window.iter_mut().zip(divisor) {
+                let product = qhat * vword as u64 + borrow;
                 let low = product as u32 as u64;
-                let old = u[j + i] as u64;
-                u[j + i] = old.wrapping_sub(low) as u32;
+                let old = *word as u64;
+                *word = old.wrapping_sub(low) as u32;
                 borrow = (product >> 32) + u64::from(old < low);
             }
-            let negative = (u[j + n] as u64) < borrow;
-            u[j + n] = (u[j + n] as u64).wrapping_sub(borrow) as u32;
+            let negative = (high[0] as u64) < borrow;
+            high[0] = (high[0] as u64).wrapping_sub(borrow) as u32;
             if negative {
                 qhat -= 1;
                 let mut carry = 0u64;
-                for i in 0..n {
-                    let total = u[j + i] as u64 + v[i] as u64 + carry;
-                    u[j + i] = total as u32;
+                for (word, &vword) in window.iter_mut().zip(divisor) {
+                    let total = *word as u64 + vword as u64 + carry;
+                    *word = total as u32;
                     carry = total >> 32;
                 }
-                u[j + n] = (u[j + n] as u64 + carry) as u32;
+                high[0] = (high[0] as u64 + carry) as u32;
             }
-            quotient[j] = qhat as u32;
+            if want_quotient { quotient[j] = qhat as u32; }
         }
         Self::trim(&mut quotient);
         let remainder = Self::nat_shr(&u[..n], shift);
@@ -718,6 +825,11 @@ impl Int {
         Some(Self::exact_parts(negative^(value<0),output))
     }
     fn exact_add(&self, other: &Self) -> Self {
+        if self.is_zero() { return other.clone(); }
+        if other.is_zero() { return self.clone(); }
+        if let (IntRepr::Big { negative: a, digits: x }, IntRepr::Big { negative: b, digits: y }) = (&self.0, &other.0) {
+            if a != b && std::rc::Rc::ptr_eq(x, y) { return Self::exact_small(0); }
+        }
         if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
             if let Some(n) = a.checked_add(*b) {
                 return Self::exact_small(n);
@@ -744,6 +856,9 @@ impl Int {
         }
     }
     fn exact_neg(&self) -> Self {
+        if let IntRepr::Big { negative, digits } = &self.0 {
+            return Self::shared_parts(!negative, digits.clone());
+        }
         if let IntRepr::Small(n) = self.0 {
             if let Some(x) = n.checked_neg() {
                 return Self::exact_small(x);
@@ -752,6 +867,14 @@ impl Int {
         Self::exact_parts(!self.is_negative(), self.magnitude().into_owned())
     }
     fn exact_mul(&self, other: &Self) -> Self {
+        if self.is_zero() || other.is_zero() { return Self::exact_small(0); }
+        match (&self.0, &other.0) {
+            (IntRepr::Small(1), _) => return other.clone(),
+            (_, IntRepr::Small(1)) => return self.clone(),
+            (IntRepr::Small(-1), _) => return other.exact_neg(),
+            (_, IntRepr::Small(-1)) => return self.exact_neg(),
+            _ => {},
+        }
         if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
             if let Some(n) = a.checked_mul(*b) {
                 return Self::exact_small(n);
@@ -802,6 +925,9 @@ impl Int {
         if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
             if INT_BITS != 0 {
                 return Self::from_i128(a.wrapping_mul(*b));
+            }
+            if *a == *a as i64 as i128 && *b == *b as i64 as i128 {
+                return Self::exact_small((*a as i64 as i128) * (*b as i64 as i128));
             }
             if let Some(value) = a.checked_mul(*b) {
                 return Self::exact_small(value);
@@ -861,6 +987,60 @@ impl Int {
             .map(|(q, r)| (q.normalized(), r.normalized()))
     }
 
+    #[inline(always)]
+    fn exact_remainder(&self, other: &Self) -> Result<Self, String> {
+        if let IntRepr::Small(divisor) = other.0 {
+            let magnitude = divisor.unsigned_abs();
+            if magnitude == 0 { return Err("ZeroDivisionError: division by zero".into()); }
+            if magnitude <= u32::MAX as u128 {
+                return Ok(Self::exact_small(self.remainder_word(divisor)));
+            }
+        }
+        if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
+            if *b == 0 { return Err("ZeroDivisionError: division by zero".into()); }
+            if *b == -1 { return Ok(Self::exact_small(0)); }
+            let mut r = if *a == *a as i64 as i128 && *b == *b as i64 as i128 {
+                (*a as i64 % *b as i64) as i128
+            } else { a % b };
+            if r != 0 && (r < 0) != (*b < 0) { r += b; }
+            return Ok(Self::exact_small(r));
+        }
+        self.remainder_extended(other)
+    }
+
+    #[inline(always)]
+    fn remainder_word(&self, divisor: i128) -> i128 {
+        let magnitude = divisor.unsigned_abs() as u32;
+        let mut result = match &self.0 {
+            IntRepr::Small(value) => {
+                if *value == *value as i64 as i128 {
+                    (value.unsigned_abs() as u64 % magnitude as u64) as i128
+                } else { (value.unsigned_abs() % magnitude as u128) as i128 }
+            },
+            IntRepr::Big { digits, .. } => Self::nat_rem_small(digits, magnitude) as i128,
+        };
+        if result != 0 && self.is_negative() != (divisor < 0) { result = magnitude as i128 - result; }
+        if divisor < 0 { result = -result; }
+        result
+    }
+
+    #[inline(never)]
+    fn remainder_extended(&self, other: &Self) -> Result<Self, String> {
+        if other.is_zero() { return Err("ZeroDivisionError: division by zero".into()); }
+        let a = self.magnitude();
+        let b = other.magnitude();
+        let (_, mut r) = Self::nat_divrem(&a, &b, false);
+        if self.is_negative() != other.is_negative() && !r.is_empty() {
+            r = Self::nat_sub(&b, &r);
+        }
+        Ok(Self::exact_parts(other.is_negative(), r))
+    }
+
+    #[inline(always)]
+    fn modulo(&self, other: &Self) -> Result<Self, String> {
+        self.exact_remainder(other).map(Self::normalized)
+    }
+
     fn twos(&self, words: usize) -> Vec<u32> {
         let mut out = self.magnitude().into_owned();
         out.resize(words, 0);
@@ -874,7 +1054,7 @@ impl Int {
         }
         out
     }
-    #[inline]
+    #[inline(always)]
     fn bitop(&self, other: &Self, op: u8) -> Self {
         if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
             return Self::from_i128(match op {
@@ -882,6 +1062,16 @@ impl Int {
                 1 => a | b,
                 _ => a ^ b,
             });
+        }
+        self.bitop_extended(other, op)
+    }
+
+    #[inline(never)]
+    fn bitop_extended(&self, other: &Self, op: u8) -> Self {
+        if let (IntRepr::Big { negative: a, digits: x }, IntRepr::Big { negative: b, digits: y }) = (&self.0, &other.0) {
+            if a == b && std::rc::Rc::ptr_eq(x, y) {
+                return if op == 2 { Self::from_i128(0) } else { self.clone().normalized() };
+            }
         }
         if op == 0 {
             let masked = match (&self.0, &other.0) {
@@ -946,22 +1136,34 @@ impl Int {
         self.bitop(other, 2)
     }
     fn bitop_assign(&mut self, other: &Self, op: u8) {
+        if let (IntRepr::Big { negative: a, digits: x }, IntRepr::Big { negative: b, digits: y }) = (&self.0, &other.0) {
+            if a == b && std::rc::Rc::ptr_eq(x, y) {
+                if op == 2 { *self = Self::from_i128(0); }
+                return;
+            }
+        }
+        if op == 0 && matches!(other.0, IntRepr::Small(value) if value >= 0) {
+            *self = self.bitand(other);
+            return;
+        }
         if !self.is_negative() && !other.is_negative()
             && matches!(self.0, IntRepr::Big { .. })
         {
             let IntRepr::Big { mut digits, .. } = std::mem::replace(&mut self.0, IntRepr::Small(0)) else { unreachable!() };
             let right = other.magnitude();
-            if op == 0 { digits.truncate(right.len()); }
+            let output = std::rc::Rc::make_mut(&mut digits);
+            if op == 0 { output.truncate(right.len()); }
             match op {
-                0 => digits.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x &= y),
-                1 => digits.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x |= y),
-                _ => digits.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x ^= y),
+                0 => output.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x &= y),
+                1 => output.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x |= y),
+                _ => output.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x ^= y),
             }
-            if op != 0 && right.len() > digits.len() {
-                let common = digits.len();
-                digits.extend_from_slice(&right[common..]);
+            if op != 0 && right.len() > output.len() {
+                let common = output.len();
+                output.extend_from_slice(&right[common..]);
             }
-            *self = Self::parts(false, digits);
+            Self::trim(output);
+            *self = Self::shared_parts(false, digits).normalized();
         } else {
             *self = self.bitop(other, op);
         }
@@ -995,6 +1197,7 @@ impl Int {
         }
         self.shr(shift).map(|value| value.bitand(&Self::from_i128(mask as i128)))
     }
+    #[inline(always)]
     fn shl(&self, shift: &Self) -> Result<Self, String> {
         if shift.is_negative() {
             return Err("ValueError: negative shift count".into());
@@ -1014,6 +1217,17 @@ impl Int {
         let n = shift
             .to_usize()
             .ok_or_else(|| "OverflowError: too many digits in integer".to_string())?;
+        if n == 0 { return Ok(self.clone()); }
+        if let IntRepr::Small(value) = self.0 {
+            if n < 128 && value >= (i128::MIN >> n) && value <= (i128::MAX >> n) {
+                return Ok(Self::exact_small(value << n));
+            }
+        }
+        self.shl_extended(n)
+    }
+
+    #[inline(never)]
+    fn shl_extended(&self, n: usize) -> Result<Self, String> {
         let size = self
             .bit_length()
             .checked_add(n)
@@ -1061,6 +1275,13 @@ impl Int {
         Ok(Self::parts(self.is_negative(), out))
     }
 
+    fn magnitude_bit(&self, index: usize) -> bool {
+        match &self.0 {
+            IntRepr::Small(value) => value.unsigned_abs() & (1u128 << index) != 0,
+            IntRepr::Big { digits, .. } => digits[index / 32] & (1u32 << (index % 32)) != 0,
+        }
+    }
+
     fn pow(&self, exponent: &Self) -> Result<Self, String> {
         if exponent.is_negative() {
             return Err("ValueError: negative exponent requires floating point power".into());
@@ -1068,9 +1289,8 @@ impl Int {
         let mut result = Self::from_i128(1);
         let mut base = self.clone();
         let bits = exponent.bit_length();
-        let digits = exponent.magnitude();
         for i in 0..bits {
-            if digits[i / 32] & (1u32 << (i % 32)) != 0 {
+            if exponent.magnitude_bit(i) {
                 result = result.mul(&base);
             }
             if i + 1 < bits {
@@ -1079,16 +1299,45 @@ impl Int {
         }
         Ok(result)
     }
+
+    fn modpow_word(&self, exponent: &Self, modulus: i128) -> Result<Self, String> {
+        let m = modulus.unsigned_abs() as u64;
+        if m == 1 { return Ok(Self::from_i128(0)); }
+        let mut base = self.exact_remainder(&Self::exact_small(m as i128))?.to_i128().unwrap() as u64;
+        if exponent.is_negative() {
+            let (mut old_r, mut r) = (m as i128, base as i128);
+            let (mut old_t, mut t) = (0i128, 1i128);
+            while r != 0 {
+                let q = old_r / r;
+                (old_r, r) = (r, old_r % r);
+                (old_t, t) = (t, old_t - q * t);
+            }
+            if old_r != 1 { return Err("ValueError: base is not invertible for the given modulus".into()); }
+            base = old_t.rem_euclid(m as i128) as u64;
+        }
+        let mut result = 1u64;
+        let bits = exponent.bit_length();
+        for i in 0..bits {
+            if exponent.magnitude_bit(i) { result = result * base % m; }
+            if i + 1 < bits { base = base * base % m; }
+        }
+        let value = if modulus < 0 && result != 0 { result as i128 - m as i128 } else { result as i128 };
+        Ok(Self::from_i128(value))
+    }
+
     fn modpow(&self, exponent: &Self, modulus: &Self) -> Result<Self, String> {
         if modulus.is_zero() {
             return Err("ValueError: pow() 3rd argument cannot be 0".into());
+        }
+        if let IntRepr::Small(value) = modulus.0 {
+            if value.unsigned_abs() <= u32::MAX as u128 { return self.modpow_word(exponent, value); }
         }
         let m = if modulus.is_negative() {
             modulus.exact_neg()
         } else {
             modulus.clone()
         };
-        let mut base = self.exact_divmod(&m)?.1;
+        let mut base = self.exact_remainder(&m)?;
         if exponent.is_negative() {
             let (mut old_r, mut r) = (m.clone(), base);
             let (mut old_t, mut t) = (Self::exact_small(0), Self::exact_small(1));
@@ -1103,17 +1352,16 @@ impl Int {
             if old_r != Self::exact_small(1) {
                 return Err("ValueError: base is not invertible for the given modulus".into());
             }
-            base = old_t.exact_divmod(&m)?.1;
+            base = old_t.exact_remainder(&m)?;
         }
-        let mut result = Self::exact_small(1).exact_divmod(&m)?.1;
-        let digits = exponent.magnitude();
+        let mut result = Self::exact_small(1).exact_remainder(&m)?;
         let bits = exponent.bit_length();
         for i in 0..bits {
-            if digits[i / 32] & (1u32 << (i % 32)) != 0 {
-                result = result.exact_mul(&base).exact_divmod(&m)?.1;
+            if exponent.magnitude_bit(i) {
+                result = result.exact_mul(&base).exact_remainder(&m)?;
             }
             if i + 1 < bits {
-                base = base.exact_mul(&base).exact_divmod(&m)?.1;
+                base = base.exact_mul(&base).exact_remainder(&m)?;
             }
         }
         if modulus.is_negative() && !result.is_zero() {
@@ -1200,6 +1448,14 @@ impl Int {
         let mut packed_count = 0u32;
         let mut bounded_word = 0u128;
         let mut digits = Vec::<u32>::new();
+        let mut chunk_base = 1u32;
+        let mut chunk_size = 0u32;
+        while chunk_base <= u32::MAX / base {
+            chunk_base *= base;
+            chunk_size += 1;
+        }
+        let mut chunk_word = 0u32;
+        let mut chunk_count = 0u32;
         let mut previous_digit = false;
         let mut first_zero = false;
         let mut any_nonzero = false;
@@ -1232,14 +1488,12 @@ impl Int {
                     }
                 }
             } else {
-                let mut carry = d as u64;
-                for limb in &mut digits {
-                    let n = *limb as u64 * base as u64 + carry;
-                    *limb = n as u32;
-                    carry = n >> 32;
-                }
-                if carry != 0 {
-                    digits.push(carry as u32);
+                chunk_word = chunk_word * base + d;
+                chunk_count += 1;
+                if chunk_count == chunk_size {
+                    Self::accumulate_digits(&mut digits, &mut bounded_word, chunk_base, chunk_word);
+                    chunk_word = 0;
+                    chunk_count = 0;
                 }
             }
             previous_digit = true;
@@ -1247,6 +1501,28 @@ impl Int {
         }
         if !previous_digit || count == 0 || (auto && !prefix && first_zero && any_nonzero) {
             return Err(invalid());
+        }
+        if packed_bits == 0 {
+            if chunk_count != 0 {
+                let mut factor = 1u32;
+                for _ in 0..chunk_count { factor *= base; }
+                Self::accumulate_digits(&mut digits, &mut bounded_word, factor, chunk_word);
+            }
+            if INT_BITS != 0 {
+                let value = if negative { bounded_word.wrapping_neg() } else { bounded_word };
+                return Ok(Self::from_i128(value as i128));
+            }
+            if digits.is_empty() {
+                if bounded_word <= i128::MAX as u128 || negative && bounded_word == 1u128 << 127 {
+                    let value = if negative { bounded_word.wrapping_neg() } else { bounded_word };
+                    return Ok(Self::exact_small(value as i128));
+                }
+                let mut magnitude = bounded_word;
+                while magnitude != 0 {
+                    digits.push(magnitude as u32);
+                    magnitude >>= 32;
+                }
+            }
         }
         if packed_bits != 0 {
             if INT_BITS != 0 {
@@ -1549,13 +1825,18 @@ impl std::fmt::Display for Int {
         if let IntRepr::Small(n) = self.0 {
             return write!(formatter, "{}", n);
         }
-        let mut magnitude = self.magnitude().into_owned();
+        let magnitude = self.magnitude();
         let mut chunks = Vec::new();
-        while !magnitude.is_empty() {
-            let (q, r) = Self::nat_div_small(&magnitude, 1_000_000_000);
-            chunks.push(r);
-            magnitude = q;
+        let mut powers = Vec::new();
+        if magnitude.len() > 32 {
+            powers.push(vec![1_000_000_000]);
+            let half = self.bit_length() / 2;
+            while Self::nat_bits(powers.last().unwrap()) * 2 - 1 <= half {
+                let last = powers.last().unwrap();
+                powers.push(Self::nat_mul(last, last));
+            }
         }
+        Self::nat_decimal_chunks(&magnitude, &powers, &mut chunks);
         if self.is_negative() {
             formatter.write_str("-")?;
         }

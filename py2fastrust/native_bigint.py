@@ -362,8 +362,10 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         simple = {ast.Add:"add",ast.Sub:"sub",ast.Mult:"mul",ast.BitAnd:"bitand",ast.BitOr:"bitor",ast.BitXor:"bitxor"}
         if type(operator) in simple:
             result = f"{first}.{simple[type(operator)]}(&{second})"
-        elif isinstance(operator,(ast.FloorDiv,ast.Mod)):
-            result = f"({self.at(f'{first}.divmod(&{second})',node)}).{0 if isinstance(operator,ast.FloorDiv) else 1}"
+        elif isinstance(operator,ast.FloorDiv):
+            result = f"({self.at(f'{first}.divmod(&{second})',node)}).0"
+        elif isinstance(operator,ast.Mod):
+            result = self.at(f'{first}.modulo(&{second})',node)
         elif isinstance(operator,(ast.LShift,ast.RShift)):
             method = "shl" if isinstance(operator,ast.LShift) else "shr"
             result = self.at(f"{first}.{method}(&{second})",node)
