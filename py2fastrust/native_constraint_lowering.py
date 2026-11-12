@@ -70,7 +70,8 @@ def allocation_expression(g,node,environment):
     if isinstance(kind,SharedListType):
         from .native_nested_lists import allocation
         return allocation(g,node,environment,kind,term)
-    if isinstance(kind,ListType) and not immutable(kind.element):return None
+    if (isinstance(kind,ListType)and not immutable(kind.element)
+            and not(isinstance(kind.element,ListType)and immutable(kind.element.element))):return None
     if isinstance(kind,(SetType,DictType)):
         from .native_key_containers import _construct,key_kind
         if not key_kind(kind.key):
@@ -106,6 +107,8 @@ def allocation_expression(g,node,environment):
         g.register_type(kind);g.has_lists=True
         values=[g.expression(g.type_analysis.graph.nodes[item.site],environment) for item in term.operands] if term.operation=="list" else []
         if values:
+            if isinstance(element,ListType)and any(not value.owned for value in values):
+                raise _Unsupported('owned nested-vector construction requires fresh owned rows; a borrowed row must retain its shared object identity',node=node,types=(('element',element),),proof='fresh row ownership without cloning mutable contents')
             g.has_typed_lists=True
             elements=",".join(value.code if value.kind==element and value.owned else g.coerce(value,element) for value in values)
             code=g.at(f"native_typed_literal([{elements}])",node)

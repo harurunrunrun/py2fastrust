@@ -187,7 +187,8 @@ def _collect(g,source,node,*,constructed=False):
         element = value.kind
     else:
         raise _Unsupported
-    if not immutable(element) and not isinstance(element,SharedListType) and not (element == "list_int" and value.owned):
+    if(not immutable(element)and not isinstance(element,SharedListType)
+       and not(value.owned and(element=='list_int'or type(element)is ListType and immutable(element.element)))):
         raise _Unsupported
     kind = ("list_int" if element == "int" else "matrix_int" if element == "list_int" else ListType(element))
     g.register_type(kind)
@@ -273,7 +274,8 @@ def try_expression(g, node, environment):
             element = join_types(element,value.kind)
             if element is None:
                 raise _Unsupported
-        if element == "int" or not immutable(element):
+        if element == "int" or not(immutable(element)or type(element)is ListType
+                and immutable(element.element)and all(value.owned for value in values)):
             return None
         _enable(g)
         g.register_type(ListType(element))
@@ -286,6 +288,9 @@ def try_expression(g, node, environment):
         if isinstance(node.slice,ast.Slice):
             return _slice(g,node,owner,environment)
         value = g.expression(node.slice,environment)
+        if type(owner.kind.element)is ListType:
+            from .native_sequence_storage import row_expression
+            return row_expression(g,node,owner,value,environment)
         container,index = g.temporary(),g.temporary()
         checked = _index(g,index,f"{container}.len()",node)
         return _Expression(f"{{ let {container}=&({owner.code}); let {index}={g.number(value)}; {container}[{checked}].clone() }}",owner.kind.element)
@@ -318,10 +323,13 @@ def try_statement(g,node,environment):
     from .native_nested_lists import kind_for
     if (isinstance(node,ast.AugAssign)and isinstance(node.target,ast.Subscript)
             and not isinstance(node.target.slice,ast.Slice)
-            and type(kind_for(g,node.target.value,environment))is ListType):
+            and(type(kind_for(g,node.target.value,environment))is ListType
+                or isinstance(node.target.value,ast.Subscript)
+                and kind_for(g,node.target.value,environment)=='list_int')):
         target=node.target
         owner=g.expression(target.value,environment)
-        if type(owner.kind)is ListType:
+        if type(owner.kind)is ListType or owner.kind=='list_int':
+            element='int'if owner.kind=='list_int'else owner.kind.element
             from .native_sequence_storage import capture_owned,stable_value_rhs
             storage=capture_owned(g,owner,target.value,environment,mutates=True)
             index=g.expression(target.slice,environment)
@@ -331,8 +339,8 @@ def try_statement(g,node,environment):
             lines.append(f'let {position}='+_index(g,offset,f'({storage.read}).len()',target)+';')
             lines.append(f'let {old}=({storage.read})[{position}].clone();')
             right=g.expression(node.value,environment)
-            result=g.binary(node.op,_Expression(old,owner.kind.element),right,node)
-            lines.append(f'let {item}={g.coerce(result,owner.kind.element)};')
+            result=g.binary(node.op,_Expression(old,element),right,node)
+            lines.append(f'let {item}={g.coerce(result,element)};')
             if stable_value_rhs(g,node.value):
                 write_position=position
             else:
@@ -341,6 +349,21 @@ def try_statement(g,node,environment):
             return '\n'.join(lines),environment
     if isinstance(node,ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0],ast.Subscript):
         target = node.targets[0]
+        if(isinstance(target.value,ast.Subscript)and not isinstance(target.slice,ast.Slice)
+           and(type(kind_for(g,target.value,environment))is ListType
+               or kind_for(g,target.value,environment)=='list_int')):
+            value=g.expression(node.value,environment)
+            owner=g.expression(target.value,environment)
+            element='int'if owner.kind=='list_int'else owner.kind.element
+            from .native_sequence_storage import capture_owned
+            storage=capture_owned(g,owner,target.value,environment,mutates=True)
+            index=g.expression(target.slice,environment)
+            item,offset,position=(g.temporary()for _ in range(3))
+            lines=[f'let {item}={_clone(g,value,element)};',*storage.setup,
+                   f'let {offset}={g.number(index)};',
+                   f'let {position}='+_index(g,offset,f'({storage.read}).len()',target,assignment=True)+';',
+                   f'({storage.mutable})[{position}]={item};']
+            return '\n'.join(lines),environment
         if not isinstance(target.value,ast.Name) or isinstance(target.slice,ast.Slice):
             return None
         binding = environment.get(target.value.id)

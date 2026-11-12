@@ -832,3 +832,11 @@ inlined checked operations for canonical signed-i128 values. Results that exceed
 that interval retain exact limb arithmetic. Comparing a wide value with a small
 value uses the canonical representation bounds, without allocating a temporary
 small magnitude. Fixed-width modes retain explicit wrapping at every operation.
+
+Fresh, nonescaping numeric matrix rows can use owned nested vectors, including
+row literals and per-iteration repeated rows such as `[[False] * w for _ in
+range(h)]`. Direct cell reads, assignments and augmented assignments share the
+stable sequence-storage capability. Repeated outer rows, escaped row aliases,
+shallow copies, reentrant operations and mutations observed by a row iterator
+retain identity-preserving storage. Assignment and augmented assignment keep
+their separate Python operand and error order.

@@ -55,7 +55,9 @@ def kind_for(g,node,environment):
         if isinstance(binding,_Binding):return unmaybe(binding.kind)
     from .native_constraint_lowering import facts_for
     facts,site=facts_for(g,node)
-    return facts.storage.get(site,facts.expressions.get(site)) if facts is not None else None
+    if facts is None:return None
+    from .native_constraints import native_kind
+    return native_kind(facts.storage.get(site,facts.expressions.get(site)),g.bits)
 
 
 def coerce(value,kind):
@@ -136,6 +138,11 @@ def try_expression(g,node,environment):
     if isinstance(node,ast.Subscript) and not isinstance(node.slice,ast.Slice):
         kind=kind_for(g,node.value,environment)
         if kind=="list_int" or isinstance(kind,ListType):
+            if type(kind)is ListType and type(kind.element)is ListType:
+                from .native_sequence_storage import row_expression
+                owner=g.expression(node.value,environment)
+                index=g.expression(node.slice,environment)
+                return row_expression(g,node,owner,index,environment)
             from .native_container_reads import capture
             owner=g.expression(node.value,environment)
             read=capture(g,node.value,owner,environment)

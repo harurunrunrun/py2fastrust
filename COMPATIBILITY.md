@@ -2280,3 +2280,10 @@ container alias identity without treating copied float values as Python object
 identities. Floating tuple values can be constructed, indexed, unpacked and
 printed using Python float formatting. Operations requiring identity-aware
 floating element comparisons still report their positioned protocol diagnostic.
+
+Numeric matrix storage follows allocation and escape proofs across the entire
+source scope. Independently allocated rows can remain `Vec<Vec<T>>` when only
+closed numeric cell operations observe them. A row projection captures its
+owner and normalized index; reads and writes access that original row instead
+of cloning its contents. Observable aliases and live mutation during iteration
+keep shared object identity.

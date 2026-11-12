@@ -32,6 +32,16 @@ class UniqueNestedListSelection(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertTrue(self.shared(source))
 
+    def test_numeric_repeated_rows_and_cell_updates_have_owned_storage(self):
+        for source in (
+                'rows=[[False]*3 for _ in range(2)]\nrows[0][1]=True\nprint(rows[0][1],rows[1][1])\n',
+                'rows=[[1.5]*3 for _ in range(2)]\nrows[0][-1]+=0.5\nprint(rows[0][2],rows[1][2])\n',
+                'rows=[[1,2],[3,4]]\nrows[1][1]=rows[0][0]+rows[0][1]\nprint(rows[1][1])\n'):
+            with self.subTest(source=source):self.assertFalse(self.shared(source))
+
+    def test_cell_mutation_during_row_iteration_keeps_shared_storage(self):
+        self.assertTrue(self.shared('rows=[[False,False]]\nfor item in rows[0]:\n print(item)\n rows[0][1]=True\n'))
+
 
 @unittest.skipUnless(shutil.which('rustc'), 'rustc is required')
 class UniqueNestedListExecution(unittest.TestCase):
@@ -55,6 +65,74 @@ for x in rows[0]:
  rows=[[9]]
  print(x)
 print(rows,other)
+''')
+
+    def test_repeated_bool_rows_are_independent(self):
+        self.compare('''rows=[[False]*3 for _ in range(2)]
+rows[0][1]=True
+print(rows[0][1],rows[1][1],len(rows),len(rows[0]))
+''')
+
+    def test_fresh_constructor_rows_remain_independent(self):
+        self.compare('''rows=[list([False,True]) for _ in range(2)]
+rows[0][0]=True
+print(rows[0][0],rows[1][0],rows[0][1],rows[1][1])
+''')
+
+    def test_float_updates_and_nested_scalar_rhs_read_the_original_rows(self):
+        self.compare('''rows=[[1.5]*3 for _ in range(2)]
+rows[0][-1]+=0.5
+rows[1][0]=rows[0][0]+rows[0][2]
+rows[1][1]*=rows[1][0]
+print(rows[0][0],rows[0][2],rows[1][0],rows[1][1],rows[1][2])
+''')
+
+    def test_integer_cell_writes_and_augmented_reads_keep_the_matrix_owner(self):
+        self.compare('''rows=[[1,2],[3,4]]
+rows[1][-1]=rows[0][0]+rows[0][1]
+rows[0][-1]+=rows[1][-1]
+print(rows[0][0],rows[0][1],rows[1][0],rows[1][1])
+''')
+
+    def test_cell_assignment_runs_rhs_before_owner_and_index_errors(self):
+        source='''rows=[[1.5,2.5],[3.5,4.5]]
+r=int(input())
+c=int(input())
+divisor=float(input())
+print('before')
+rows[r][c]=1.0/divisor
+print(rows[0][0],rows[1][1])
+'''
+        self.compare(source,('0\n0\n2\n','-1\n-1\n2\n','2\n0\n0\n',
+                             '2\n0\n2\n','0\n2\n0\n','0\n2\n2\n'))
+
+    def test_cell_augassign_reads_before_rhs_errors(self):
+        source='''rows=[[1.5,2.5],[3.5,4.5]]
+r=int(input())
+c=int(input())
+divisor=float(input())
+print('before')
+rows[r][c]+=1.0/divisor
+print(rows[0][0],rows[1][1])
+'''
+        self.compare(source,('0\n0\n2\n','-1\n-1\n2\n','2\n0\n0\n',
+                             '2\n0\n2\n','0\n2\n0\n','0\n0\n0\n'))
+
+    def test_outer_repetition_and_row_aliases_keep_identity(self):
+        self.compare('''rows=[[False]*2]*2
+rows[0][1]=True
+print(rows[1][1])
+fresh=[[False]*2 for _ in range(2)]
+row=fresh[0]
+row[0]=True
+print(fresh[0][0],fresh[1][0],row is fresh[0])
+''')
+
+    def test_mutation_during_row_iteration_remains_observable(self):
+        self.compare('''rows=[[False,False]]
+for item in rows[0]:
+ print(item)
+ rows[0][1]=True
 ''')
 
 

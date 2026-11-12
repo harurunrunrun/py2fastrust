@@ -136,7 +136,9 @@ def capture_owned(g,receiver,node,environment,*,mutates):
 def row_expression(g,node,owner,index,environment):
     """Describe an already lowered row owner/index; never visit either twice."""
     from .native import _Expression
-    binding=environment.get(node.value.id)
+    from .native_types import ListType
+    name=binding_name(g,node.value)
+    binding=environment.get(name)
     if not isinstance(binding,_Binding):
         raise _Unsupported("the matrix row's owner has no resolved native binding; retaining the same row across later argument effects requires an identity-preserving owner/row handle",node=node,types=(("owner",owner.kind),),proof="stable matrix owner and row identity")
     offset=g.temporary()
@@ -146,10 +148,11 @@ def row_expression(g,node,owner,index,environment):
     read=f"&(({owner.code})[{offset}])[..]"
     parent=(f'{binding.slot}.as_mut().expect("validated matrix receiver")'if is_maybe(binding.kind)
             else binding.slot)
-    storage=SequenceStorage(setup,read,f"&mut ({parent})[{offset}]","list_int",
-                            forbidden_owners=(node.value.id,),mutation_binding=binding)
+    row_kind=owner.kind.element if type(owner.kind)is ListType else 'list_int'
+    storage=SequenceStorage(setup,read,f"&mut ({parent})[{offset}]",row_kind,
+                            forbidden_owners=(name,),mutation_binding=binding)
     code="{"+"".join(setup)+f"&({owner.code})[{offset}]"+"}"
-    return _Expression(code,"list_int",owned=False,sequence_view=storage)
+    return _Expression(code,row_kind,owned=False,sequence_view=storage)
 
 
 def capture_shared(g,receiver):

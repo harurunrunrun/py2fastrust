@@ -1,11 +1,11 @@
-"""Prove that fresh integer rows never escape their unique outer vector."""
+"""Prove that fresh numeric rows never escape their unique outer vector."""
 import ast
 
 
 def allocations(solver):
     from .native_constraints import Allocation, value
     from .native_types import ListType
-    from .native_scalar_effects import scalar_rhs
+    from .native_scalar_effects import scalar_rhs,SCALARS
     from .references import BuiltinIdentity
 
     unit = solver.graph.unit
@@ -29,9 +29,20 @@ def allocations(solver):
             if isinstance(part, Allocation):
                 uses.setdefault(part, []).append((context, solver.graph.nodes[site]))
 
+    def kind(context,node):
+        return solver.kind(solver.records.get((context,unit.ordinal(node)),value(None)))
+
+    def owner(context,node):
+        if not isinstance(kind(context,node),ListType):return False
+        if isinstance(node,ast.Name):return True
+        return(isinstance(node,ast.Subscript)and not isinstance(node.slice,ast.Slice)
+               and owner(context,node.value)and scalar(context,node.slice))
+
     def scalar(context, node):
-        return scalar_rhs(node, lambda child: solver.kind(solver.records.get(
-            (context, unit.ordinal(child)), value(None))))
+        def read(child):
+            return(not isinstance(child.slice,ast.Slice)and owner(context,child.value)
+                   and scalar(context,child.slice))
+        return scalar_rhs(node,lambda child:kind(context,child),read=read)
 
     def builtin(context, call, name):
         fact = solver.calls.get((context, unit.ordinal(call)))
@@ -45,7 +56,9 @@ def allocations(solver):
 
     proved = set()
     for root in solver.allocations.values():
-        if root.category != 'list' or solver.kind(value(root)) != ListType(ListType('int')):
+        shape=solver.kind(value(root))
+        if(root.category!='list'or not isinstance(shape,ListType)
+           or not isinstance(shape.element,ListType)or shape.element.element not in SCALARS):
             continue
         if root in solver.shared_references or root in ambiguous:
             continue
@@ -55,8 +68,7 @@ def allocations(solver):
                 or len(assignment.targets) != 1 or not isinstance(assignment.targets[0], ast.Name)):
             continue
         binding_name = unit.name_for(assignment.targets[0])
-        if not (isinstance(creation, ast.ListComp) and isinstance(creation.elt, ast.List)
-                or isinstance(creation, ast.List) and all(isinstance(child, ast.List) for child in creation.elts)):
+        if not isinstance(creation,(ast.ListComp,ast.List)):
             continue
         children = solver.provenance(solver.field(root, 'element')).alternatives
         if (not children or not all(isinstance(child, Allocation) and child.category == 'list'
@@ -100,6 +112,15 @@ def allocations(solver):
                 elif (isinstance(parent, ast.Subscript) and parent.value is node
                         and isinstance(parent.ctx, ast.Load) and scalar(context, parent.slice)):
                     continue
+                elif(isinstance(parent,ast.Subscript)and parent.value is node
+                     and isinstance(parent.ctx,ast.Store)and scalar(context,parent.slice)):
+                    statement=parents.get(id(parent))
+                    if(not isinstance(statement,(ast.Assign,ast.AugAssign))
+                       or isinstance(statement,ast.Assign)and statement.targets!=[parent]
+                       or not scalar(context,statement.value)):
+                        valid=False
+                        break
+                    mutations.add(id(statement))
                 elif isinstance(parent, ast.Attribute) and parent.value is node and parent.attr == 'append':
                     call = parents.get(id(parent))
                     if (not isinstance(call, ast.Call) or call.func is not parent
