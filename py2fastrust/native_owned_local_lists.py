@@ -17,6 +17,15 @@ class Local:
     kind: ListType
     binding: tuple
     allocations: tuple
+    exports: frozenset=frozenset()
+
+
+def tail_transfer(plan,node):
+    """A direct final return has no pending source cleanup or later reads."""
+    if not isinstance(plan.node,(ast.FunctionDef,ast.AsyncFunctionDef)):return False
+    body=plan.node.body
+    return(bool(body)and isinstance(body[-1],ast.Return)and body[-1].value is node
+           and isinstance(node,ast.Name)and isinstance(node.ctx,ast.Load))
 
 
 def static_builtin(emitter,node,name):
@@ -134,6 +143,7 @@ def prepare(emitter):
         writes=0
         iterates=False
         allocations=[]
+        exports=set()
         for binding,node in bindings:
             parent=parents.get(id(node))
             if (not isinstance(node,ast.Name)or model.lexical.field_for(node)is not None
@@ -171,6 +181,11 @@ def prepare(emitter):
                 if allocation_site is None:valid=False;break
                 allocations.append(allocation_site)
             elif binding.role=='load':
+                if tail_transfer(plan,node):
+                    from .native_primitive_parameter_places import owned_load,owned_lifetime
+                    if not owned_load(model,kind)or not owned_lifetime(model):
+                        valid=False;break
+                    exports.add(id(node));continue
                 direct=isinstance(parent,ast.Subscript)and parent.value is node and not isinstance(parent.slice,ast.Slice)
                 length=(isinstance(parent,ast.Call)and parent.args==[node]and not parent.keywords
                         and static_builtin(emitter,parent.func,'len'))
@@ -189,7 +204,7 @@ def prepare(emitter):
         # Direct places need no retained handle only when that binding cannot
         # be replaced during any iteration (captures/deletions already fail).
         if valid and writes and(not iterates or writes==1):
-            result[name]=Local(name,kind,(scope,bindings[0][0].name),tuple(allocations))
+            result[name]=Local(name,kind,(scope,bindings[0][0].name),tuple(allocations),frozenset(exports))
     return result
 
 
@@ -206,6 +221,13 @@ def checked(emitter,local,node,mutable=False):
     slot=emitter.slot(local.name,local.kind)
     message="UnboundLocalError: cannot access local variable '"+emitter.model.display_name(local.name)+"' where it is not associated with a value"
     return emitter.at(f'{slot}.as_{"mut"if mutable else"ref"}().ok_or_else(||{_string(message)}.to_owned())',node)
+
+
+def take(emitter,local,node):
+    from .native import _string
+    slot=emitter.slot(local.name,local.kind)
+    message="UnboundLocalError: cannot access local variable '"+emitter.model.display_name(local.name)+"' where it is not associated with a value"
+    return emitter.at(f'{slot}.take().ok_or_else(||{_string(message)}.to_owned())',node)
 
 
 def iteration(emitter,node):
@@ -309,6 +331,9 @@ def store(emitter,reference,value,node):
 
 def read(emitter,node):
     from .native_classes import Expression
+    local=selected(emitter,node)
+    if local is not None and id(node)in local.exports:
+        return Expression('class_list('+take(emitter,local,node)+')',local.kind)
     indexed=reference(emitter,node)
     if indexed is not None:
         before,place=indexed

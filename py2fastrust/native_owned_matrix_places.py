@@ -93,6 +93,7 @@ def prepare(emitter,candidates):
                 if not isinstance(parent,(ast.Assign,ast.AnnAssign))or not fresh(emitter,parent.value,layout):
                     valid=False;break
             elif binding.role=='load':
+                if id(node)in local.exports:continue
                 end=node
                 while isinstance(parents.get(id(end)),ast.Subscript)and parents[id(end)].value is end:
                     end=parents[id(end)]
@@ -232,6 +233,14 @@ def store(emitter,reference,value,node):
 def read(emitter,node):
     from .native_classes import Expression
     from .native_owned_local_lists import static_builtin
+    matrix=selected(emitter,node)
+    if matrix is not None and id(node)in matrix.local.exports:
+        from .native_owned_local_lists import take
+        def publish(layout,value):
+            if layout.child is None:return value
+            item=emitter.fresh()
+            return 'class_list(('+value+').into_iter().map(|'+item+'|'+publish(layout.child,item)+').collect())'
+        return Expression(publish(matrix.tree,take(emitter,matrix.local,node)),matrix.kind)
     indexed=reference(emitter,node)
     if indexed is not None:
         before,place=indexed
@@ -326,6 +335,8 @@ def requires_frames(unit,analysis):
                     if binding.role!='load':continue
                     root=nodes[binding.node]
                     if not isinstance(root,ast.Name)or kind_of(root)!=kind:valid=False;break
+                    from .native_owned_local_lists import tail_transfer
+                    if tail_transfer(SimpleNamespace(node=function),root):continue
                     end=root
                     while isinstance(parents.get(id(end)),ast.Subscript)and parents[id(end)].value is end:
                         end=parents[id(end)]
