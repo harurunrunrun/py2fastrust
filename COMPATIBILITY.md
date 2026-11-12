@@ -12,10 +12,27 @@ Proved integer/boolean, string, and f64 scalars, BigInt scalar arithmetic and
 functions, integer containers, compatible branches/loops, scalar functions and
 selected competitive-programming input/BFS patterns are implemented. This is
 an incomplete subset of the required Python language. Remaining closure lifetime
-cases, exception handlers, general object models, user-defined generators,
+cases, exception handlers, general object models, advanced generator protocols,
 dynamic execution, import reflection/reloading and many mixed-type/alias cases
 still require direct lowering. An `E006`
 diagnostic makes that gap explicit; it does not satisfy the missing feature.
+
+Source generator functions with statement `yield` compile to concrete typed
+Rust frames. Numeric and builtin-container locals, ordinary branches and
+`while`/`for` loops, `next` with defaults, iteration and shared cursors are
+supported. Creation captures bound arguments/defaults without executing the
+body; global reads occur at each original pull. Only entry and post-yield
+resumption points select frame states; ordinary operations and loops remain
+native structured Rust. Iterator sources retained by suspended loops participate
+in ownership validation. Generator exhaustion and PEP 479 exception chaining
+retain their separate behavior.
+
+`send`/`throw`/`close`, expression yields, `yield from`, non-`None` return values,
+cleanup/exception statements, lexical captures, opaque retained payloads and
+recursive resume regions still produce specific source-positioned diagnostics.
+Ordinary call-depth elimination is withheld for reached suspended source frames
+until its lifetime proof covers suspension. Unreachable generator declarations
+do not disable that optimization for ordinary reached functions.
 
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14

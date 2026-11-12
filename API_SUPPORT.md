@@ -28,6 +28,14 @@ maps and callbacks keep their owned input snapshots; sized reads keep their
 existing adapters. No input view escapes, and `readline()` still does not flush
 pending output implicitly.
 
+Source functions using statement `yield` can supply typed native iterators to
+ordinary consumers. Creation defers the body, arguments/defaults are captured
+once, globals remain live at pulls, and aliases share the suspended cursor.
+Builtin-container/numeric frame storage and structured native loops are
+supported. Delegation, injected resumption/cleanup, lexical captures, opaque
+retained payloads and recursive resume regions remain explicit diagnostics;
+this is not full generator-protocol coverage.
+
 Typed source-class namespaces support ordinary nested classes and scalar/list
 class data, including aliases, rebinding, deletion and instance-field precedence.
 They retain the original scope owners and captured defining-module references.

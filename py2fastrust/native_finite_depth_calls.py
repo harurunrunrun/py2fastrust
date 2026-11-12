@@ -111,6 +111,8 @@ def _model_proof(model):
         raise Unproved('collection or a finalizer can reenter source calls')
     if model.generators.records:
         raise Unproved('a generator can contribute suspended logical depth')
+    if any(getattr(plan,'source_generator',None)is not None for plan in plans.values()):
+        raise Unproved('a source generator retains suspension state outside ordinary call-frame lifetime proofs')
     heights = getattr(model, 'native_call_heights', {})
     if any(index not in heights for index in plans):
         raise Unproved('a reached source plan has no finite acyclic height')

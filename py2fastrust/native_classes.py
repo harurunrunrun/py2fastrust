@@ -315,6 +315,8 @@ class Model:
         self.callable_cells=self.create_callable_cells()
         from .native_class_iterators import Iterators
         self.iterators=Iterators(self)
+        from .native_source_generators import prepare as prepare_source_generators
+        prepare_source_generators(self)
         from .native_starred_calls import ExpandedCalls
         self.expanded_calls=ExpandedCalls(self)
         from .native_immediate_generators import Generators
@@ -543,7 +545,9 @@ class Model:
             value=Cell("object",(self.class_key(owner),))if receiver_kind is None else self.cell_for_kind(receiver_kind)
             merge(plan.arguments[plan.parameters[0]],value,node)
         from .native_lexical_cells import own_return_values
-        if not any(value is not None and not(isinstance(value,ast.Constant)and value.value is None)
+        from .native_source_generators import initialize as initialize_generator
+        generator=initialize_generator(self,plan)
+        if not generator and not any(value is not None and not(isinstance(value,ast.Constant)and value.value is None)
                    for value in own_return_values(self.unit,node)):
             merge(plan.result, Cell("none"), node)
         self.plans.append(plan)
@@ -664,6 +668,7 @@ class Model:
             self.contribute(plan.result,self.expression(plan,plan.node.body,environment),plan.node.body)
             return None
         result=self.block(plan,plan.node.body,environment)
+        if getattr(plan,'source_generator',None)is not None:return None
         if hasattr(self,'class_namespaces'):self.class_namespaces.named_tuples.finish_body(plan,result or environment)
         return result
 
@@ -711,7 +716,7 @@ class Model:
         self.specializations.enable()
         if self.specializations.enabled:self.infer_until_stable()
         self.final = True
-        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or self.exceptions.raises or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)else None
+        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or self.exceptions.raises or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)or getattr(self,'source_generators_used',False)else None
         self.module.visible_definitions = set()
         self.block(self.module, self.tree.body, dict(self.global_symbols))
         for plan in self.plans[1:]:
@@ -748,6 +753,9 @@ class Model:
         validate(cell,node,self.integer,field_value=field_value,model=self)
 
     def expression(self, plan, node, environment):
+        if isinstance(node,(ast.Yield,ast.YieldFrom)):
+            from .native_source_generators import analyze_yield
+            return analyze_yield(self,plan,node,environment)
         if isinstance(node,ast.JoinedStr):
             from .native_formatting import analyze_joined
             return analyze_joined(self,plan,node,environment)
@@ -1051,11 +1059,14 @@ class Model:
             if name in getattr(callee,"erased_context_parameters",()):continue
             if not self.namespace.contribute(callee.arguments[name],value,node,force=True):
                 self.contribute(callee.arguments[name], value, node)
-        self.namespace.call_effects(caller,callee,environment)
+        if getattr(callee,'source_generator',None)is None:
+            self.namespace.call_effects(caller,callee,environment)
         from .native_source_returns import project_result
         return project_result(self,caller,node,callee,bound)
 
     def call(self, plan, node, environment):
+        from .native_source_generators import guard_call as source_generator_guard_call
+        source_generator_guard_call(self,plan,node,environment)
         expanded=self.expanded_calls.analyze(plan,node,environment)
         if expanded is not None:return expanded
         value=self.callable_cells.analyze(plan,node,environment)
@@ -1505,7 +1516,10 @@ class Model:
                 if self.is_module_plan(plan):
                     raise ClassUnsupported(node)
                 value = Cell("none") if node.value is None else self.expression(plan,node.value,environment)
-                self.contribute(plan.result,value,node)
+                if getattr(plan,'source_generator',None)is not None:
+                    from .native_source_generators import analyze_return
+                    analyze_return(self,plan,node,value)
+                else:self.contribute(plan.result,value,node)
                 environment = None
             elif isinstance(node,(ast.Break,ast.Continue)):
                 if not self.loop_depth:
@@ -2869,6 +2883,9 @@ class Emitter:
         return "\n".join(data+references)
 
     def generate(self):
+        from .native_source_generators import generate as generate_source_generator
+        generator=generate_source_generator(self)
+        if generator is not None:return generator
         from .native_typed_continuations import generate as generate_continuation
         continuation=None if getattr(self,'native_direct_body',False)else generate_continuation(self)
         if continuation is not None:return continuation

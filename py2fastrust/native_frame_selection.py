@@ -101,6 +101,8 @@ def _semantic_requirements(unit,analysis,targets):
 
 
 def select_frames(unit,*,integer="i64"):
+    if any(isinstance(node,(ast.Yield,ast.YieldFrom))for node in ast.walk(unit.tree)):
+        return FrameSelection(True,('source generator suspension',),None,frozenset(),MappingProxyType({}))
     if any(isinstance(node,ast.ClassDef)for node in ast.walk(unit.tree)):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
     analysis=analyze(unit)
