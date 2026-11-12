@@ -292,3 +292,12 @@ def shared_payload(kind):
     if isinstance(kind,NullableType):return shared_payload(kind.value)
     if isinstance(kind,UnionType):return all(shared_payload(value)for value in kind.alternatives)
     return kind in {"int","bool","int_bool","str","bytes","none"}
+
+
+def shared_storage_payload(kind):
+    """An immutable value can be stored behind an identity-preserving list handle.
+
+    Float element identity and NaN-aware sequence comparisons require separate
+    protocol proofs; they do not restrict sharing the container itself.
+    """
+    return immutable(kind)

@@ -315,6 +315,27 @@ def try_statement(g,node,environment):
     from .native_unpack import try_statement as unpack_statement
     unpacked=unpack_statement(g,node,environment)
     if unpacked is not None:return unpacked
+    from .native_nested_lists import kind_for
+    if (isinstance(node,ast.AugAssign)and isinstance(node.target,ast.Subscript)
+            and not isinstance(node.target.slice,ast.Slice)
+            and type(kind_for(g,node.target.value,environment))is ListType):
+        target=node.target
+        owner=g.expression(target.value,environment)
+        if type(owner.kind)is ListType:
+            from .native_sequence_storage import capture_owned
+            storage=capture_owned(g,owner,target.value,environment,mutates=True)
+            index=g.expression(target.slice,environment)
+            offset,position,old,item,write_position=(g.temporary()for _ in range(5))
+            lines=list(storage.setup)
+            lines.append(f'let {offset}={g.number(index)};')
+            lines.append(f'let {position}='+_index(g,offset,f'({storage.read}).len()',target)+';')
+            lines.append(f'let {old}=({storage.read})[{position}].clone();')
+            right=g.expression(node.value,environment)
+            result=g.binary(node.op,_Expression(old,owner.kind.element),right,node)
+            lines.append(f'let {item}={g.coerce(result,owner.kind.element)};')
+            lines.append(f'let {write_position}='+_index(g,offset,f'({storage.read}).len()',target,assignment=True)+';')
+            lines.append(f'({storage.mutable})[{write_position}]={item};')
+            return '\n'.join(lines),environment
     if isinstance(node,ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0],ast.Subscript):
         target = node.targets[0]
         if not isinstance(target.value,ast.Name) or isinstance(target.slice,ast.Slice):

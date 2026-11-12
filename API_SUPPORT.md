@@ -807,3 +807,14 @@ adapters retain source allocation provenance without wrapping values in a VM.
 Ordinary lexical value bindings support `del`, including conditional and
 loop-carried unbound states. Imported/callable static-reference bindings still
 need their own unbinding representation.
+
+Owned typed vectors support indexed augmented assignment through the shared
+stable-owner sequence capability. The receiver and index are captured before
+reading the old element; the right-hand side runs before the final checked
+store. Negative indices are normalized again after right-hand-side mutation.
+Unaliased homogeneous arrays retain ordinary `Vec<T>` storage. Aliased builtin
+lists containing floats or immutable float tuple fields use shared native list
+handles without requiring an element-comparison protocol merely to store them.
+Float tuple construction and display retain Python formatting; identity-sensitive
+floating element equality, membership and ordering remain explicit missing
+protocols rather than silently using Rust's value comparisons.

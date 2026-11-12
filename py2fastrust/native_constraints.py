@@ -1094,8 +1094,9 @@ class Solver:
         else:raise ConstraintFailure(self.graph.unit.tree.body[0] if self.graph.unit.tree.body else self.graph.unit.tree)
         # Nested mutable list fields carry allocation identities. Select shared
         # physical storage from these solved edges, never from source spelling.
+        from .native_types import shared_storage_payload
         def shared_lists(kind):
-            return shared_payload(kind)or isinstance(kind,ListType)and shared_lists(kind.element)
+            return shared_storage_payload(kind)or isinstance(kind,ListType)and shared_lists(kind.element)
         shared={part for part in self.shared_references if shared_lists(self.kind(value(part)))}
         from .native_unique_nested_lists import allocations as unique_nested_allocations
         unique_nested=unique_nested_allocations(self)

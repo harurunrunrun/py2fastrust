@@ -2269,3 +2269,14 @@ Declared entry variants share the original source plan's binding, call-height
 and parameter-borrow certificates. The existing physical Rust shape, escape,
 destructor and bounded-call checks still apply; unknown entry shapes retain
 their checked native representation.
+
+Typed-vector element updates (`+=`, `*=`, `/=`, `//=`, `%=`, `**=`, and other
+operators with an implemented native value operation) preserve Python's
+receiver/index/read/right-hand-side/store order. Every source index runs once.
+The read and write use their respective bounds errors; a negative index is
+checked against the length at each phase, retaining mutations between them.
+Unique homogeneous containers keep `Vec<T>`; shared float-list storage retains
+container alias identity without treating copied float values as Python object
+identities. Floating tuple values can be constructed, indexed, unpacked and
+printed using Python float formatting. Operations requiring identity-aware
+floating element comparisons still report their positioned protocol diagnostic.

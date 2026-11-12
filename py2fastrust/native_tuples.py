@@ -122,6 +122,8 @@ def _order(generator,left,right,operator,node):
 
 
 def tuple_compare(generator,left,right,operator,node):
+    if any(isinstance(value.kind,TupleType)and not _scalar(value.kind)for value in (left,right)):
+        raise _Unsupported('tuple element comparison requires identity-aware equality for floating or other unproved payloads; that tuple comparison protocol is not implemented',node=node,types=(('left',left.kind),('right',right.kind)),proof='identity-aware tuple element equality and ordering')
     if not isinstance(left.kind,TupleType) and not isinstance(right.kind,TupleType):
         if not _scalar(left.kind) or not _scalar(right.kind):raise _Unsupported
         if isinstance(operator,(ast.Eq,ast.NotEq)):
@@ -186,6 +188,9 @@ def tuple_repr(generator,value):
             nested=tuple_repr(generator,_Expression(item,kind,owned=False))
             lines.append(f"{result}.push_str(&({nested}));")
         elif kind=="str":lines.append(f"{result}.push_str(&native_tuple_repr_str(&{item}));")
+        elif kind=='float':
+            generator.has_extended_scalars=True
+            lines.append(f'{result}.push_str(&native_float_text({item}));')
         else:
             display=f'if {item}{{"True"}}else{{"False"}}' if kind=="bool" else item
             lines.append(f'write!(&mut {result},"{{}}",{display}).unwrap();')
@@ -200,7 +205,8 @@ def try_expression(generator,node,environment):
     if sequence is not None:return sequence
     if isinstance(node,ast.Tuple):
         values=[generator.expression(value,environment) for value in node.elts]
-        if any(not _scalar(value.kind) for value in values):
+        from .native_types import immutable
+        if any(not immutable(value.kind) for value in values):
             raise _Unsupported("this tuple payload needs value/identity or mutable-alias handling beyond the registered native scalar tuple fields; the required tuple storage/protocol adapter is not implemented",node=node,operation="tuple allocation",types=(("tuple",TupleType(tuple(value.kind for value in values))),),proof="tuple payload value and identity semantics")
         kind=TupleType(tuple(value.kind for value in values));_mark(generator,kind)
         return _Expression(tuple_code(value.code for value in values),kind,length=len(values))
@@ -315,7 +321,11 @@ def try_statement(generator,node,environment):
         if index:setup.append(f"native_output.push_str({_string(sep)});")
         code=tuple_repr(generator,value) if isinstance(value.kind,TupleType) else value.code
         if value.kind=="bool":code=f'if {code}{{"True"}}else{{"False"}}'
-        if not isinstance(value.kind,TupleType) and value.kind not in {"int","bool","int_bool","str"}:raise _Unsupported
+        if value.kind=='float':
+            generator.has_extended_scalars=True
+            code=f'native_float_text({code})'
+        if value.kind=='none':code='"None"'
+        if not isinstance(value.kind,TupleType) and value.kind not in {"int","bool","int_bool","str","float","none"}:raise _Unsupported
         setup.append(f'write!(&mut native_output,"{{}}",{code}).unwrap();')
     setup.append(f"native_output.push_str({_string(end)});")
     if flush:setup.append(generator.at("native_flush_output(&mut native_output)",node)+";")
