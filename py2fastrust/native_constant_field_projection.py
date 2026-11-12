@@ -65,12 +65,20 @@ class Registry:
         from .native_module_calls import BuiltinRef
         if self.scalars is None or self.scalars.reason is not None:
             raise Unproved('the closed scalar producer/heap graph is unavailable')
-        if not value_selected(self.model,owner)or not copy_selected(self.model,owner):
-            raise Unproved('owner is not a closed immutable Copy value class')
+        if not copy_selected(self.model,owner):
+            raise Unproved('owner does not have closed Copy scalar fields')
         if not packed_selected(self.model,owner):
             raise Unproved('field presence and read-after-initialization are not independently proved')
-        if not identity_elided(self.model,owner):
+        if value_selected(self.model,owner)and not identity_elided(self.model,owner):
             raise Unproved('owner identity/representation/heap observations retain its physical layout')
+        if not value_selected(self.model,owner):
+            # Packed shared instances retain their Rc identity and all mutable
+            # fields. The ordered constructor proof seals field presence; the
+            # whole-source MAY value graph, including every aliasing write,
+            # separately establishes a redundant constant slot.
+            from .native_namespace_read_places import lifetime_closed
+            if not lifetime_closed(self.model):
+                raise Unproved('shared instance lifetime/observer proof is absent')
         namespace={'getattr','setattr','delattr','vars','locals','globals','eval','exec','compile','type'}
         observers={'id','print','str','repr','format','ascii','hash','sorted','min','max'}
         for plan in self.scalars.plans.values():

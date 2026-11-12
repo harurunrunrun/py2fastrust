@@ -14,12 +14,66 @@ class Registry:
         self.values=getattr(model,'value_classes',None)
         self.bindings={binding.node:binding for binding in model.iter_bindings()}
         for owner in model.classes.values():
-            if self.values is None or owner.index not in self.values.selected:continue
+            if self.values is None or not owner.used:continue
             try:self.prove(owner)
             except Unproved as error:self.reasons[owner.index]=str(error)
             else:self.selected.add(owner.index)
 
     def kind(self,plan,node):return self.values.kind(plan,node)
+
+    def map_constructor(self,plan,node,owner,*,consumer=False):
+        """The registered map callback allocates a fresh canonical instance."""
+        from .native_classes import shape
+        from .native_module_linking import ClassReferenceType
+        for record in self.model.iterators.records:
+            if record.operation != 'map':continue
+            if not consumer and (record.plan is not plan or record.node is not node):continue
+            kind=shape(record.callback)
+            if not isinstance(kind,ClassReferenceType)or kind.definition!=owner.index:continue
+            if not consumer:return True
+            site=record.demands.get((plan.index,id(node)))
+            if (site is not None and not(site.targets or site.errors or site.builtins
+                    or site.members or site.exception_constructors)
+                    and set(site.constructors)=={owner.index}
+                    and site.constructors[owner.index].owner is owner
+                    and site.constructors[owner.index].error is None):
+                return True
+        return False
+
+    def shared_initializer(self,owner,initializer):
+        """Retain shared identity/mutations; certify only field presence."""
+        from .native_copy_scalar_fields import selected
+        from .native_class_calls import synchronous
+        from .native_classes import InstanceType,shape
+        from .native_namespace_read_places import lifetime_closed
+        if not selected(self.model,owner)or not lifetime_closed(self.model):
+            raise Unproved('shared scalar layout lacks a closed lifetime certificate')
+        if (owner.node.bases or owner.node.keywords or owner.node.decorator_list
+                or owner.node.type_params or any(name in owner.methods for name in
+                    ('__new__','__del__','__setattr__','__delattr__','__getattribute__','__getattr__'))):
+            raise Unproved('shared allocation or attribute protocol is not plain')
+        if not synchronous(self.model,initializer)or not initializer.runtime_parameters:
+            raise Unproved('shared initializer can suspend or has no receiver')
+        name=initializer.runtime_parameters[0]
+        if shape(initializer.arguments[name])!=InstanceType(self.model.class_key(owner)):
+            raise Unproved('shared initializer receiver has no exact instance layout')
+        for (index,node_id),targets in self.model.call_edges_by_site.items():
+            if initializer.index not in targets:continue
+            caller=self.values.plans.get(index);node=self.values.nodes.get(node_id)
+            if (caller is None or node is None or not(
+                    self.values.constructor(caller,node,owner)
+                    or self.map_constructor(caller,node,owner,consumer=True))):
+                raise Unproved('initializer can be invoked on an existing or unproved instance')
+        scope=self.model.lexical.scope(initializer)
+        for node in self.values.own_nodes(initializer):
+            if not isinstance(node,ast.Name)or self.model.resolved_name(initializer,node)!=name:continue
+            parent=self.values.parents.get(id(node))
+            binding=self.bindings.get(self.model.unit.ordinal(node))
+            if (not isinstance(node.ctx,ast.Load)or binding is None
+                    or binding.owner!=scope or binding.scope!=scope
+                    or not isinstance(parent,ast.Attribute)or parent.value is not node
+                    or self.model.resolved_name(initializer,parent)not in owner.fields):
+                raise Unproved('partly initialized receiver can escape or invoke another protocol')
 
     def class_reference(self,kind,owner,active=frozenset()):
         from .native_module_linking import ClassReferenceType
@@ -33,15 +87,18 @@ class Registry:
     def sealed(self,owner):
         from .native_aot_callables import AotFunctionType
         from .native_module_linking import ClassReferenceType
-        raw_protocols={'__new__','__subclasses__','__getattribute__','__reduce__','__reduce_ex__','__getstate__','__setstate__'}
+        raw_protocols={'__new__','__dict__','__subclasses__','__getattribute__','__reduce__','__reduce_ex__','__getstate__','__setstate__'}
         reflection={'getattr','setattr','delattr','vars','locals','globals','eval','exec','compile','type'}
         namespace=getattr(self.model,'class_namespaces',None)
         for plan in self.values.plans.values():
             for node in self.values.own_nodes(plan):
                 if isinstance(node,ast.Attribute):
                     if node.attr in raw_protocols:raise Unproved('raw allocation or reflective protocol is reachable')
+                    receiver=self.kind(plan,node.value)
+                    if (isinstance(receiver,ClassReferenceType)and receiver.definition==owner.index
+                            and isinstance(node.ctx,(ast.Store,ast.Del))):
+                        raise Unproved('the source class namespace can change after publication')
                     if isinstance(node.ctx,ast.Del):
-                        receiver=self.kind(plan,node.value)
                         if receiver is None or self.values.contains(receiver,owner):
                             raise Unproved('an instance field may be deleted')
                 if not isinstance(node,ast.Call):continue
@@ -57,6 +114,12 @@ class Registry:
                 instance_result=self.values.contains(self.kind(plan,node),owner)
                 if not class_argument and not instance_result:continue
                 if names and names<={'isinstance','issubclass'}:continue
+                if self.map_constructor(plan,node,owner):continue
+                from .native_source_native_effects import _identity, sealed_builtin
+                identity=_identity(self,plan,node.func)
+                if identity is not None and sealed_builtin(self.model,identity,
+                        [self.kind(plan,value)for value in arguments]):
+                    continue
                 if isinstance(callee,ClassReferenceType):
                     actual=next((item for item in self.model.classes.values()if item.index==callee.definition),None)
                     if actual is not None and self.values.constructor(plan,node,actual):continue
@@ -65,7 +128,8 @@ class Registry:
                 if isinstance(callee,AotFunctionType)and callee.targets:
                     source=all((target if isinstance(target,int)else getattr(target,'definition',None))in self.model.callable_cells.plans for target in callee.targets)
                     if source:continue
-                raise Unproved('class reference escapes into an unproved constructor protocol')
+                raise Unproved('class reference escapes into an unproved constructor protocol: '
+                               + ast.unparse(node)[:160])
         if namespace is not None and any((owner.index,name)in namespace.members for name in owner.fields):
             raise Unproved('instance field shares a class namespace member')
 
@@ -73,8 +137,9 @@ class Registry:
         from .native_classes import shape
         if not owner.fields:raise Unproved('no instance scalar fields to pack')
         initializer=owner.methods.get('__init__')
-        if initializer is None or self.values.initializers.get(initializer.index)is not owner:
-            raise Unproved('no sealed borrowed canonical initializer')
+        if initializer is None:raise Unproved('no canonical initializer')
+        if self.values.initializers.get(initializer.index)is not owner:
+            self.shared_initializer(owner,initializer)
         if initializer.node.decorator_list or shape(initializer.result)!='none':
             raise Unproved('initializer result or descriptor is not plain None')
         arguments=[*initializer.node.args.posonlyargs,*initializer.node.args.args]

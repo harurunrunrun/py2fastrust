@@ -2603,7 +2603,8 @@ class Emitter:
 
     def statements(self, values):
         reached=getattr(self.model,'reached_statements',None)
-        return "\n".join(self.statement(value)for value in values
+        from .native_statement_lifetimes import scope
+        return "\n".join(scope(self,value,self.statement(value))for value in values
                          if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
@@ -2671,7 +2672,9 @@ class Emitter:
                 return setup+"".join(self.assign(value,Expression(f"{temporary}[{i}].clone()",'int'))
                                      for i,value in enumerate(target.elts))
             setup,value=self.capture(self.expression(node.value))
-            return setup+"".join(self.assign(target,Expression(value.code+".clone()",value.kind,value.constant))for target in node.targets)
+            return setup+"".join(self.assign(target,value if index+1==len(node.targets)
+                else Expression(value.code+".clone()",value.kind,value.constant))
+                for index,target in enumerate(node.targets))
         if isinstance(node,ast.Delete):
             from .native_class_deletion import lower
             from .native_class_globals import delete

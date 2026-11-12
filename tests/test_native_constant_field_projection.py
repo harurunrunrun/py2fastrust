@@ -236,11 +236,20 @@ class ConstantFieldProjectionTests(unittest.TestCase):
                 self.assertEqual(result.rust_source,self.unprojected(source,mode).rust_source,key)
 
     def test_published_mutations_deletion_and_observation_keep_storage(self):
-        for key in ('same_value_write_after_publication','different_value_write_after_publication',
+        for key in ('different_value_write_after_publication',
                     'field_deletion','instance_identity_observer','inplace_heap_invariant_declines'):
             source=CASES[key][0];result,registry=self.capture(source)
             self.assertFalse(registry.fields,key)
             self.assertEqual(result.rust_source,self.unprojected(source,'i64').rust_source,key)
+
+    def test_same_value_shared_writes_keep_identity_and_remove_only_the_constant_slot(self):
+        source, inputs=CASES['same_value_write_after_publication']
+        for mode in ('i64','i128'):
+            result,registry=self.capture(source,mode)
+            self.assertTrue(registry.fields)
+            owner=next(owner for owner in registry.model.classes.values()if owner.node.name=='Scale')
+            self.assertNotIn(owner.index,registry.model.value_classes.selected)
+        self.exercise(source,inputs)
 
     def test_unproved_effectful_default_keeps_storage_and_default_code(self):
         source=CASES['effectful_constructor_default'][0]

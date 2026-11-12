@@ -15,6 +15,68 @@ class Unproved(Exception):
     pass
 
 
+def _guard_weight(tokens, pairs, opening, closing, source_symbols):
+    """Bound simultaneously active literal guard invocations in one source body.
+
+    Sequential calls do not retain the depth guard after returning. Unknown
+    callback closures keep the original sum: they could invoke a closure whose
+    guard was defined elsewhere in this body. Immediate closures and the
+    guard's own literal closure cannot escape their canonical consumers.
+    """
+    calls = [i for i in range(opening + 1, closing)
+             if tokens[i].text == 'class_sync_call' and tokens[i + 1].text == '(']
+    total = len(calls)
+    if total <= 1:
+        return total
+    bars = set()
+    for i in calls:
+        end = pairs[i + 1]
+        # Skip the actual first argument, including all nested delimiters.
+        cursor = i + 2
+        while cursor < end and tokens[cursor].text != ',':
+            cursor = pairs[cursor] + 1 if tokens[cursor].text in {'(', '[', '{'} else cursor + 1
+        start = cursor + 1
+        if [token.text for token in tokens[start:start + 2]] != ['|', '|']:
+            return total
+        bars.update((start, start + 1))
+        cursor = start + 2
+        if tokens[cursor].text == '{':
+            cursor += 1
+            # The iterator binder sometimes records whether the actual source
+            # entry was reached before propagating StopIteration.
+            while (tokens[cursor].kind == 'identifier'
+                   and tokens[cursor + 1].text == '='
+                   and tokens[cursor + 2].text in {'true', 'false'}
+                   and tokens[cursor + 3].text == ';'):
+                cursor += 4
+        if tokens[cursor].text not in source_symbols or tokens[cursor + 1].text != '(':
+            return total
+    for i in range(opening + 1, closing):
+        if tokens[i].text == 'fn':
+            return total
+        if tokens[i].text != '|' or i in bars:
+            continue
+        previous = tokens[i - 1].text
+        if previous not in {'(', ',', '=', '{', ';', 'return', 'move'}:
+            continue  # A binary operator or the closing parameter bar.
+        if previous == '(' and pairs[i - 1] + 1 < closing:
+            end = pairs[i - 1]
+            if tokens[end + 1].text == '(':
+                continue  # The complete closure is invoked immediately.
+            if (i >= 3 and tokens[i - 2].text == 'ok_or_else'
+                    and tokens[i - 3].text == '.'):
+                continue  # Option's literal error closure is also immediate.
+        return total
+    events = []
+    for i in calls:
+        events.extend(((i, 1), (pairs[i + 1], -1)))
+    active = maximum = 0
+    for _, change in sorted(events):
+        active += change
+        maximum = max(maximum, active)
+    return maximum
+
+
 def _native_reader_call(model, plan, node, result):
     """Recognize the core Model's captured standard-stream call contract.
 
@@ -310,6 +372,7 @@ def apply(source, model):
             if token.text in source_symbols and tokens[i+1].text != '(':
                 raise Unproved('a physical source-function address escapes the closed call graph')
         edges, weights = {}, {}
+        sequential_guard_reductions = 0
         for key, (item, opening, closing) in bodies.items():
             edges[key], weights[key] = set(), 0
             if item is guard:
@@ -322,6 +385,10 @@ def apply(source, model):
                     weights[key] += 1
                 else:
                     edges[key].update(by_name.get(name, ()))
+            if item.name in source_symbols:
+                weight = _guard_weight(tokens, pairs, opening, closing, source_symbols)
+                sequential_guard_reductions += weights[key] - weight
+                weights[key] = weight
         bounds, zero_components = _weighted_bounds(edges, weights)
         named_path_bound = 1 + max(bounds.values(), default=0)
         # A generic Rust helper can invoke a closure supplied by its caller:
@@ -389,7 +456,8 @@ def apply(source, model):
         info.update(eligible=True, certified_depth=physical_bound, named_path_depth=named_path_bound,
                     synthetic_span=synthetic_span, guard_sites=guard_sites,
                     certified_source_transitions=len(transitions),
-                    rust_functions=len(functions), zero_weight_components=zero_components)
+                    rust_functions=len(functions), zero_weight_components=zero_components,
+                    sequential_guard_reductions=sequential_guard_reductions)
         # Preserve the complete existing call/error-frame expression byte for
         # byte, including exception identity and context synchronization.
         return source[:tokens[body].end] + '\n' + source[tokens[keep].start:]

@@ -46,7 +46,7 @@ class Registry:
             return
         self.graph.finalize()
         from .native_classes import shape
-        from .native_value_classes import selected
+        from .native_copy_scalar_fields import selected
         for owner in model.classes.values():
             if not owner.used or not selected(model,owner):continue
             for index,(name,field)in enumerate(owner.fields.items()):
@@ -404,6 +404,8 @@ class Registry:
                 else:self.graph.unknown(heap)
             return
         if self.source_call(plan,node):return
+        from .native_source_native_effects import readonly_text_call
+        if readonly_text_call(self.model,plan,node):return
         # Canonical scalar/container builtins have fixed heap behavior; source
         # callbacks are included in the reached graph. Other native adapters
         # lose facts for every passed mutable origin, rather than guessing.
@@ -431,6 +433,15 @@ class Registry:
             else:raise Unproved('a scalar/heap write has an unresolved attribute receiver')
         elif isinstance(node,ast.Subscript):
             self.cover_target(plan,node)
+            from .native_class_mappings import MappingType,key_supported
+            receiver=self.kind(plan,node.value)
+            if (isinstance(receiver,MappingType)
+                    and key_supported(self.kind(plan,node.slice))):
+                # Rebinding a native dictionary value does not mutate the
+                # object previously stored there. All key/RHS evaluations and
+                # later writes through a retrieved list alias remain separate
+                # original producers with their own MAY origin checks.
+                return
             origins=self.origins(plan,node.value)
             if not origins:self.heap_unknown=True;return
             for origin in origins:
@@ -501,7 +512,12 @@ class Registry:
             # reached body/writes in the closed semantic graph.
             pass
         else:
-            raise Unproved('an inplace operator lacks a closed heap mutation transfer')
+            from .native_source_iteration_effects import operator_effects_closed
+            if not operator_effects_closed(self,plan,node):
+                raise Unproved('an inplace operator lacks a closed heap mutation transfer')
+            # Every operator phase invokes a registered, reached source body.
+            # Its field/binding/list stores are independent graph producers;
+            # the result type is not evidence that those stores are absent.
         self.coverage.record(self.producer(plan,node,'inplace_effect'))
 
     def unknown_target(self,plan,node):

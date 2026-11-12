@@ -7,6 +7,31 @@ the tracked source lists. Unknown identities and value protocols stay opaque.
 import ast
 
 
+def comparison_closed(left, operator, right):
+    """Builtin comparisons have no source phase beyond their operands.
+
+    A mapping membership query hashes and compares keys, never its values.
+    Do not infer this property from the bool result or a source class's fields.
+    """
+    from .native_list_positions import closed
+    from .native_class_mappings import MappingType, key_supported
+    from .native_classes import shape
+    from .native_types import alternatives
+    if isinstance(operator, (ast.Is, ast.IsNot)):
+        return True
+    if left is None or right is None:
+        return False
+    for a in alternatives(left):
+        for b in alternatives(right):
+            if (isinstance(operator, (ast.In, ast.NotIn))
+                    and isinstance(b, MappingType)):
+                if not (key_supported(a) and key_supported(shape(b.record.key))):
+                    return False
+            elif not (closed(a) and closed(b)):
+                return False
+    return True
+
+
 def _plain_owner(model, owner):
     return (owner is not None and isinstance(owner.node, ast.ClassDef)
             and not owner.node.bases and not owner.node.keywords
@@ -77,6 +102,70 @@ def builtin_iterable(kind):
         or part in {'str', 'bytes', 'range'} for part in alternatives(kind))
 
 
+def readonly_pull(model, kind, active=frozenset()):
+    """A registered builtin cursor/map pull cannot mutate source heap values.
+
+    Source callbacks, class iterators and native member callbacks are excluded.
+    Cursor advancement and scalar parsing/I/O still run in their original
+    consumer; none is an aliasing write to a source list or instance field.
+    """
+    if builtin_iterable(kind):
+        return True
+    from .native_class_iterators import iterator_kind
+    from .native_classes import shape
+    from .native_types import ListType, TupleSequenceType, TupleType
+    from .native_aot_callables import function_kind
+    if not iterator_kind(kind) or not model.iterators.owns(kind) or kind.index in active:
+        return False
+    record=kind.record
+    if hasattr(record,'adapter'):
+        return False
+    active=active|{kind.index}
+    if record.operation in {'source','reverse'}:
+        return readonly_pull(model,shape(record.source),active)
+    if record.operation!='map' or record.node.keywords:
+        return False
+    if not all(readonly_pull(model,part,active)for part in record.input_types):
+        return False
+    callback=shape(record.callback)
+    if not function_kind(callback)or len(callback.targets)!=1:
+        return False
+    def elements(part):
+        if isinstance(part,(ListType,TupleSequenceType)):
+            return (part.element,)
+        if iterator_kind(part):
+            return (shape(part.record.element),)
+        if isinstance(part,TupleType):
+            return part.fields
+        return ('str'if part=='str'else'int'if part in {'bytes','range'}else None,)
+    choices=[elements(part)for part in record.input_types]
+    count=1
+    for options in choices:count*=len(options)
+    if count>256:return False
+    from itertools import product
+    return all(sealed_builtin(model,callback.targets[0],arguments)
+               for arguments in product(*choices))
+
+
+def readonly_text_call(model, plan, node):
+    """Exact builtin text receivers with closed native argument/pull phases."""
+    if not isinstance(node.func,ast.Attribute):return False
+    from .native_classes import shape
+    from .native_list_positions import closed
+    def kind(value):
+        cell=model.records.get((plan.index,id(value)))
+        return None if cell is None else shape(cell)
+    if kind(node.func.value)not in {'str','bytes'}:return False
+    if node.func.attr=='join':
+        return (len(node.args)==1 and not node.keywords
+                and readonly_pull(model,kind(node.args[0])))
+    point=plan.index,id(node)
+    sites=(getattr(model,'text_split_sites',{}),getattr(model,'text_operation_sites',{}))
+    return (any(point in table for table in sites)
+            and all(kind(value)is not None and closed(kind(value))for value in
+                    [*node.args,*(item.value for item in node.keywords)]))
+
+
 def sealed_builtin(model, identity, argument_kinds):
     """No tracked source-heap writes, including all native internal phases."""
     from .references import BuiltinIdentity
@@ -144,6 +233,8 @@ def operation(state, plan, node):
     from .native_types import ListType, alternatives
     from .native_list_positions import closed
     model = state.model
+    if readonly_text_call(model,plan,node):
+        return frozenset()
     arguments = [state.kind(plan, item) for item in node.args]
     arguments += [state.kind(plan, item.value) for item in node.keywords]
     identity = _identity(state, plan, node.func)

@@ -182,6 +182,20 @@ Proved fixed-width constant divisors lower to wrapping floor arithmetic while
 preserving both original operand evaluations and unbound-name errors. Short
 closed leaf bodies expose their typed arithmetic to Rust's optimizer.
 
+Shared instances with proved scalar-only fields retain their reference identity
+while definite initialization removes optional field storage and presence checks.
+Read-only field parameters can borrow the actual instance without incrementing
+its reference count. Constant propagation includes registered source operator
+writes and distinguishes dictionary value replacement from mutations through a
+retrieved alias. Dictionary membership examines key protocols; stored values
+do not invalidate an otherwise closed comparison.
+
+In programs without lifetime observers, statement temporaries end with their
+source statement. Loop-aware liveness can release dead local scalar-instance
+handles earlier; captures, loop-carried values, zero-iteration exits and saved
+object representations retain their required lifetimes. Sequential calls do
+not add to the certified maximum simultaneous recursion depth.
+
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather
 than a generated Rust instruction offset. These positions remain identical

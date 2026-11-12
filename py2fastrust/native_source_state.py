@@ -741,6 +741,7 @@ class Registry:
             return available
         if isinstance(node, ast.Compare):
             available = self.expression(plan, node.left, available, mode)
+            left = node.left
             for operator, comparator in zip(node.ops, node.comparators):
                 available = self.expression(plan, comparator, available, mode)
                 if len(node.ops) == 1:
@@ -751,9 +752,11 @@ class Registry:
                     available -= self.effects.get(index, set(self.slots))
                 # Identity tests return a primitive bool without an equality
                 # or truth callback. Operand effects have already occurred.
-                if (not isinstance(operator, (ast.Is, ast.IsNot))
-                        and not all(self.copy_kind(self.kind(plan, value)) for value in (node.left, comparator))):
+                from .native_source_native_effects import comparison_closed
+                if not comparison_closed(self.kind(plan, left), operator,
+                                         self.kind(plan, comparator)):
                     available.clear()
+                left = comparator
             return available
         if isinstance(node, ast.BoolOp):
             for value in node.values:

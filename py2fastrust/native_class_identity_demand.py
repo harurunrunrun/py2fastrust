@@ -165,6 +165,12 @@ class Registry:
                     for left,operator,right in zip(operands,node.ops,operands[1:]):
                         a,b=self.kind(plan,left),self.kind(plan,right)
                         if 'none'in(a,b):continue
+                        from .native_class_mappings import MappingType
+                        from .native_source_native_effects import comparison_closed
+                        if (isinstance(operator,(ast.In,ast.NotIn))
+                                and isinstance(b,MappingType)
+                                and comparison_closed(a,operator,b)):
+                            continue  # Membership never compares stored values.
                         if self.contains(a,owner)or self.contains(b,owner):
                             raise Unproved('instance/container comparison can consume object identity')
                 if isinstance(node,ast.Assert)and node.msg is not None and self.contains(self.kind(plan,node.msg),owner):

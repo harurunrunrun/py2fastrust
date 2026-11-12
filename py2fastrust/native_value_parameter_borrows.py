@@ -1,4 +1,4 @@
-"""Borrow closed value parameters used only for Copy scalar field loads.
+"""Borrow closed instance parameters used only for Copy scalar field loads.
 
 The source proof uses official binding owners. A separate physical Rust ABI
 pass preserves every original argument capture and only borrows the existing
@@ -31,7 +31,18 @@ class Registry:
                 if not isinstance(kind, InstanceType) or kind.name not in model.classes:
                     continue
                 owner = model.classes[kind.name]
-                if not selected(model, owner) or borrowed_self(model, plan, name, kind):
+                shared = False
+                if not selected(model, owner):
+                    from .native_copy_scalar_fields import selected as copy_selected
+                    from .native_namespace_read_places import lifetime_closed
+                    shared = (copy_selected(model, owner) and lifetime_closed(model)
+                              and not (owner.node.bases or owner.node.keywords
+                                       or owner.node.decorator_list or owner.node.type_params)
+                              and not any(method in owner.methods for method in
+                                  ('__new__', '__del__', '__setattr__', '__delattr__',
+                                   '__getattribute__', '__getattr__')))
+                if (not selected(model, owner) and not shared
+                        or borrowed_self(model, plan, name, kind)):
                     continue
                 binding = declared.get(name)
                 key = plan.index, position
