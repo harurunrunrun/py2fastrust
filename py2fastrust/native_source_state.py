@@ -393,7 +393,13 @@ class Registry:
             for record in site.constructors.values():
                 if record.error or not self.constructor_role_closed(record.owner, children):
                     return False
-            return bool(site.targets or site.constructors)
+            if site.targets or site.constructors:
+                return True
+            # A direct constructor can retain a provisional empty callable
+            # record; its real role is held by the linked class adapter.
+            linker = getattr(self.model, 'module_linker', None)
+            owner = None if linker is None else linker.class_calls.get((plan.index, id(node)))
+            return owner is not None and self.constructor_role_closed(owner, children)
         # No stored callable site: prove the actual direct producer role.
         # Edges from native callbacks/formatting alone are not source calls.
         linker = getattr(self.model, 'module_linker', None)
@@ -436,6 +442,11 @@ class Registry:
             if isinstance(kind, ListType):
                 return self.aliases_value(previous)
             if kind in {'int', 'bool', 'int_bool', 'float', 'str', 'bytes', 'none', 'range'}:
+                return set()
+            from .native_source_iteration_effects import operator_effects_closed
+            if operator_effects_closed(self, plan, node):
+                # Each original method's heap/namespace writes are propagated
+                # through its actual source edges by the effect fixed point.
                 return set()
             # Finite mixed lists, other mutable carriers, unregistered
             # protocol payloads and missing old-read facts are not NoWrite.
@@ -1065,6 +1076,31 @@ def bodies(model):
     return output
 
 
+def inline_entry(model, plan):
+    """Inline bounded private source chains after their real module demand."""
+    if plan.index not in getattr(model, 'private_module_demands', ()):
+        return False
+    state = getattr(model, 'source_state', None)
+    if state is None or state.barrier is not None:
+        return False
+    def weight(index, active):
+        if index in active or index not in state.plans:
+            return 385
+        nodes = state.own[index]
+        if len(nodes) > 96 or any(isinstance(node, (ast.For, ast.While)) for node in nodes):
+            return 385
+        total = len(nodes)
+        for (caller, _), targets in model.call_edges_by_site.items():
+            if caller != index:
+                continue
+            for child in targets:
+                total += weight(child, active | {index})
+                if total > 384:
+                    return total
+        return total
+    return weight(plan.index, frozenset()) <= 384
+
+
 def constructor(model, emitter, owner, signature, allocation, receiver, arguments, *, marker_signature=None):
     state = getattr(model, 'source_state', None)
     plan = owner.methods.get('__init__')
@@ -1080,5 +1116,6 @@ def constructor(model, emitter, owner, signature, allocation, receiver, argument
     call = private_name(plan) + '(class_scope.clone(),' + receiver
     call += ''.join(',' + value for value in arguments)
     call += ''.join(',class_state_value_' + str(i) for i in range(len(abi.slots))) + ')?;'
-    return ('fn class_state_construct_' + str(owner.index) + '(' + signature + parameters
+    prefix = '#[inline(always)]\n' if inline_entry(model, plan) else ''
+    return (prefix + 'fn class_state_construct_' + str(owner.index) + '(' + signature + parameters
             + ')->ClassResult<ClassHandle_' + str(owner.index) + '>{' + allocation + call + 'Ok(object)}')

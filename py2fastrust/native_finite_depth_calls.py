@@ -108,7 +108,16 @@ def _model_proof(model):
         site = model.callable_cells.sites.get((index, node_id))
         if site is not None:
             if not any((site.targets, site.builtins, site.members, site.constructors, site.exception_constructors)):
-                raise Unproved('a reached invocation has no finite canonical callable targets')
+                # Direct source constructors also leave a provisional callable
+                # site. Their canonical constructor and initializer edge are
+                # recorded by the class adapter, rather than that empty site.
+                result = shape(cell)
+                owner = model.classes.get(result.name) if isinstance(result, InstanceType) else None
+                initializer = None if owner is None else owner.methods.get('__init__')
+                edges = model.call_edges_by_site.get((index, node_id), ())
+                if not (owner is not None and model.value_classes.constructor(plan, node, owner)
+                        and (initializer is None or initializer.index in edges)):
+                    raise Unproved('a reached invocation has no finite canonical callable targets')
             continue
         if model.call_edges_by_site.get((index, node_id)):
             continue

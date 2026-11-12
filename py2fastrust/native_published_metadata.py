@@ -8,9 +8,8 @@ def prepare(model):
     if state is None or state.barrier is not None:
         return
     from .native_source_class_bindings import publication_closed
-    from .native_value_classes import selected as value_class
     for owner in model.classes.values():
-        if owner.used and value_class(model, owner) and publication_closed(state, owner):
+        if owner.used and publication_closed(state, owner):
             selected.add(owner.index)
 
 

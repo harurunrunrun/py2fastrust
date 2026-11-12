@@ -2,12 +2,30 @@
 import ast
 
 
+def sealed_member(model, member):
+    """Instance field mutation does not replace a plain class method slot."""
+    from .native_value_classes import selected
+    if selected(model, member.owner):
+        return True
+    lifetime = getattr(model, 'callable_field_demand', None)
+    if lifetime is None or lifetime.model is not model or lifetime.barrier is not None:
+        return False
+    owner = member.owner
+    if (owner.node.bases or owner.node.keywords or owner.node.decorator_list
+            or owner.node.type_params or owner.node not in model.unit.original_unit(owner.node).tree.body):
+        return False
+    namespace = model.namespace.incoming.get(member.key, {})
+    expected = ('method_definition', model.unit.ordinal(member.plan.node))
+    # Include all original producers, including writes through saved class
+    # aliases and classmethod receivers, rather than just the initial body.
+    return bool(namespace) and set(namespace) == {expected}
+
+
 def definition(model,member,stored):
     from .native_aot_callables import AotFunctionType
     from .native_function_instances import instanced
-    from .native_value_classes import selected
     owner,plan=member.owner,member.plan
-    if plan is None or not selected(model,owner):return None
+    if plan is None or not sealed_member(model,member):return None
     if getattr(model,'module_linker',None)is None:return None
     unit=model.unit
     if owner.node not in unit.original_unit(owner.node).tree.body:return None

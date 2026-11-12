@@ -40,9 +40,23 @@ def _source_children(state, plan, node, include_source):
 def _callback(state, plan, node, site, arguments, include_source):
     from .native_aot_callables import function_kind
     from .native_classes import shape
+    from .native_module_linking import ClassReferenceType
     from .native_call_context_effects import source_plan
     from .native_source_native_effects import sealed_builtin
     kind = shape(site.callee)
+    if isinstance(kind, ClassReferenceType):
+        if (site.errors or site.targets or site.builtins or site.members
+                or site.exception_constructors or set(site.constructors) != {kind.definition}):
+            return unknown(state)
+        children, effect = _source_children(state, plan, node, include_source)
+        record = site.constructors[kind.definition]
+        if (children is None or record.error
+                or not state.constructor_role_closed(record.owner,
+                    {source_plan(state.plans[index]).index for index in children})):
+            return unknown(state)
+        if children:
+            effect.calls.append((node, frozenset(children)))
+        return effect
     if (not function_kind(kind) or site.errors or site.members
             or site.constructors or site.exception_constructors
             or set(kind.targets) != set(site.targets) | set(site.builtins)):
@@ -70,6 +84,39 @@ def _callback(state, plan, node, site, arguments, include_source):
     if callback_targets:
         effect.calls.append((node, frozenset(callback_targets)))
     return effect
+
+
+def operator_effects_closed(state, plan, node):
+    """The registered implicit source methods cover every operator phase."""
+    from .native_classes import InstanceType, shape
+    from .native_call_context_effects import source_plan
+    previous = state.model.augmented.get((plan.index, id(node)))
+    if previous is None or not isinstance(shape(previous), InstanceType):
+        return False
+    site = state.model.operators.sites.get((plan.index, id(node), None))
+    if site is None or not site.branches:
+        return False
+    children = set(state.model.call_edges_by_site.get((plan.index, id(node)), ()))
+    if not children or any(index not in state.plans for index in children):
+        return False
+    original_children = {source_plan(state.plans[index]).index for index in children}
+    covered = set()
+    for branch in site.branches.values():
+        if not branch.complete or not branch.phases or branch.fallback not in (None, 'error'):
+            return False
+        for phase in branch.phases:
+            callback = phase.site
+            if (not callback.targets or callback.errors or callback.builtins
+                    or callback.members or callback.constructors or callback.exception_constructors):
+                return False
+            for target in callback.targets:
+                definition = getattr(target, 'definition', target)
+                original = state.model.callable_cells.plans.get(definition)
+                original = None if original is None else source_plan(original)
+                if original is None or original.index not in original_children:
+                    return False
+                covered.add(original.index)
+    return covered == original_children
 
 
 def _word_parser_closed(model, record):

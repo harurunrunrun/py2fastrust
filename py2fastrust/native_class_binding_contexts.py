@@ -102,9 +102,10 @@ class Registry:
                     if module is not None and module.name == 'builtins' and module.native_adapter:
                         self.barrier = 'a mutated builtin namespace can supply another generation through fallback'
                         return
-        from .native_value_classes import selected
+        from .native_source_native_effects import _instance_value
+        from .native_classes import InstanceType
         for owner in model.classes.values():
-            if not owner.used or not selected(model, owner):
+            if not owner.used or not _instance_value(model, InstanceType(model.class_key(owner))):
                 continue
             try:
                 binding = self.binding(owner)

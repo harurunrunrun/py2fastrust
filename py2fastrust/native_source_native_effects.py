@@ -149,6 +149,15 @@ def operation(state, plan, node):
     identity = _identity(state, plan, node.func)
     if identity is not None and sealed_builtin(model, identity, arguments):
         return frozenset()
+    if (getattr(identity, 'name', None) in {'list', 'tuple'} and len(node.args) == 1
+            and not node.keywords):
+        from .native_class_iterators import iterator_kind
+        from .native_source_iteration_effects import _pull
+        if iterator_kind(state.kind(plan, node.args[0])):
+            value = model.records.get((plan.index, id(node.args[0])))
+            effect = _pull(state, plan, node, value, include_source=False)
+            if effect.closed:
+                return frozenset(effect.writes)
     # The immediate integer-map collector is a separate canonical operation;
     # its result is not an iterator kind, and its int parser cannot call source.
     if (identity is not None and getattr(identity, 'name', None) in {'list', 'tuple'}

@@ -9,11 +9,15 @@ def match(model, plan, actual):
     context = owner(model, plan)
     if context is None or actual is None:
         return None
-    from .native_value_classes import selected
-    # Closed scalar value instances cannot change their concrete class. Both
-    # names must also have one original definition and no source replacement.
-    # A ClassDef ordinal alone cannot establish equality across import retries.
-    if (not selected(model, actual) or not selected(model, context)
+    from .native_source_native_effects import _instance_value
+    from .native_classes import InstanceType
+    # Mutable fields do not change the actual nominal class. Exclude custom
+    # lookup/__class__ slots, and retain the independent source-generation and
+    # original class-binding certificates for both operands.
+    if (not _instance_value(model,InstanceType(model.class_key(actual)))
+            or not _instance_value(model,InstanceType(model.class_key(context)))
+            or actual.index not in getattr(model,'published_metadata',())
+            or context.index not in getattr(model,'published_metadata',())
             or not state.class_root(actual) or not state.class_root(context)):
         return None
     return actual is context

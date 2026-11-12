@@ -245,7 +245,13 @@ class NativeSourceStateProofTests(unittest.TestCase):
                     self.assertTrue(baseline.success,baseline.diagnostics)
                     self.assertFalse(reads)
                     self.assertFalse(exports)
-                    self.assertEqual(result.rust_source,baseline.rust_source)
+                    # An independent single-publication metadata proof can
+                    # change constructors even when no context witness is
+                    # transported. Check the actual rejected capability.
+                    self.assertFalse(model.source_state.bridges)
+                    self.assertNotIn('fn class_state_function_',result.rust_source)
+                    self.assertNotIn('fn class_state_enter_',result.rust_source)
+                    self.assertNotIn('fn class_state_construct_',result.rust_source)
 
     def test_all_finite_callable_roles_invalidate_postcall_facts(self):
         result,model,_,_=convert(SOURCES['finite_native'])

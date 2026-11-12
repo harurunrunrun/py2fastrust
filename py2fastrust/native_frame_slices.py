@@ -64,7 +64,12 @@ def analyze(model,plan,node,environment):
                 raise ClassUnsupported(bound,'this slice bound needs its user __index__ method; the typed sequence slice adapter supports builtin integral bounds and their builtin type errors',types=(('bound',kind),),proof='slice bound __index__ protocol')
     result=model.cell(plan,node)
     for value in branches(owner):
-        if value.tag in {'list','tuple_sequence'}:
+        if value.tag == 'list':
+            # Slicing creates a new outer list, while retaining its element
+            # references. Register that allocation just like a list literal;
+            # an unknown origin would otherwise alias every source list.
+            output=model.cell(plan,node,'list',(value.args[0],),identity=('slice_list',))
+        elif value.tag == 'tuple_sequence':
             output=Cell(value.tag,(value.args[0],))
         elif value.tag in {'str','bytes'}:output=Cell(value.tag)
         elif value.tag in NONINDEXABLE:output=Cell('none')

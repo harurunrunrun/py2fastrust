@@ -849,3 +849,17 @@ an intermediate integer vector.
 Builtin `dict.popitem()` removes the last inserted live slot without scanning
 other entries, retains the original key representation, and raises `KeyError`
 on an empty dictionary. Reinserted keys use their new insertion position.
+
+Canonical direct constructors and constructor callbacks consumed by `map` have
+separate source call and heap-effect certificates. Registered numeric in-place
+methods propagate their real source writes instead of invalidating every
+independent namespace fact. List slices register fresh outer allocations while
+preserving references to their elements. These facts can transport a proved
+context value through a native numeric loop; constructors and operators that
+modify that context still invalidate it.
+
+Plain classes with mutable instance fields can retain fixed original method
+bindings and shared metadata from their proved single class publication.
+Mutable objects keep their shared identity and field updates. Replaced methods,
+observable metadata, ambiguous publication and unproved callbacks retain the
+corresponding checked native operations.
