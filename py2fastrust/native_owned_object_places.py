@@ -300,7 +300,9 @@ def call_receiver(emitter,node,callee):
     from .native_classes import Expression,InstanceType
     setup=root.check();module=None
     from .native_private_module_demands import module_unused
+    from .native_call_context_effects import incoming_module
     if (getattr(emitter.model,'module_linker',None)is not None
+            and incoming_module(emitter.model,callee)
             and not module_unused(emitter,node,callee)):
         module=emitter.fresh()
         setup+='let '+module+'={'+root.shared()+'.borrow().class_definition.module.clone()};'
