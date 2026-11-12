@@ -14,7 +14,7 @@ from .rust_pruning import _lex,_parse
 # All entries are compiler-owned symbols. State entries use the exact same
 # signature, shared-field, use/escape and suspension proofs below; the family
 # inventory alone never grants a borrowed ABI.
-FUNCTION=re.compile(r'class_(?:(?:function|construct)|state_(?:function|enter|construct))_\d+\Z')
+FUNCTION=re.compile(r'class_(?:(?:function|construct|build|data_function)|state_(?:function|enter|construct|build|data_function))_\d+\Z')
 
 
 def body_index(tokens,pairs,opening,limit):

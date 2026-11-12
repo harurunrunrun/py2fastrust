@@ -121,9 +121,14 @@ def scope(emitter,node):
     parents=emitter.list_access_regions
     proof=Proof(emitter)
     regions={};lines=[]
+    proved=proof.statement(node)
+    if not proved:
+        from .native_scalar_list_regions import select as scalar_region
+        scalar=scalar_region(emitter,node)
+        if scalar is not None:proof=scalar;proved=True
     # A parent proof already includes this entire loop. Do not take a second
     # lease for a potentially aliased root in an inner region.
-    if (not any(parents)and proof.statement(node)and proof.roots
+    if (not any(parents)and proved and proof.roots
             and not proof.writes.intersection(proof.roots)
             and(not proof.mutable or len(proof.roots)==1)):
         for name,kind in proof.roots.items():
@@ -131,7 +136,7 @@ def scope(emitter,node):
             borrow='borrow_mut'if proof.mutable else'borrow'
             from .native_primitive_parameter_places import argument
             direct=argument(emitter,name,kind)
-            if direct is None:lines.append(f'let mut {guard}={slot}.as_ref().map(|owner|owner.{borrow}());')
+            if direct is None:lines.append(f'let mut {guard}=match {slot}.as_ref(){{Some(owner)=>Some(owner.{borrow}()),None=>None}};')
             else:lines.append(f'let mut {guard}={direct}.{borrow}();')
             regions[name]=Region(name,kind,guard,proof.mutable,direct is not None)
     parents.append(regions)

@@ -571,12 +571,16 @@ def emit_bound_definition_body(emitter,node,bound,wanted,*,source_call_location=
     target=bound.target
     from .native_source_state import bound_call
     invocation,state_output=bound_call(emitter,node,bound)
+    from .native_scalar_data_results import bound_call as data_bound_call
+    invocation=data_bound_call(emitter,node,target,invocation)
     from .native_class_calls import call
     from .native_source_returns import emit_result
     called=call(emitter,invocation,target,source_call_location or node)
     if state_output is not None:
         value,witness=emitter.fresh(),emitter.fresh()
         called='{let ('+value+','+witness+')='+called+';'+state_output+'='+witness+';'+value+'}'
+    from .native_scalar_data_results import call_result as data_call_result
+    called=data_call_result(emitter,node,invocation,called)
     return emit_result(emitter,node,target,called,wanted)
 
 
@@ -587,7 +591,8 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
     from .native_unions import project,union_kind
     provider=emitter.model.callable_cells
     def error(message):
-        return emitter.at(f"Err::<{emitter.rust_type(wanted)},String>({_string(message)}.to_owned())",node)
+        from .native_scalar_data_results import expected_type
+        return emitter.at(f"Err::<{expected_type(emitter,node,wanted)},String>({_string(message)}.to_owned())",node)
     def branch(kind,code):
         if union_kind(kind):
             return project(kind,code,lambda child,value:branch(child,f"({value}).clone()"))
@@ -636,4 +641,9 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
         return error(f"TypeError: '{name}' object is not callable")
     code=branch(callee.kind,callee.code)
     result=emitter.fresh()
-    return _Expression('{let '+result+':'+emitter.rust_type(wanted)+'='+code+';'+result+'}',wanted)
+    from .native_scalar_data_results import expected_type
+    actual=expected_type(emitter,node,wanted)
+    request=getattr(emitter,'scalar_data_request',None)
+    if request is not None and request.node is node and actual.startswith('ClassData_'):
+        request.consumed=True
+    return _Expression('{let '+result+':'+actual+'='+code+';'+result+'}',wanted)

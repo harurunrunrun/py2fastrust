@@ -43,6 +43,9 @@ def read(emitter,node):
     reference=emitter.fresh()
     from .native_primitive_parameter_places import reference as parameter_reference
     direct=parameter_reference(emitter,root)
+    from .native_scalar_data_parameters import read as data_parameter_read
+    view=data_parameter_read(emitter,root)
+    if view is not None:direct=view.code
     checked=direct if direct is not None else emitter.at(f'{slot}.as_ref().ok_or_else(||{_string(message)}.to_owned())',root)
     index=list(owner.fields).index(field)
     loaded=emitter.at(f'class_get_{owner.index}_{index}({reference})',node)

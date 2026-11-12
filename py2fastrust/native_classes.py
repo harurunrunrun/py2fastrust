@@ -1839,6 +1839,9 @@ class Emitter:
         if isinstance(node,ast.Constant):
             return self.literal_value(node.value,wanted,node)
         if isinstance(node,ast.Name):
+            from .native_scalar_data_parameters import read as data_parameter_read
+            data_parameter=data_parameter_read(self,node)
+            if data_parameter is not None:return data_parameter
             lexical=self.model.lexical.emit_function(self,node,wanted)
             if lexical is None:lexical=self.model.lexical.emit_read(self,node,wanted)
             if lexical is not None:return lexical
@@ -2160,6 +2163,9 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def function_name(self, plan):
+        from .native_scalar_data_results import function_name as data_function_name
+        data_name=data_function_name(self,plan)
+        if data_name is not None:return data_name
         from .native_source_state import function_name
         state_name=function_name(self,plan)
         if state_name is not None:return state_name
@@ -2201,6 +2207,9 @@ class Emitter:
         if state_arguments is not None:
             name=(f"class_state_construct_{constructor.index}"if constructor is not None else f"class_state_function_{callee.index}")
             values.extend(state_arguments)
+        from .native_scalar_data_results import constructor_name,call_name
+        name=(constructor_name(self,node,constructor,name)if constructor is not None
+              else call_name(self,node,callee,name))
         if constructor is not None:
             from .native_class_identity_demand import token as identity_token
             from .native_class_value_demands import marker_constructor
@@ -2218,6 +2227,8 @@ class Emitter:
         invocation = name+"(class_scope.clone()"+defining_context+(" ,"+",".join(values)if values else"")+")"
         from .native_class_calls import call as compiled_call
         call = compiled_call(self,invocation,callee,node)
+        from .native_scalar_data_results import call_result as data_call_result
+        call=data_call_result(self,node,invocation,call)
         context=self.prepare_call_context(callee,receiver,constructor,defining_module,node=node)
         code="{"+"\n".join(setup)+context+call+"}"
         if constructor is not None:
@@ -2437,6 +2448,9 @@ class Emitter:
         return setup+self.store_reference(reference,value,target)
 
     def reference(self, target):
+        from .native_scalar_data_results import reference as data_reference
+        data=data_reference(self,target)
+        if data is not None:return data
         from .native_owned_object_places import reference as owned_object_reference
         owned_object=owned_object_reference(self,target)
         if owned_object is not None:return owned_object
@@ -2608,6 +2622,12 @@ class Emitter:
                          if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
+        from .native_scalar_data_locals import statement as snapshot_statement
+        snapshot=snapshot_statement(self,node)
+        if snapshot is not None:return snapshot
+        from .native_scalar_data_results import statement as data_statement
+        data=data_statement(self,node)
+        if data is not None:return data
         from .native_source_state import explicit_return
         state_return=explicit_return(self,node)
         if state_return is not None:return state_return
@@ -2834,9 +2854,13 @@ class Emitter:
         from .native_local_storage import rust_type as local_storage_type
         from .native_primitive_parameter_places import slot_required
         from .native_operand_demands import private_projection
+        from .native_scalar_constructor_data import receiver_type
+        from .native_scalar_data_parameters import parameter as data_parameter
         projection=private_projection(self)
         erased=projection.erased_names if projection is not None else frozenset()
-        data=[f"let mut {slot}:Option<"+(f"&{self.rust_type(kind)}"if borrowed_self(self.model,self.plan,name,kind)else local_storage_type(self,name,kind))+">=None;"for(name,kind),slot in self.slots.items()if name not in erased and not owned_receiver(self.model,self.plan,name)and slot_required(self,name,kind)]
+        data=[f"let mut {slot}:Option<"+('&'+receiver_type(self.model,self.plan,name)
+              if receiver_type(self.model,self.plan,name)is not None else
+              f"&{self.rust_type(kind)}"if borrowed_self(self.model,self.plan,name,kind)else local_storage_type(self,name,kind))+">=None;"for(name,kind),slot in self.slots.items()if name not in erased and not owned_receiver(self.model,self.plan,name)and slot_required(self,name,kind)and data_parameter(self.model,self.plan,name)is None]
         references=[f"let mut {slot}=false;"for slot in self.reference_slots.values()]
         return "\n".join(data+references)
 
@@ -2860,13 +2884,20 @@ class Emitter:
             reference=borrowed_self(self.model,self.plan,name,kind)
             from .native_owned_object_places import receiver as owned_receiver
             mutable=owned_receiver(self.model,self.plan,name)
-            parameters.append(f"{argument}:"+('&mut 'if mutable else'&'if reference else'')+self.rust_type(kind))
+            from .native_scalar_constructor_data import receiver_type
+            receiver=receiver_type(self.model,self.plan,name)
+            from .native_scalar_data_parameters import parameter_type
+            view=parameter_type(self.model,self.plan,name)
+            parameters.append(f"{argument}:"+(view if view is not None else'&'+receiver if receiver is not None else
+                ('&mut 'if mutable else'&'if reference else'')+self.rust_type(kind)))
+            if view is not None:continue
             if mutable or not slot_required(self,name,kind):continue
             captured=self.model.lexical.environments.get(self.model.lexical.scope(self.plan))
             if captured is not None and name in captured.fields:continue
             stored=self.model.namespace.local_kind(self.plan,name)or kind
             initial.append(f"{self.slot(name,stored)}=Some({self.coerce(Expression(argument,kind),stored,self.plan.node)});")
-        result=self.rust_type(shape(self.plan.result))
+        from .native_scalar_data_results import result_type as data_result_type
+        result=data_result_type(self)or self.rust_type(shape(self.plan.result))
         if "none"in alternatives(shape(self.plan.result)):
             tail="Ok("+self.coerce(Expression("()","none"),shape(self.plan.result),self.plan.node)+")"
         else:
@@ -2951,6 +2982,8 @@ def _class_layouts(model,emitter):
         has_identity=identity_token(model,owner)
         from .native_packed_value_fields import selected as packed_selected,initial as packed_initial,raw as packed_raw
         packed=packed_selected(model,owner)
+        from .native_scalar_constructor_data import selected as data_constructor
+        stack_constructor=data_constructor(model,owner)
         fields=list(owner.fields.values())
         from .native_owned_class_lists import selected as owned_field_selected,runtime as owned_field_runtime,physical_type as owned_field_type
         from .native_constant_field_projection import selected as constant_selected,read as constant_read
@@ -2973,8 +3006,10 @@ def _class_layouts(model,emitter):
             result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=ClassData_{owner.index};"
                           f"impl ClassData_{owner.index}{{fn borrow(&self)->&Self{{self}}fn borrow_mut(&mut self)->&mut Self{{self}}}}")
         elif copied:
-            result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<ClassData_{owner.index}>;"
+            result.append(("#[derive(Clone)]\n"if stack_constructor else"")+f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<ClassData_{owner.index}>;"
                           f"impl ClassData_{owner.index}{{fn borrow(&self)->&Self{{self}}fn borrow_mut(&self)->&Self{{self}}}}")
+            if stack_constructor:
+                result.append(f"impl AsRef<ClassData_{owner.index}> for ClassData_{owner.index}{{fn as_ref(&self)->&Self{{self}}}}")
         else:
             result.append(f"struct ClassData_{owner.index}{{{members}}}\ntype ClassHandle_{owner.index}=Rc<RefCell<ClassData_{owner.index}>>;")
         from .native_class_gc import layout as gc_layout,registration as gc_registration
@@ -2983,8 +3018,8 @@ def _class_layouts(model,emitter):
         for i,value in enumerate(fields):
             if owned_field_selected(model,owner,i):continue
             message=_string(f"AttributeError: '{owner.node.name}' object has no attribute '{value.name}'")
-            argument=f'impl AsRef<ClassHandle_{owner.index}>'if unboxed else f'&ClassHandle_{owner.index}'
-            receiver='value.as_ref()'if unboxed else'value'
+            argument=f'impl AsRef<ClassHandle_{owner.index}>'if unboxed else f'impl AsRef<ClassData_{owner.index}>'if stack_constructor else f'&ClassHandle_{owner.index}'
+            receiver='value.as_ref()'if unboxed or stack_constructor else'value'
             projected=constant_read(model,owner,receiver,i)
             if projected is not None:getter='Ok('+projected+')'
             elif initialized_field(model,owner,i):getter=f'Ok(({receiver}).borrow().field_{i}.clone())'
@@ -3002,7 +3037,9 @@ def _class_layouts(model,emitter):
         params=[];args=[]
         if constructor:
             for i,name in enumerate(constructor.signature.parameters[1:]):
-                params.append(f"argument_{i}:{emitter.rust_type(shape(constructor.arguments[name]))}")
+                from .native_scalar_data_parameters import parameter_type
+                view=parameter_type(model,constructor,name)
+                params.append(f"argument_{i}:{view or emitter.rust_type(shape(constructor.arguments[name]))}")
                 args.append(f"argument_{i}")
         if has_identity:params.insert(0,'class_value_identity:usize')
         if extra_parameter:params.insert(0,extra_parameter)
@@ -3011,17 +3048,20 @@ def _class_layouts(model,emitter):
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
         if has_identity:initialize='class_value_identity'+(','+initialize if initialize else'')
         body=(f"let mut object=ClassData_{owner.index}{{{initialize}}};"if owned_object else
-              f"let object=ClassData_{owner.index}{{{initialize}}};"if unboxed else
+              f"let object=ClassData_{owner.index}{{{initialize}}};"if unboxed or stack_constructor else
               f"let object=Rc::new(ClassData_{owner.index}{{{initialize}}});"if copied else
               f"let object=Rc::new(RefCell::new(ClassData_{owner.index}{{{initialize}}}));")
         body+=gc_registration(model,owner)
         allocation_body=body
         if constructor:
             suffix="?;"if synchronous(model,constructor)else".await?;"
-            receiver='&mut object'if owned_object else'&object'if unboxed else'object.clone()'
+            receiver='&mut object'if owned_object else'&object'if unboxed or stack_constructor else'object.clone()'
             body+=f"class_function_{constructor.index}(class_scope.clone(),{receiver}"+(","+",".join(args)if args else"")+ ")"+suffix
         if synchronous(model,constructor):
-            result.append(f"fn class_construct_{owner.index}({signature})->ClassResult<ClassHandle_{owner.index}>{{{body}Ok(object)}}")
+            wrapped='Rc::new(object)'if stack_constructor else'object'
+            result.append(f"fn class_construct_{owner.index}({signature})->ClassResult<ClassHandle_{owner.index}>{{{body}Ok({wrapped})}}")
+            if stack_constructor:
+                result.append(f"#[inline(always)]\nfn class_build_{owner.index}({signature})->ClassResult<ClassData_{owner.index}>{{{body}Ok(object)}}")
         else:
             result.append(f"fn class_construct_{owner.index}({signature})->ClassFuture<ClassHandle_{owner.index}>{{Box::pin(async move{{{body}Ok(object)}})}}")
         if constructor:
@@ -3096,6 +3136,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_class_reference_borrows(model)
         from .native_packed_value_fields import prepare as prepare_packed_fields
         prepare_packed_fields(model)
+        from .native_scalar_constructor_data import prepare as prepare_constructor_data
+        prepare_constructor_data(model)
         from .native_constant_field_projection import prepare as prepare_constant_projection
         prepare_constant_projection(model)
         from .native_typed_continuations import prepare as prepare_continuations
@@ -3108,10 +3150,18 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_published_metadata(model)
         from .native_class_value_demands import prepare as prepare_class_value_demands
         prepare_class_value_demands(model)
+        from .native_scalar_data_parameters import prepare as prepare_scalar_data_parameters
+        prepare_scalar_data_parameters(model)
+        from .native_scalar_data_results import prepare as prepare_scalar_data_results
+        prepare_scalar_data_results(model)
+        from .native_scalar_data_locals import prepare as prepare_scalar_data_locals
+        prepare_scalar_data_locals(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         from .native_source_state import bodies as source_state_bodies
         bodies.extend(source_state_bodies(model))
+        from .native_scalar_data_results import bodies as scalar_data_bodies
+        bodies.extend(scalar_data_bodies(model))
         from .native_typed_continuations import runtime as continuation_runtime
         continuation_support=continuation_runtime(model)
         if continuation_support:bodies.append(continuation_support)

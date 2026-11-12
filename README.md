@@ -196,6 +196,16 @@ handles earlier; captures, loop-carried values, zero-iteration exits and saved
 object representations retain their required lifetimes. Sequential calls do
 not add to the certified maximum simultaneous recursion depth.
 
+For sealed scalar instance layouts, fresh constructors and source functions can
+produce concrete Rust data before a shared handle is needed. Read-only formals
+accept either shared instances or that concrete data. A loop-local value becomes
+a data snapshot only when its binding stays within one iteration, every read
+follows its assignment, and all reached source calls preserve existing instance
+fields. Captures, observable identity and mutations through aliases reject that
+transformation. Fresh list replacements reuse storage only when the previous
+instance has no other owners. Closed loops borrow the underlying typed Vec once;
+callees that could access an alias of that list prevent the extended borrow.
+
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather
 than a generated Rust instruction offset. These positions remain identical

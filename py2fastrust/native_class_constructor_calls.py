@@ -86,6 +86,8 @@ def emit(emitter,node,site,reference,positional,keywords,wanted,*,source_call_lo
     if state_values is not None:
         name='class_state_construct_'+str(owner.index)
         values.extend(state_values)
+    from .native_scalar_data_results import constructor_name
+    name=constructor_name(emitter,node,owner,name)
     invocation=name+'(class_scope.clone()'+(','+','.join(values)if values else'')+')'
     from .native_class_calls import call
     invocation=call(emitter,invocation,constructor,source_call_location or node)

@@ -1120,5 +1120,12 @@ def constructor(model, emitter, owner, signature, allocation, receiver, argument
     call += ''.join(',' + value for value in arguments)
     call += ''.join(',class_state_value_' + str(i) for i in range(len(abi.slots))) + ')?;'
     prefix = '#[inline(always)]\n' if inline_entry(model, plan) else ''
-    return (prefix + 'fn class_state_construct_' + str(owner.index) + '(' + signature + parameters
-            + ')->ClassResult<ClassHandle_' + str(owner.index) + '>{' + allocation + call + 'Ok(object)}')
+    from .native_scalar_constructor_data import selected as data_constructor
+    stack=data_constructor(model,owner)
+    wrapped='Rc::new(object)'if stack else'object'
+    result=(prefix + 'fn class_state_construct_' + str(owner.index) + '(' + signature + parameters
+            + ')->ClassResult<ClassHandle_' + str(owner.index) + '>{' + allocation + call + 'Ok('+wrapped+')}')
+    if stack:
+        result+=('\n#[inline(always)]\nfn class_state_build_'+str(owner.index)+'('+signature+parameters
+                 +')->ClassResult<ClassData_'+str(owner.index)+'>{'+allocation+call+'Ok(object)}')
+    return result

@@ -2,6 +2,12 @@
 
 
 def rust_type(emitter,name,kind):
+    from .native_scalar_data_locals import local_type as snapshot_type
+    snapshot=snapshot_type(emitter,name)
+    if snapshot is not None:return snapshot
+    from .native_scalar_data_results import local_type
+    projected=local_type(emitter,name)
+    if projected is not None:return projected
     matrix=emitter.owned_matrices.get(name)
     if matrix is not None:
         from .native_owned_matrix_places import physical_type

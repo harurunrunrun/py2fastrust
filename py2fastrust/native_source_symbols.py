@@ -9,6 +9,7 @@ Constructor wrappers stay separate from source function entry ranks.
 def function_plans(model):
     plans = {plan.index: plan for plan in getattr(model, 'plans', ()) if plan.reachable}
     result = {'class_function_' + str(index): plan for index, plan in plans.items()}
+    result.update(getattr(getattr(model,'scalar_data_results',None),'emitted',{}))
     state = getattr(model, 'source_state', None)
     if state is None or not state.bridges:
         return result
@@ -28,9 +29,13 @@ def constructor_names(model):
         if not owner.used:
             continue
         result.add('class_construct_' + str(owner.index))
+        from .native_scalar_constructor_data import selected as data_constructor
+        data=data_constructor(model,owner)
+        if data:result.add('class_build_'+str(owner.index))
         initializer = owner.methods.get('__init__')
         if (state is not None and state.bridges and initializer is not None
                 and initializer.index in state.abis
                 and state.abis[initializer.index].plan is initializer):
             result.add('class_state_construct_' + str(owner.index))
+            if data:result.add('class_state_build_'+str(owner.index))
     return result
