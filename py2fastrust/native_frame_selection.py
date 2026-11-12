@@ -157,6 +157,8 @@ def select_frames(unit,*,integer="i64"):
     if exception_requires_frames(unit,analysis):reasons+=('typed builtin exception values and raise',)
     from .native_type_checks import requires_frames
     if requires_frames(analysis):reasons+=("captured builtin type predicates",)
+    from .native_guard_flow import requires_frames as none_guard_requires_frames
+    if none_guard_requires_frames(unit,analysis):reasons+=("concrete None conditional reachability",)
     from .native_heap_selection import requires_frames as heap_selection_requires_frames
     if heap_selection_requires_frames(analysis):reasons+=("bounded native heap selections",)
     from .native_float_constructor import requires_frames as float_requires_frames

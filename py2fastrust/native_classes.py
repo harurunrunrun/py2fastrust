@@ -804,6 +804,9 @@ class Model:
                         joined=self.namespace.join_values(result,value,node,name)
                         result=merge(result,value,node)if joined is None else joined
                     return self.remember(plan,node,result)
+                from .native_guard_flow import unbound_local
+                missing=unbound_local(self,plan,node,environment)
+                if missing is not None:return self.remember(plan,node,missing)
                 if not self.final:
                     return self.cell(plan,node)
             if node.id in self.classes:

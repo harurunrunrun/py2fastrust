@@ -8,6 +8,30 @@ class AnalysisPending(Exception):
     """A guard consumer waits for its producing argument/type constraints."""
 
 
+def requires_frames(unit,analysis):
+    for node in ast.walk(unit.tree):
+        if not isinstance(node,ast.If):continue
+        operand=node.test
+        while isinstance(operand,ast.UnaryOp)and isinstance(operand.op,ast.Not):operand=operand.operand
+        site=unit.ordinal(operand)
+        if any(facts.expressions.get(site)=='none'for facts in analysis.scopes.values()):return True
+    return False
+
+
+def unbound_local(model,plan,node,environment):
+    """Choose a phantom ABI payload for a slot that cannot be read normally."""
+    if not getattr(model,'none_truth_guards',False)or model.unit is None:return None
+    name=model.resolved_name(plan,node)
+    if name in environment or name in plan.arguments:return None
+    binding=model.namespace.owners.get(model.unit.ordinal(node))
+    if (binding is None or binding.owner!=model.lexical.scope(plan)
+            or model.unit.scopes[binding.owner].kind!='function'):return None
+    from .native_types import EMPTY
+    value=model.cell(plan,node,EMPTY,identity='unbound_local_read')
+    model.canonical_local(plan,name,value)
+    return value
+
+
 def descendant_readonly(model,owner,name):
     if not hasattr(model,'guard_readonly_bindings'):model.guard_readonly_bindings={}
     key=owner,name
@@ -92,6 +116,21 @@ def _matches(model,value,classes):
 def branches(model,plan,test,environment):
     from .native_classes import Cell,Environment,ClassUnsupported,shape
     from .native_union_sequences import branches as choices
+    key=plan.index,id(test)
+    # A proof belongs to the current solved input. Earlier iterations may have
+    # seen only None before a later call contributes another return type.
+    if hasattr(model,'type_guard_branches'):model.type_guard_branches.pop(key,None)
+    operand=test;inverted=False
+    while isinstance(operand,ast.UnaryOp)and isinstance(operand.op,ast.Not):
+        inverted=not inverted;operand=operand.operand
+    value=model.records.get((plan.index,id(operand)))
+    if value is not None and value.root().tag=='none':
+        model.none_truth_guards=True
+        if not hasattr(model,'type_guard_cells'):model.type_guard_cells={}
+        if not hasattr(model,'type_guard_branches'):model.type_guard_branches={}
+        model.type_guard_branches[key]=(inverted,not inverted)
+        selected=Environment(environment)
+        return(selected,None)if inverted else(None,selected)
     negative=isinstance(test,ast.UnaryOp)and isinstance(test.op,ast.Not)
     call=test.operand if negative else test
     if not isinstance(call,ast.Call)or len(call.args)!=2 or call.keywords:return None
