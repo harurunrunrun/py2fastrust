@@ -1073,6 +1073,10 @@ impl Int {
         if base == 0 {
             base = 10;
         }
+        let packed_bits = if base.is_power_of_two() { base.trailing_zeros() } else { 0 };
+        let mut packed_word = 0u64;
+        let mut packed_count = 0u32;
+        let mut bounded_word = 0u128;
         let mut digits = Vec::<u32>::new();
         let mut previous_digit = false;
         let mut first_zero = false;
@@ -1093,20 +1097,50 @@ impl Int {
                 first_zero = d == 0;
             }
             any_nonzero |= d != 0;
-            let mut carry = d as u64;
-            for limb in &mut digits {
-                let n = *limb as u64 * base as u64 + carry;
-                *limb = n as u32;
-                carry = n >> 32;
-            }
-            if carry != 0 {
-                digits.push(carry as u32);
+            if packed_bits != 0 {
+                if INT_BITS != 0 {
+                    bounded_word = bounded_word.wrapping_shl(packed_bits) | d as u128;
+                } else if any_nonzero {
+                    packed_word = (packed_word << packed_bits) | d as u64;
+                    packed_count += packed_bits;
+                    if packed_count >= 32 {
+                        packed_count -= 32;
+                        digits.push((packed_word >> packed_count) as u32);
+                        packed_word &= (1u64 << packed_count) - 1;
+                    }
+                }
+            } else {
+                let mut carry = d as u64;
+                for limb in &mut digits {
+                    let n = *limb as u64 * base as u64 + carry;
+                    *limb = n as u32;
+                    carry = n >> 32;
+                }
+                if carry != 0 {
+                    digits.push(carry as u32);
+                }
             }
             previous_digit = true;
             count += 1;
         }
         if !previous_digit || count == 0 || (auto && !prefix && first_zero && any_nonzero) {
             return Err(invalid());
+        }
+        if packed_bits != 0 {
+            if INT_BITS != 0 {
+                let value = if negative { bounded_word.wrapping_neg() } else { bounded_word };
+                return Ok(Self::from_i128(value as i128));
+            }
+            digits.reverse();
+            if packed_count != 0 {
+                let mut carry = packed_word as u32;
+                for word in &mut digits {
+                    let original = *word;
+                    *word = (original << packed_count) | carry;
+                    carry = original >> (32 - packed_count);
+                }
+                if carry != 0 { digits.push(carry); }
+            }
         }
         Ok(Self::parts(negative, digits))
     }
