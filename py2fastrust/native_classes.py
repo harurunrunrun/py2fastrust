@@ -519,7 +519,6 @@ class Model:
         plan.parameters=list(signature.positional)
         plan.positional_only=set(signature.positional_only)
         plan.keyword_only=list(signature.keyword_only)
-        if owner and not plan.parameters and (not signature.variadic_positional or name=="__init__"):raise ClassUnsupported(node,"this method needs an explicit positional receiver; constructor-only variadic receiver packing is not implemented",operation=f"signature of method {name!r}")
         for name in signature.parameters:plan.arguments[name]=Cell()
         plan.declared=set(signature.local_names)
         defaults=[(slot.name,slot.expression)for slot in signature.defaults]
@@ -539,7 +538,8 @@ class Model:
             if isinstance(value,ast.UnaryOp):
                 captured=-captured if isinstance(value.op,ast.USub)else +captured
             plan.default_literals[name]=captured
-        if owner and plan.parameters:
+        from .native_class_descriptors import DEFERRED_RECEIVER
+        if owner and plan.parameters and receiver_kind is not DEFERRED_RECEIVER:
             value=Cell("object",(self.class_key(owner),))if receiver_kind is None else self.cell_for_kind(receiver_kind)
             merge(plan.arguments[plan.parameters[0]],value,node)
         from .native_lexical_cells import own_return_values
@@ -655,7 +655,8 @@ class Model:
                 tuple((key,tuple((name,shape(value))for name,value in sorted(state.items())),tuple(sorted(state.definite)))
                       for key,state in sorted(self.loop_feedback.items())),
                 self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else(),
-                tuple(tuple(shape(value)for value in record.arguments)for record in self.exceptions.records),position_snapshot(self))
+                tuple(tuple(shape(value)for value in record.arguments)for record in self.exceptions.records),position_snapshot(self),
+                tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else())
 
     def analyze_body(self,plan,environment):
         if isinstance(plan.node,ast.Lambda):

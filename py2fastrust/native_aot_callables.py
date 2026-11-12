@@ -302,7 +302,7 @@ class CallableCells:
             if self.bound_methods.finite_candidate(plan,function,owner):return True
             if owner.tag=="object":
                 method=self.model.classes[owner.args[0]].methods.get(self.model.resolved_name(plan,function))
-                if method is not None and method.signature.variadic_positional:
+                if method is not None:
                     try:method.signature.plan(normalize_call(node),implicit_count=1,allow_variadic=True)
                     except CallBindingError:return True
                 return method is None
