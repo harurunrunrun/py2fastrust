@@ -55,7 +55,7 @@ def analyze(model,plan,node,identity,metadata,positional,keywords,environment,*,
     if getattr(shape(source),'_native_class_generator',False):
         source_kind=shape(source);element=model.generators.demand(plan,node,source,inside)
     else:
-        source_kind=model.iterators.source(plan,node,source,('heap_selection',identity.name))
+        source_kind=model.iterators.source(plan,node,source,('heap_selection',identity.name),environment=inside)
         element=model.iterators.demand(plan,node,Cell(source_kind),inside)
     site=SelectionCall(factory('list',(element,)),binding,element,bound['key'],source_kind)
     _sites(model)[(plan.index,id(node),identity.name)]=site

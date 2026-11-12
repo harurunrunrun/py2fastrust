@@ -82,7 +82,8 @@ class Iterators:
 
     def needs_source_cursor(self,kind):
         from .native_class_deque_cursors import needs_cursor
-        return any(part in {'str','bytes'}for part in alternatives(kind)) or needs_cursor(self.model,kind)
+        from .native_source_iteration import has_protocol
+        return any(part in {'str','bytes'}or has_protocol(self.model,part)for part in alternatives(kind)) or needs_cursor(self.model,kind)
 
     def immediate_integer_map(self,plan,node,environment):
         """Retain eager word parsing only for consumers with no saved cursor."""
@@ -109,9 +110,13 @@ class Iterators:
         if not self.model.namespace.contribute(destination,value,node,force=True):
             self.model.contribute(destination,value,node)
 
-    def source(self,plan,node,value,identity=None,*,operation="source"):
+    def source(self,plan,node,value,identity=None,*,operation="source",environment=None):
         from .native_classes import ClassUnsupported,shape,tuple_cell
         kind=shape(value)
+        if operation=='source':
+            from .native_source_iteration import analyze
+            protocol=analyze(self,plan,node,value,environment)
+            if protocol is not None:return protocol
         if iterator_kind(kind)and operation=="source":return kind
         record=self._record(plan,node,operation,identity)
         self._contribute(record.source,value,node)
@@ -153,29 +158,29 @@ class Iterators:
                 raise ClassUnsupported(node,"this iterable needs its user __iter__/__next__ or container iteration protocol; no typed pull-state adapter is registered",types=(("iterable",shape(choice)),),proof="typed iterator construction protocol")
         return record.kind
 
-    def filter(self,plan,node,callback,source):
+    def filter(self,plan,node,callback,source,environment=None):
         from .native_classes import Cell
         record=self._record(plan,node,"filter")
         self._contribute(record.callback,callback,node)
-        record.input_type=self.source(plan,node,source)
+        record.input_type=self.source(plan,node,source,environment=environment)
         self._contribute(record.element,record.input_type.record.element,node)
         return Cell(record.kind)
 
-    def map(self,plan,node,callback,sources):
+    def map(self,plan,node,callback,sources,environment=None):
         from .native_classes import Cell
         record=self._record(plan,node,"map")
         self._contribute(record.callback,callback,node)
-        record.input_types=tuple(self.source(plan,node,source,("map",index))
+        record.input_types=tuple(self.source(plan,node,source,("map",index),environment=environment)
                                 for index,source in enumerate(sources))
         if any(isinstance(self.model.item(Cell(kind),node).root().tag,EmptyType)
                for kind in record.input_types):
             self._contribute(record.element,Cell(EMPTY),node)
         return Cell(record.kind)
 
-    def zip(self,plan,node,sources):
+    def zip(self,plan,node,sources,environment=None):
         from .native_classes import Cell
         record=self._record(plan,node,"zip")
-        record.input_types=tuple(self.source(plan,node,source,("zip",index))
+        record.input_types=tuple(self.source(plan,node,source,("zip",index),environment=environment)
                                 for index,source in enumerate(sources))
         if not sources:self._contribute(record.element,Cell(EMPTY),node)
         return Cell(record.kind)
@@ -184,6 +189,9 @@ class Iterators:
 
     def demand(self,plan,node,value,environment,active=()):
         from .native_classes import Cell,Environment,ClassUnsupported,shape
+        from .native_source_iteration import has_protocol
+        if has_protocol(self.model,shape(value)):
+            return self.demand(plan,node,Cell(self.source(plan,node,value,environment=environment)),environment,active)
         if getattr(shape(value),'_native_class_generator',False):return self.model.generators.demand(plan,node,value,environment)
         if value.root().tag=="union":
             result=Cell();branches=[]
@@ -263,6 +271,9 @@ class Iterators:
 
     def construct(self,emitter,node,source,*,kind=None,not_iterable=None):
         from .native_classes import Expression,ClassUnsupported,shape,domain
+        from .native_source_iteration import construct
+        protocol=construct(self,emitter,node,source)
+        if protocol is not None:return protocol
         kind=kind or self.sites[(emitter.plan.index,id(node),"source",None)].kind
         if iterator_kind(source.kind):return source
         record=kind.record;record.emitted=True

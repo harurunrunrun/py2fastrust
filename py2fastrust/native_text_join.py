@@ -75,7 +75,7 @@ def analyze(model,plan,node,receiver,arguments,keywords,environment):
             site.source_kind=shape(arguments[0])
             site.element=model.generators.demand(plan,node,arguments[0],environment)
         else:
-            site.source_kind=model.iterators.source(plan,node,arguments[0])
+            site.source_kind=model.iterators.source(plan,node,arguments[0],environment=environment)
             site.element=model.iterators.demand(plan,node,Cell(site.source_kind),environment)
     result=model.cell(plan,node)
     for kind in kinds:model.contribute(result,Cell(kind),node)

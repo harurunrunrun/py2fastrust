@@ -36,6 +36,15 @@ supported. Delegation, injected resumption/cleanup, lexical captures, opaque
 retained payloads and recursive resume regions remain explicit diagnostics;
 this is not full generator-protocol coverage.
 
+Direct source `__iter__` methods returning registered native cursors serve
+builtin consumers, comprehensions, unpacking and supported collection/iterator
+constructors. Their cursor identity, sharing and evaluation order are retained.
+Owned source-instance generator captures are supported with lifetime checks;
+manual `__next__`, alternate descriptors and unsafe captures remain diagnostics.
+Fixed-target unpacking of finite builtin list/tuple alternatives uses an exact
+length check and Rust local snapshots, releasing temporary list leases before
+target stores and retaining shared mutable elements without iterator allocation.
+
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
 Size checks precede blocking reads. Binary reads retain raw bytes, and default

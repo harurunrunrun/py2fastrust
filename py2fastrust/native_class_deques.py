@@ -86,7 +86,7 @@ class Deques:
         if source is not None:
             if getattr(shape(source),'_native_class_generator',False):item=self.model.generators.demand(plan,node,source,environment)
             else:
-                site.source_type=self.model.iterators.source(plan,node,source)
+                site.source_type=self.model.iterators.source(plan,node,source,environment=environment)
                 item=self.model.iterators.demand(plan,node,Cell(site.source_type),environment)
             self._contribute(record.element,item,node)
         self.sites[key]=site
@@ -109,7 +109,7 @@ class Deques:
             source=arguments[0]
             if getattr(shape(source),'_native_class_generator',False):item=self.model.generators.demand(plan,node,source,environment)
             else:
-                site.source_type=self.model.iterators.source(plan,node,source)
+                site.source_type=self.model.iterators.source(plan,node,source,environment=environment)
                 item=self.model.iterators.demand(plan,node,Cell(site.source_type),environment)
             for kind in kinds:self._contribute(kind.record.element,item,node)
             result=self.model.cell(plan,node,'none')

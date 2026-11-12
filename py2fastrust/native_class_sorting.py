@@ -56,7 +56,7 @@ def _analyze(model,plan,node,source,key,environment,*,method,error=None):
         else:
             element=model.mappings.sorted_element(source,key,node)
             if element is None:
-                kind=model.iterators.source(plan,node,source)
+                kind=model.iterators.source(plan,node,source,environment=environment)
                 element=model.iterators.demand(plan,node,Cell(kind),environment)
     site=SortSite(key,element,source_kind=kind,error=error)
     _sites(model)[(plan.index,id(node))]=site

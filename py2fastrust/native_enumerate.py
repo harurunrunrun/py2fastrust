@@ -34,7 +34,7 @@ def analyze(model,plan,node,arguments,keywords,environment,*,factory):
     source,start=values;registry=model.iterators
     record=registry._record(plan,node,'enumerate')
     registry._contribute(record.source,source,node)
-    record.input_type=registry.source(plan,node,source,('enumerate',0))
+    record.input_type=registry.source(plan,node,source,('enumerate',0),environment=environment)
     if not hasattr(record,'index_start'):record.index_start=Cell()
     registry._contribute(record.index_start,Cell('int')if start is None else start,node)
     contribute_element(registry,record,record.input_type.record.element,node)

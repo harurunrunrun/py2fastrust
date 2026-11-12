@@ -50,7 +50,7 @@ class DefaultDicts:
         if getattr(shape(source),'_native_class_generator',False):
             item=self.model.generators.demand(plan,node,source,environment).root()
         else:
-            site.source_type=self.model.iterators.source(plan,node,source)
+            site.source_type=self.model.iterators.source(plan,node,source,environment=environment)
             item=self.model.iterators.demand(plan,node,Cell(site.source_type),environment).root()
         if item.tag=='tuple'and len(item.args)==2:
             self.mappings.contribute_key(record,item.args[0],node)

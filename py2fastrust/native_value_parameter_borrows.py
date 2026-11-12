@@ -23,6 +23,8 @@ class Registry:
         for plan in model.plans:
             if not plan.reachable or not synchronous(model, plan):
                 continue
+            if getattr(plan,'source_generator',None)is not None:
+                continue
             scope = model.lexical.scope(plan)
             declared = {binding.name: binding for binding in bindings
                         if binding.owner == scope and binding.scope == scope and binding.role == 'parameter'}

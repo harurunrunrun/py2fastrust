@@ -98,14 +98,14 @@ def _bind(model, plan, target, item, environment, record):
     _target_names(model,plan,target)
 
 
-def _register_sources(model,plan,producer,value=None):
+def _register_sources(model,plan,producer,value=None,environment=None):
     """Retain a proved shared cursor for finite iterable alternatives."""
     from .native_classes import shape,Cell
     from .native_unions import union_kind
     if value is None:value=model.records.get((plan.index,id(producer.node)))
-    children=[_register_sources(model,plan,source)for source in producer.sources]
+    children=[_register_sources(model,plan,source,environment=environment)for source in producer.sources]
     if value is not None and(union_kind(shape(value))or model.iterators.needs_source_cursor(shape(value))):
-        return Cell(model.iterators.source(plan,producer.node,value))
+        return Cell(model.iterators.source(plan,producer.node,value,environment=environment))
     if (value is not None and producer.kind is ProducerKind.ENUMERATE
             and value.root().tag=='enumerate'and children and children[0]is not None):
         return Cell('enumerate',(children[0],value.root().args[1]))
@@ -155,9 +155,9 @@ def analyze(model, plan, node, environment, *, contribute=None, first_value=None
                 raise ClassUnsupported(clause.source.expression,str(error),proof="typed comprehension iterable")from None
             value=model.expression(plan,source.node,inside)
         if model.iterators.needs_source_cursor(shape(value)):
-            value=Cell(model.iterators.source(plan,source.node,value))
+            value=Cell(model.iterators.source(plan,source.node,value,environment=inside))
         sources.append(source)
-        adapted=_register_sources(model,plan,source,value)
+        adapted=_register_sources(model,plan,source,value,inside)
         _bind(model,plan,clause.target,model.iterators.demand(plan,source.node,adapted,inside),inside,record)
         for condition in clause.filters:model.condition(plan,condition,inside)
     record.sources=tuple(sources)

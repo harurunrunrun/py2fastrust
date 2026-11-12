@@ -172,7 +172,7 @@ class ExpandedCalls:
                 if getattr(shape(value),'_native_class_generator',False):
                     part.element = self.model.generators.demand(plan,node,value,environment)
                 else:
-                    part.iterator = self.model.iterators.source(plan, original, value)
+                    part.iterator = self.model.iterators.source(plan, original, value,environment=environment)
                     part.element = self.model.iterators.demand(plan, node,
                                                               Cell(part.iterator), environment)
                 part.minimum, part.maximum = _range_for(value)

@@ -1490,9 +1490,9 @@ class Model:
                     value = self.expression(plan,node.iter,environment)
                     from .native_class_iterators import tuple_cursor_required
                     if self.iterators.needs_source_cursor(shape(value)) or tuple_cursor_required(shape(value)):
-                        value=Cell(self.iterators.source(plan,node,value))
+                        value=Cell(self.iterators.source(plan,node,value,environment=environment))
                     elif value.root().tag=='enumerate'and self.iterators.needs_source_cursor(shape(value.root().args[0])):
-                        self.iterators.source(plan,node,value.root().args[0])
+                        self.iterators.source(plan,node,value.root().args[0],environment=environment)
                 start=Environment(environment)
                 key=plan.index,id(node)
                 from .native_loop_flow import header as loop_header

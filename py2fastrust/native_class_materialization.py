@@ -14,17 +14,17 @@ def empty_runtime(model,required):
     return EMPTY_HELPERS
 
 
-def list_source(model,plan,node,source):
+def list_source(model,plan,node,source,environment=None):
     """Keep saved iterator cursors; register only the raw source alternatives."""
     from .native_classes import Cell,shape
     from .native_class_iterators import iterator_kind
     root=source.root()
     if root.tag=="union":
-        return Cell("union",tuple(list_source(model,plan,node,choice)for choice in root.args))
+        return Cell("union",tuple(list_source(model,plan,node,choice,environment)for choice in root.args))
     kind=shape(source)
     if iterator_kind(kind)or getattr(kind,'_native_class_generator',False):return source
     if root.tag in {"list","tuple","tuple_sequence","range","enumerate","map_int"}:return source
-    return Cell(model.iterators.source(plan,node,source))
+    return Cell(model.iterators.source(plan,node,source,environment=environment))
 
 
 def analyze_tuple(model,plan,node,arguments,keywords,environment,factory):
@@ -35,7 +35,7 @@ def analyze_tuple(model,plan,node,arguments,keywords,environment,factory):
     source=arguments[0];kind=shape(source)
     if isinstance(kind,TupleType):return factory('tuple',source.root().args)
     if isinstance(kind,TupleSequenceType):return factory('tuple_sequence',source.root().args)
-    iterator=model.iterators.source(plan,node,source)
+    iterator=model.iterators.source(plan,node,source,environment=environment)
     item=model.iterators.demand(plan,node,Cell(iterator),environment)
     model.materialized_tuple=True
     result=factory('tuple_sequence',(Cell(),))

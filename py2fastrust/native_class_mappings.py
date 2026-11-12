@@ -254,7 +254,7 @@ class Mappings:
                     self.contribute_key(record,choice.record.key,node)
                     if name=='dict':self.model.contribute(record.value,choice.record.value,node)
             else:
-                record.source_type=self.model.iterators.source(plan,node,source)
+                record.source_type=self.model.iterators.source(plan,node,source,environment=environment)
                 item=self.model.iterators.demand(plan,node,Cell(record.source_type),environment)
                 if name=='set':self.contribute_key(record,item,node)
                 elif item.root().tag=='tuple'and len(item.root().args)==2:

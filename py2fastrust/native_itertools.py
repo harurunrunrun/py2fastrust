@@ -72,7 +72,7 @@ class ItertoolsAdapter:
             registry._contribute(record.source,values[0],node)
             registry._contribute(record.element,values[0],node)
         else:
-            record.input_types=tuple(registry.source(plan,node,source,('itertools',record.tool,index))
+            record.input_types=tuple(registry.source(plan,node,source,('itertools',record.tool,index),environment=environment)
                                      for index,source in enumerate(record.input_values))
             if record.tool=='chain':
                 if not values:registry._contribute(record.element,Cell(EMPTY),node)

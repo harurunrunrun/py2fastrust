@@ -67,7 +67,7 @@ class FunctoolsAdapter:
         if getattr(shape(source),'_native_class_generator',False):
             source_kind=shape(source);item=model.generators.demand(plan,node,source,inside)
         else:
-            source_kind=model.iterators.source(plan,node,source,('reduce_source',identity))
+            source_kind=model.iterators.source(plan,node,source,('reduce_source',identity),environment=inside)
             item=model.iterators.demand(plan,node,Cell(source_kind),inside)
         empty=isinstance(shape(item),EmptyType)or count==0
         seed=item if initial is None else initial

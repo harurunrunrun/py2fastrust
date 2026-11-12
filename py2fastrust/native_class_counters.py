@@ -92,7 +92,7 @@ class Counters:
             else:ordinary.append(kind)
         site.mapping_source=bool(kinds)and not ordinary
         if ordinary or not kinds:
-            site.source_type=self.model.iterators.source(plan,node,source)
+            site.source_type=self.model.iterators.source(plan,node,source,environment=environment)
             item=self.model.iterators.demand(plan,node,Cell(site.source_type),environment)
             for owner in owners:self.mappings.contribute_key(owner.record,item,node)
 

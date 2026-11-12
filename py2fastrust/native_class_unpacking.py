@@ -91,7 +91,7 @@ def analyze(model, plan, target, value, environment,*,bind_target=None):
     star=next((i for i,node in enumerate(target.elts)if isinstance(node,ast.Starred)),None)
     source=value.root()
     mismatch=source.tag=='tuple'and star is None and len(source.args)!=len(target.elts)
-    if star is None and not(iterator_kind(shape(value))or union_kind(shape(value))or default_noniterable(model,shape(value))or mismatch):
+    if star is None and not(iterator_kind(shape(value))or model.iterators.needs_source_cursor(shape(value))or union_kind(shape(value))or default_noniterable(model,shape(value))or mismatch):
         return False
     record=Unpack(star)
     if source.tag=='tuple':
@@ -111,7 +111,7 @@ def analyze(model, plan, target, value, environment,*,bind_target=None):
                 index=i if star is None or i<star else len(fields)-len(target.elts)+i
                 bind(node,fields[index]if enough else Cell(EMPTY))
     else:
-        record.source_kind=model.iterators.source(plan,target,value)
+        record.source_kind=model.iterators.source(plan,target,value,environment=environment)
         member=model.iterators.demand(plan,target,Cell(record.source_kind),environment)
         for i,node in enumerate(target.elts):
             if i==star:

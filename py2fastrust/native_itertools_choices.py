@@ -59,7 +59,7 @@ def analyze(model,plan,node,identity,metadata,positional,keywords,environment,*,
         if getattr(shape(value),'_native_class_generator',False):
             record.input_type=shape(value);item=model.generators.demand(plan,node,value,inside)
         else:
-            record.input_type=registry.source(plan,node,value,('choice_pool',record.tool))
+            record.input_type=registry.source(plan,node,value,('choice_pool',record.tool),environment=environment)
             item=registry.demand(plan,node,Cell(record.input_type),inside)
         registry._contribute(record.pool_element,item,node)
     rank=_fixed_rank(model,node,metadata,identity.name)

@@ -194,9 +194,12 @@ class GeneratorBuilder(Builder):
             return
         if isinstance(node,ast.For):
             source=self.emitter.expression(node.iter)
-            kind=self.emitter.model.iterators.source(self.plan,node.iter,self.emitter.model.records[self.plan.index,id(node.iter)],('generator_for',id(node)))
+            original=self.emitter.model.records[self.plan.index,id(node.iter)]
+            from .native_source_iteration import has_protocol
+            source_node=node if has_protocol(self.emitter.model,source.kind)else node.iter
+            kind=self.emitter.model.iterators.source(self.plan,source_node,original,('generator_for',id(node)))
             cursor='cursor_'+str(len(self.extra));self.extra[cursor]=('Option<ClassIterator_'+str(kind.index)+'>','None')
-            created=self.emitter.model.iterators.construct(self.emitter,node.iter,source,kind=kind)
+            created=self.emitter.model.iterators.construct(self.emitter,source_node,source,kind=kind)
             self.emit('frame.'+cursor+'=Some('+created.code+');')
             head,body,otherwise,after=self.new(),self.new(),self.new(),self.new();self.end(('jump',head));self.current=head
             pulled=self.emitter.model.iterators.pull(self.emitter,node.iter,Expression('frame.'+cursor+'.as_ref().unwrap().clone()',kind))
@@ -251,7 +254,7 @@ class GeneratorBuilder(Builder):
 def generate(emitter):
     spec=getattr(emitter.plan,'source_generator',None)
     if spec is None:return None
-    from .native_classes import ClassUnsupported,shape
+    from .native_classes import ClassUnsupported,shape,InstanceType
     from .native_class_calls import entry_result
     from .native_class_binding_contexts import parameter
     model=emitter.model;plan=emitter.plan;record=spec.record;record.emitted=True
@@ -266,10 +269,19 @@ def generate(emitter):
         if isinstance(kind,TupleType):return all(closed(part)for part in kind.fields)
         if isinstance(kind,NullableType):return closed(kind.value)
         if isinstance(kind,UnionType):return all(closed(part)for part in kind.alternatives)
+        if isinstance(kind,InstanceType):return not model.gc_classes
         return False
+    from .native_primitive_parameter_places import borrowed_parameter
+    from .native_scalar_constructor_data import receiver_type
+    from .native_scalar_data_parameters import parameter_type
+    for index,name in enumerate(plan.runtime_parameters):
+        if (borrowed_parameter(model,plan,index,name,shape(plan.arguments[name]))
+                or receiver_type(model,plan,name)is not None
+                or parameter_type(model,plan,name)is not None):
+            raise ClassUnsupported(plan.node,'source generator parameter '+repr(name)+' uses a borrowed native receiver; suspending that borrowed receiver requires an owned frame capture that is not implemented',proof='owned source generator receiver capture')
     for value in (record.element,*plan.arguments.values(),*(value for values in plan.locals.values()for value in values)):
         if not closed(shape(value)):
-            raise ClassUnsupported(plan.node,'this source generator retains an object, callable or iterator whose suspended lifetime/ownership is not implemented; the current frame supports builtin scalar/list/tuple values',types=(('retained value',shape(value)),),proof='owned source generator frame payload')
+            raise ClassUnsupported(plan.node,'this source generator retains a callable, iterator or object whose suspended lifetime/ownership is not implemented; the current frame supports builtin values and owned shared instance handles',types=(('retained value',shape(value)),),proof='owned source generator frame payload')
     # All frame places remain owned across Rust calls and suspension. Never
     # retain temporary native borrows or an optimizer's stack-local Vec place.
     emitter.primitive_parameters={};emitter.readonly_owned_parameters={}

@@ -21,7 +21,7 @@ def analyze(model,plan,node,identity,positional,keywords,environment,*,factory):
         if getattr(shape(value),'_native_class_generator',False):
             sources.append(shape(value));item=model.generators.demand(plan,node,value,inside)
         else:
-            source=registry.source(plan,node,value,('product',index));sources.append(source)
+            source=registry.source(plan,node,value,('product',index),environment=environment);sources.append(source)
             item=registry.demand(plan,node,Cell(source),inside)
         registry._contribute(record.pool_element,item,node)
     if not positional or fixed_repeat==0:registry._contribute(record.pool_element,Cell(EMPTY),node)

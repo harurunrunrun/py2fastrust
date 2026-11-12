@@ -53,7 +53,7 @@ def analyze(model,plan,node,name,arguments,keywords,environment,*,factory):
     if len(arguments)==1:
         source=arguments[0]
         if not getattr(shape(source),'_native_class_generator',False):
-            site.source=model.iterators.source(plan,node,source,('extrema',name))
+            site.source=model.iterators.source(plan,node,source,('extrema',name),environment=environment)
             source=Cell(site.source)
         _contribute(model,element,model.iterators.demand(plan,node,source,environment),node)
     else:

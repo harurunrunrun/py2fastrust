@@ -115,7 +115,7 @@ class Generators:
             self.sites[key]=record;self.records.append(record)
         record.semantic=_normalizer(self.model,plan,environment).comprehension(node)
         first=self.model.expression(plan,node.generators[0].iter,environment)
-        record.outer=self.model.iterators.source(plan,node,first,('generator_outer',record.index))
+        record.outer=self.model.iterators.source(plan,node,first,('generator_outer',record.index),environment=environment)
         return self.model.cell(plan,node,record.kind)
 
     def demand(self,plan,node,value,environment):

@@ -34,6 +34,23 @@ Ordinary call-depth elimination is withheld for reached suspended source frames
 until its lifetime proof covers suspension. Unreachable generator declarations
 do not disable that optimization for ordinary reached functions.
 
+Ordinary source `__iter__` methods returning a registered native cursor work
+through builtin iterable consumers, comprehensions, unpacking and supported
+collection/iterator constructors. The returned cursor keeps its original
+identity and shared position. Yield-based methods retain owned source-instance
+handles across suspension when their ownership graph is safe; borrowed/GC
+captures and ownership cycles remain guarded. Manual `__next__` protocols,
+alternate `__iter__` descriptors and unresolved/noniterator results remain
+explicit diagnostics. Other class protocols, including custom display and
+`__reversed__`, retain their separate implementation boundaries.
+
+Fixed-target unpacking of finite builtin list/tuple type alternatives checks
+length and snapshots values into Rust locals before storing any target. It
+releases a list's temporary lease before targets can mutate that list, retains
+shared element identity, and avoids allocating iterator wrappers for this
+operation. Noniterable alternatives keep their runtime `TypeError`; starred
+targets and custom iteration keep their existing protocol paths.
+
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14
 order: an explicit `!s`/`!r`/`!a` conversion runs before spec expressions, while

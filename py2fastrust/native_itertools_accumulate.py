@@ -32,7 +32,7 @@ def analyze(model,plan,node,identity,positional,keywords,environment,*,factory):
     registry._contribute(record.source,values[0],node)
     registry._contribute(record.callback,values[1]if values[1]is not None else Cell('none'),node)
     registry._contribute(record.initial,values[2]if values[2]is not None else Cell('none'),node)
-    record.input_types=(registry.source(plan,node,values[0],('accumulate',0)),)
+    record.input_types=(registry.source(plan,node,values[0],('accumulate',0),environment=environment),)
     registry._contribute(record.element,record.input_types[0].record.element,node)
     for kind in alternatives(shape(record.initial)):
         if kind is not None and kind!='none':registry._contribute(record.element,model.cell_for_kind(kind),node)

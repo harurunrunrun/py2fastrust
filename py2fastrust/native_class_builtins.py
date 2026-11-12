@@ -91,16 +91,16 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         from .native_enumerate import analyze as analyze_enumerate
         return analyze_enumerate(model,plan,node,arguments,keywords,environment,factory=cell)
     if name == "filter" and len(arguments)==2 and not keywords:
-        result=model.iterators.filter(plan,node,arguments[0],arguments[1])
+        result=model.iterators.filter(plan,node,arguments[0],arguments[1],environment)
         return cell(result.root().tag)
     if name == "map" and len(arguments)>=2 and all(key=="strict"for key,_ in keywords):
-        result=model.iterators.map(plan,node,arguments[0],arguments[1:])
+        result=model.iterators.map(plan,node,arguments[0],arguments[1:],environment)
         return cell(result.root().tag)
     if name == "zip" and all(key=="strict"for key,_ in keywords):
-        result=model.iterators.zip(plan,node,arguments)
+        result=model.iterators.zip(plan,node,arguments,environment)
         return cell(result.root().tag)
     if name in {"iter","reversed"} and len(arguments)==1 and not keywords:
-        return cell(model.iterators.source(plan,node,arguments[0],operation="reverse"if name=="reversed"else"source"))
+        return cell(model.iterators.source(plan,node,arguments[0],operation="reverse"if name=="reversed"else"source",environment=environment))
     if name == "next" and 1<=len(arguments)<=2 and not keywords:
         model.exceptions.require(node)
         from .native_class_iterators import iterator_kind
@@ -128,14 +128,14 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         from .native_class_iterators import iterator_kind
         source=arguments[0]
         if not iterator_kind(shape(source))and not getattr(shape(source),'_native_class_generator',False):
-            source=Cell(model.iterators.source(plan,node,source))
+            source=Cell(model.iterators.source(plan,node,source,environment=environment))
         model.iterators.demand(plan,node,source,environment)
         return cell("bool")
     if name == "list" and len(arguments) <= 1 and not keywords:
         result = cell("list",(Cell(),))
         if arguments:
             from .native_class_materialization import list_source
-            arguments=[list_source(model,plan,node,arguments[0])]
+            arguments=[list_source(model,plan,node,arguments[0],environment)]
             self.contribute(result.root().args[0],self.iterators.demand(plan,node,arguments[0],environment),node)
         return result
     if name == "sum" and 1 <= len(arguments) <= 2 and not keywords:
@@ -145,7 +145,7 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         from .native_integer_mapping_folds import element as mapping_element
         item = mapping_element(model,node,source)
         if item is None:
-            if self.iterators.needs_source_cursor(shape(source)):source=Cell(self.iterators.source(plan,node,source))
+            if self.iterators.needs_source_cursor(shape(source)):source=Cell(self.iterators.source(plan,node,source,environment=environment))
             item = self.iterators.demand(plan,node,source,environment)
         item = item.root()
         if not isinstance(item.tag,EmptyType)and item.tag not in {None,"int","bool","int_bool"}:
@@ -279,6 +279,11 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
     from .native_types import ListType
     self=emitter
     name=identity.name
+    from .native_source_iteration import has_protocol
+    if name in {'list','sum','min','max','any','all'}and arguments and has_protocol(self.model,arguments[0].kind):
+        setup,source=self.capture(self.model.iterators.construct(self,node,arguments[0]))
+        result=_emit(self,node,identity,[source]+arguments[1:],keywords,wanted,raw_kind,owned_list=owned_list)
+        return Expression('{'+setup+result.code+'}',result.kind)
     if name=="enumerate":
         from .native_enumerate import emit as emit_enumerate
         return emit_enumerate(emitter,node,arguments,keywords,wanted)
