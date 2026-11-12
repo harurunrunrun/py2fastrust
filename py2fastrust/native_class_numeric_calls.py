@@ -111,9 +111,8 @@ def emit(emitter,node,identity,arguments,keywords,wanted):
                 call=f'({numbers[0]}).modpow(&({numbers[1]}),&({numbers[2]}))'
                 code=emitter.at(call,node)
             else:
-                numbers=[f'Int::from_i128(({code})as i128)'for code in numbers]
-                call=f'({numbers[0]}).modpow(&({numbers[1]}),&({numbers[2]}))'
-                code=f'({emitter.at(call,node)}).to_i128().unwrap()as NativeInt'
+                call='native_fixed_modpow('+','.join(numbers)+')'
+                code=emitter.at(call,node)
             return emitter.encoded(code,'int',wanted,node)
         if tags[2]!='none'and 'float'in tags:
             return _error(emitter,node,wanted,_string('TypeError: pow() 3rd argument not allowed unless all arguments are integers')+'.to_owned()')

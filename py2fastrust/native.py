@@ -243,6 +243,10 @@ impl Iterator for NativeRange {
 '''
 
 
+from .native_fixed_modular_power import HELPERS as _MODULAR_POWER_HELPERS
+_HELPERS+=_MODULAR_POWER_HELPERS
+
+
 _OUTPUT_HELPERS = r'''
 fn native_flush_output(output:&mut String)->Result<(),String> {
     use std::io::Write;
@@ -1105,11 +1109,10 @@ class _Generator:
                 arguments = [self.expression(value, environment) for value in node.args]
                 if len(arguments) == 2:
                     return self.binary(ast.Pow(), *arguments, node)
-                self.needs_integer_runtime = True
                 names = [self.temporary() for _ in arguments]
-                code = " ".join(f"let {name} = Int::from_i128(({self.number(value)}) as i128);" for name, value in zip(names, arguments))
-                call = self.at(f"{names[0]}.modpow(&{names[1]}, &{names[2]})", node)
-                return _Expression(f"{{ {code} ({call}).to_i128().unwrap() as NativeInt }}", "int")
+                code = " ".join(f"let {name} = {self.number(value)};" for name, value in zip(names, arguments))
+                call = self.at('native_fixed_modpow('+','.join(names)+')',node)
+                return _Expression(f"{{ {code} {call} }}", "int")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             function = environment.get(node.func.id)
             if isinstance(function, _DequeConstructor):
