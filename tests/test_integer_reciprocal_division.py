@@ -21,11 +21,22 @@ fn main() {
             continue;
         }
         let b = Int::parse_ascii(fields[2].as_bytes(), 16).unwrap();
+        if fields[0] == "recursive" || fields[0] == "long" {
+            let divide = if fields[0] == "long" { Int::nat_divrem_long } else { Int::nat_divrem_recursive };
+            let (q, r) = divide(&a.magnitude(), &b.magnitude(), true);
+            let (unused, only_r) = divide(&a.magnitude(), &b.magnitude(), false);
+            assert!(unused.is_empty()); assert_eq!(r, only_r);
+            println!("{}\t{}", Int::exact_parts(false, q).radix(16, false), Int::exact_parts(false, r).radix(16, false));
+            continue;
+        }
         if fields[0].starts_with("mutate") {
             let mut target = if fields[0] == "mutate_unique" {
                 Int::exact_parts(false, b.magnitude().into_owned())
             } else { b.clone() };
             for _ in 0..3 { let _ = a.divmod(&target).unwrap(); }
+            if let IntRepr::Big { digits, .. } = &target.0 {
+                assert!(digits.division.get().unwrap().get().is_some());
+            }
             assert_eq!(target, b);
             if let (IntRepr::Big { digits: x, .. }, IntRepr::Big { digits: y, .. }) = (&target.0, &b.0) {
                 use std::hash::{Hash, Hasher};
@@ -93,6 +104,49 @@ class ReciprocalDivisionTests(unittest.TestCase):
         for optimized in (False, True):
             self.check(rows if optimized else rows[::7], optimized)
 
+    def test_recursive_halves_padding_and_quotient_estimates(self):
+        rng = random.Random(2026111901)
+        rows = []
+        for words in (1, 2, 63, 64, 65, 95, 96, 127, 128, 129, 255, 256,
+                      257, 499, 500, 511, 512, 513, 1023, 1024, 1025, 2049):
+            for top_bits in (1, 16, 31, 32):
+                bits = (words - 1) * 32 + top_bits
+                b = rng.getrandbits(bits - 1) | (1 << (bits - 1))
+                for quotient_words in (0, 1, words // 2, words, 2 * words + 1):
+                    q = rng.getrandbits(32 * quotient_words)
+                    for r in (0, b - 1, rng.randrange(b)):
+                        a = q * b + r
+                        rows.append((f'recursive\t{a:x}\t{b:x}', f'{q:x}\t{r:x}'))
+        # Dense low divisor halves force overestimates; all-zero low halves
+        # and maximal quotient blocks exercise exact/saturated estimates.
+        for half in (33, 64, 65, 128, 256, 512):
+            base = 1 << (32 * half)
+            for high in (base // 2, base // 2 + 1, base - 1):
+                for low in (0, 1, base - 1):
+                    b = high * base + low
+                    for q in (base // 2, base - 2, base - 1, base, base**2 - 1):
+                        for r in (0, 1, b - 1):
+                            a = q * b + r
+                            rows.append((f'recursive\t{a:x}\t{b:x}', f'{q:x}\t{r:x}'))
+        self.check(rows, True)
+        self.check(rows[::17], False)
+
+    def test_paired_word_division_normalization_and_dispatch_boundaries(self):
+        rng = random.Random(2026111902)
+        rows = []
+        for words in (8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127):
+            for top_bits in (1, 2, 31, 32):
+                bits = (words - 1) * 32 + top_bits
+                for b in (1 << (bits - 1), (1 << bits) - 1,
+                          rng.getrandbits(bits - 1) | (1 << (bits - 1))):
+                    for extra in (0, 1, 3, 4, 5, words, 2 * words + 1):
+                        q = rng.getrandbits(extra * 32)
+                        for r in (0, b - 1, rng.randrange(b)):
+                            a = q * b + r
+                            rows.append((f'long\t{a:x}\t{b:x}', f'{q:x}\t{r:x}'))
+        self.check(rows, True)
+        self.check(rows[::11], False)
+
     def test_quotient_blocks_remainders_and_signs(self):
         rng = random.Random(2026111702)
         rows = []
@@ -124,7 +178,7 @@ class ReciprocalDivisionTests(unittest.TestCase):
         for words in (256, 257, 512, 513, 1024):
             bits = words * 32
             b = rng.getrandbits(bits - 1) | (1 << (bits - 1)) | 1
-            a = rng.getrandbits(bits * 2) | (1 << (bits * 2))
+            a = rng.getrandbits(bits * 3) | (1 << (bits * 3))
             for mask in (1, (1 << (bits - 1)), 1 << bits, (1 << bits) - 1):
                 for op, target in ((0, b & mask), (1, b | mask), (2, b ^ mask)):
                     if not target: continue

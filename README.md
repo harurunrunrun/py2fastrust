@@ -216,13 +216,17 @@ their original values. Remainders do not construct a discarded quotient, and
 word-sized moduli use limb reduction with a precomputed reciprocal. Modular
 powers with a 32-bit modulus use exact native products. Nonbinary input is
 parsed in digit groups, while large decimal output splits into smaller blocks.
-Large divisions use exact reciprocal estimates and bounded quotient corrections.
-Repeated divisors can retain a reciprocal in their immutable magnitude; changing
-that magnitude invalidates the cache. Equality and hashing depend only on the
-integer value. Smaller divisions retain native word or long division arithmetic.
+Large divisions split operands recursively instead of building a full reciprocal
+for each new divisor. Long division leaves pack pairs of 32-bit limbs into
+64-bit scratch words with exact 128-bit products; stored magnitudes retain their
+32-bit representation. Long dividends can reuse exact reciprocal estimates and
+bounded quotient corrections. Repeated divisors can retain that reciprocal in
+their immutable magnitude; changing the magnitude invalidates the cache.
+Equality and hashing depend only on the integer value. Smaller divisions retain
+native word or long division arithmetic.
 Identical immutable operand magnitudes use symmetric squaring. Short quotients
-use upper divisor prefixes and one exact correction, keeping reciprocal work
-proportional to the quotient precision needed by a first division.
+use upper divisor prefixes and one exact correction, reducing the work to the
+quotient precision needed by a first division.
 
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather
