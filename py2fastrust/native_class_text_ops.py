@@ -71,6 +71,13 @@ def analyze(model,plan,node,receiver,arguments,keywords):
     if search is not None:return search
     from .native_classes import Cell,shape
     name=node.func.attr
+    if name=='decode'and shape(receiver)=='bytes':
+        from .native_classes import ClassUnsupported
+        import ast
+        if (keywords or len(arguments)>1 or node.args and
+                not(isinstance(node.args[0],ast.Constant)and node.args[0].value in {'utf-8','utf8','UTF-8','UTF8'})):
+            raise ClassUnsupported(node,'this bytes.decode call requires codec lookup or an error-handler policy; the native adapter currently implements default strict UTF-8 and explicit literal utf-8/utf8 encodings',proof='bytes codec and decoding error policy')
+        return model.cell(plan,node,'str')
     if name not in STRIP_NAMES:return None
     kinds=alternatives(shape(receiver))
     if not kinds or not all(kind in {'str','bytes'}for kind in kinds):return None
@@ -97,6 +104,10 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
     from .native_classes import Expression,ClassUnsupported,domain
     from .native_unions import project,union_kind
     from .native_class_builtins import _error,_type_name
+    if node.func.attr=='decode'and receiver.kind=='bytes':
+        call='std::str::from_utf8(&('+receiver.code+')).map(str::to_owned).map_err(|_|"UnicodeDecodeError: bytes are not valid UTF-8".to_owned())'
+        code='NativeText::from('+emitter.at(call,node)+')'
+        return Expression(emitter.coerce(Expression(code,'str'),wanted,node),wanted)
     site=_sites(emitter.model).get((emitter.plan.index,id(node)))
     if site is None:return None
     bound,error=bind(arguments,list(keywords.items()),Expression('()','none'))

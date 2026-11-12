@@ -643,6 +643,17 @@ parsing/unpacking leaves the next line available. Oversized scratch buffers are
 released after consumption. `readline()` does not gain an implicit output
 flush; builtin `input()` retains its existing flush and interactive behavior.
 
+Typed source frames also call captured canonical `read`/`readline` values through
+the same standard-input adapter, including calls inside map callbacks and
+`from sys import stdin as stream` bindings. An optional positional size follows
+the reader's integer/boolean/`None`, negative-size and overflow rules, with
+validation before the first read or stream borrow. Reader keyword/invalid-arity
+call errors and user-defined size `__index__` methods remain explicit
+diagnostics. Native `bytes.decode()` and closed literal UTF-8 encoding names
+produce text on this path; other encoding/error-handler protocols still require
+their own adapters. A source using only `try`/`except` may still require an
+unimplemented frame-selection route.
+
 Builtin `print` also has its normal `None` result in assignment, nested call,
 tuple and short-circuit expression contexts. These calls share the statement
 printer's argument capture, formatting and explicit flush behavior. Replacing a

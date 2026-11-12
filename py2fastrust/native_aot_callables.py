@@ -419,6 +419,11 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
     from .native_builtin_callables import analyze as analyze_builtin
     from .native_module_linking import ClassReferenceType
     for branch in alternatives(kind)if kind is not None else():
+        from .native_class_stdio import READERS,analyze as analyze_reader
+        if branch in READERS:
+            value=analyze_reader(self.model,plan,node,branch,positional,keywords,
+                                factory=lambda tag:self.model.cell(plan,node,tag,identity=('stdin',branch)))
+            if not self.model.namespace.contribute(result,value,node,force=True):self.model.contribute(result,value,node)
         if isinstance(branch,ClassReferenceType):
             from .native_class_constructor_calls import analyze as analyze_constructor
             record=analyze_constructor(self,plan,node,branch,arguments,positional,keywords,environment,identity=identity)
@@ -596,6 +601,9 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
     def branch(kind,code):
         if union_kind(kind):
             return project(kind,code,lambda child,value:branch(child,f"({value}).clone()"))
+        from .native_class_stdio import READERS,emit as emit_reader
+        if kind in READERS:
+            return emit_reader(emitter,node,kind,positional,keywords,wanted).code
         if getattr(kind,'_native_exception_class',False):
             record=site.exception_constructors[kind]
             return emitter.model.exceptions.emit_construct(emitter,node,record,positional,keywords,wanted).code

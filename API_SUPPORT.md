@@ -36,6 +36,14 @@ supported. Delegation, injected resumption/cleanup, lexical captures, opaque
 retained payloads and recursive resume regions remain explicit diagnostics;
 this is not full generator-protocol coverage.
 
+Typed source frames support captured canonical stdin readers at deferred
+callable sites, optional positional sizes and `from sys import stdin` aliases.
+Size checks precede blocking reads. Binary reads retain raw bytes, and default
+or closed literal UTF-8 `bytes.decode` calls can produce native text. Reader
+keyword/invalid-arity call errors, custom size `__index__`, other codecs/error
+handlers and some exception-only frame-selection cases remain positioned
+diagnostics.
+
 Typed source-class namespaces support ordinary nested classes and scalar/list
 class data, including aliases, rebinding, deletion and instance-field precedence.
 They retain the original scope owners and captured defining-module references.

@@ -379,6 +379,8 @@ class Model:
         plan.definition_key=(source.name,source.ordinal(node))
 
     def resolved_name(self, plan, node):
+        if self.unit is not None and isinstance(node,ast.alias):
+            return self.namespace.owners[self.unit.ordinal(node)].name
         if self.unit is not None:return self.unit.name_for(node)
         raw=node.id if isinstance(node,ast.Name)else node.attr if isinstance(node,ast.Attribute)else node.arg
         return plan.name(raw)
@@ -1147,10 +1149,11 @@ class Model:
         if isinstance(function,ast.Name):
             callable_ = environment.get(self.resolved_name(plan,function))
             if callable_ is None:callable_=self.lexical.read(plan,function,environment)
-            if callable_ is not None and callable_.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"} and not arguments and not keywords:
+            if callable_ is not None and callable_.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
                 callable_=callable_.root()
                 self.remember(plan,function,callable_)
-                return self.cell(plan,node,"bytes" if callable_.tag in {"reader_bytes","read_bytes"} else "str")
+                from .native_class_stdio import analyze as analyze_reader
+                return analyze_reader(self,plan,node,callable_.tag,arguments,keywords)
         if receiver is not None:
             from .native_text_join import analyze as analyze_join
             joined=analyze_join(self,plan,node,receiver,arguments,keywords,environment)
@@ -1208,10 +1211,10 @@ class Model:
                 if len(arguments) != (1 if function.attr == "setrecursionlimit" else 0):
                     raise ClassUnsupported(node)
                 return self.cell(plan,node,"none" if arguments else "int")
-            intrinsic = {("stdin","readline"):"str", ("stdin","read"):"str",
-                         ("stdin_buffer","readline"):"bytes", ("stdin_buffer","read"):"bytes"}.get((receiver.tag,function.attr))
-            if intrinsic and not arguments and not keywords:
-                return self.cell(plan,node,intrinsic)
+            from .native_class_stdio import member as reader_member,analyze as analyze_reader
+            intrinsic=reader_member(receiver.tag,function.attr)
+            if intrinsic is not None:
+                return analyze_reader(self,plan,node,intrinsic,arguments,keywords)
             if receiver.tag is None and not self.final:
                 return self.cell(plan,node)
         raise ClassUnsupported(node)
@@ -1350,7 +1353,9 @@ class Model:
         self.canonical_local(plan,name,value)
         self.remember(plan,node,value)
 
-    def import_statement(self,plan,node,environment):return False
+    def import_statement(self,plan,node,environment):
+        from .native_class_stdio import import_statement
+        return import_statement(self,plan,node,environment)
 
     def join(self, left, right, node, role="join"):
         if left is None:
@@ -1645,7 +1650,9 @@ class Emitter:
 
     def constructor_context_arguments(self,constructor,defining_class):return []
 
-    def emit_import(self,node):return None
+    def emit_import(self,node):
+        from .native_class_stdio import emit_import
+        return emit_import(self,node)
 
     def unsupported(self, node):
         raise ClassUnsupported(node)
@@ -2394,6 +2401,11 @@ class Emitter:
         alias_kind = self.model.records.get((self.plan.index,id(function)))
         if alias_kind is not None and alias_kind.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
             name = alias_kind.root().tag
+        from .native_class_stdio import READERS,member as reader_member,emit as emit_reader
+        reader=name if name in READERS else reader_member(domain(receiver.kind),function.attr)if receiver is not None else None
+        if reader is not None:
+            result=emit_reader(self,node,reader,arguments,list(keywords.items()),wanted)
+            return Expression("{"+"\n".join(setup)+result.code+"}",wanted)
         code = None
         raw_kind=shape(self.model.constructors[(self.plan.index,id(node))])if(self.plan.index,id(node))in self.model.constructors else wanted
         from .native_class_builtins import SUPPORTED,emit as emit_builtin
