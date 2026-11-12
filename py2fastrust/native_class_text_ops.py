@@ -25,6 +25,8 @@ def bind(arguments,keywords,default):
 
 
 def requires_frames(unit,analysis):
+    from .native_class_text_format import requires_frames as format_requires_frames
+    if format_requires_frames(unit,analysis):return True
     from .native_ascii_text_case import requires_frames as case_requires_frames
     if case_requires_frames(unit,analysis):return True
     from .native_class_text_replace import requires_frames as replace_requires_frames
@@ -55,6 +57,9 @@ def requires_frames(unit,analysis):
 
 
 def analyze(model,plan,node,receiver,arguments,keywords):
+    from .native_class_text_format import analyze as analyze_format
+    formatted=analyze_format(model,plan,node,receiver,arguments,keywords)
+    if formatted is not None:return formatted
     from .native_ascii_text_case import analyze as analyze_case
     changed=analyze_case(model,plan,node,receiver,arguments,keywords)
     if changed is not None:return changed
@@ -77,6 +82,9 @@ def analyze(model,plan,node,receiver,arguments,keywords):
 
 
 def emit(emitter,node,receiver,arguments,keywords,wanted):
+    from .native_class_text_format import emit as emit_format
+    formatted=emit_format(emitter,node,receiver,arguments,keywords,wanted)
+    if formatted is not None:return formatted
     from .native_ascii_text_case import emit as emit_case
     changed=emit_case(emitter,node,receiver,arguments,keywords,wanted)
     if changed is not None:return changed
