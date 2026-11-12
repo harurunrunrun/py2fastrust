@@ -826,3 +826,9 @@ checked store, including negative-index normalization after a resize.
 BigInt list indices are checked against the structural length directly, without
 constructing a BigInt length or running arbitrary-precision addition/comparison.
 Values outside signed i128 cannot index an in-memory Rust sequence.
+
+Arbitrary-precision integer add/subtract/multiply/negate and ordering have
+inlined checked operations for canonical signed-i128 values. Results that exceed
+that interval retain exact limb arithmetic. Comparing a wide value with a small
+value uses the canonical representation bounds, without allocating a temporary
+small magnitude. Fixed-width modes retain explicit wrapping at every operation.

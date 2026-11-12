@@ -722,34 +722,54 @@ impl Int {
             Self::nat_mul(&self.magnitude(), &other.magnitude()),
         )
     }
+    #[inline(always)]
     fn add(&self, other: &Self) -> Self {
-        if INT_BITS != 0 {
-            if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
+        if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
+            if INT_BITS != 0 {
                 return Self::from_i128(a.wrapping_add(*b));
+            }
+            if let Some(value) = a.checked_add(*b) {
+                return Self::exact_small(value);
             }
         }
         self.exact_add(other).normalized()
     }
+    #[inline(always)]
     fn sub(&self, other: &Self) -> Self {
-        if INT_BITS != 0 {
-            if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
+        if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
+            if INT_BITS != 0 {
                 return Self::from_i128(a.wrapping_sub(*b));
             }
+            if let Some(value) = a.checked_sub(*b) {
+                return Self::exact_small(value);
+            }
         }
+        self.sub_extended(other)
+    }
+    #[inline(never)]
+    fn sub_extended(&self, other: &Self) -> Self {
         self.exact_add(&other.exact_neg()).normalized()
     }
+    #[inline(always)]
     fn mul(&self, other: &Self) -> Self {
-        if INT_BITS != 0 {
-            if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
+        if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
+            if INT_BITS != 0 {
                 return Self::from_i128(a.wrapping_mul(*b));
+            }
+            if let Some(value) = a.checked_mul(*b) {
+                return Self::exact_small(value);
             }
         }
         self.exact_mul(other).normalized()
     }
+    #[inline(always)]
     fn neg(&self) -> Self {
-        if INT_BITS != 0 {
-            if let IntRepr::Small(n) = self.0 {
+        if let IntRepr::Small(n) = self.0 {
+            if INT_BITS != 0 {
                 return Self::from_i128(n.wrapping_neg());
+            }
+            if let Some(value) = n.checked_neg() {
+                return Self::exact_small(value);
             }
         }
         self.exact_neg().normalized()
@@ -1331,28 +1351,39 @@ impl Int {
         let result = sign | (((exponent + 1023) as u64) << 52) | (rounded - (1u64 << 52));
         Ok(f64::from_bits(result))
     }
-}
-
-impl std::cmp::Ord for Int {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
-            return a.cmp(b);
-        }
-        match (self.is_negative(), other.is_negative()) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            (negative, _) => {
-                let order = Self::nat_cmp(&self.magnitude(), &other.magnitude());
-                if negative {
-                    order.reverse()
-                } else {
-                    order
-                }
+    #[inline(never)]
+    fn compare_extended(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering::{Less, Greater};
+        // exact_parts canonicalizes every representable value to Small.
+        // A Big value therefore lies outside the entire signed-i128 interval.
+        match (&self.0, &other.0) {
+            (IntRepr::Small(a), IntRepr::Small(b)) => a.cmp(b),
+            (IntRepr::Small(_), IntRepr::Big { negative, .. }) => {
+                if *negative { Greater } else { Less }
+            }
+            (IntRepr::Big { negative, .. }, IntRepr::Small(_)) => {
+                if *negative { Less } else { Greater }
+            }
+            (IntRepr::Big { negative: a, digits: x },
+             IntRepr::Big { negative: b, digits: y }) => {
+                if a != b { return if *a { Less } else { Greater }; }
+                if *a { Self::nat_cmp(y, x) } else { Self::nat_cmp(x, y) }
             }
         }
     }
 }
+
+impl std::cmp::Ord for Int {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if let (IntRepr::Small(a), IntRepr::Small(b)) = (&self.0, &other.0) {
+            return a.cmp(b);
+        }
+        self.compare_extended(other)
+    }
+}
 impl std::cmp::PartialOrd for Int {
+    #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }

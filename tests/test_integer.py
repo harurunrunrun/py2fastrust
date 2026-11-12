@@ -58,6 +58,8 @@ fn main() {
                 "ratio" => format!("{:016x}", a.ratio(&b)?.to_bits()),
                 "round" => a.round_decimal(&b).to_string(),
                 "cmp" => (if a < b { -1 } else if a == b { 0 } else { 1 }).to_string(),
+                "cmpall" => format!("{},{},{},{},{},{},{}", a == b, a != b,
+                    a < b, a <= b, a > b, a >= b, a.cmp(&b) as i8),
                 _ => panic!("unknown operation"),
             })
         };
@@ -148,6 +150,21 @@ class IntegerTests(unittest.TestCase):
                     for first,second,x,y in ((raw_a,raw_b,a,b),(raw_b,raw_a,b,a)):
                         cases.extend((f'{op}\t{first}\t{second}',wrap(result,bits))
                             for op,result in (('add',x+y),('sub',x-y),('mul',x*y)))
+            self.check_cases(bits,cases)
+
+    def test_signed_i128_boundary_and_wide_ordering(self):
+        values=[0,1,-1]
+        for exponent in (63,64,126,127,128,129,255,256,511):
+            values.extend(sign*((1<<exponent)+delta)
+                          for sign in (-1,1)for delta in (-1,0,1))
+        for bits in (0,64,128):
+            cases=[]
+            for left in values:
+                for right in values:
+                    a,b=wrap(left,bits),wrap(right,bits)
+                    flags=[a==b,a!=b,a<b,a<=b,a>b,a>=b]
+                    expected=','.join(str(flag).lower()for flag in flags)+f',{(a>b)-(a<b)}'
+                    cases.append((f'cmpall\t{left}\t{right}',expected))
             self.check_cases(bits,cases)
 
     def test_long_division_trial_correction(self):
