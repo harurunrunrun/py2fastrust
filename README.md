@@ -205,6 +205,9 @@ fields. Captures, observable identity and mutations through aliases reject that
 transformation. Fresh list replacements reuse storage only when the previous
 instance has no other owners. Closed loops borrow the underlying typed Vec once;
 callees that could access an alias of that list prevent the extended borrow.
+Canonical integer `str` maps join by writing directly to one string buffer,
+without allocating a string for each element. Saved map cursors retain their
+actual shared iteration state; custom callbacks keep their original calls.
 
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather

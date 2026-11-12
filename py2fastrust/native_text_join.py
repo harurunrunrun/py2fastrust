@@ -107,6 +107,8 @@ def emit(emitter,node):
             return error(wanted,_string(message)+'.to_owned()')
         code=project(receiver.kind,receiver.code,invalid)
         return Expression('{'+setup+code+'}',wanted)
+    direct=integer_map_join(emitter,node,receiver,arguments[0])
+    if direct is not None:return Expression('{'+setup+direct+'}',wanted)
     element=shape(site.element);values=emitter.fresh();item=emitter.fresh()
     setup+='let mut '+values+':Vec<'+emitter.rust_type(element)+'>=Vec::new();'
     def append(e,value):
@@ -145,3 +147,52 @@ def emit(emitter,node):
         code='{let mut '+result+'='+initial+';for ('+index+','+current+')in '+values+'.into_iter().enumerate(){'+action+'}'+value+'}'
         return emitter.coerce(Expression(code,kind),wanted,node)
     return Expression('{'+setup+project(receiver.kind,receiver.code,joined)+'}',wanted)
+
+
+def integer_map_join(emitter,node,receiver,mapped):
+    """Consume the real builtin cursor, formatting integers without text objects."""
+    from .native_class_iterators import iterator_kind
+    from .native_classes import shape,Expression
+    from .references import BuiltinIdentity
+    from .native_source_native_effects import readonly_pull
+    kind=mapped.kind;model=emitter.model
+    if receiver.kind!='str'or not iterator_kind(kind)or not model.iterators.owns(kind):return None
+    record=kind.record
+    if (record.operation!='map'or hasattr(record,'adapter')or len(record.input_types)!=1
+            or getattr(shape(record.callback),'targets',())!=(BuiltinIdentity('str'),)):
+        return None
+    source_kind=record.input_types[0]
+    if (not iterator_kind(source_kind)or not model.iterators.owns(source_kind)
+            or shape(source_kind.record.element)!='int'or not readonly_pull(model,source_kind)):
+        return None
+    model.integer_join_writer=True
+    source,item,writer,first=(emitter.fresh()for _ in range(4))
+    pulled=model.iterators.pull(emitter,node,Expression(source,source_kind))
+    failure='map_err(|_|'+writer+'.error.take().unwrap_or_else(||"RuntimeError: integer formatting failed".to_owned()))'
+    separator=emitter.at(writer+'.write_str(&('+receiver.code+')).'+failure,node)+';'
+    number=emitter.at('write!(&mut '+writer+',"{}",'+item+').'+failure,node)+';'
+    return ('{let '+source+'='+mapped.code+'.borrow().source_0.clone();'
+            'let mut '+writer+'=NativeIntegerJoin{output:String::new(),error:None};'
+            'let mut '+first+'=true;while let Some('+item+')=('+pulled.code+'){'
+            'if !'+first+'{'+separator+'}'+first+'=false;'+number+'}'
+            'NativeText::from('+writer+'.output)}')
+
+
+def runtime(model):
+    if not getattr(model,'integer_join_writer',False):return ''
+    return '''
+struct NativeIntegerJoin{output:String,error:Option<String>}
+impl std::fmt::Write for NativeIntegerJoin{
+    fn write_str(&mut self,value:&str)->std::fmt::Result{
+        if self.output.len().checked_add(value.len()).filter(|length|*length<=isize::MAX as usize).is_none(){
+            self.error=Some("OverflowError: join() result is too long for a Python string".to_owned());
+            return Err(std::fmt::Error);
+        }
+        if self.output.try_reserve(value.len()).is_err(){
+            self.error=Some("MemoryError: joined value is too large".to_owned());
+            return Err(std::fmt::Error);
+        }
+        self.output.push_str(value);Ok(())
+    }
+}
+'''

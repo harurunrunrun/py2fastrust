@@ -3162,6 +3162,9 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         bodies.extend(source_state_bodies(model))
         from .native_scalar_data_results import bodies as scalar_data_bodies
         bodies.extend(scalar_data_bodies(model))
+        from .native_text_join import runtime as integer_join_runtime
+        joined=integer_join_runtime(model)
+        if joined:bodies.append(joined)
         from .native_typed_continuations import runtime as continuation_runtime
         continuation_support=continuation_runtime(model)
         if continuation_support:bodies.append(continuation_support)
