@@ -115,11 +115,19 @@ impl<'a> Iterator for NativeByteWords<'a> {
 
 
 @dataclass(frozen=True)
+class InputWordView:
+    node:object
+    operation:str
+
+
+@dataclass(frozen=True)
 class WordSource:
     kind: str
     buffer: str
     cursor: str
     method: object
+    readline: InputWordView | None = None
+    scoped_setup: str = ''
 
 
 @dataclass(frozen=True)
@@ -156,7 +164,14 @@ class IntegerWords:
         else:
             call=(f"native_collect_integer_words({self.source.cursor},|native_word|{parsed},{limit},"
                   f"|native_failure|{consumer_error})?")
-        return self.prefix(g,caller,line)+call
+        body=self.prefix(g,caller,line)+call
+        if self.source.readline is not None:
+            view=self.source.readline
+            error=g.at('Err::<(),String>(native_failure)',view.node)[:-1]+'.unwrap_err()'
+            method='with_byte_line'if view.operation=='bytes'else'with_text_line'
+            return (f'native_input.{method}(|native_failure|{error},|{self.source.buffer}|{{'
+                    +self.source.scoped_setup+self.prefix(g,caller,line)+'Ok('+call+')})?')
+        return body
 
 
 def borrow_immediate_input(generator,plan,environment):
@@ -171,9 +186,20 @@ def borrow_immediate_input(generator,plan,environment):
     if source.kind is not ProducerKind.WORDS or source.method is None:
         return False
     method=source.method
-    if method.identity.owner!='str' or method.invocation.explicit_order:
+    if method.invocation.explicit_order:
         return False
     node=method.receiver.expression
+    if not isinstance(node,ast.Call)or node.args or node.keywords:
+        return False
+    from .native_stdio import READERS
+    target=callable_reference(generator,node.func,environment)
+    if target in READERS.values() and target.line:
+        kind='bytes'if target.binary else'str'
+        if method.identity.owner==kind:
+            return InputWordView(node,'bytes'if target.binary else'text')
+        return False
+    if method.identity.owner!='str':
+        return False
     # A static target identity alone does not justify omitting a binding read.
     # Restrict this view to builtin lookup, not a stored/rebound callable slot.
     if ('input' in environment or 'input' in (generator.global_environment or {})
@@ -183,9 +209,10 @@ def borrow_immediate_input(generator,plan,environment):
                  else getattr(generator,'entry_local_names',()))
     if 'input' in local_names:
         return False
-    return (isinstance(node,ast.Call) and not node.args and not node.keywords
-            and isinstance(node.func,ast.Name) and node.func.id=='input'
-            and callable_reference(generator,node.func,environment)==BuiltinIdentity('input'))
+    if (isinstance(node.func,ast.Name) and node.func.id=='input'
+            and target==BuiltinIdentity('input')):
+        return InputWordView(node,'input')
+    return False
 
 
 def integer_map(g,source,planner,node,*,frame=None,inline=False):
@@ -236,7 +263,12 @@ def lower(g,plan,environment,planner):
     g.has_native_words=True
     kind=method.identity.owner
     buffer,cursor=g.temporary(),g.temporary()
-    if planner.borrow_input_words:
+    view=planner.borrow_input_words
+    readline=view if isinstance(view,InputWordView)and view.operation!='input'else None
+    if readline is not None:
+        g.has_borrowed_word_input=True
+        lines=[]
+    elif view:
         # No callback or later argument can read input before this immediate
         # integer consumer finishes. The reader retains and reuses its buffer.
         read=g.at('native_input.line(&mut native_output)',method.receiver.expression)
@@ -262,8 +294,41 @@ def lower(g,plan,environment,planner):
     call=g.at(f"{factory}::new(&{buffer},{separator},{maximum})",plan.node)
     lines.append(f"let {cursor}={call};")
     field="NativeText::from(@)" if kind=="str" else "@.to_vec()"
-    result=planner.leaf("\n".join(lines),"",cursor,((kind,field,True),))
+    setup="\n".join(lines)
+    result=planner.leaf(''if readline is not None else setup,"",cursor,((kind,field,True),))
     snapshot=g.temporary()
     result.unpack_length=(f"let {snapshot}={cursor}.clone();",f"{snapshot}.count()")
-    result.words=WordSource(kind,buffer,cursor,method)
+    result.words=WordSource(kind,buffer,cursor,method,readline,setup if readline is not None else'')
     return result
+
+
+INPUT_VIEW_HELPERS = r'''
+const NATIVE_INPUT_LINE_CACHE_LIMIT:usize=1<<20;
+impl NativeInput {
+    fn with_text_line<T,E,F>(&mut self,error:E,consume:F)->Result<T,NativeError>
+    where E:FnOnce(String)->NativeError,F:FnOnce(&str)->Result<T,NativeError> {
+        self.reader.read_text_into(&mut self.line,None,true)
+            .map_err(StandardInputError::native_message).map_err(error)?;
+        let result=consume(&self.line);
+        if self.line.capacity()>NATIVE_INPUT_LINE_CACHE_LIMIT {self.line=String::new();}
+        result
+    }
+    fn with_byte_line<T,E,F>(&mut self,error:E,consume:F)->Result<T,NativeError>
+    where E:FnOnce(String)->NativeError,F:FnOnce(&[u8])->Result<T,NativeError> {
+        let mut bytes=std::mem::take(&mut self.line).into_bytes();
+        let result=match self.reader.read_binary_into(&mut bytes,None,true) {
+            Ok(())=>consume(&bytes),
+            Err(failure)=>Err(error(failure.native_message())),
+        };
+        if bytes.capacity()<=NATIVE_INPUT_LINE_CACHE_LIMIT {
+            bytes.clear();
+            self.line=String::from_utf8(bytes).unwrap();
+        }
+        result
+    }
+}
+'''
+
+
+def render_helpers(generator):
+    return HELPERS+(INPUT_VIEW_HELPERS if generator.has_borrowed_word_input else'')

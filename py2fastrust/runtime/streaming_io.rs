@@ -98,18 +98,23 @@ impl StandardInput {
         }
     }
     fn read_binary(&mut self,count:Option<usize>,line:bool)->Result<Vec<u8>,StandardInputError> {
+        let mut out=Vec::new();
+        self.read_binary_into(&mut out,count,line)?;
+        Ok(out)
+    }
+    fn read_binary_into(&mut self,out:&mut Vec<u8>,count:Option<usize>,line:bool)->Result<(),StandardInputError> {
         use std::io::{BufRead,Read};
-        let mut out=Vec::new();if count==Some(0){return Ok(out);}
+        out.clear();if count==Some(0){return Ok(());}
         if count.is_none() && !line {
-            self.reader.read_to_end(&mut out).map_err(StandardInputError::Io)?;
-            return Ok(out);
+            self.reader.read_to_end(out).map_err(StandardInputError::Io)?;
+            return Ok(());
         }
         loop {
             let available=match self.reader.fill_buf() {
                 Err(error) if error.kind()==std::io::ErrorKind::Interrupted=>continue,
                 result=>result.map_err(StandardInputError::Io)?,
             };
-            if available.is_empty(){return Ok(out);}
+            if available.is_empty(){return Ok(());}
             let mut end=available.len();
             if let Some(count)=count{end=end.min(count-out.len());}
             if line {if let Some(index)=available[..end].iter().position(|byte|*byte==b'\n'){end=index+1;}}
@@ -117,7 +122,7 @@ impl StandardInput {
             out.extend_from_slice(&available[..end]);
             let newline=out.last()==Some(&b'\n');
             self.reader.consume(end);
-            if (line&&newline) || count==Some(out.len()){return Ok(out);}
+            if (line&&newline) || count==Some(out.len()){return Ok(());}
         }
     }
 }

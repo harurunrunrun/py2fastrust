@@ -414,6 +414,7 @@ class _Generator:
         self.needs_integer_runtime = False
         self.has_fixed_parsing = False
         self.has_input = False
+        self.has_borrowed_word_input = False
         self.has_lists = False
         self.has_dicts = False
         self.has_mapping_delete = False
@@ -2183,7 +2184,7 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
             generator.union_types.update(local.union_types)
             generator.text_predicates.update(local.text_predicates)
         for local in specializations.generators:
-            for flag in ("needs_integer_runtime", "has_fixed_parsing", "has_input", "has_lists", "has_dicts", "has_mapping_delete", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_callback_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
+            for flag in ("needs_integer_runtime", "has_fixed_parsing", "has_input", "has_borrowed_word_input", "has_lists", "has_dicts", "has_mapping_delete", "has_sets", "has_deques", "has_scalar_union", "has_extended_scalars", "has_iterator_frames", "has_callback_frames", "has_slices", "has_text_methods", "has_stdio", "has_tuples", "has_typed_lists", "has_native_modules", "has_key_containers", "has_native_words", "has_empty_type"):
                 setattr(generator, flag, getattr(generator, flag) or getattr(local, flag))
         if wrapper:
             body = f"'native_entrypoint: {{\n{body}\n}}"
@@ -2232,8 +2233,8 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
         from .native_typed_lists import HELPERS as TYPED_LIST_HELPERS
         result.append(TYPED_LIST_HELPERS)
     if generator.has_native_words:
-        from .native_words import HELPERS as WORD_HELPERS
-        result.append(WORD_HELPERS)
+        from .native_words import render_helpers as word_helpers
+        result.append(word_helpers(generator))
     if generator.has_stdio:
         from .native_stdio import render_helpers
         result.append(render_helpers(generator.bits,integer_runtime=generator.needs_integer_runtime,input_runtime=generator.has_input))

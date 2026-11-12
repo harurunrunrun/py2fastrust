@@ -21,6 +21,13 @@ Linked module references also adapt `sys.setrecursionlimit` and
 `sys.getrecursionlimit`, including saved references. Replacing the standard
 stream objects requires an unimplemented stream-object protocol and is rejected.
 
+Immediate integer-map consumers of canonical zero-argument text/binary
+`readline()` reuse the buffered line through parsing and preserve raw-byte,
+newline, EOF and error order. Proved reader aliases share this path. Stored
+maps and callbacks keep their owned input snapshots; sized reads keep their
+existing adapters. No input view escapes, and `readline()` still does not flush
+pending output implicitly.
+
 Typed source-class namespaces support ordinary nested classes and scalar/list
 class data, including aliases, rebinding, deletion and instance-field precedence.
 They retain the original scope owners and captured defining-module references.

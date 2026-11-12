@@ -527,6 +527,7 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         generator.has_mapping_delete |= any(local.has_mapping_delete for local in specializations.generators)
         generator.has_typed_lists |= any(local.has_typed_lists for local in specializations.generators)
         generator.has_native_words |= any(local.has_native_words for local in specializations.generators)
+        generator.has_borrowed_word_input |= any(local.has_borrowed_word_input for local in specializations.generators)
         generator.has_extended_scalars |= any(local.has_extended_scalars for local in specializations.generators)
         from .native_float_constructor import parser_names
         generator.native_float_parsers=set(getattr(generator,"native_float_parsers",()))|set().union(*(parser_names(local)for local in specializations.generators))
@@ -574,8 +575,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
         from .native_typed_lists import HELPERS as TYPED_LIST_HELPERS
         result.append(TYPED_LIST_HELPERS)
     if generator.has_native_words:
-        from .native_words import HELPERS as WORD_HELPERS
-        result.append(WORD_HELPERS)
+        from .native_words import render_helpers as word_helpers
+        result.append(word_helpers(generator))
     if generator.has_stdio:
         from .native_stdio import render_helpers
         result.append(render_helpers(0,input_runtime=generator.has_input))

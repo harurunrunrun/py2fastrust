@@ -616,6 +616,16 @@ ASCII profile or opt-in strict UTF-8 Unicode profile. Custom/reconfigured
 streams and surrogate escapes need further
 direct implementation.
 
+Immediate canonical `map(int, reader().split())` unpacking and list construction
+reuse the input line buffer for zero-argument text and binary `readline` calls,
+including proved reader aliases. Parsed integers are owned; no borrowed line or
+word escapes the consumer. Stored maps, explicit split arguments, sized reads
+and user callbacks retain their existing owned-input paths. Binary reads keep
+raw bytes, and text reads retain their decoding and newline rules. Failed
+parsing/unpacking leaves the next line available. Oversized scratch buffers are
+released after consumption. `readline()` does not gain an implicit output
+flush; builtin `input()` retains its existing flush and interactive behavior.
+
 Builtin `print` also has its normal `None` result in assignment, nested call,
 tuple and short-circuit expression contexts. These calls share the statement
 printer's argument capture, formatting and explicit flush behavior. Replacing a
