@@ -30,11 +30,15 @@ fn native_big_list_extend(values:&mut Vec<Int>, items:Vec<Int>)->Result<(),Strin
     values.extend(items);
     Ok(())
 }
+#[inline]
 fn native_big_list_index(index:&Int, length:usize)->Result<usize,String> {
-    let bound=Int::from_i128(length as i128);
-    let offset=if index.is_negative(){index.add(&bound)}else{index.clone()};
-    if offset.is_negative()||offset>=bound{return Err("IndexError: list index out of range".into());}
-    offset.to_usize().ok_or_else(||"IndexError: list index out of range".into())
+    if let Some(index)=index.to_i128() {
+        if index<0 {
+            let magnitude=index.unsigned_abs();
+            if magnitude<=length as u128{return Ok(length-magnitude as usize);}
+        }else if (index as u128)<length as u128{return Ok(index as usize);}
+    }
+    Err("IndexError: list index out of range".into())
 }
 fn native_big_list_get(values:&[Int], index:&Int)->Result<Int,String> {
     Ok(values[native_big_list_index(index,values.len())?].clone())

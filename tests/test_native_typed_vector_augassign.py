@@ -110,6 +110,22 @@ for value in values:
  if value>3:values.pop()
 print(values)
 ''',('',)),
+ 'stable_builtin_and_index_rhs':('''values=[-1.5,2.5,3.5]
+other=[2.0,4.0]
+values[-1]+=abs(values[0])+len(values)+other[0]
+values[-2]*=values[0] if values[0]<0 else other[1]
+print(values,other)
+''',('',)),
+ 'stable_rhs_index_error':('''values=[1.5,2.5]
+other=[3.5]
+print('before')
+values[-1]+=other[int(input())]
+print(values)
+''',('0\n','1\n','-2\n')),
+ 'float_abs_direct_alias_and_map':('''absolute=abs
+values=[-0.0,-1.5,float('-inf'),float('nan')]
+print(abs(-0.0),absolute(-1.5),list(map(absolute,values)))
+''',('',)),
 }
 
 

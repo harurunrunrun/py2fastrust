@@ -52,6 +52,30 @@ def binding_name(g,node):
     return term.data if term is not None and term.operation=="name"else None
 
 
+def stable_value_rhs(g,node):
+    """Prove a closed builtin expression cannot resize or rebind its receiver.
+
+    This permits reusing an already checked offset, including negative offsets.
+    Arithmetic and indexing may still raise at their original evaluation point.
+    Unknown terms, callbacks, descriptors and binding writes keep checked stores.
+    """
+    from .native_constraint_lowering import facts_for
+    from .native_range_facts import RegionAnalysis
+    facts,site=facts_for(g,node)
+    analysis=getattr(g,'type_analysis',None)
+    if facts is None or analysis is None:return False
+    term=analysis.graph.expressions.get(site)
+    if term is None:return False
+    proof=RegionAnalysis(analysis,facts,g.bits)
+    closed={'constant','name','unary','binary','compare','join','conditional','index','call'}
+    def known(value):
+        return value.operation in closed and all(known(child)for child in proof.children(value))
+    if not known(term):return False
+    effects=[]
+    proof.expression_info(term,[],effects)
+    return all(effect.kind in {'pure','index'}for effect in effects)
+
+
 def capture_owned(g,receiver,node,environment,*,mutates):
     from .native_types import SharedListType
     if isinstance(receiver.kind,SharedListType):

@@ -315,6 +315,10 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
                 return _Expression(self.number(value),"int",value.constant)
             if name == "abs" and len(node.args) == 1:
                 value = self.expression(node.args[0],environment)
+                if value.kind=='float':
+                    from .native_builtin_values import unary
+                    from .references import BuiltinIdentity
+                    return unary(self,BuiltinIdentity('abs'),value,node)
                 return _Expression(f"({self.number(value)}).abs()","int",None if value.constant is None else abs(value.constant))
             if name == "pow" and len(node.args) in {2,3}:
                 arguments = [self.expression(value,environment) for value in node.args]

@@ -166,6 +166,15 @@ print(*A)
                                        f"{10**100}\n13\n17\n", f"{-10**100}\n13\n17\n",
                                        "invalid\n13\n", "2\ninvalid\n"])
 
+    def test_index_conversion_boundaries_for_typed_payloads(self):
+        indices=[-4,-3,-1,0,2,3,-(1<<63),(1<<63)-1,
+                 -(1<<127),(1<<127)-1,-(1<<127)-1,1<<127,-10**100,10**100]
+        for values in ('[1.5,2.5,3.5]','[1,2,3]',"['a','b','c']"):
+            source=f"values={values}\nprint('before')\nprint(values[int(input())])\n"
+            self.differential(source,[f'{index}\n'for index in indices],(False,True))
+        self.differential("values=[1.5]*0\nprint('before')\nprint(values[int(input())])\n",
+                          ['0\n','-1\n',f'{1<<127}\n'],(False,True))
+
     def test_subscript_effects_run_before_augmented_rhs(self):
         source = '''def index():
     print(111)

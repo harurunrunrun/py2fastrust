@@ -818,3 +818,11 @@ handles without requiring an element-comparison protocol merely to store them.
 Float tuple construction and display retain Python formatting; identity-sensitive
 floating element equality, membership and ordering remain explicit missing
 protocols rather than silently using Rust's value comparisons.
+
+An indexed update reuses its checked offset when shared semantic effect facts
+prove that the right-hand side contains only closed builtin value operations
+and reads. Potential callbacks, binding writes and mutations retain a separate
+checked store, including negative-index normalization after a resize.
+BigInt list indices are checked against the structural length directly, without
+constructing a BigInt length or running arbitrary-precision addition/comparison.
+Values outside signed i128 cannot index an in-memory Rust sequence.

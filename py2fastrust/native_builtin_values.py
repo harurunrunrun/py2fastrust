@@ -31,7 +31,7 @@ def unary_capability(identity,kind):
                            "list_int","dict_int","set_int","matrix_int","deque_int"})
     if name=="float":return kind in {"int","bool","int_bool","float","str","bytes"}
     if name=="int":return kind in {"int","bool","int_bool","float","str","bytes"}
-    if name=="abs":return kind in {"int","bool","int_bool"}
+    if name=="abs":return kind in {"int","bool","int_bool","float"}
     if name=="str":return kind in {"int","bool","int_bool","str"}
     if name=="len":return kind in {"str","bytes","list_int","matrix_int","dict_int","set_int","deque_int"}
     return False
@@ -58,6 +58,8 @@ def unary(g, identity, value, node):
             from .native_integer_parsing import parse_value
             call=parse_value(g,value,node) or g.at(f"{parser}(&({value.code}))",node)
             return _Expression(_number(g,call),"int")
+    if name == "abs" and value.kind=='float':
+        return _Expression(f"({value.code}).abs()",'float')
     if name == "abs" and value.kind in {"int","bool","int_bool"}:
         code=g.number(value)
         return _Expression(f"({code}).wrapping_abs()" if g.bits else f"({code}).abs()","int")
