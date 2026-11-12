@@ -35,6 +35,18 @@ def unique_site(model,plan,node):
             metadata.fail(node,'TypeVar factories inside repeated execution regions require fresh runtime type-variable identities; move-free single-execution module construction is the implemented protocol')
 
 
+def native_import_only(linker,bindings):
+    """Each module actually initialized by this import has a native factory."""
+    for binding in bindings:
+        for name in (binding.module,*binding.children):
+            parts=name.split('.')
+            for length in range(1,len(parts)+1):
+                module=linker.modules.get('.'.join(parts[:length]))
+                if (module is None or not module.native_adapter
+                        or module.source_unit is not None or module.initializer is not None):return False
+    return bool(bindings)
+
+
 def closed_loader(model,node):
     """A source module initializer cannot be reopened through admitted APIs."""
     metadata=registry(model)
@@ -47,13 +59,15 @@ def closed_loader(model,node):
     nodes={id(value):value for value in model.iter_nodes()}
     plans={plan.index:plan for plan in model.plans if plan.reachable}
     # A caught failed import can run its initializer again, without touching
-    # sys.modules explicitly. Only original, unconditional module import
-    # statements establish this construction's one-generation boundary.
-    for (caller,node_id),_ in linker.imports.items():
+    # sys.modules explicitly. Source initializers require original,
+    # unconditional module import statements. Native factories with no source
+    # initializer cannot reopen a failed Python module generation.
+    for (caller,node_id),bindings in linker.imports.items():
         if caller not in plans:continue
         plan=plans[caller];statement=nodes.get(node_id)
         if not isinstance(statement,(ast.Import,ast.ImportFrom)):
             metadata.fail(node,'TypeVar module uniqueness requires original fixed-name import statements')
+        if native_import_only(linker,bindings):continue
         original=model.unit.original_unit(statement)
         if (not model.is_module_plan(plan)or plan.node is not original.tree
                 or not any(child is statement for child in original.tree.body)):

@@ -3,7 +3,11 @@ import shutil
 import typing
 import unittest
 import tempfile
+import subprocess
+import sys
+import os
 from pathlib import Path
+from types import SimpleNamespace
 import test_native_class_iterators as helpers
 
 from py2fastrust import transpile,TranspileOptions
@@ -11,6 +15,8 @@ from py2fastrust.native_typing_metadata import semantic_key
 
 
 CASES={
+ 'native_function_imports':'from typing import TypeVar\nT=TypeVar("T")\ndef main():\n import sys\n from math import gcd\n a,b=map(int,sys.stdin.readline().split())\n print(gcd(a,b))\nmain()\n',
+ 'native_loop_imports':'from typing import TypeVar\nT=TypeVar("T")\nfor i in range(3):\n import math\n print(math.gcd(i+6,12))\n',
  'factory_display':'from typing import TypeVar\nprint(TypeVar,repr(TypeVar),bool(TypeVar),isinstance(1,TypeVar),isinstance(TypeVar,TypeVar))\n',
  'annotations':'from typing import TypeVar\nT=TypeVar("T")\ndef identity(x:T)->T:return x\nprint(identity(3),identity("x"))\n',
  'saved_factory':'import typing\nfactory=typing.TypeVar\nT=factory(name="T",bound=int,default=42)\ndef plus(x:T):return x+1\nprint(plus(7))\n',
@@ -31,6 +37,23 @@ CASES={
 
 
 class TypeVarProtocolTests(unittest.TestCase):
+    def test_native_import_proof_checks_metadata_parents_and_children(self):
+        from py2fastrust.native_typing_typevars import native_import_only
+        native=lambda:SimpleNamespace(native_adapter=True,source_unit=None,initializer=None)
+        parent=native();child=native()
+        linker=SimpleNamespace(modules={'pkg':parent,'pkg.native':child})
+        binding=SimpleNamespace(module='pkg.native',children=())
+        self.assertTrue(native_import_only(linker,(binding,)))
+        parent.source_unit=object()
+        self.assertFalse(native_import_only(linker,(binding,)))
+        parent.source_unit=None;child.initializer=object()
+        self.assertFalse(native_import_only(linker,(binding,)))
+        child.initializer=None;child.native_adapter=False
+        self.assertFalse(native_import_only(linker,(binding,)))
+        child.native_adapter=True;linker.modules['pkg.other']=SimpleNamespace(native_adapter=False,source_unit=object(),initializer=object())
+        binding.children=('pkg.other',)
+        self.assertFalse(native_import_only(linker,(binding,)))
+
     def test_distinct_host_type_variables_have_distinct_semantic_keys(self):
         first=typing.TypeVar('T');second=typing.TypeVar('T')
         self.assertNotEqual(semantic_key(first),semantic_key(second))
@@ -72,6 +95,12 @@ class TypeVarProtocolTests(unittest.TestCase):
             result=transpile(source,TranspileOptions(filename=str(folder/'main.py'),module_paths=(folder,)))
             self.assertFalse(result.success)
             self.assertIn('failed module initialization can be retried',str(result.diagnostics[0]))
+            (folder/'bisect.py').write_text('value=3\n')
+            for statement,returned in (('import bisect','bisect.value'),('import math,ordinary','ordinary.value')):
+                source='from typing import TypeVar\nT=TypeVar("T")\ndef load():\n '+statement+'\n return '+returned+'\nprint(load())\n'
+                result=transpile(source,TranspileOptions(filename=str(folder/'main.py'),module_paths=(folder,)))
+                self.assertFalse(result.success)
+                self.assertIn('failed module initialization can be retried',str(result.diagnostics[0]))
         for source in ('from typing import TypeVar\nT=TypeVar(name="T",*())\n',
                        'from typing import TypeVar\nvalues=list(map(TypeVar,["T","T"]))\n'):
             result=transpile(source)
@@ -82,12 +111,36 @@ class TypeVarProtocolTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class TypeVarExecutionTests(unittest.TestCase):
     cases=CASES
-    inputs={'distinct_in_branches':'0\n'}
+    inputs={'distinct_in_branches':'0\n','native_function_imports':'12 8\n'}
     check=helpers.IteratorExecutionTests.check
 
     def test_module_factories_and_aliases(self):
         for name in ('factory_display','annotations','saved_factory','constraint_defaults','distinct_same_names','distinct_in_branches','shadowed_factory'):
             with self.subTest(name=name):self.check(name)
+
+    def test_native_function_and_control_flow_imports(self):
+        for name in ('native_function_imports','native_loop_imports'):
+            with self.subTest(name=name):self.check(name)
+
+    def test_imported_typevar_library_with_function_local_sys(self):
+        with tempfile.TemporaryDirectory(prefix='pytors-typevar-native-import-')as directory:
+            folder=Path(directory)
+            (folder/'typed_data.py').write_text('from typing import TypeVar\nT=TypeVar("T")\nclass Box:\n def __init__(self,value:T):self.value=value\n def get(self)->T:return self.value\n')
+            source='from typed_data import Box\ndef main():\n import sys\n a,b=map(int,sys.stdin.readline().split())\n print(Box(a+b).get())\nmain()\n'
+            script=folder/'main.py';script.write_text(source)
+            reference=subprocess.run([sys.executable,'-S',str(script)],input='12 8\n',text=True,capture_output=True,timeout=10)
+            self.assertEqual((reference.returncode,reference.stdout,reference.stderr),(0,'20\n',''))
+            for mode in ('i64','i128','bigint'):
+                result=transpile(source,TranspileOptions(filename=str(script),module_paths=(folder,),integer=mode,license='none'))
+                self.assertTrue(result.success,result.diagnostics)
+                self.assertEqual(result.backend,'native')
+                rust=folder/(mode+'.rs');rust.write_text(result.rust_source)
+                for optimized in (False,True):
+                    binary=folder/(mode+str(optimized))
+                    built=subprocess.run(['rustc','--edition=2021','--crate-name','typevar_import',*(['-O']if optimized else[]),str(rust),'-o',str(binary)],capture_output=True,text=True,timeout=120)
+                    self.assertEqual(built.returncode,0,built.stderr)
+                    actual=subprocess.run([str(binary)],input='12 8\n',text=True,capture_output=True,timeout=10,env={**os.environ,'PATH':'/no-python','PYTHONPATH':'/no-python'})
+                    self.assertEqual((actual.returncode,actual.stdout,actual.stderr),(reference.returncode,reference.stdout,reference.stderr))
 
     def test_metadata_resubscription_and_constructor_errors(self):
         for name in ('same_parameter_repeated','single_constraint','constraint_and_bound','bad_variance','missing_name','unexpected_keyword'):

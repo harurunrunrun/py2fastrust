@@ -892,3 +892,15 @@ maps, aliased input bindings, callbacks and later argument effects retain owned
 snapshots. Prompts, implicit input flushing, explicit print flushing and
 interactive pipe behavior are preserved. This removes per-line text allocation;
 it does not remove Python input's per-read output-flush cost.
+
+Concrete `None` conditions preserve evaluation of the original test while
+omitting the unreachable branch from native type execution. Official local
+bindings remain local: an unbound read still raises `UnboundLocalError` rather
+than falling back to a global value. Unknown conditions never establish this
+proof, and a later type widening invalidates an earlier branch mask.
+
+Closed TypeVar construction also permits function/control-flow imports when
+every resolved module prefix and imported child is a canonical native adapter
+without a Python source initializer. Source-module retry boundaries remain
+explicit diagnostics. Empty primitive `str.format` specifications retain only
+the required string conversion helpers.
