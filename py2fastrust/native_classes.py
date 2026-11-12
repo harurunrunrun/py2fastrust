@@ -2122,6 +2122,10 @@ class Emitter:
             return f"({left.code}){symbols[type(operator)]}({right.code})"
         if a==b and a in {"str","bytes"}and type(operator)in symbols:
             return f"{left.code}{symbols[type(operator)]}{right.code}"
+        if self.model.integer=="bigint"and a in numeric|{"float"}and b in numeric|{"float"}:
+            from .native_comparisons import real_comparison
+            compared=real_comparison(self.numeric,self.scalar(left),self.scalar(right),operator,node)
+            if compared is not None:return compared
         if self.model.integer!="bigint"and a in numeric|{"float"}and b in numeric|{"float"}:
             temporary=SimpleNamespace(ops=[operator])
             return self.numeric.compare(temporary,[self.scalar(left),self.scalar(right)]).code

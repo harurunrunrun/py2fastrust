@@ -8,6 +8,24 @@ ORDERING = {ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
 _INTEGERS = {"int", "bool", "int_bool"}
 
 
+def real_comparison(g,left,right,operator,node):
+    """Compare captured builtin real values without rounding their integers."""
+    symbols={ast.Eq:'==',ast.NotEq:'!=',ast.Lt:'<',ast.LtE:'<=',ast.Gt:'>',ast.GtE:'>='}
+    if (type(operator)not in symbols or 'float'not in {left.kind,right.kind}
+            or left.kind not in _INTEGERS|{'float'}or right.kind not in _INTEGERS|{'float'}):return None
+    if left.kind==right.kind=='float':return '('+left.code+')'+symbols[type(operator)]+'('+right.code+')'
+    integer=g.number(right if left.kind=='float'else left)
+    floating=left.code if left.kind=='float'else right.code
+    if g.bits:
+        g.has_extended_scalars=True
+        order=f'native_integer_float_compare({integer},{floating})'
+    else:order=f'({integer}).cmp_f64({floating})'
+    if left.kind=='float':order+='.map(std::cmp::Ordering::reverse)'
+    variants={ast.Eq:'Equal',ast.NotEq:'Equal',ast.Lt:'Less',ast.LtE:'Less | std::cmp::Ordering::Equal',
+              ast.Gt:'Greater',ast.GtE:'Greater | std::cmp::Ordering::Equal'}
+    return ('!'if isinstance(operator,ast.NotEq)else'')+f'matches!({order},Some(std::cmp::Ordering::{variants[type(operator)]}))'
+
+
 def _type_name(value):
     from .native import _Unsupported, _string
     from .native_types import list_type
@@ -69,16 +87,5 @@ def ordering(g, left, right, operator, node):
         return f"({left.code}){symbol}({right.code})"
     if (left.kind == "float" and right.kind in _INTEGERS
             or right.kind == "float" and left.kind in _INTEGERS):
-        if not g.bits:
-            # BigInt/float interoperation still needs a shared exact proof.
-            raise _Unsupported("exact arbitrary-precision-integer/binary64 comparison is not implemented on the BigInt path; converting the integer to float would lose ordering precision",node=node,operation=f"integer/float comparison {symbol!r}",types=(("left",left.kind),("right",right.kind)),proof="exact BigInt/float ordering and NaN behavior")
-        g.has_extended_scalars = True
-        integer = g.number(right if left.kind == "float" else left)
-        floating = left.code if left.kind == "float" else right.code
-        order = f"native_integer_float_compare({integer},{floating})"
-        if left.kind == "float":
-            order += ".map(std::cmp::Ordering::reverse)"
-        variants = {ast.Lt: "Less", ast.LtE: "Less | std::cmp::Ordering::Equal",
-                    ast.Gt: "Greater", ast.GtE: "Greater | std::cmp::Ordering::Equal"}
-        return f"matches!({order},Some(std::cmp::Ordering::{variants[type(operator)]}))"
+        return real_comparison(g,left,right,operator,node)
     return _unsupported_pair(g, left, right, operator, node)

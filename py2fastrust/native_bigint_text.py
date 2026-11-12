@@ -176,7 +176,10 @@ class BigIntText:
                     raise _Unsupported
                 result = str(isinstance(op,ast.NotEq)).lower()
             elif type(op) in operators:
-                result = f"{self.number(_Expression(x,a.kind))}{operators[type(op)]}{self.number(_Expression(y,b.kind))}"
+                from .native_comparisons import real_comparison
+                result=real_comparison(self,_Expression(x,a.kind),_Expression(y,b.kind),op,node)
+                if result is None:
+                    result = f"{self.number(_Expression(x,a.kind))}{operators[type(op)]}{self.number(_Expression(y,b.kind))}"
             else:raise _Unsupported
             tail=f"{{{bind(y,b)}({result})&&({tail})}}"
         return _Expression(f"{{{bind(names[0],values[0])}{tail}}}","bool")

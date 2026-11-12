@@ -1221,16 +1221,42 @@ impl Int {
         if value == f64::NEG_INFINITY {
             return Some(Ordering::Greater);
         }
-        let truncated = Self::exact_from_f64(value).unwrap();
-        let order = self.cmp(&truncated);
-        if order != Ordering::Equal || value.fract() == 0.0 {
-            return Some(order);
+        if value == 0.0 { return Some(self.cmp(&Self::exact_small(0))); }
+        let negative = self.is_negative();
+        if negative != value.is_sign_negative() {
+            return Some(if negative { Ordering::Less } else { Ordering::Greater });
         }
-        Some(if value.is_sign_positive() {
-            Ordering::Less
+        let bits = value.to_bits();
+        let exponent = ((bits >> 52) & 2047) as i32 - 1023;
+        let order = if exponent < 0 {
+            if self.is_zero() { Ordering::Less } else { Ordering::Greater }
         } else {
-            Ordering::Greater
-        })
+            let small = match &self.0 { IntRepr::Small(value) => Some(value.unsigned_abs()), _ => None };
+            let digits = match &self.0 { IntRepr::Big { digits, .. } => digits.as_slice(), _ => &[] };
+            let integer_bits = small.map_or_else(|| Self::nat_bits(digits), |value| (128 - value.leading_zeros()) as usize);
+            let float_bits = exponent as usize + 1;
+            let mut order = integer_bits.cmp(&float_bits);
+            if order == Ordering::Equal {
+                let mantissa = ((bits & ((1_u64 << 52) - 1)) | (1_u64 << 52)) as u128;
+                let power = exponent - 52;
+                for index in (0..(integer_bits + 31) / 32).rev() {
+                    let offset = index * 32;
+                    let integer_word = match small {
+                        Some(value) => if offset < 128 { (value >> offset) as u32 } else { 0 },
+                        None => digits.get(index).copied().unwrap_or(0),
+                    };
+                    let shift = offset as i32 - power;
+                    let float_word = if shift >= 128 || shift <= -32 { 0 }
+                        else if shift >= 0 { (mantissa >> shift) as u32 }
+                        else { (mantissa << -shift) as u32 };
+                    order = integer_word.cmp(&float_word);
+                    if order != Ordering::Equal { break; }
+                }
+                if order == Ordering::Equal && value.fract() != 0.0 { order = Ordering::Less; }
+            }
+            order
+        };
+        Some(if negative { order.reverse() } else { order })
     }
     fn to_f64(&self) -> f64 {
         self.ratio(&Self::exact_small(1)).unwrap_or_else(|_| {

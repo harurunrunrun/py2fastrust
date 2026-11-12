@@ -97,8 +97,8 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 
     def slot(self, kind):
         if isinstance(unmaybe(kind),(TupleType,TupleSequenceType,ListType,DequeType,UnionType,NullableType,EmptyType)) or getattr(unmaybe(kind),"_key_container",False):return super().slot(kind)
-        if kind in {"str","float"}:
-            if kind == "str":self.has_big_text = True
+        if unmaybe(kind) in {"str","float"}:
+            if unmaybe(kind) == "str":self.has_big_text = True
             slot = f"native_var_{len(self.bindings)}"
             self.bindings[slot] = kind
             return slot

@@ -520,6 +520,13 @@ present. Integral operands convert once through the exact `Int.ratio` helper,
 with overflow errors instead of silent infinity. Pure integral true division
 retains its existing exact-ratio path.
 
+Builtin scalar integer/binary64 comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`)
+are exact in every integer mode, including BigInt and finite numeric alternatives.
+They preserve signed zero, infinities, NaN, operand order, and comparison-chain
+short-circuiting. BigInt comparisons inspect existing limbs and float bits without
+converting the integer to binary64 or allocating an intermediate integer.
+Identity-sensitive floating container comparisons remain separate requirements.
+
 Canonical `math.sqrt`, `floor`, `ceil` and `trunc` have direct numeric adapters
 for int/bool/float values and captured aliases. Integer rounding retains exact
 integers; square root converts integers once to binary64 with overflow checks.

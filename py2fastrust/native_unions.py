@@ -148,6 +148,10 @@ def compare(g,node,values):
                 result=str(a==b=="none").lower()
             elif a=="none" or b=="none":result=str(a==b).lower()
             else:
+                from .native_comparisons import real_comparison
+                real=real_comparison(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),ast.Eq(),node)
+                if real is not None:
+                    return '!('+real+')'if isinstance(operator,ast.NotEq)else real
                 if list_type(a) or list_type(b) or a=="matrix_int" or b=="matrix_int":
                     from .native_nested_lists import equality
                     result=equality(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),node)

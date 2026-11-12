@@ -106,9 +106,9 @@ mutable aliases are preserved. Empty input returns its captured default without
 calling the key. Generator inputs use direct loop sinks, keeping construction,
 keyword evaluation and body execution in their original order. Source callbacks
 invalidate loop field caches through a shared semantic-effect registry. Bare
-binary64 comparisons retain native partial ordering in every integer mode;
-exact mixed BigInt/float ordering and identity-sensitive floating containers
-still require their own protocols.
+binary64 comparisons retain native partial ordering in every integer mode.
+Direct mixed integer/float comparisons are exact in every integer mode;
+identity-sensitive floating containers still require their own protocols.
 
 Canonical builtin and registered native-member references have stable display
 metadata, including builtin class names. Display of source functions and bound
@@ -295,9 +295,11 @@ all integer modes: integers/bools, `None`, strings, bytes, and supported tuples
 dispatch to native operations or a positioned Python `TypeError` for the actual
 incompatible pair. Operands are captured once; chained comparisons evaluate the
 next operand only if the preceding relation succeeds. Tuple comparisons retain
-lexicographic short-circuiting and the original error operator. Fixed-width modes
-also share exact integer/float ordering and partial binary64 ordering, including
-NaN. BigInt/float interoperation, float tuple identity, mutable alternatives,
+lexicographic short-circuiting and the original error operator. All integer modes
+share exact scalar integer/float equality and ordering, including finite numeric
+alternatives, signed zero, infinities, and unordered NaN. BigInt comparisons
+inspect integer limbs and binary64 significands without rounding the integer
+or allocating a temporary integer. Floating tuple identity, mutable alternatives,
 and general custom comparison protocols remain unfinished.
 
 Ordinary comparison frontends consume one common set of captured operand
