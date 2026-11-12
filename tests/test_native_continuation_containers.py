@@ -48,6 +48,18 @@ print(total([3],depth),total([7],0),total([5],depth))
         self.assertIn('_direct(',result.rust_source)
         self.assertIn('class_native_enter()',result.rust_source)
 
+    def test_long_acyclic_call_chains_do_not_duplicate_source_bodies(self):
+        source='SEED=int(input())\n'
+        for index in range(160):
+            source+=('def stage_'+str(index)+'(value):\n return '+
+                     ('stage_'+str(index+1)+'(value)+1'if index<159 else'value+SEED')+'\n')
+        source+='print(stage_0(2))\n'
+        for mode in ('i64','i128','bigint'):
+            result=transpile(source,TranspileOptions(integer=mode,license='none'))
+            self.assertTrue(result.success,result.diagnostics)
+            self.assertLess(len(result.rust_source.encode()),512*1024)
+            self.assertNotIn('class_native_enter',result.rust_source)
+
     def test_mutating_list_argument_preserves_external_aliases(self):
         source='''def walk(values,depth):
  if depth==0:

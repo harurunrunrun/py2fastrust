@@ -553,7 +553,17 @@ class Builder:
                 'outcome=>break outcome}}')
 
 
-def prepare(model):model.typed_continuations=Registry(model)
+def prepare(model):
+    registry=Registry(model)
+    registry.direct_entries=frozenset()
+    if registry.reason is None:
+        from .native_captured_invocations import components
+        graph={index:set(model.call_edges.get(index,()))&registry.plans.keys()
+               for index in registry.plans}
+        registry.direct_entries=frozenset(index for group in components(graph)
+            if len(group)>1 or any(index in graph[index]for index in group)
+            for index in group)
+    model.typed_continuations=registry
 
 
 def selected(model,plan):return plan is not None and plan.index in getattr(getattr(model,'typed_continuations',None),'plans',())
@@ -583,7 +593,7 @@ def generate(emitter):
     # calls need explicit source frames. Captured entries can have additional
     # environment/context fields and keep their separately proved frame ABI.
     direct='';direct_call=''
-    if registry.reason is None:
+    if emitter.plan.index in registry.direct_entries:
         ordinary=emitter.model.emitter(emitter.plan)
         ordinary.native_direct_body=True
         direct=ordinary.generate()
@@ -605,7 +615,7 @@ def runtime(model):
     from .native_classes import shape
     validate_transfers(model,registry)
     builders=registry.builders;result=[builder.frame()for builder in builders.values()]
-    if registry.reason is None:
+    if registry.direct_entries:
         from .native_class_calls import MAX_NATIVE_CALL_DEPTH
         result.append('''thread_local!{static CLASS_NATIVE_DEPTH:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
 struct ClassNativeSegment;
