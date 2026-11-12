@@ -314,6 +314,29 @@ def small_entry(model,plan):
     return (len(nodes)<=96 and not any(isinstance(node,(ast.For,ast.While,ast.Call))for node in nodes))
 
 
+def inline_entry(model,plan):
+    """Bound one adapter layer by the complete reached leaf source bodies."""
+    if small_entry(model,plan):return True
+    if incoming_module(model,plan):return False
+    from .native_class_calls import synchronous
+    if not synchronous(model,plan):return False
+    nodes=list(model.value_classes.own_nodes(plan))
+    if len(nodes)>96 or any(isinstance(node,(ast.For,ast.While))for node in nodes):return False
+    calls=[node for node in nodes if isinstance(node,ast.Call)]
+    if not calls or len(calls)>3:return False
+    from .native_aot_callables import AotFunctionType
+    weight=len(nodes)
+    for node in calls:
+        kind=model.call_context_effects.kind(plan,node.func)
+        if not(isinstance(kind,AotFunctionType)and kind.definitions
+               and not(kind.builtins or kind.members or kind.methods)):return False
+        for definition in kind.definitions:
+            callee=model.callable_cells.plans.get(definition)
+            if callee is None or not small_entry(model,callee):return False
+            weight+=len(list(model.value_classes.own_nodes(callee)))
+    return weight<=256
+
+
 def borrowed_parent(model,plan):
     """A synchronous closed leaf cannot retain the invocation's parent handle."""
     return summary(model,plan).lexical_parent and small_entry(model,plan)

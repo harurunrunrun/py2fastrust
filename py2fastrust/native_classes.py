@@ -2855,8 +2855,8 @@ class Emitter:
         lexical_initial=state_initial+lexical_initial
         from .native_class_calls import entry_result
         if entry_result(self.model,self.plan):
-            from .native_call_context_effects import small_entry
-            inline="#[inline(always)]\n"if small_entry(self.model,self.plan)else""
+            from .native_call_context_effects import inline_entry
+            inline="#[inline(always)]\n"if inline_entry(self.model,self.plan)else""
             return (inline+f"fn {self.function_name(self.plan)}({signature})->ClassResult<{result}>{{\n"
                     "use std::fmt::Write as _;\n"+(lexical_initial+"\n"if lexical_initial else"")+self.declaration()+"\n"+"\n".join(initial)+"\n"+body+"\n"+tail+"\n}")
         return (f"fn {self.function_name(self.plan)}({signature})->ClassFuture<{result}>{{Box::pin(async move{{\n"
