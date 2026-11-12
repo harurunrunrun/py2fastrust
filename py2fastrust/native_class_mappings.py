@@ -315,6 +315,13 @@ class Mappings:
                 if not mapping_kind(kind)or kind.record.category!='set':raise ClassUnsupported(node)
                 self.contribute_key(kind.record,arguments[0],node)
             return self.model.cell(plan,node,'none')
+        if name in {'remove','discard'}and len(arguments)==1:
+            for kind in kinds:
+                if not mapping_kind(kind)or kind.record.category!='set':raise ClassUnsupported(node)
+            argument=shape(arguments[0])
+            if argument is not None and not key_supported(argument):
+                raise ClassUnsupported(node,'set deletion with this argument needs a Python hash/equality adapter that is not implemented',types=(('key',argument),),proof='set deletion query key')
+            return self.model.cell(plan,node,'none')
         raise ClassUnsupported(node,'mapping method '+repr(name)+' needs a native view/mutation/argument protocol not implemented by this adapter',proof='mapping method protocol')
 
     def rust_type(self,kind):return 'ClassMapping_'+str(kind.index)
@@ -432,6 +439,18 @@ class Mappings:
                 copied=emitter.fresh()
                 code='{let '+copied+'=('+owner.code+'.borrow()).clone();Rc::new(RefCell::new('+copied+'))}'
         elif name=='add':code='{'+self.emit_store(emitter,node,owner,arguments[0],Expression('()','none'))+'()}'
+        elif name in {'remove','discard'}:
+            from .native_unions import union_kind,project
+            key=arguments[0]
+            def branch(kind,text):
+                canonical_name=emitter.fresh();removed=emitter.fresh()
+                query=query_canonical(emitter,key,shape(kind.record.key))
+                body='let '+removed+'=match '+query+'{Some('+canonical_name+')=>('+text+').borrow_mut().delete(&'+canonical_name+'),None=>false};'
+                if name=='remove':
+                    failure=emitter.at('Err::<(),String>(format!("KeyError: {}",'+emitter.show(key,node,True)+'))',node)
+                    body+='if !'+removed+'{'+failure+';}'
+                return '{'+body+'()}'
+            code=project(owner.kind,owner.code,branch)if union_kind(owner.kind)else branch(owner.kind,owner.code)
         else:
             default=arguments[1]if len(arguments)==2 else Expression('()','none')
             if name=='get':code=self.emit_get(emitter,node,owner,arguments[0],wanted,default).code

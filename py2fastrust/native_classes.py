@@ -2092,6 +2092,9 @@ class Emitter:
             from .native_callable_carriers import comparison
             code=comparison(self,left,right)
             return '!('+code+')'if isinstance(operator,ast.NotEq)else code
+        if isinstance(operator,(ast.In,ast.NotIn))and isinstance(right.kind,TupleType):
+            from .native_tuples import membership
+            return membership(self,left,right,operator,node)
         if not isinstance(operator,(ast.In,ast.NotIn))and(isinstance(left.kind,TupleType)or isinstance(right.kind,TupleType)):
             from .native_tuples import tuple_compare,_scalar
             if not _scalar(left.kind)or not _scalar(right.kind):raise ClassUnsupported(node)

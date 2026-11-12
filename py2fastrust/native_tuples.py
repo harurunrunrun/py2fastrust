@@ -331,7 +331,21 @@ def try_statement(generator,node,environment):
     if flush:setup.append(generator.at("native_flush_output(&mut native_output)",node)+";")
     return "\n".join(setup),environment
 
+def membership(generator,left,right,operator,node):
+    if not isinstance(right.kind,TupleType)or not _scalar(left.kind)or not _scalar(right.kind):
+        raise _Unsupported('fixed tuple membership requires identity-aware equality for these element types, which is not implemented',node=node,types=(('item',left.kind),('container',right.kind)),proof='fixed tuple element equality')
+    fresh=getattr(generator,'fresh',None)or generator.temporary
+    item,owner=fresh(),fresh()
+    key=_Expression(item,left.kind,owned=False)
+    tests=[_equal(generator,_Expression(tuple_field(owner,i),kind,owned=False),key)for i,kind in enumerate(right.kind.fields)]
+    found='||'.join('('+test+')'for test in tests)or'false'
+    if isinstance(operator,ast.NotIn):found='!('+found+')'
+    return '{let '+item+'=('+left.code+').clone();let '+owner+'=&('+right.code+');'+found+'}'
+
+
 def comparison(generator,node,expressions):
+    if len(node.ops)==1 and isinstance(node.ops[0],(ast.In,ast.NotIn)):
+        return _Expression(membership(generator,*expressions,node.ops[0],node),'bool')
     if any(type(operator) not in {ast.Eq,ast.NotEq,ast.Lt,ast.LtE,ast.Gt,ast.GtE} for operator in node.ops):
         raise _Unsupported
     names=[generator.temporary() for _ in expressions];tail="true"
