@@ -220,6 +220,9 @@ Large divisions use exact reciprocal estimates and bounded quotient corrections.
 Repeated divisors can retain a reciprocal in their immutable magnitude; changing
 that magnitude invalidates the cache. Equality and hashing depend only on the
 integer value. Smaller divisions retain native word or long division arithmetic.
+Identical immutable operand magnitudes use symmetric squaring. Short quotients
+use upper divisor prefixes and one exact correction, keeping reciprocal work
+proportional to the quotient precision needed by a first division.
 
 `source_map` retains original file, line and column. Its `code` field identifies
 a lexical scope; `instruction` is a stable AST ordinal within that scope, rather

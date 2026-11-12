@@ -162,6 +162,30 @@ print(read(int(input()),int(input())),int(input()))
 '''
         self.differential(source,["7\n9\n11\n"])
 
+    def test_square_operands_keep_calls_signs_and_mutation_order(self):
+        calls='''def identity(value):
+    print("called")
+    return value
+value=int(input(),16)
+print(hex(identity(value)*identity(value)))
+print(hex(identity(value)*identity(-value)))
+'''
+        mutation='''def advance(values):
+    print("changed")
+    values[0]+=1
+    return values[0]
+value=int(input(),16)
+values=[value]
+print(hex(values[0]*advance(values)))
+print(hex(value),hex(values[0]))
+'''
+        data=[f'{value:x}\n'for value in (0,1,-1,(1<<127)-1,1<<127,-(1<<127),
+              (1<<1500)+31,-((1<<3100)+7),(1<<16384)-1)]
+        for source in (calls,mutation):
+            for optimized in (False,True):
+                binary,_=self.compile(source,release=optimized)
+                for item in data:self.compare(binary,source,item)
+
     def test_recursion_mutable_defaults_and_global_effects_execute_directly(self):
         for source in ['def f(n):\n return 1 if n<=0 else n*f(n-1)\nprint(f(7))\n',
                        'def a(x):return b(x)\ndef b(x):return a(x)\nprint(a(1))\n',

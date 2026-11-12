@@ -38,8 +38,9 @@ fn main() {
             println!("{}\t{}\t{}\t{}", b.radix(16, false), target.radix(16, false), q.radix(16, false), r.radix(16, false));
             continue;
         }
+        let first_remainder = if fields[0] == "mod_first" { Some(a.modulo(&b).unwrap()) } else { None };
         let (q, r) = a.divmod(&b).unwrap();
-        let remainder = a.modulo(&b).unwrap();
+        let remainder = match first_remainder { Some(value) => value, None => a.modulo(&b).unwrap() };
         let (hot_q, hot_r) = a.divmod(&b).unwrap();
         assert_eq!(q, hot_q); assert_eq!(r, hot_r);
         println!("{}\t{}\t{}", q.radix(16, false), r.radix(16, false), remainder.radix(16, false));
@@ -149,3 +150,30 @@ class ReciprocalDivisionTests(unittest.TestCase):
                         rows.append((f'pair\t{first:x}\t{second:x}', f'{quotient:x}\t{remainder:x}\t{remainder:x}'))
         self.check(rows, True)
         self.check(rows[::13], False)
+
+    def test_short_quotient_prefixes_and_one_high_estimates(self):
+        rng = random.Random(2026111803)
+        rows = []
+        for words in (2047, 2048, 2049, 4096, 8192):
+            for extra in (127, 128, 129, words // 4, words // 2 - 3,
+                          words // 2 - 2, words // 2 - 1, words // 2):
+                for top_bits in (1, 32):
+                    bits = (words - 1) * 32 + top_bits
+                    divisor = rng.getrandbits(bits - 1) | (1 << (bits - 1)) | 1
+                    value = rng.getrandbits((words + extra) * 32 - 1) | (1 << ((words + extra) * 32 - 1))
+                    for sa, sb in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+                        x, y = sa * value, sb * divisor
+                        q, r = divmod(x, y)
+                        for name in ('pair', 'mod_first'):
+                            rows.append((f'{name}\t{x:x}\t{y:x}', f'{q:x}\t{r:x}\t{r:x}'))
+            # A zero low numerator prefix and a nonzero low divisor make the
+            # initial quotient exactly one too high. Decrement crosses zeros.
+            for extra in (128, words // 2 - 2):
+                b = (1 << ((words - 1) * 32)) + 1
+                q = (1 << (extra * 32)) - 1
+                for r in (0, 1, b - 1):
+                    a = q * b + r
+                    for name in ('pair', 'mod_first'):
+                        rows.append((f'{name}\t{a:x}\t{b:x}', f'{q:x}\t{r:x}\t{r:x}'))
+        self.check(rows, True)
+        self.check(rows[::83], False)

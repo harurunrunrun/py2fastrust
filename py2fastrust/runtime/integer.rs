@@ -586,6 +586,9 @@ impl Int {
         if a.is_empty() || b.is_empty() {
             return Vec::new();
         }
+        if a.len() == b.len() && a.as_ptr() == b.as_ptr() {
+            return Self::nat_square(a);
+        }
         let shorter = a.len().min(b.len());
         let longer = a.len().max(b.len());
         if shorter >= 48 && longer - shorter > shorter {
@@ -625,6 +628,52 @@ impl Int {
                 carry = n >> 32;
             }
             out[i + b.len()] = carry as u32;
+        }
+        Self::trim(&mut out);
+        out
+    }
+
+    fn nat_square(mut a: &[u32]) -> Vec<u32> {
+        while a.last() == Some(&0) { a = &a[..a.len() - 1]; }
+        if a.is_empty() { return Vec::new(); }
+        let n = a.len();
+        let size = n.checked_mul(2).and_then(|value| value.checked_add(1)).expect("integer limb count overflow");
+        if n >= 96 {
+            let split = n / 2;
+            let (a0, a1) = a.split_at(split);
+            let low = Self::nat_square(a0);
+            let high = Self::nat_square(a1);
+            let sum = Self::nat_add(a0, a1);
+            let cross = Self::nat_square(&sum);
+            let cross = Self::nat_sub(&cross, &low);
+            let cross = Self::nat_sub(&cross, &high);
+            let mut out = vec![0; size];
+            Self::nat_add_shifted(&mut out, &low, 0);
+            Self::nat_add_shifted(&mut out, &cross, split);
+            Self::nat_add_shifted(&mut out, &high, split * 2);
+            Self::trim(&mut out);
+            return out;
+        }
+        let mut out = vec![0; size];
+        for (i, &x) in a.iter().enumerate() {
+            let mut carry = 0u64;
+            for (word, &y) in out[2 * i + 1..i + n].iter_mut().zip(&a[i + 1..]) {
+                let value = x as u64 * y as u64 + *word as u64 + carry;
+                *word = value as u32;
+                carry = value >> 32;
+            }
+            out[i + n] = carry as u32;
+        }
+        let mut carry = 0u64;
+        for word in &mut out {
+            let value = (*word as u64) * 2 + carry;
+            *word = value as u32;
+            carry = value >> 32;
+        }
+        debug_assert_eq!(carry, 0);
+        for (i, &word) in a.iter().enumerate() {
+            let square = word as u64 * word as u64;
+            Self::nat_add_shifted(&mut out, &[square as u32, (square >> 32) as u32], 2 * i);
         }
         Self::trim(&mut out);
         out
@@ -756,6 +805,9 @@ impl Int {
     }
 
     fn nat_divrem(a: &[u32], b: &[u32], want_quotient: bool) -> (Vec<u32>, Vec<u32>) {
+        if Self::nat_has_short_quotient(a, b) {
+            return Self::nat_divrem_prefix(a, b, want_quotient);
+        }
         if b.len() >= 2048 && a.len().saturating_sub(b.len()) >= 128 {
             let shift = b.last().unwrap().leading_zeros() as usize;
             let divisor = Self::nat_shl(b, shift);
@@ -767,12 +819,34 @@ impl Int {
         Self::nat_divrem_long(a, b, want_quotient)
     }
 
+    fn nat_has_short_quotient(a: &[u32], b: &[u32]) -> bool {
+        let extra = a.len().saturating_sub(b.len());
+        b.len() >= 2048 && extra >= 128 && extra <= b.len() / 2 - 2
+    }
+
+    fn nat_divrem_prefix(a: &[u32], b: &[u32], want_quotient: bool) -> (Vec<u32>, Vec<u32>) {
+        debug_assert!(Self::nat_has_short_quotient(a, b));
+        let kept = a.len() - b.len() + 2;
+        let cut = b.len() - kept;
+        let mut quotient = Self::nat_divrem(&a[cut..], &b[cut..], true).0;
+        let mut product = Self::nat_mul(b, &quotient);
+        // The two guard limbs make the prefix quotient at most one too high,
+        // including when the divisor's highest word is not normalized.
+        if Self::nat_cmp(&product, a) == std::cmp::Ordering::Greater {
+            if want_quotient { quotient = Self::nat_sub(&quotient, &[1]); }
+            product = Self::nat_sub(&product, b);
+        }
+        let remainder = Self::nat_sub(a, &product);
+        debug_assert!(Self::nat_cmp(&remainder, b) == std::cmp::Ordering::Less);
+        (if want_quotient { quotient } else { Vec::new() }, remainder)
+    }
+
     fn nat_divrem_cached(a: &[u32], b: &[u32], want_quotient: bool, cache: Option<&IntDivisionCache>) -> (Vec<u32>, Vec<u32>) {
         if b.len() >= 256 && a.len().saturating_sub(b.len()) >= 128 {
             if let Some(cache) = cache {
-                if b.len() < 2048 && cache.get().is_none() {
+                if cache.get().is_none() && (b.len() < 2048 || Self::nat_has_short_quotient(a, b)) {
                     let _ = cache.set(Box::new(std::cell::OnceCell::new()));
-                    return Self::nat_divrem_long(a, b, want_quotient);
+                    return Self::nat_divrem(a, b, want_quotient);
                 }
                 let shift = b.last().unwrap().leading_zeros() as usize;
                 let divisor = if shift == 0 { std::borrow::Cow::Borrowed(b) }
