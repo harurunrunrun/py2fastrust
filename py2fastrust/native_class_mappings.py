@@ -49,6 +49,14 @@ def key_supported(kind):
         or isinstance(kind,TupleSequenceType)and key_supported(kind.element))
 
 
+def key_pending(kind):
+    if kind is None:return True
+    if isinstance(kind,TupleType):return any(key_pending(child)for child in kind.fields)
+    if isinstance(kind,TupleSequenceType):return key_pending(kind.element)
+    choices=alternatives(kind)
+    return len(choices)>1 and any(key_pending(child)for child in choices)
+
+
 def key_compatible(left,right):
     if isinstance(left,EmptyType)or isinstance(right,EmptyType):return False
     if left in {'int','bool','int_bool'}and right in {'int','bool','int_bool'}:return True
@@ -198,7 +206,7 @@ class Mappings:
         from .native_classes import shape,ClassUnsupported
         kind=shape(value)
         if kind is None:return
-        if not key_supported(kind):
+        if not key_supported(kind)and not(not self.model.final and key_pending(kind)):
             raise ClassUnsupported(node,'this dictionary/set key requires a custom or unhashable key protocol that has no native representation yet',types=(('key',kind),),proof='native hash-key protocol')
         self.model.contribute(record.key,value,node)
 
@@ -319,7 +327,7 @@ class Mappings:
             for kind in kinds:
                 if not mapping_kind(kind)or kind.record.category!='set':raise ClassUnsupported(node)
             argument=shape(arguments[0])
-            if argument is not None and not key_supported(argument):
+            if argument is not None and not key_supported(argument)and not(not self.model.final and key_pending(argument)):
                 raise ClassUnsupported(node,'set deletion with this argument needs a Python hash/equality adapter that is not implemented',types=(('key',argument),),proof='set deletion query key')
             return self.model.cell(plan,node,'none')
         raise ClassUnsupported(node,'mapping method '+repr(name)+' needs a native view/mutation/argument protocol not implemented by this adapter',proof='mapping method protocol')
