@@ -863,3 +863,10 @@ bindings and shared metadata from their proved single class publication.
 Mutable objects keep their shared identity and field updates. Replaced methods,
 observable metadata, ambiguous publication and unproved callbacks retain the
 corresponding checked native operations.
+
+Native `typing.TypeVar` construction supports closed arguments at proved
+single-execution module sites, including constructor errors and distinct
+same-name type-variable identities in unobserved metadata. Repeated factories,
+retriable initializer imports, expanded/implicit factory calls, and runtime
+metadata-object observation retain explicit diagnostics. This native slice does
+not establish the broader historical typing/runtime API claims above.

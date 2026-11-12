@@ -43,6 +43,9 @@ class Construction:
 
 
 def semantic_key(value):
+    # Equal spellings do not make two separately constructed type variables
+    # equal. TypeVar construction sites retain their actual stable host value.
+    if isinstance(value,typing.TypeVar):return ('typevar_identity',id(value))
     if isinstance(value,tuple):return ('tuple',tuple(map(semantic_key,value)))
     if isinstance(value,list):return ('list',tuple(map(semantic_key,value)))
     if isinstance(value,type)and '_pytors_type_id'in vars(value):return ('source_type',vars(value)['_pytors_type_id'])
@@ -116,7 +119,10 @@ class Registry:
         # each reached body separately proves every observed metadata read.
         source_only=lambda kind:isinstance(kind,AotFunctionType) and bool(kind.definitions) and not(kind.builtins or kind.members or kind.methods)
         compatible=lambda kind:isinstance(kind,AotFunctionType) and not(kind.builtins or kind.methods) and all(member==BuiltinRef('typing','cast')for member in kind.members)
+        typevar=lambda kind:isinstance(kind,AotFunctionType) and not(kind.definitions or kind.builtins or kind.methods) and kind.members and all(member==BuiltinRef('typing','TypeVar')for member in kind.members)
         if all(source_only(kind)for kind in kinds):
+            nodes=[arg.expression for arg in arguments.evaluation_order]
+        elif kinds and all(typevar(kind)for kind in kinds):
             nodes=[arg.expression for arg in arguments.evaluation_order]
         elif all(compatible(kind)for kind in kinds)and any(kind.members for kind in kinds):
             try:

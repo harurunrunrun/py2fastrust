@@ -1328,6 +1328,13 @@ of metadata objects remain positioned diagnostics. Printing, truth tests,
 comparison, exposed metadata attributes and calling these compiler symbols do
 not silently produce Python `None` or runtime metadata objects.
 
+Canonical `typing.TypeVar` constructors at proved single-execution module
+sites support closed arguments through dedicated metadata carriers. Separate
+same-name variables retain distinct identities during type-parameter validation;
+argument expressions and constructor errors keep their Python order. Runtime
+metadata observation, repeated factories, expanded/implicit factory calls, and
+imports that may retry an initializer remain explicit unsupported protocols.
+
 Canonical class declarations based on `typing.NamedTuple` use typed tuple
 payloads with nominal record metadata. Nested declarations, captured factory
 aliases, positional/keyword construction, trailing defaults, field reads,

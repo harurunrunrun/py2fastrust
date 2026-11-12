@@ -57,10 +57,26 @@ class CastCall:
 
 
 class TypingAdapter:
-    NAMES=frozenset({'cast','NamedTuple'})
+    NAMES=frozenset({'cast','NamedTuple','TypeVar'})
+    TYPES=frozenset({'TypeVar'})
+
+    @staticmethod
+    def match_type(emitter,node,value,name):
+        from .native_unions import project,union_kind
+        from .native_classes import Expression
+        from .native_typing_metadata import MetadataType
+        import typing
+        if union_kind(value.kind):
+            return project(value.kind,value.code,lambda kind,code:TypingAdapter.match_type(emitter,node,Expression(code,kind),name))
+        if name!='TypeVar'or not isinstance(value.kind,MetadataType):return 'false'
+        selected=[index for index,item in enumerate(value.kind.record.values)if isinstance(item,typing.TypeVar)]
+        return '('+'||'.join(f'({value.code}).case=={index}'for index in selected)+')'if selected else'false'
 
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
+        if identity.name=='TypeVar':
+            from .native_typing_typevars import analyze
+            return analyze(model,plan,node,normalized_call,positional,keywords,factory=factory)
         if identity.name=='NamedTuple':
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,'functional typing.NamedTuple construction requires dynamic field/factory generation; only canonical class declarations are implemented',proof='runtime named tuple factory construction')
@@ -74,6 +90,9 @@ class TypingAdapter:
 
     @staticmethod
     def emit(emitter,node,identity,record,positional,keywords):
+        if identity.name=='TypeVar':
+            from .native_typing_typevars import emit
+            return emit(emitter,node,record,positional,keywords)
         from .native import _string
         from .native_classes import Expression,shape
         wanted=shape(record.result)
