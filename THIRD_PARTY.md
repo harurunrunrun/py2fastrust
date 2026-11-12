@@ -142,3 +142,10 @@ CPython 3.14.4's `run_eval_code_obj` (`Python/pythonrun.c`), `PyEval_EvalCode`
 (`Objects/funcobject.c`).
 These sources are distributed under the PSF license included in
 `py2fastrust/stdlib/PYTHON_LICENSE.txt` and in generated Rust source notices.
+
+The offline test data in `tests/fixtures/yosupo_generated.json` are generated
+from [Library Checker Problems](https://github.com/yosupo06/library-checker-problems),
+pinned to commit `73876f1cbcf082d2b22722924b924d3d65a2f00e`. The fixture records
+each generator, seed, original input/answer checksum and any explicit reduction.
+The Apache-2.0 license is retained in `tests/fixtures/yosupo.LICENSE`. These test
+fixtures and generator dependencies are not bundled into generated Rust.
