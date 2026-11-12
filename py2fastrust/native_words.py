@@ -159,6 +159,35 @@ class IntegerWords:
         return self.prefix(g,caller,line)+call
 
 
+def borrow_immediate_input(generator,plan,environment):
+    """Borrow one input line only through a closed immediate integer consumer."""
+    from .native_stream_plans import ProducerKind
+    from .references import BuiltinIdentity,callable_reference
+    if (plan is None or plan.kind is not ProducerKind.MAP
+            or plan.callback!=BuiltinIdentity('int') or len(plan.sources)!=1
+            or plan.node.keywords):
+        return False
+    source=plan.sources[0]
+    if source.kind is not ProducerKind.WORDS or source.method is None:
+        return False
+    method=source.method
+    if method.identity.owner!='str' or method.invocation.explicit_order:
+        return False
+    node=method.receiver.expression
+    # A static target identity alone does not justify omitting a binding read.
+    # Restrict this view to builtin lookup, not a stored/rebound callable slot.
+    if ('input' in environment or 'input' in (generator.global_environment or {})
+            or 'input' in (generator.global_names or ())):
+        return False
+    local_names=(generator.function.local_names if generator.function is not None
+                 else getattr(generator,'entry_local_names',()))
+    if 'input' in local_names:
+        return False
+    return (isinstance(node,ast.Call) and not node.args and not node.keywords
+            and isinstance(node.func,ast.Name) and node.func.id=='input'
+            and callable_reference(generator,node.func,environment)==BuiltinIdentity('input'))
+
+
 def integer_map(g,source,planner,node,*,frame=None,inline=False):
     from .native_iterators import DeferredScope,_scope
     word=source.words
@@ -207,7 +236,13 @@ def lower(g,plan,environment,planner):
     g.has_native_words=True
     kind=method.identity.owner
     buffer,cursor=g.temporary(),g.temporary()
-    lines=[f"let {buffer}={method.receiver.captured.code};"]
+    if planner.borrow_input_words:
+        # No callback or later argument can read input before this immediate
+        # integer consumer finishes. The reader retains and reuses its buffer.
+        read=g.at('native_input.line(&mut native_output)',method.receiver.expression)
+        lines=[f"let {buffer}={read};"]
+    else:
+        lines=[f"let {buffer}={method.receiver.captured.code};"]
     separator,maximum="None","-1_i128"
     for operand in method.invocation.explicit_order:
         expression=operand.expression

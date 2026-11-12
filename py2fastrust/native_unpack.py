@@ -67,7 +67,9 @@ def try_statement(g,node,environment):
         lines+=_assign(g,plan,fields,environment)
         return "\n".join(lines),environment
     from .native_iterators import Planner, TraceContext, _owned, stream_item
-    source=Planner(g).lower(source_plan,environment,captured_value=captured)
+    from .native_words import borrow_immediate_input
+    source=Planner(g,borrow_input_words=borrow_immediate_input(g,source_plan,environment)).lower(
+        source_plan,environment,captured_value=captured)
     if source.integer_words is not None:
         count=len(plan.target.elts)
         result=g.temporary()

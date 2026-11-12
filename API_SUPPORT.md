@@ -56,8 +56,8 @@ Integer, binary64, and string fields support alignment, width, grouping,
 precision, and the supported standard presentation codes. Dynamic format specs,
 debug fields, `!s`/`!r`/`!a`, and field/spec evaluation order use the original
 Python AST. Plain fields emit only the needed display helpers. Source-defined
-format/display methods, complex values, and string `format`/`format_map` methods
-still require their own direct protocols.
+format/display methods, complex values, dynamic string format templates and
+`str.format_map` still require their own direct protocols.
 
 Canonical `ord`, `bin`, `oct`, and `hex` calls have direct native lowering,
 including saved aliases, callback arguments and class fields. `ord` accepts
@@ -614,6 +614,15 @@ helpers are omitted. User `__index__` and `__getitem__` slice protocols and fixe
 heterogeneous-tuple slicing remain positioned capability diagnostics. Pending
 index types are deferred until the type-analysis fixed point is reached.
 
+Canonical `@staticmethod` decorators retain the original source function:
+class and instance reads supply no implicit receiver and preserve function
+identity, defaults, arguments and exception frames. Decorator aliases/calls are
+admitted only when their captured value proves the canonical builtin identity.
+Descriptor resolution participates in the type-analysis fixed point before any
+receiver is seeded. Plain zero-argument class-body functions can also execute
+without an invented receiver. Ambiguous decorator identities, raw descriptor
+values and descriptor replacement remain explicit capability diagnostics.
+
 Canonical `@classmethod` decorators use the shared typed class namespace. The
 decorator can be captured through a builtin alias or a source call only when its
 resolved value is exactly the canonical builtin. Decorator expressions execute
@@ -870,3 +879,16 @@ same-name type-variable identities in unobserved metadata. Repeated factories,
 retriable initializer imports, expanded/implicit factory calls, and runtime
 metadata-object observation retain explicit diagnostics. This native slice does
 not establish the broader historical typing/runtime API claims above.
+
+Literal `str.format` templates lower through Python's official field parser to
+direct typed Rust string construction. Positional, named and automatic root
+fields, escaped braces, `!s`/`!r`/`!a`, and nested specifications preserve argument
+and formatting-stage error order. Attribute/subscript field traversal, dynamic
+templates and expanded argument calls retain precise unsupported diagnostics.
+
+Immediate canonical `map(int, input().split())` unpack/list consumers can borrow
+the input reader's reused line buffer until integer collection finishes. Stored
+maps, aliased input bindings, callbacks and later argument effects retain owned
+snapshots. Prompts, implicit input flushing, explicit print flushing and
+interactive pipe behavior are preserved. This removes per-line text allocation;
+it does not remove Python input's per-read output-flush cost.

@@ -25,7 +25,7 @@ Debug fields, nested f-strings, canonical `format`/`repr`/`ascii` aliases,
 integer/boolean/string/binary64 formatting, and supported container display work
 in all integer modes. Nonempty specs for containers raise `TypeError`.
 Source-defined `__format__`, `__str__`, and `__repr__` methods, complex formatting,
-and `str.format`/`str.format_map` remain positioned diagnostics. Unicode format
+and dynamic string templates/`str.format_map` remain positioned diagnostics. Unicode format
 widths and fills follow the selected string mode; Unicode data is included and
 attributed only when its helpers remain reachable.
 
@@ -1402,6 +1402,15 @@ helpers are omitted. User `__index__` and `__getitem__` slice protocols and fixe
 heterogeneous-tuple slicing remain positioned capability diagnostics. Pending
 index types are deferred until the type-analysis fixed point is reached.
 
+Canonical `@staticmethod` decorators retain the original source function:
+class and instance reads supply no implicit receiver and preserve function
+identity, defaults, arguments and exception frames. Decorator aliases/calls are
+admitted only when their captured value proves the canonical builtin identity.
+Descriptor resolution participates in the type-analysis fixed point before any
+receiver is seeded. Plain zero-argument class-body functions can also execute
+without an invented receiver. Ambiguous decorator identities, raw descriptor
+values and descriptor replacement remain explicit capability diagnostics.
+
 Canonical `@classmethod` decorators use the shared typed class namespace. The
 decorator can be captured through a builtin alias or a source call only when its
 resolved value is exactly the canonical builtin. Decorator expressions execute
@@ -2294,3 +2303,16 @@ closed numeric cell operations observe them. A row projection captures its
 owner and normalized index; reads and writes access that original row instead
 of cloning its contents. Observable aliases and live mutation during iteration
 keep shared object identity.
+
+Literal `str.format` templates lower through Python's official field parser to
+direct typed Rust string construction. Positional, named and automatic root
+fields, escaped braces, `!s`/`!r`/`!a`, and nested specifications preserve argument
+and formatting-stage error order. Attribute/subscript field traversal, dynamic
+templates and expanded argument calls retain precise unsupported diagnostics.
+
+Immediate canonical `map(int, input().split())` unpack/list consumers can borrow
+the input reader's reused line buffer until integer collection finishes. Stored
+maps, aliased input bindings, callbacks and later argument effects retain owned
+snapshots. Prompts, implicit input flushing, explicit print flushing and
+interactive pipe behavior are preserved. This removes per-line text allocation;
+it does not remove Python input's per-read output-flush cost.

@@ -132,10 +132,11 @@ class ItemField:
 
 
 class Planner:
-    def __init__(self, generator, snapshot_strings=(),iteration_site=None):
+    def __init__(self, generator, snapshot_strings=(),iteration_site=None,borrow_input_words=False):
         self.g = generator
         self.snapshot_strings = frozenset(snapshot_strings)
         self.iteration_site=iteration_site
+        self.borrow_input_words=borrow_input_words
 
     def leaf(self, setup, begin, iterator, fields, owners=(), eager=False, tupled=False,
              length=None, nonempty=False, unpack_length=None):

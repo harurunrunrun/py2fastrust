@@ -246,7 +246,9 @@ def try_expression(g, node, environment):
         # traversal order. Producer adapters with callbacks do not inherit
         # this permission; transparent iter(...) alone may retain it.
         order_free=plan.kind is ConsumerKind.SORTED and _none_operand(g,plan.binding.binding["key"])
-        source=Planner(g).lower(plan.source,environment,allow_set=order_free)
+        from .native_words import borrow_immediate_input
+        source=Planner(g,borrow_input_words=plan.kind is ConsumerKind.LIST
+            and borrow_immediate_input(g,plan.source,environment)).lower(plan.source,environment,allow_set=order_free)
         if plan.kind is ConsumerKind.LIST:
             return _collect(g,source,node)
         lines=[source.setup+("\n"+source.begin if source.eager else "")]
