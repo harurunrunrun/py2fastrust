@@ -26,6 +26,7 @@ impl<T> NativeOrderedEntries<T>{
     fn new()->Self{Self{slots:Vec::new(),head:NATIVE_ENTRY_NONE,tail:NATIVE_ENTRY_NONE,free:NATIVE_ENTRY_NONE,length:0}}
     fn len(&self)->usize{self.length}
     fn is_empty(&self)->bool{self.length==0}
+    fn pop(&mut self)->Option<T>{let slot=self.tail;if slot==NATIVE_ENTRY_NONE{None}else{Some(self.remove(slot))}}
     fn clear(&mut self){self.slots.clear();self.head=NATIVE_ENTRY_NONE;self.tail=NATIVE_ENTRY_NONE;self.free=NATIVE_ENTRY_NONE;self.length=0;}
     fn insert(&mut self,value:T)->Result<usize,String>{
         let length=self.length.checked_add(1).filter(|length|*length<=isize::MAX as usize).ok_or_else(||"MemoryError: dictionary is too large".to_owned())?;
@@ -94,4 +95,15 @@ fn native_dict_remove<T,C,S>(entries:&mut NativeDictionaryEntries<T>,_index:&mut
 
 
 def helpers(deletion):
-    return ORDERED_HELPERS if deletion else DENSE_HELPERS
+    return (ORDERED_HELPERS if deletion else DENSE_HELPERS)+POPITEM_HELPER
+
+
+POPITEM_HELPER=r'''
+fn native_dict_popitem<K,V,C,S,F>(entries:&mut NativeDictionaryEntries<(K,V)>,index:&mut std::collections::HashMap<C,usize,S>,canonical:F)->Result<(K,V),String>
+where C:Eq+std::hash::Hash,S:std::hash::BuildHasher,F:FnOnce(&K)->C {
+    let value=entries.pop().ok_or_else(||"KeyError: 'popitem(): dictionary is empty'".to_owned())?;
+    let removed=index.remove(&canonical(&value.0));
+    debug_assert!(removed.is_some());
+    Ok(value)
+}
+'''

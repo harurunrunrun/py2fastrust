@@ -66,6 +66,25 @@ def _mutated(g,value,name,binding,environment):
         g.expression_mutations.append(binding)
 
 
+def popitem(g,node,environment):
+    if not(isinstance(node,ast.Call)and isinstance(node.func,ast.Attribute)and node.func.attr=='popitem'):return None
+    kind=_kind(g,node.func.value,environment)
+    if kind!='dict_int'and not isinstance(kind,DictType):return None
+    if node.args or node.keywords:
+        raise _Unsupported('dict.popitem accepts no arguments; evaluation and TypeError construction for this invalid call signature are not implemented',node=node,types=(('receiver',kind),),proof='zero-argument dict.popitem signature')
+    value,name,binding,owner,lines=_receiver(g,node.func,environment)
+    from .native_key_containers import canonical
+    from .native_types import TupleType
+    key,stored=('int','int')if kind=='dict_int'else(kind.key,kind.value)
+    reference,item=g.temporary(),g.temporary()
+    lines.append(f'let {reference}=&mut {owner};')
+    canon=canonical(g,_Expression(f'(*{item})',key,owned=False))
+    call=f'native_dict_popitem(&mut {reference}.entries,&mut {reference}.index,|{item}|{canon})'
+    result=TupleType((key,stored));g.register_type(result)
+    _mutated(g,value,name,binding,environment)
+    return _Expression('{'+''.join(lines)+g.at(call,node)+'}',result)
+
+
 def _scalar_rhs(g,node):
     from .native_constraint_lowering import facts_for
     from .native_scalar_effects import scalar_rhs

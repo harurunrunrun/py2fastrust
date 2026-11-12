@@ -163,6 +163,9 @@ def _construct(generator,keys,values,node,*,kind=None):
 
 
 def try_expression(generator,node,environment):
+    from .native_mapping_mutations import popitem
+    removed=popitem(generator,node,environment)
+    if removed is not None:return removed
     if isinstance(node,ast.Name):
         binding=environment.get(node.id)
         if isinstance(binding,_Binding) and isinstance(binding.info,KeyInfo):
@@ -263,6 +266,10 @@ def _widen(generator,environment,name,kind,node):
 
 
 def try_statement(generator,node,environment):
+    if isinstance(node,ast.Expr):
+        from .native_mapping_mutations import popitem
+        removed=popitem(generator,node.value,environment)
+        if removed is not None:return f'let _={removed.code};',environment
     from .native_mapping_mutations import lower as mapping_delete
     deleted=mapping_delete(generator,node,environment)
     if deleted is not None:return deleted

@@ -740,6 +740,8 @@ class Solver:
             if name in {"keys","values","items"} and ("dict" in category or any(isinstance(kind,DictType) for kind in kinds)):
                 key=self.field_values(identity.receiver,"iteration");item=self.field_values(identity.receiver,"value")
                 return value(IteratorValue(value(TupleValue((key,item))) if name=="items" else key if name=="keys" else item))
+            if name=='popitem'and('dict'in category or any(isinstance(kind,DictType)for kind in kinds)):
+                return value(TupleValue((self.field_values(identity.receiver,'iteration'),self.field_values(identity.receiver,'value'))))
             if name=="get" and args:
                 fallback=args[1] if len(args)>1 else value("none")
                 return self.field_values(identity.receiver,"value").join(fallback)

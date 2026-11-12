@@ -840,3 +840,12 @@ stable sequence-storage capability. Repeated outer rows, escaped row aliases,
 shallow copies, reentrant operations and mutations observed by a row iterator
 retain identity-preserving storage. Assignment and augmented assignment keep
 their separate Python operand and error order.
+
+Unpacking consumes proved fixed tuple fields directly even when normalization
+classifies the producer as a method or another iterable-producing operation.
+The source expression runs once, arity is checked before binding, and the
+captured tuple's owned fields are moved into the targets without constructing
+an intermediate integer vector.
+Builtin `dict.popitem()` removes the last inserted live slot without scanning
+other entries, retains the original key representation, and raises `KeyError`
+on an empty dictionary. Reinserted keys use their new insertion position.

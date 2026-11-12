@@ -53,13 +53,17 @@ def try_statement(g,node,environment):
         lines+=_assign(g,plan,fields,environment)
         return "\n".join(lines),environment
     binding=environment.get(source_plan.node.id)if isinstance(source_plan.node,ast.Name)else None
-    captured=g.expression(source_plan.node,environment)if source_plan.kind is ProducerKind.VALUE else None
+    from .native_constraint_lowering import facts_for
+    facts,site=facts_for(g,source_plan.node)
+    exact_tuple=(facts is not None and isinstance(unmaybe(
+        facts.storage.get(site,facts.expressions.get(site))),TupleType))
+    captured=g.expression(source_plan.node,environment)if source_plan.kind is ProducerKind.VALUE or exact_tuple else None
     if captured is not None and isinstance(captured.kind,TupleType):
         value=captured
         owner=g.temporary()
         captured=value.code if value.owned else g.coerce(value,value.kind)
         lines=[f"let {owner}={captured};"]
-        fields=[_Expression(f"{owner}.{index}",kind,owned=False)for index,kind in enumerate(value.kind.fields)]
+        fields=[_Expression(f"{owner}.{index}",kind,owned=True)for index,kind in enumerate(value.kind.fields)]
         lines+=_assign(g,plan,fields,environment)
         return "\n".join(lines),environment
     from .native_iterators import Planner, TraceContext, _owned, stream_item
