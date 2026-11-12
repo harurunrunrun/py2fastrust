@@ -339,7 +339,7 @@ class IntegerTests(unittest.TestCase):
         values = [0]
         for digits in (9, 18, 36, 72, 144, 288, 576, 1152, 2304, 4608):
             values += [10**digits + offset for offset in (-1, 0, 1)]
-        values += [rng.getrandbits(size) for size in (1023, 1024, 1025, 2048, 8192, 16384, 32768, 65536)
+        values += [rng.getrandbits(size) for size in (1023, 1024, 1025, 2048, 8192, 16384, 32768, 65536, 131072, 262144)
                    for _ in range(3)]
         previous = sys.get_int_max_str_digits()
         sys.set_int_max_str_digits(0)

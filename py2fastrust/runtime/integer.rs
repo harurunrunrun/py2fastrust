@@ -20,7 +20,40 @@ impl Clone for Int {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum IntRepr {
     Small(i128),
-    Big { negative: bool, digits: std::rc::Rc<Vec<u32>> },
+    Big { negative: bool, digits: std::rc::Rc<IntMagnitude> },
+}
+
+type IntDivisionCache = std::cell::OnceCell<Box<std::cell::OnceCell<Vec<u32>>>>;
+
+#[derive(Debug)]
+struct IntMagnitude {
+    words: Vec<u32>,
+    division: IntDivisionCache,
+}
+impl IntMagnitude {
+    fn new(words: Vec<u32>) -> Self {
+        Self { words, division: std::cell::OnceCell::new() }
+    }
+}
+impl Clone for IntMagnitude {
+    fn clone(&self) -> Self { Self::new(self.words.clone()) }
+}
+impl PartialEq for IntMagnitude {
+    fn eq(&self, other: &Self) -> bool { self.words == other.words }
+}
+impl Eq for IntMagnitude {}
+impl std::hash::Hash for IntMagnitude {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { std::hash::Hash::hash(&self.words, state); }
+}
+impl std::ops::Deref for IntMagnitude {
+    type Target = Vec<u32>;
+    fn deref(&self) -> &Vec<u32> { &self.words }
+}
+impl std::ops::DerefMut for IntMagnitude {
+    fn deref_mut(&mut self) -> &mut Vec<u32> {
+        self.division.take();
+        &mut self.words
+    }
 }
 
 impl Int {
@@ -81,12 +114,12 @@ impl Int {
         if let Some(value) = Self::small_parts(negative, &digits) {
             return Self::exact_small(value);
         }
-        Self(IntRepr::Big { negative, digits: std::rc::Rc::new(digits) })
+        Self(IntRepr::Big { negative, digits: std::rc::Rc::new(IntMagnitude::new(digits)) })
     }
 
-    fn shared_parts(negative: bool, mut digits: std::rc::Rc<Vec<u32>>) -> Self {
+    fn shared_parts(negative: bool, mut digits: std::rc::Rc<IntMagnitude>) -> Self {
         if digits.last() == Some(&0) {
-            Self::trim(std::rc::Rc::make_mut(&mut digits));
+            Self::trim(std::rc::Rc::<IntMagnitude>::make_mut(&mut digits));
         }
         if let Some(value) = Self::small_parts(negative, &digits) {
             return Self::exact_small(value);
@@ -94,17 +127,14 @@ impl Int {
         Self(IntRepr::Big { negative, digits })
     }
 
-    fn owned_digits(digits: std::rc::Rc<Vec<u32>>) -> Vec<u32> {
-        match std::rc::Rc::try_unwrap(digits) {
-            Ok(value) => value,
-            Err(shared) => (*shared).clone(),
-        }
-    }
-
     fn parts(negative: bool, digits: Vec<u32>) -> Self {
         if INT_BITS == 0 {
             return Self::exact_parts(negative, digits);
         }
+        Self::bounded_parts(negative, &digits)
+    }
+
+    fn bounded_parts(negative: bool, digits: &[u32]) -> Self {
         let count = (INT_BITS / 32) as usize;
         let mut n = 0u128;
         for &limb in digits.iter().take(count).rev() {
@@ -122,7 +152,7 @@ impl Int {
         }
         match self.0 {
             IntRepr::Small(n) => Self::from_i128(n),
-            IntRepr::Big { negative, digits } => Self::parts(negative, Self::owned_digits(digits)),
+            IntRepr::Big { negative, digits } => Self::bounded_parts(negative, &digits),
         }
     }
 
@@ -558,7 +588,7 @@ impl Int {
         }
         let shorter = a.len().min(b.len());
         let longer = a.len().max(b.len());
-        if shorter >= 64 && longer - shorter > shorter {
+        if shorter >= 48 && longer - shorter > shorter {
             let (long, short) = if a.len() >= b.len() { (a, b) } else { (b, a) };
             let mut out = vec![0u32; a.len() + b.len() + 1];
             for (block, chunk) in long.chunks(shorter).enumerate() {
@@ -568,7 +598,7 @@ impl Int {
             Self::trim(&mut out);
             return out;
         }
-        if shorter >= 64 && longer - shorter <= shorter {
+        if shorter >= 48 && longer - shorter <= shorter {
             let split = longer / 2;
             let (a0, a1) = a.split_at(split);
             let (b0, b1) = b.split_at(split);
@@ -726,6 +756,107 @@ impl Int {
     }
 
     fn nat_divrem(a: &[u32], b: &[u32], want_quotient: bool) -> (Vec<u32>, Vec<u32>) {
+        if b.len() >= 2048 && a.len().saturating_sub(b.len()) >= 128 {
+            let shift = b.last().unwrap().leading_zeros() as usize;
+            let divisor = Self::nat_shl(b, shift);
+            let dividend = Self::nat_shl(a, shift);
+            let inverse = Self::nat_reciprocal(&divisor);
+            let (q, r) = Self::nat_divrem_inverse(&dividend, &divisor, &inverse, want_quotient);
+            return (q, if shift == 0 { r } else { Self::nat_shr(&r, shift) });
+        }
+        Self::nat_divrem_long(a, b, want_quotient)
+    }
+
+    fn nat_divrem_cached(a: &[u32], b: &[u32], want_quotient: bool, cache: Option<&IntDivisionCache>) -> (Vec<u32>, Vec<u32>) {
+        if b.len() >= 256 && a.len().saturating_sub(b.len()) >= 128 {
+            if let Some(cache) = cache {
+                if b.len() < 2048 && cache.get().is_none() {
+                    let _ = cache.set(Box::new(std::cell::OnceCell::new()));
+                    return Self::nat_divrem_long(a, b, want_quotient);
+                }
+                let shift = b.last().unwrap().leading_zeros() as usize;
+                let divisor = if shift == 0 { std::borrow::Cow::Borrowed(b) }
+                    else { std::borrow::Cow::Owned(Self::nat_shl(b, shift)) };
+                let dividend = if shift == 0 { std::borrow::Cow::Borrowed(a) }
+                    else { std::borrow::Cow::Owned(Self::nat_shl(a, shift)) };
+                let state = cache.get_or_init(|| Box::new(std::cell::OnceCell::new()));
+                let inverse = state.get_or_init(|| Self::nat_reciprocal(&divisor));
+                let (q, r) = Self::nat_divrem_inverse(&dividend, &divisor, inverse, want_quotient);
+                return (q, if shift == 0 { r } else { Self::nat_shr(&r, shift) });
+            }
+        }
+        Self::nat_divrem(a, b, want_quotient)
+    }
+
+    fn nat_reciprocal(divisor: &[u32]) -> Vec<u32> {
+        let n = divisor.len();
+        debug_assert!(divisor.last().unwrap() & 0x8000_0000 != 0);
+        let double = n.checked_mul(2).expect("integer limb count overflow");
+        let mut scale = vec![0; double.checked_add(1).expect("integer limb count overflow")];
+        scale[double] = 1;
+        if n <= 32 { return Self::nat_divrem_long(&scale, divisor, true).0; }
+        let low = n / 2;
+        let upper = Self::nat_reciprocal(&divisor[low..]);
+        let mut estimate = vec![0; low];
+        estimate.extend_from_slice(&upper);
+        let squared = Self::nat_mul(&estimate, &estimate);
+        let product = Self::nat_mul(divisor, &squared);
+        let mut correction = product[double..].to_vec();
+        if product[..double].iter().any(|&word| word != 0) {
+            correction = Self::nat_add(&correction, &[1]);
+        }
+        let mut inverse = Self::nat_sub(&Self::nat_add(&estimate, &estimate), &correction);
+        let product = Self::nat_mul(divisor, &inverse);
+        let mut remainder = Self::nat_sub(&scale, &product);
+        // With a normalized divisor, one precision-doubling step undershoots
+        // floor(B^(2n)/divisor) by at most 17, including rounding, for B=2^32.
+        while Self::nat_cmp(&remainder, divisor) != std::cmp::Ordering::Less {
+            inverse = Self::nat_add(&inverse, &[1]);
+            remainder = Self::nat_sub(&remainder, divisor);
+        }
+        inverse
+    }
+
+    fn nat_divrem_inverse(a: &[u32], b: &[u32], inverse: &[u32], want_quotient: bool) -> (Vec<u32>, Vec<u32>) {
+        let n = b.len();
+        let mut quotient = if want_quotient { vec![0; a.len() - n + 1] } else { Vec::new() };
+        let mut remainder = Vec::new();
+        let blocks = a.len() / n + usize::from(a.len() % n != 0);
+        for block in (0..blocks).rev() {
+            let start = block * n;
+            let end = a.len().min(start.saturating_add(n));
+            let capacity = (end - start).checked_add(remainder.len()).expect("integer limb count overflow");
+            let mut dividend = Vec::with_capacity(capacity);
+            dividend.extend_from_slice(&a[start..end]);
+            dividend.extend_from_slice(&remainder);
+            Self::trim(&mut dividend);
+            if Self::nat_cmp(&dividend, b) == std::cmp::Ordering::Less {
+                remainder = dividend;
+                continue;
+            }
+            let upper = if dividend.len() > n { &dividend[n..] } else { &[] };
+            let mut q = Self::nat_mul(upper, inverse);
+            let low_words = n.min(q.len());
+            std::mem::drop(q.drain(..low_words));
+            Self::trim(&mut q);
+            remainder = Self::nat_sub(&dividend, &Self::nat_mul(b, &q));
+            // Ignoring the lower n dividend words lowers the estimate by
+            // less than two more units; the exact quotient is at most 3 away.
+            let mut corrections = 0;
+            while Self::nat_cmp(&remainder, b) != std::cmp::Ordering::Less {
+                q = Self::nat_add(&q, &[1]);
+                remainder = Self::nat_sub(&remainder, b);
+                corrections += 1;
+            }
+            debug_assert!(corrections <= 3);
+            debug_assert!(q.len() <= n);
+            if want_quotient { quotient[start..start + q.len()].copy_from_slice(&q); }
+        }
+        Self::trim(&mut quotient);
+        (quotient, remainder)
+    }
+
+    fn nat_divrem_long(a: &[u32], b: &[u32], want_quotient: bool) -> (Vec<u32>, Vec<u32>) {
         debug_assert!(!b.is_empty());
         if Self::nat_cmp(a, b) == std::cmp::Ordering::Less {
             return (Vec::new(), a.to_vec());
@@ -971,7 +1102,8 @@ impl Int {
         }
         let a = self.magnitude();
         let b = other.magnitude();
-        let (mut q, mut r) = Self::nat_divmod(&a, &b);
+        let cache = match &other.0 { IntRepr::Big { digits, .. } => Some(&digits.division), _ => None };
+        let (mut q, mut r) = Self::nat_divrem_cached(&a, &b, true, cache);
         let different = self.is_negative() ^ other.is_negative();
         if different && !r.is_empty() {
             q = Self::nat_add(&q, &[1]);
@@ -1029,7 +1161,8 @@ impl Int {
         if other.is_zero() { return Err("ZeroDivisionError: division by zero".into()); }
         let a = self.magnitude();
         let b = other.magnitude();
-        let (_, mut r) = Self::nat_divrem(&a, &b, false);
+        let cache = match &other.0 { IntRepr::Big { digits, .. } => Some(&digits.division), _ => None };
+        let (_, mut r) = Self::nat_divrem_cached(&a, &b, false, cache);
         if self.is_negative() != other.is_negative() && !r.is_empty() {
             r = Self::nat_sub(&b, &r);
         }
