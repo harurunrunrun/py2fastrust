@@ -47,6 +47,8 @@ class Generators:
     def _immediate(self,plan,node,environment):
         from .native_classes import shape
         parent=self.parents.get(id(node))
+        if isinstance(parent,ast.Assign)and parent.value is node:
+            return len(parent.targets)==1 and isinstance(parent.targets[0],(ast.Tuple,ast.List))and not any(isinstance(child,ast.Starred)for child in parent.targets[0].elts)
         if isinstance(parent,ast.Starred):
             call=self.parents.get(id(parent))
             return isinstance(call,ast.Call)and parent in call.args

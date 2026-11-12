@@ -52,6 +52,12 @@ class Unpack:
     rest:object=None
 
 
+@dataclass
+class GeneratorUnpack:
+    member:object
+    _immediate_generator_unpack=True
+
+
 def _sites(model):
     if not hasattr(model,'unpack_sites'):model.unpack_sites={}
     return model.unpack_sites
@@ -62,6 +68,13 @@ def analyze(model, plan, target, value, environment,*,bind_target=None):
     from .native_types import EMPTY
     from .native_unions import union_kind
     from .native_class_iterators import default_noniterable
+    if getattr(shape(value),'_native_class_generator',False)and not has_star(target):
+        member=model.generators.demand(plan,target,value,environment)
+        for child in target.elts:
+            if bind_target is not None:bind_target(child,member)
+            else:model.target(plan,child,member,environment)
+        _sites(model)[(plan.index,id(target))]=GeneratorUnpack(member)
+        return True
     from .native_list_positions import analyze_unpack
     positional=analyze_unpack(model,plan,target,value,environment,bind_target)
     if positional is not None:
@@ -118,6 +131,20 @@ def emit(emitter, target, value,*,assign_target=None):
     record=_sites(emitter.model).get((emitter.plan.index,id(target)))
     if record is None:
         return None
+    if getattr(record,'_immediate_generator_unpack',False):
+        before,source=emitter.capture(value)
+        count=emitter.fresh();expected=len(target.elts);member=shape(record.member)
+        slots=[emitter.fresh()for _ in target.elts]
+        before+=f'let mut {count}=0usize;'+''.join(f'let mut {slot}:Option<{emitter.rust_type(member)}>=None;'for slot in slots)
+        def append(e,item):
+            excess=e.at('Err::<(),String>('+_string(f'ValueError: too many values to unpack (expected {expected})')+'.to_owned())',target)
+            branches=''.join(str(i)+'=>{'+slot+'=Some('+e.coerce(item,member,target)+');},'for i,slot in enumerate(slots))
+            return 'match '+count+'{'+branches+'_=>{'+excess+';} }'+count+'+=1;'
+        consumed=emitter.model.generators.consume(emitter,target,'list',source,[],{},'none',append_item=append)
+        before+=consumed.code+';'
+        message=_string(f'ValueError: not enough values to unpack (expected {expected}, got {{}})')
+        before+=f'if {count}<{expected}{{'+emitter.at('Err::<(),String>(format!('+message+','+count+'))',target)+';}'
+        return before+''.join(assign(child,Expression(slot+'.unwrap()',member))for child,slot in zip(target.elts,slots))
     if getattr(record,'_positional_list_unpack',False):
         from .native_list_positions import emit_unpack
         return emit_unpack(emitter,target,value,record,assign_target)
