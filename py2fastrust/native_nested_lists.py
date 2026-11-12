@@ -118,7 +118,8 @@ def try_expression(g,node,environment):
             if borrowed is not None:return borrowed
         owner=g.expression(node.value,environment)
         if isinstance(node.slice,ast.Slice):
-            raise _Unsupported("shared nested list slicing is not implemented yet",node=node,types=(("owner",owner.kind),),proof="shallow-copy list slice preserving row identity")
+            from .native_shared_slices import expression as shared_slice
+            return shared_slice(g,node,owner,environment)
         from .native_list_end_indices import method,result as end_result
         operation=method(node.slice)
         if operation is not None:

@@ -327,6 +327,9 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
         raise _Unsupported
 
     def binary(self, operator, left, right, node):
+        from .native_integral_powers import plain as integral_power
+        power=integral_power(self,operator,left,right,node)
+        if power is not None:return power
         from .native_primitive_ops import emit_plain
         finite=emit_plain(self,operator,left,right,node)
         if finite is not None:return finite

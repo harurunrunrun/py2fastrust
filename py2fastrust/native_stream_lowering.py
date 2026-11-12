@@ -31,15 +31,26 @@ def integer_range(g,node,environment):
     if plan.kind is not ProducerKind.RANGE:
         raise _Unsupported
     provided={}
+    captured=[]
+    needs_index=False
     for operand in plan.binding.explicit_order:
         value=g.expression(operand.expression,environment)
-        if value.kind not in {"int","bool","int_bool"}:
-            raise _Unsupported
+        needs_index|=value.kind not in {"int","bool","int_bool"}
         provided[operand.parameter]=value
+        captured.append((operand,value))
+    before=''
+    if needs_index:
+        for operand,value in captured:
+            name=g.temporary()
+            before+=f'let {name}={g.coerce(value,value.kind)};\n'
+            provided[operand.parameter]=_Expression(name,value.kind,value.constant,owned=True)
     arguments=[provided.get("start",_Expression(g.literal(0),"int",0)),provided["stop"],
                provided.get("step",_Expression(g.literal(1),"int",1))]
     names=[g.temporary()for _ in arguments]
-    setup="\n".join(f"let {name}={g.number(value)};"for name,value in zip(names,arguments))
+    if needs_index:
+        from .native_index_protocol import plain as index_value
+        setup=before+'\n'.join(f'let {name}={index_value(g,value,plan.node)};'for name,value in zip(names,arguments))
+    else:setup="\n".join(f"let {name}={g.number(value)};"for name,value in zip(names,arguments))
     if g.bits and arguments[2].constant==1:
         iterator=f"({names[0]}..{names[1]})"
     elif g.bits and arguments[2].constant==-1:

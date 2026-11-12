@@ -45,6 +45,7 @@ def classify(operator,left,right,integer):
                    for identity in getattr(value,"builtins",())):
                 return PrimitivePlan(protocol="builtin class union-type protocol")
     if a in NUMERIC and b in NUMERIC:
+        if isinstance(operator,ast.Pow)and a=='float'and b in INTEGRAL:return PrimitivePlan('float')
         if "float"in {a,b}or isinstance(operator,ast.Div):
             if "float"in {a,b}and isinstance(operator,(ast.LShift,ast.RShift)+BITWISE):return PrimitivePlan(error="binary")
             if not isinstance(operator,FLOAT):return PrimitivePlan(protocol="binary64 power/numeric operation")
@@ -105,12 +106,8 @@ def analyze(model,plan,node,operator,left,right,*,identity=None):
                 raise ClassUnsupported(node,"this finite operand combination needs "+selected.protocol+"; that per-alternative native operation is not implemented",types=(("left",a),("right",b)),proof=selected.protocol)
             if selected.kind is not None:kinds.append(selected.kind)
     if isinstance(operator,ast.Pow)and"int"in kinds:
-        from .literal_semantics import Literal,integer_policy
-        expression=getattr(node,"right",getattr(node,"value",None))
-        literal=Literal.from_ast(expression)
-        bits=0 if model.integer=="bigint"else 64 if model.integer=="i64"else 128
-        if literal is None or literal.kind not in {"int","bool"}or integer_policy(bits).normalize(literal.value)<0:
-            raise ClassUnsupported(node,"this finite power needs proof of a nonnegative exponent; negative integral powers produce binary64 results whose runtime result carrier is not implemented here",proof="power exponent/result-type proof")
+        from .native_integral_powers import node_kind
+        kinds=[kind for kind in kinds if kind!='int']+list(alternatives(node_kind(node,model.integer)))
     kind=union_type(*kinds)if kinds else"none"
     result=model.cell(plan,node,identity=identity)
     if sequences:
@@ -143,7 +140,11 @@ def emit(emitter,operator,left,right,node,wanted):
             if operation is not None:
                 value=Expression("{"+operation+left.code+".clone()}",left.kind)
                 return Expression(emitter.coerce(value,wanted,node),wanted)
-        value=emitter.binary(operator,left,right,node,selected.kind)
+        result_kind=selected.kind
+        if isinstance(operator,ast.Pow)and result_kind=='int':
+            from .native_integral_powers import node_kind
+            result_kind=node_kind(node,emitter.model.integer)
+        value=emitter.binary(operator,left,right,node,result_kind)
         return Expression(emitter.coerce(value,wanted,node),wanted)
     from .native import _string
     from .native_class_builtins import _type_name,_error
@@ -183,8 +184,10 @@ def emit_plain(generator,operator,left,right,node):
             if selected.protocol:
                 raise _Unsupported("this finite operand combination needs "+selected.protocol,node=node,types=(("left",a),("right",b)),proof=selected.protocol)
             if selected.kind is not None:kinds.append(selected.kind)
-    if isinstance(operator,ast.Pow)and"int"in kinds and(right.constant is None or right.constant<0):
-        raise _Unsupported("this finite power needs proof of a nonnegative exponent; negative integral powers require a binary64 result carrier",node=node,proof="power exponent/result-type proof")
+    if isinstance(operator,ast.Pow)and"int"in kinds:
+        from .native_integral_powers import node_kind
+        power_kind=('int'if right.constant>=0 else'float')if right.constant is not None else node_kind(node,integer)
+        kinds=[kind for kind in kinds if kind!='int']+list(alternatives(power_kind))
     wanted=union_type(*kinds)if kinds else"none"
     generator.register_type(wanted)
     first,second=generator.temporary(),generator.temporary()

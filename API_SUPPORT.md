@@ -81,9 +81,12 @@ Mixed BigInt/binary64 and custom operand special methods remain unfinished.
 
 Builtin `pow` has direct captured/frame lowering for integral three-argument
 calls, including modular inverses, signed moduli and keyword binding. Supported
-two-argument integral calls require a proved nonnegative literal exponent.
-Dynamic/negative two-argument and floating/complex power protocols remain
-unfinished; see [COMPATIBILITY.md](COMPATIBILITY.md).
+two-argument integral calls accept dynamic and negative exponents. Nonnegative
+exponents return integers; negative exponents return binary64 values, including
+zero-to-negative and integer-to-float overflow errors. Binary64 bases with
+integral exponents return binary64 and preserve overflow and signed-zero behavior.
+Floating exponents and complex power protocols remain unfinished; see
+[COMPATIBILITY.md](COMPATIBILITY.md).
 
 Resolved integer calls to `math.gcd`, `lcm`, `isqrt`, `factorial`, `comb`, and
 `perm` also have direct helpers. The following list APIs have direct typed

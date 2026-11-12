@@ -634,7 +634,14 @@ class Solver:
                 result=value(self.allocation(term.site,"list",context))
                 sources=(first,second) if term.data=="Add" else tuple(item for item in (first,second) if any(isinstance(part,(Allocation,ListType)) for part in item.alternatives))
                 for source in sources:self.insert(result,"element",self.field_values(source,"iteration"))
-            else:result=self.compute("binary:"+term.data,(first,second))
+            else:
+                operation="binary:"+term.data
+                if term.data=='Pow':
+                    from .native_integral_powers import semantic_kind
+                    kind=semantic_kind(self.graph.nodes[term.site])
+                    if kind=='int':operation+=':integral'
+                    elif kind=='float':operation+=':negative'
+                result=self.compute(operation,(first,second))
         elif op in {"join","conditional"}:
             result=BOTTOM
             if op=="conditional":
@@ -1031,6 +1038,10 @@ class Solver:
     @staticmethod
     def computed(operation,kinds):
         if None in kinds:return None
+        if any(isinstance(kind,UnionType)for kind in kinds):
+            from itertools import product
+            results=[Solver.computed(operation,choices)for choices in product(*(alternatives(kind)for kind in kinds))]
+            return None if None in results else union_type(*results)
         if operation=="sum" and kinds[0]==EMPTY:return kinds[1]
         if EMPTY in kinds:return EMPTY
         numeric={"int","bool","int_bool","float"}
@@ -1043,6 +1054,8 @@ class Solver:
         if "str" in kinds and operator=="Mult" and (second if first=="str" else first) in numeric-{"float"}:return "str"
         if set(kinds)<=numeric:
             if "float" in kinds or operator=="Div":return "float"
+            if operator=='Pow':return union_type('int','float')
+            if operator=='Pow:negative':return 'float'
             if operator in {"BitAnd","BitOr","BitXor"} and first==second=="bool":return "bool"
             if operator in {"BitAnd","BitOr","BitXor"} and "int_bool" in kinds and set(kinds)<={"bool","int_bool"}:return "int_bool"
             return "int"

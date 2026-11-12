@@ -545,7 +545,7 @@ print(d[0],d[-1],len(d))
             "print(input('prompt'))", "print(1, flush=int(input()))", "print(*(1,2))",
             "for i in range(3):\n pass\nelse:\n print(1)", "del x", "print(1 is 1)",
         ]
-        self.check_source_cases(rejected, [2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 20, 21])
+        self.check_source_cases(rejected, [2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 16, 17, 20, 21])
         self.assertIsNotNone(try_generate_native("print(1)", "fallback.py", "bigint"))
         self.differential("x=1\nx=True\nprint(x)")
         self.differential("x=1\nx='hi'\nprint(x)")

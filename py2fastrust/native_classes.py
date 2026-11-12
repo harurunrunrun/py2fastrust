@@ -969,6 +969,13 @@ class Model:
                 raise ClassUnsupported(node)
             return cell()
         from .native_primitive_ops import analyze,classify
+        if isinstance(operator,ast.Pow)and a.tag=='float'and b.tag in {'int','bool','int_bool'}:
+            return cell('float')
+        if isinstance(operator,ast.Pow)and a.tag in {'int','bool','int_bool'}and b.tag in {'int','bool','int_bool'}:
+            from .native_integral_powers import node_kind
+            result=cell()
+            self.contribute(result,self.cell_for_kind(node_kind(node,self.integer)),node)
+            return result
         primitive_tags={"int","bool","int_bool","float","str","bytes","none","function","globals_dict","range","list","tuple"}
         if (a.tag=="union"or b.tag=="union"or a.tag in primitive_tags and b.tag in primitive_tags
                 and classify(operator,shape(a),shape(b),self.integer).error is not None):
@@ -2006,6 +2013,9 @@ class Emitter:
         return self.binary_builtin(operator,left,right,node,wanted)
 
     def binary_builtin(self, operator, left, right, node, wanted):
+        from .native_integral_powers import frame as integral_power
+        power=integral_power(self,operator,left,right,node,wanted)
+        if power is not None:return power
         from .native_constant_divisors import frame as constant_divisor
         divided=constant_divisor(self,operator,left,right,node,wanted)
         if divided is not None:return divided

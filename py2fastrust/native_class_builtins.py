@@ -377,10 +377,18 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         code=f"class_from_usize({identity(emitter.model,arguments[0].kind,arguments[0].code)})"
         raw_kind='int'
     elif name == "range":
-        values=[self.number(value)for value in arguments]
+        before=''
+        if any(value.kind not in {'int','bool','int_bool'}for value in arguments):
+            from .native_index_protocol import frame as index_value
+            captured=[]
+            for value in arguments:
+                setup,value=self.capture(value);before+=setup;captured.append(value)
+            values=[index_value(self,value,node)for value in captured]
+        else:values=[self.number(value)for value in arguments]
         if len(values)==1:values.insert(0,self.literal(0))
         if len(values)==2:values.append(self.literal(1))
         code=self.at("class_range("+",".join(values)+")",node)
+        if before:code='{'+before+code+'}'
     elif name == "filter":
         return self.model.iterators.emit_filter(self,node,arguments[0],arguments[1],wanted)
     elif name == "map":

@@ -28,6 +28,12 @@ class NativeCapturedPowTests(unittest.TestCase):
     def test_positive_two_argument_aliases(self):
         self.exercise({'main.py': 'from builtins import pow as p\nprint(p(2,10),p(-2,3),p(base=3,exp=4),p(2,3,None),p(True,False))\n'})
 
+    def test_negative_two_argument_alias(self):
+        self.exercise({'main.py': 'from builtins import pow as power\nprint(power(2,-3))\n'})
+
+    def test_binary64_base_with_an_integral_exponent(self):
+        self.exercise({'main.py': 'from builtins import pow as power\nprint(power(2.0,3))\n'})
+
     def test_builtin_rebind_and_old_alias(self):
         self.exercise({'main.py': 'import builtins\noriginal=pow\ndef replacement(base,exp,mod):return original(base,exp,mod)+1\nbuiltins.pow=replacement\nprint(original(2,10,17),pow(2,10,17),builtins.pow(2,10,17))\n'})
 
@@ -98,10 +104,10 @@ class NativeCapturedPowTests(unittest.TestCase):
 
 
 class CapturedPowDiagnosticTests(unittest.TestCase):
-    def test_unimplemented_two_argument_power_keeps_a_positioned_protocol_boundary(self):
+    def test_floating_exponent_keeps_a_positioned_protocol_boundary(self):
         from py2fastrust import transpile,TranspileOptions
         # These remain required unfinished protocols, not supported conversions.
-        sources=['from builtins import pow as power\nexponent=int(input())\nprint(power(2,exponent))\n','from builtins import pow as power\nprint(power(2,-3))\n','from builtins import pow as power\nprint(power(2.0,3))\n']
+        sources=['from builtins import pow as power\nprint(power(-2.0,0.5))\n']
         for source in sources:
             for integer in ('i64','i128','bigint'):
                 result=transpile(source,TranspileOptions(integer=integer,filename='pow_protocol.py'))

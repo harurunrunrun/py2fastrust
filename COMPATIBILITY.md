@@ -752,10 +752,18 @@ arguments in every integer mode, including negative exponents with modular
 inverses, signed moduli, keyword binding and Python arithmetic/binding errors.
 They share the ordinary integer arithmetic implementation. Saved aliases and
 the canonical `builtins.pow` binding preserve callee-before-argument evaluation.
-Two-argument integral calls currently require a literal exponent whose value
-after selected-width normalization is nonnegative. Dynamic or negative
-two-argument exponents, floating/complex power results and user operand special
-methods remain required unfinished protocols with positioned `E006` diagnostics.
+Two-argument integral calls and `**` accept dynamic exponents. After operand
+normalization, a nonnegative exponent returns an integer; a negative exponent
+converts both integers to binary64 in order and returns a float. Zero-to-negative
+power and BigInt conversion overflow retain their Python exception types.
+Fixed-width positive results wrap at the selected width; BigInt results remain
+exact. A dynamic result uses a finite integer/float carrier. Passing it to
+`range` checks the actual integer-index type after all call arguments have been
+evaluated, so an integral-valued float still raises `TypeError`. A binary64 base
+with an integral exponent returns binary64, retaining signed zero, NaN,
+infinities, zero-to-negative errors and finite-result overflow errors. Custom
+`__index__` objects, floating exponents, complex results and unfinished
+user operand special methods retain positioned `E006` diagnostics.
 
 Definition-time defaults on the typed frame path run once in their original
 execution scope, including mutable defaults and calls with effects. Optional

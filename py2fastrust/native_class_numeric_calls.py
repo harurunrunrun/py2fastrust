@@ -52,9 +52,10 @@ def _plan(kinds,nonnegative,integer,node):
     if not all(tag in SEALED for tag in tags):
         raise ClassUnsupported(node,'pow with these objects needs Python __pow__/__rpow__ and integer-index dispatch; those user object protocols are not implemented by this native numeric adapter',types=tuple(zip(('base','exp','mod'),kinds)),proof='power operand special-method protocol')
     if tags[2]=='none':
+        if tags[0]=='float'and tags[1]in INTEGRAL:return 'float'
         if set(tags[:2])<=INTEGRAL:
             if not nonnegative:
-                raise ClassUnsupported(node,'two-argument integral pow needs a proved nonnegative exponent; dynamic or negative exponents can return binary64 values, whose power result/error protocol is not implemented here',types=tuple(zip(('base','exp'),kinds[:2])),proof='power exponent/result-type proof')
+                return union_type('int','float')
             return 'int'
         if set(tags[:2])<=INTEGRAL|{'float'}:
             raise ClassUnsupported(node,'two-argument floating pow needs binary64/complex result selection, overflow and zero-to-negative-power behavior; that power protocol is not implemented',types=tuple(zip(('base','exp'),kinds[:2])),proof='binary64/complex power result protocol')
@@ -102,7 +103,7 @@ def emit(emitter,node,identity,arguments,keywords,wanted):
                 return Expression(project(value.kind,value.code,lambda kind,code:lower(
                     values[:index]+[Expression(f'({code}).clone()',kind)]+values[index+1:]).code),wanted)
         tags=tuple(domain(value.kind)for value in values)
-        if tags[2]=='none'and set(tags[:2])<=INTEGRAL:
+        if tags[2]=='none'and(set(tags[:2])<=INTEGRAL or tags[0]=='float'and tags[1]in INTEGRAL):
             return emitter.binary(ast.Pow(),values[0],values[1],node,wanted)
         if set(tags)<=INTEGRAL:
             numbers=[emitter.number(value)for value in values]

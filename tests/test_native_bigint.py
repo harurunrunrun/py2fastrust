@@ -176,11 +176,9 @@ print(pow(a,b,c))
         for expression,data in [("int(input())",["１２\r\n","-٤\n","1\x1c\n","-\n"]),("int('１２３')",[""]),("int('bad')",[""]),("1//0",[""]),("1<<-1",[""]),("0<<int(input())",[f"{10**100}\n"]),("-9>>int(input())",[f"{10**100}\n"]),("1<<int(input())",[f"{10**100}\n"]),("1//int(input())",["0\n"])]:
             self.differential(f"print(9)\nprint({expression})\n",data,string_mode="unicode")
 
-    def test_unsupported_power_result_protocol_remains_explicit(self):
-        sources=["print(2**-1)\n","print(2**int(input()))\n"]
-        for source in sources:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source,"main.py","bigint"))
+    def test_negative_and_dynamic_integral_powers(self):
+        self.differential("print(2**-1)\n")
+        self.differential("print(2**int(input()))\n",["-8\n","0\n","8\n"])
 
     def test_real_division_and_rebound_callables_execute_directly(self):
         for source in ("print(1/2)\n","bool=lambda x:3\nprint(bool(1))\n",

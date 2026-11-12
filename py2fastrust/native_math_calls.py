@@ -86,7 +86,7 @@ def _temporary(generator):
 def _index(generator, value, node):
     if union_kind(value.kind):
         return project(value.kind, value.code,
-                       lambda kind, code: _index(generator, _Expression(code, kind, owned=False), node))
+                       lambda kind, code: _index(generator, _Expression('('+code+').clone()', kind), node))
     if value.kind in {'int', 'bool', 'int_bool'}:
         return generator.number(value)
     if not _index_kind(value.kind):
