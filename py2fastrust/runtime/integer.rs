@@ -945,6 +945,27 @@ impl Int {
     fn bitxor(&self, other: &Self) -> Self {
         self.bitop(other, 2)
     }
+    fn bitop_assign(&mut self, other: &Self, op: u8) {
+        if !self.is_negative() && !other.is_negative()
+            && matches!(self.0, IntRepr::Big { .. })
+        {
+            let IntRepr::Big { mut digits, .. } = std::mem::replace(&mut self.0, IntRepr::Small(0)) else { unreachable!() };
+            let right = other.magnitude();
+            if op == 0 { digits.truncate(right.len()); }
+            match op {
+                0 => digits.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x &= y),
+                1 => digits.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x |= y),
+                _ => digits.iter_mut().zip(right.iter()).for_each(|(x, &y)| *x ^= y),
+            }
+            if op != 0 && right.len() > digits.len() {
+                let common = digits.len();
+                digits.extend_from_slice(&right[common..]);
+            }
+            *self = Self::parts(false, digits);
+        } else {
+            *self = self.bitop(other, op);
+        }
+    }
     fn invert(&self) -> Self {
         if let IntRepr::Small(n) = self.0 {
             return Self::from_i128(!n);

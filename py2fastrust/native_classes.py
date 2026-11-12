@@ -2682,6 +2682,9 @@ class Emitter:
         if isinstance(node,ast.AugAssign):
             setup,reference=self.reference(node.target)
             old_kind=shape(self.model.augmented[(self.plan.index,id(node))])
+            from .native_integer_list_places import emit as integer_places
+            fused=integer_places(self,node,setup,reference,old_kind)
+            if fused is not None:return fused
             from .native_list_access_regions import augmented
             fused=augmented(self,node,setup,reference,old_kind)
             if fused is not None:return fused
@@ -3215,6 +3218,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(slice_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),class_runtime,layouts,*bodies])
+    from .native_integer_list_places import runtime as integer_place_runtime
+    pieces.append(integer_place_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)

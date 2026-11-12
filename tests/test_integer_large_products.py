@@ -13,7 +13,10 @@ fn main(){
  for line in io::stdin().lock().lines(){
   let line=line.unwrap();let fields:Vec<&str>=line.split('\t').collect();
   let a=Int::parse_ascii(fields[1].as_bytes(),16).unwrap();let b=Int::parse_ascii(fields[2].as_bytes(),16).unwrap();
-  let value=match fields[0]{"mul"=>a.mul(&b),"and"=>a.bitand(&b),"or"=>a.bitor(&b),_=>a.bitxor(&b)};
+  let value=match fields[0]{
+   "mul"=>a.mul(&b),"and"=>a.bitand(&b),"or"=>a.bitor(&b),"xor"=>a.bitxor(&b),
+   operation=>{let mut value=a.clone();value.bitop_assign(&b,match operation{"and_assign"=>0,"or_assign"=>1,_=>2});value}
+  };
   println!("{}",value.radix(16,false));
  }
 }
@@ -38,7 +41,8 @@ class LargeProductTests(unittest.TestCase):
                 commands=[];expected=[]
                 for a,b in pairs:
                     x,y=wrap(a,bits),wrap(b,bits)
-                    for name,value in (('mul',x*y),('and',x&y),('or',x|y),('xor',x^y)):
+                    for name,value in (('mul',x*y),('and',x&y),('or',x|y),('xor',x^y),
+                                       ('and_assign',x&y),('or_assign',x|y),('xor_assign',x^y)):
                         commands.append(f'{name}\t{a:x}\t{b:x}');expected.append(format(wrap(value,bits),'x'))
                 rust=Path(folder,f'integer_{bits}.rs');rust.write_text(f'const INT_BITS:u32={bits};\n'+RUNTIME.read_text()+HARNESS)
                 for optimized in (False,True):
