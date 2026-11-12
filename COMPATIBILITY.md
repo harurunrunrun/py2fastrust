@@ -51,6 +51,15 @@ shared element identity, and avoids allocating iterator wrappers for this
 operation. Noniterable alternatives keep their runtime `TypeError`; starred
 targets and custom iteration keep their existing protocol paths.
 
+In i128 mode, a primitive remainder can use native i64 arithmetic when the
+exact value before `%` and its constant divisor are both proved to fit i64.
+The proof combines scalar intervals, range bounds, literal-container values
+and guards that remain valid at that read. Any enclosing writer blocks older
+guards, including writes in operands, call arguments and control prefixes.
+Original operand evaluation and i128 wrapping before the remainder are
+retained. A small remainder alone never proves that an earlier product fits;
+unknown, wider or custom-operator values keep the ordinary native i128 path.
+
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14
 order: an explicit `!s`/`!r`/`!a` conversion runs before spec expressions, while

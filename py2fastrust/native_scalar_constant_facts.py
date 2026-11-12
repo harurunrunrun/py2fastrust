@@ -128,10 +128,36 @@ class Graph:
     def evaluate(self,rule):
         if rule.operation=='seed':return rule.data
         values=[self.values[key]for key in rule.operands]
+        if rule.operation=='join':
+            result=BOTTOM
+            for value in values:result=join(result,value)
+            return result
+        if rule.operation=='restrict_integer':
+            if values[0]is BOTTOM:return BOTTOM
+            low,high=rule.data
+            if isinstance(values[0],Scalar):
+                if values[0].kind not in{'int','bool'}:return UNKNOWN
+                low,high=max(low,values[0].low),min(high,values[0].high)
+            return self.normalized_range(low,high)if low<=high else BOTTOM
+        if rule.operation=='Mod'and rule.data=='closed_integer_operands':
+            divisor=values[1]
+            if isinstance(divisor,Scalar)and divisor.kind in{'int','bool'}and divisor.singleton and divisor.low:
+                if values[0]is BOTTOM:return BOTTOM
+                if values[0]is UNKNOWN or not values[0].singleton:
+                    low,high=(0,int(divisor.low)-1)if divisor.low>0 else(int(divisor.low)+1,0)
+                    return self.normalized_range(low,high)
         if any(value is UNKNOWN for value in values):return UNKNOWN
         if any(value is BOTTOM for value in values):return BOTTOM
         if rule.operation=='copy':return values[0]
         if not all(value.kind in{'int','bool'}for value in values):return UNKNOWN
+        if rule.operation=='range_items':
+            start,stop,step=values
+            if step.low>0:
+                low,high=start.low,stop.high-1
+            elif step.high<0:
+                low,high=stop.low+1,start.high
+            else:return UNKNOWN
+            return self.normalized_range(low,high)if low<=high else BOTTOM
         if all(value.singleton for value in values):
             args=[int(value.low)for value in values]
             try:
@@ -168,6 +194,13 @@ class Graph:
             else:
                 products=[x*y for x in(a.low,a.high)for y in(b.low,b.high)]
                 low,high=min(products),max(products)
+            return self.normalized_range(low,high)
+        if len(values)==2 and rule.operation in{'LShift','RShift'}:
+            value,count=values
+            if not count.singleton or not 0<=count.low<=(self.policy.bits or 4096):return UNKNOWN
+            shift=int(count.low)
+            low,high=((value.low<<shift,value.high<<shift)if rule.operation=='LShift'else
+                      (value.low>>shift,value.high>>shift))
             return self.normalized_range(low,high)
         return UNKNOWN
 

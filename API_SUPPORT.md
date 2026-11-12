@@ -45,6 +45,11 @@ Fixed-target unpacking of finite builtin list/tuple alternatives uses an exact
 length check and Rust local snapshots, releasing temporary list leases before
 target stores and retaining shared mutable elements without iterator allocation.
 
+Proved bounded primitive remainders in i128 mode can use i64 remainder
+instructions while retaining the selected integer policy and both operand
+evaluations. Exact pre-modulo bounds are required; guards invalidated by
+assignments/callbacks and unproved or wider values retain native i128 arithmetic.
+
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
 Size checks precede blocking reads. Binary reads retain raw bytes, and default

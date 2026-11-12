@@ -31,6 +31,7 @@ class Registry:
         self.bindings_by_node={}
         for binding in self.binding_rows:
             self.bindings_by_node.setdefault(binding.node,[]).append(binding)
+        self.guard_writes={}
         self.graph=Graph(0 if model.integer=='bigint'else int(model.integer[1:]))
         self.built=set()
         self.parameter_inputs=set()
@@ -116,6 +117,95 @@ class Registry:
         # Joining a lexical binding across source/native contexts is a MAY
         # value summary, not equality between those runtime bindings.
         return('binding',binding.owner,binding.name)
+
+    def writes(self,node):
+        """Official binding identities written anywhere in this source subtree."""
+        key=id(node)
+        if key not in self.guard_writes:
+            result=set()
+            for child in ast.walk(node):
+                site=self.model.unit.node_ordinals.get(id(child))
+                for binding in self.bindings_by_node.get(site,()):
+                    if binding.role!='load':result.add(('binding',binding.owner,binding.name))
+            self.guard_writes[key]=frozenset(result)
+        return self.guard_writes[key]
+
+    def guard_bound(self,plan,test,binding,truth):
+        """A primitive comparison constrains a value only on its taken edge."""
+        while isinstance(test,ast.UnaryOp)and isinstance(test.op,ast.Not):
+            truth=not truth;test=test.operand
+        if not isinstance(test,ast.Compare)or len(test.ops)!=1:return None
+        left,right=test.left,test.comparators[0];operator=type(test.ops[0])
+        def constant(node):
+            if isinstance(node,ast.Constant)and type(node.value)in{int,bool}:
+                return self.graph.policy.normalize(int(node.value))
+            if isinstance(node,ast.UnaryOp)and isinstance(node.op,(ast.UAdd,ast.USub)):
+                value=constant(node.operand)
+                if value is not None:return self.graph.policy.normalize(-value if isinstance(node.op,ast.USub)else value)
+            return None
+        if isinstance(left,ast.Name)and self.binding(plan,left)==binding:
+            limit=constant(right);name=left
+        elif isinstance(right,ast.Name)and self.binding(plan,right)==binding:
+            limit=constant(left);name=right
+            operator={ast.Lt:ast.Gt,ast.LtE:ast.GtE,ast.Gt:ast.Lt,ast.GtE:ast.LtE,
+                      ast.Eq:ast.Eq,ast.NotEq:ast.NotEq}.get(operator)
+        else:return None
+        if limit is None or self.kind(plan,name)not in{'int','bool','int_bool'}:return None
+        if operator is ast.Lt:return(None,limit-1)if truth else(limit,None)
+        if operator is ast.LtE:return(None,limit)if truth else(limit+1,None)
+        if operator is ast.Gt:return(limit+1,None)if truth else(None,limit)
+        if operator is ast.GtE:return(limit,None)if truth else(None,limit-1)
+        if operator is ast.Eq and truth or operator is ast.NotEq and not truth:return limit,limit
+        return None
+
+    def local_bounds(self,plan,node,binding):
+        """Retain dominant guards only for unshared local integer bindings.
+
+        Any enclosing expression/control subtree writer invalidates guards
+        outside it, including earlier scalar fields and loop backedges. Guards
+        already collected inside it remain valid at their checked reads. Any descendant
+        writer, including a nonlocal or comprehension store, disables this
+        certificate; source callbacks therefore cannot invalidate it silently.
+        """
+        bits=self.graph.policy.bits
+        if (not bits or binding[0]!='binding'or not isinstance(node.ctx,ast.Load)
+                or self.kind(plan,node)not in{'int','bool','int_bool'}):return None
+        _,owner,name=binding
+        if self.model.unit.scopes[owner].kind!='function':return None
+        if any(row.owner==owner and row.name==name and row.role!='load'and row.scope!=owner
+               for row in self.binding_rows):return None
+        low,high=-(1<<(bits-1)),(1<<(bits-1))-1
+        changed=False;blocked=False;current=node;stop=self.source(plan).node
+        def restrict(test,truth):
+            nonlocal low,high,changed
+            bounds=self.guard_bound(plan,test,binding,truth)
+            if bounds is not None:
+                if bounds[0]is not None:low=max(low,bounds[0])
+                if bounds[1]is not None:high=min(high,bounds[1])
+                changed=True
+        def abrupt(body):
+            return bool(body)and isinstance(body[-1],(ast.Continue,ast.Break,ast.Return,ast.Raise))
+        while current is not stop:
+            parent=self.values.parents.get(id(current))
+            if parent is None:break
+            for _,members in ast.iter_fields(parent):
+                if not isinstance(members,list)or current not in members:continue
+                for earlier in reversed(members[:members.index(current)]):
+                    if not isinstance(earlier,ast.AST):continue
+                    if binding in self.writes(earlier):blocked=True;break
+                    if not blocked and isinstance(earlier,ast.If):
+                        if abrupt(earlier.body):restrict(earlier.test,False)
+                        elif abrupt(earlier.orelse):restrict(earlier.test,True)
+            # AST list siblings are not a complete evaluation-order model:
+            # scalar operands, dict keys, call arguments and control prefixes
+            # can all write before this read. Keep post-write inner guards,
+            # but never cross any enclosing writer to collect an older guard.
+            if binding in self.writes(parent):blocked=True
+            if not blocked and isinstance(parent,ast.If):
+                if current in parent.body:restrict(parent.test,True)
+                elif current in parent.orelse:restrict(parent.test,False)
+            current=parent
+        return(low,high)if changed else None
 
     def origins(self,plan,node):
         cell=self.model.records.get((plan.index,id(node)))
@@ -300,7 +390,10 @@ class Registry:
         elif isinstance(node,ast.Name):
             binding=self.binding(plan,node)
             if binding is None:self.graph.unknown(key)
-            else:self.graph.copy(key,binding)
+            else:
+                bounds=self.local_bounds(plan,node,binding)
+                if bounds is None:self.graph.copy(key,binding)
+                else:self.graph.add(key,'restrict_integer',(binding,),bounds)
         elif isinstance(node,ast.NamedExpr):
             value=self.expression(plan,node.value)
             self.target(plan,node.target,value)
@@ -308,7 +401,9 @@ class Registry:
         elif isinstance(node,ast.UnaryOp):
             self.graph.add(key,type(node.op).__name__,(self.expression(plan,node.operand),))
         elif isinstance(node,ast.BinOp)and kind in{'int','bool'}:
-            self.graph.add(key,type(node.op).__name__,(self.expression(plan,node.left),self.expression(plan,node.right)))
+            closed=all(self.kind(plan,value)in{'int','bool','int_bool'}for value in(node.left,node.right))
+            self.graph.add(key,type(node.op).__name__,(self.expression(plan,node.left),self.expression(plan,node.right)),
+                           'closed_integer_operands'if closed else None)
         elif isinstance(node,ast.IfExp):
             self.graph.copy(key,self.expression(plan,node.body));self.graph.copy(key,self.expression(plan,node.orelse))
         elif isinstance(node,ast.Attribute):self.attribute(plan,node,key)
@@ -357,7 +452,7 @@ class Registry:
             if isinstance(node,ast.List):
                 if not node.elts:
                     self.graph.certify_empty_allocation(key,self.producer(plan,node,'empty_list'))
-                for value in node.elts:self.graph.copy(key,self.expression(plan,value))
+                if node.elts:self.graph.add(key,'join',tuple(self.expression(plan,value)for value in node.elts))
             elif isinstance(node,ast.ListComp):self.graph.copy(key,self.expression(plan,node.elt))
             elif isinstance(node,ast.BinOp)and isinstance(node.op,ast.Mult):
                 left,right=node.left,node.right
@@ -467,7 +562,17 @@ class Registry:
             if node.value is None:self.graph.unknown(self.result(plan))
             else:self.graph.copy(self.result(plan),self.expression(plan,node.value))
         elif isinstance(node,ast.For):
-            key=('loop_item',plan.index,id(node));self.graph.unknown(key)
+            key=('loop_item',plan.index,id(node));call=node.iter
+            if (isinstance(call,ast.Call)and self.builtins(plan,call)=={'range'}and not call.keywords
+                    and 1<=len(call.args)<=3 and all(self.kind(plan,value)in{'int','bool','int_bool'}for value in call.args)):
+                start=('range_start',plan.index,id(node));step=('range_step',plan.index,id(node))
+                if len(call.args)==1:self.graph.seed(start,'int',0)
+                else:self.graph.copy(start,self.expression(plan,call.args[0]))
+                if len(call.args)<3:self.graph.seed(step,'int',1)
+                else:self.graph.copy(step,self.expression(plan,call.args[2]))
+                stop=self.expression(plan,call.args[0 if len(call.args)==1 else 1])
+                self.graph.add(key,'range_items',(start,stop,step))
+            else:self.graph.unknown(key)
             self.target(plan,node.target,key)
         elif isinstance(node,ast.With):
             records=self.model.context_managers.sites.get((plan.index,id(node)),())
