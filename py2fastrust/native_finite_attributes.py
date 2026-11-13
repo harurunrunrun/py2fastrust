@@ -6,6 +6,37 @@ BUILTIN_TYPES={'none':type(None),'int':int,'bool':bool,'int_bool':int,
                'tuple_sequence':tuple,'range':range}
 
 
+def missing_builtin(kind,name):
+    """Prove absence only on closed builtin receivers, never source classes."""
+    from .native_classes import domain
+    if name.startswith('__')and name.endswith('__'):return False
+    choices=alternatives(kind)
+    if not choices:return False
+    for part in choices:
+        if not(isinstance(part,str)or type(part)in{ListType,SharedListType,TupleType,TupleSequenceType}):return False
+        builtin=BUILTIN_TYPES.get(domain(part))
+        if builtin is None or hasattr(builtin,name):return False
+    return True
+
+
+def requires_frames(unit,analysis):
+    import ast
+    for node in ast.walk(unit.tree):
+        if not isinstance(node,(ast.Attribute,ast.Call)):continue
+        receiver=node.value if isinstance(node,ast.Attribute)else node.func
+        for facts in analysis.scopes.values():
+            kind=facts.expressions.get(unit.ordinal(receiver))
+            if kind is None:continue
+            if isinstance(node,ast.Attribute):
+                if missing_builtin(kind,node.attr):return True
+            else:
+                from .native_classes import domain
+                choices=alternatives(kind)
+                if choices and all((isinstance(part,str)or type(part)in{ListType,SharedListType,TupleType,TupleSequenceType})
+                                   and domain(part)in BUILTIN_TYPES for part in choices):return True
+    return False
+
+
 def _owners(model,plan,node,receiver):
     from .native_classes import InstanceType,ClassUnsupported,shape,domain
     from .native_unions import union_kind
@@ -60,6 +91,7 @@ def emit(emitter,node,receiver,wanted,*,value=None):
     from .native_unions import project
     from .native_class_builtins import _type_name
     name=emitter.model.resolved_name(emitter.plan,node)
+    attribute=emitter.model.display_name(name)
     def branch(kind,code):
         if isinstance(kind,InstanceType):
             owner=emitter.model.classes[kind.name]
@@ -73,6 +105,6 @@ def emit(emitter,node,receiver,wanted,*,value=None):
             return '{'+store(emitter.model,owner,code,index,converted)+'()}'
         typename=_type_name(emitter,Expression(code,kind),node)
         suffix=' and no __dict__ for setting new attributes'if value is not None else''
-        message='format!("AttributeError: \'{}\' object has no attribute '+repr(node.attr)+suffix+'",'+typename+')'
+        message='format!("AttributeError: \'{}\' object has no attribute '+repr(attribute)+suffix+'",'+typename+')'
         return emitter.at(f'Err::<{emitter.rust_type(wanted)},String>({message})',node)
     return Expression(project(receiver.kind,receiver.code,branch),wanted)

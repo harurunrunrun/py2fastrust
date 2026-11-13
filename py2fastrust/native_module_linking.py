@@ -76,6 +76,8 @@ class LinkedUnit:
     from that source-node iterator; operators remain on their original nodes.
     """
     def __init__(self,program):
+        from .native_star_imports import Catalog
+        self.star_imports=Catalog(program)
         self.program=program
         self.main=program.main
         self.source_units=tuple(program.units)
@@ -110,6 +112,7 @@ class LinkedUnit:
             roots[unit.name]=scope_offset
             module_writes={binding.name for binding in unit.bindings
                            if unit.scopes[binding.owner].kind=="module" and binding.role not in {"load","parameter"}}
+            module_writes.update(self.star_imports.module_writes.get(unit.name,()))
             raw_bindings={binding.node:binding for binding in unit.bindings}
             for node in ast.walk(unit.tree):
                 if isinstance(node,_TOKENS):continue
@@ -142,6 +145,8 @@ class LinkedUnit:
                 linked=Binding(name,binding.role,binding.scope+scope_offset,binding.owner+scope_offset,binding.node+node_offset)
                 bindings.append(linked)
                 self._binding_by_node[linked.node]=linked
+            from .native_star_imports import implicit_bindings
+            bindings.extend(implicit_bindings(self,unit,node_offset,scope_offset))
             imports.extend(replace(item,node=item.node+node_offset)for item in unit.imports)
             definitions.update({identity:value+scope_offset for identity,value in unit.definition_scopes.items()})
             signatures.update(unit.function_signatures)
@@ -223,6 +228,9 @@ class LinkedUnit:
         if isinstance(node,ast.ImportFrom):
             if len(records)!=1:raise ValueError("from import has no unique resolved import record")
             record=records[0]
+            if any(alias.name=='*'for alias in node.names):
+                return tuple(ImportBinding(node.names[0],self.global_name(unit.name,name),record.module,name,record.children)
+                             for name in self.star_imports.table(node).names)
             return tuple(ImportBinding(alias,self.name_for(alias),record.module,alias.name,record.children)for alias in node.names)
         raise TypeError("expected an import statement")
 
@@ -333,6 +341,9 @@ class ModuleLinker:
     def export_cell(self,kind,name,node,*,activate=True,context=None):
         from .native_classes import Cell
         module=self.by_number[kind.number]
+        if name=='__all__':
+            from .native_star_imports import guard_export_change
+            guard_export_change(self.model,kind,name,node)
         if name in ANNOTATION_METADATA:
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,f"module attribute {name!r} uses its lazy annotation descriptor, defining-namespace evaluation and cache protocol; that metadata-object protocol is not implemented on the linked native path",proof='module lazy annotation descriptor')
@@ -386,6 +397,8 @@ class ModuleLinker:
         return ()
 
     def assign_export(self,kind,name,node,value):
+        from .native_star_imports import guard_export_change
+        guard_export_change(self.model,kind,name,node,writing=True)
         from .native_classes import ClassUnsupported
         module=self.by_number[kind.number]
         if name=='__annotate__':
@@ -483,6 +496,8 @@ class ModuleLinker:
 
 
 def needs_linking(program,*,integer="i64"):
+    from .native_star_imports import is_star
+    if any(is_star(node)for unit in program.units for node in ast.walk(unit.tree)):return True
     from .module_catalog import VENDORED_MODULES
     from .native_module_capabilities import needs_linked_members
     from .native_class_namespaces import requires_namespaces

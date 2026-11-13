@@ -41,7 +41,7 @@ class AotFunctionType:
     @property
     def _native_kind_tag(self):
         original="aot_functions_"+"_".join(map(str,self.definitions))+"_builtins_"+"_".join(value.name for value in self.builtins)+"_members_"+"_".join(value.module+"_"+value.name for value in self.members)+"_end"
-        return original+("_bound_methods_"+"_".join(str(value.definition)for value in self.methods)+"_end"if self.methods else"")
+        return original+("_bound_methods_"+"_".join(value._native_kind_tag if getattr(value,"_native_instance_function_target",False)else str(value.definition)for value in self.methods)+"_end"if self.methods else"")
 
     @property
     def targets(self):return self.definitions+self.builtins+self.members+self.methods
@@ -70,6 +70,7 @@ class CallSite:
     members: dict=field(default_factory=dict)
     constructors: dict=field(default_factory=dict)
     exception_constructors:dict=field(default_factory=dict)
+    mapping_methods:dict=field(default_factory=dict)
 
 
 def function_kind(kind):return isinstance(kind,AotFunctionType)
@@ -163,6 +164,7 @@ class CallableCells:
         self.fallback_names=set()
         self.sites={}
         self.receivers={}
+        self.abrupt_callees=set()
         from .native_bound_methods import BoundMethods
         self.bound_methods=BoundMethods(self)
         self.function_bindings=set()
@@ -299,8 +301,15 @@ class CallableCells:
             if owner is None:owner=self.model.records.get((plan.index,id(function.value)))
             if owner is None:return False
             owner=owner.root()
+            from .native_mapping_method_callables import supported
+            from .native_classes import shape
+            if all(supported(kind,function.attr)for kind in alternatives(shape(owner))):return True
             if self.bound_methods.finite_candidate(plan,function,owner):return True
+            from .native_finite_attributes import missing_builtin
+            if missing_builtin(shape(owner),function.attr):return True
             if owner.tag=="object":
+                registry=getattr(self.model,'class_namespaces',None)
+                if registry is not None and registry.descriptor_receiver(shape(owner),self.model.resolved_name(plan,function)):return True
                 method=self.model.classes[owner.args[0]].methods.get(self.model.resolved_name(plan,function))
                 if method is not None:
                     try:method.signature.plan(normalize_call(node),implicit_count=1,allow_variadic=True)
@@ -312,20 +321,31 @@ class CallableCells:
             return False
         return True
 
+    def abrupt_callee(self,plan,node,callee):
+        from .native_abrupt_values import empty,bottom
+        if not empty(callee):return None
+        key=plan.index,id(node)
+        self.sites.pop(key,None)
+        self.abrupt_callees.add(key)
+        return bottom(self.model,plan,node)
+
     def analyze(self,plan,node,environment):
         from .native_classes import ClassUnsupported,shape
         key=plan.index,id(node)
+        self.abrupt_callees.discard(key)
         self.receivers.pop(key,None)
         if isinstance(node.func,ast.Attribute):
             self.receivers[key]=self.model.expression(plan,node.func.value,environment)
         if not self.candidate(plan,node,environment):
             self.sites.pop(key,None)
             return None
+        callee=(self.model.attribute_value(plan,node.func,self.receivers[key],environment)
+                if isinstance(node.func,ast.Attribute)else self.model.expression(plan,node.func,environment))
+        abrupt=self.abrupt_callee(plan,node,callee)
+        if abrupt is not None:return abrupt
         try:arguments=normalize_call(node)
         except CallBindingError as error:
             raise ClassUnsupported(node,str(error),proof="dynamic positional/keyword argument expansion")from None
-        callee=(self.model.attribute_value(plan,node.func,self.receivers[key],environment)
-                if isinstance(node.func,ast.Attribute)else self.model.expression(plan,node.func,environment))
         from .native_typing_metadata import registry
         with registry(self.model).arguments(plan,callee,arguments):
             positional=[self.model.expression(plan,arg.expression,environment)for arg in arguments.positional]
@@ -429,6 +449,11 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
             record=analyze_constructor(self,plan,node,branch,arguments,positional,keywords,environment,identity=identity)
             site.constructors[branch.definition]=record
             if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
+        from .native_mapping_method_callables import is_method,analyze_call
+        if is_method(branch):
+            record=analyze_call(self.model,plan,node,branch,positional,keywords,environment,identity=identity)
+            site.mapping_methods[branch]=record
+            if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
         if getattr(branch,'_native_exception_class',False):
             record=self.model.exceptions.construct(plan,node,branch,positional,keywords)
             site.exception_constructors[branch]=record
@@ -523,6 +548,9 @@ def emit_call(emitter,node):
     from .native_classes import ClassUnsupported,Emitter,shape
     from .native_unions import project,union_kind
     provider=emitter.model.callable_cells
+    if(emitter.plan.index,id(node))in getattr(provider,'abrupt_callees',()):
+        wanted=emitter.kind(node)
+        return _Expression(emitter.coerce(emitter.expression(node.func),wanted,node),wanted)
     site=provider.sites.get((emitter.plan.index,id(node)))
     if site is None:return None
     lines=[]
@@ -604,6 +632,8 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
         from .native_class_stdio import READERS,emit as emit_reader
         if kind in READERS:
             return emit_reader(emitter,node,kind,positional,keywords,wanted).code
+        from .native_mapping_method_callables import is_method,emit_call
+        if is_method(kind):return emit_call(emitter,node,kind,site.mapping_methods[kind],code,positional,keywords,wanted).code
         if getattr(kind,'_native_exception_class',False):
             record=site.exception_constructors[kind]
             return emitter.model.exceptions.emit_construct(emitter,node,record,positional,keywords,wanted).code

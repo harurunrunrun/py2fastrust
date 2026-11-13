@@ -19,6 +19,8 @@ def emit(emitter,value,node):
         adapter=emitter.model.callable_cells.member_adapters.get(identity.module)
         if adapter is None or identity.name not in adapter.NAMES:
             raise ClassUnsupported(node,'this native member needs its canonical object representation metadata',types=(('value',value.kind),),proof='native member object display metadata')
+        if getattr(adapter,'DISPLAY_REQUIRES_BOUND_RECEIVER',False):
+            raise ClassUnsupported(node,'displaying native '+identity.module+'.'+identity.name+' requires its retained Python bound receiver and method representation; that private module-instance display protocol is not implemented',proof='native bound module callable representation')
         text=("<class '"+identity.module+'.'+identity.name+"'>"if identity.name in getattr(adapter,'TYPES',())else'<built-in function '+identity.name+'>')
         texts[identity]=_string(text)+'.to_owned()'
     from .native_callable_carriers import dispatch

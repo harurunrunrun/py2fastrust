@@ -27,6 +27,14 @@ def candidate(emitter,node):
     registry=getattr(emitter.model,'class_namespaces',None)
     if registry is None:return None
     key=(emitter.plan.index,id(node))
+    if getattr(target,'_native_instance_function_target',False):
+        cases=getattr(registry,'instance_function_reads',{}).get(key)
+        receiver=emitter.kind(node.value)
+        if not isinstance(receiver,InstanceType)or receiver.name!=target.owner or not cases or len(cases)!=1:return None
+        selected=cases.get(receiver)
+        if selected is None or selected.member is None or selected.field is not None:return None
+        if selected.member.descriptor!='function':return None
+        return Request(node,target)
     records=registry.attribute_reads.get(key)
     if records is None or len(records)!=1 or registry.instance_reads.get(key,False):return None
     member=records[0]
@@ -72,7 +80,9 @@ def stack_payload(emitter,node,target,fields):
     request=getattr(emitter,'immediate_classmethod_request',None)
     if request is None or request.node is not node or request.target!=target:return None
     request.used=True
-    return 'ClassBoundMethod'+str(target.definition)+'{'+fields+'}'
+    from .native_source_function_descriptors import structure
+    name=structure(target)if getattr(target,'_native_instance_function_target',False)else'ClassBoundMethod'+str(target.definition)
+    return name+'{'+fields+'}'
 
 
 def direct_payload(emitter,node,reference,member):

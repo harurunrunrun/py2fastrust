@@ -347,7 +347,7 @@ def _source_metadata(tree, scopes, *, future_annotations=False):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bind(node.name, "definition", scope, ordinal)
         elif isinstance(node, ast.alias):
-            bind(node.asname or node.name.split(".")[0], "import", scope, ordinal)
+            if node.name!='*':bind(node.asname or node.name.split(".")[0], "import", scope, ordinal)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             bind(node.name, "store", scope, ordinal)
         elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
@@ -590,6 +590,9 @@ class _Resolver:
                         if alias.name != "*" and module.package and self.find(child):
                             self.load(child, unit, node)
                             children.append(child)
+                    if module.package and any(alias.name=='*'for alias in node.names):
+                        from .native_star_imports import resolve_package_children
+                        children.extend(resolve_package_children(self,module,unit,node))
                     imports.append(ResolvedImport(unit.ordinal(node), name, tuple(alias.name for alias in node.names),
                         node.level, module.origin, module.filename, tuple(children)))
             for child in ast.iter_child_nodes(node):visit(child, private)

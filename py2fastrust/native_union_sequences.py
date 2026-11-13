@@ -52,7 +52,7 @@ def analyze_subscript(model,plan,node,owner,index):
         if any(identity.name in TYPE_NAMES for identity in getattr(kind,"builtins",())):
             raise ClassUnsupported(node,"subscription of a builtin type needs its class __class_getitem__ or type-specific subscription-error protocol; that adapter is not registered",types=(("receiver",kind),),proof="builtin type subscription protocol")
     for kind in alternatives(b):
-        if domain(kind)not in INTEGRAL|SEQUENCES|NONINDEXABLE:
+        if domain(kind)not in INTEGRAL|SEQUENCES|NONINDEXABLE|{'range'}:
             raise ClassUnsupported(node,"this indexed access needs the index object's __index__ protocol; no typed index-conversion adapter is registered",types=(("index",kind),),proof="index special-method conversion")
     result=model.cell(plan,node)
     inputs=[]

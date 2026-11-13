@@ -41,7 +41,7 @@ def requires_frames(unit,analysis):
 
 def unbound_local(model,plan,node,environment):
     """Choose a phantom ABI payload for a slot that cannot be read normally."""
-    if not getattr(model,'none_truth_guards',False)or model.unit is None:return None
+    if not (getattr(model,'none_truth_guards',False)or getattr(model,'loop_reachability_used',False))or model.unit is None:return None
     name=model.resolved_name(plan,node)
     if name in environment or name in plan.arguments:return None
     binding=model.namespace.owners.get(model.unit.ordinal(node))

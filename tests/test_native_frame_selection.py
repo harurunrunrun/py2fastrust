@@ -52,14 +52,15 @@ class FrameSelectionProofTests(unittest.TestCase):
             self.assertEqual(frames.call_count,1)
             self.assertEqual(result.diagnostics[0].code,'E006')
 
-    def test_unknown_callable_has_no_invented_recursive_edge(self):
+    def test_known_noncallable_has_no_invented_recursive_edge(self):
         source='def call_it(fn,n):return fn(n)\nprint(call_it(int(input()),2))\n'
         selection=self.select(source)
-        self.assertFalse(selection.required)
-        result=transpile(source)
-        self.assertFalse(result.success)
-        self.assertEqual(result.diagnostics[0].code,'E006')
-        self.assertGreater(result.diagnostics[0].line,0)
+        self.assertTrue(selection.required)
+        self.assertFalse(selection.recursive_definitions)
+        with patch('py2fastrust.codegen.generate',side_effect=AssertionError('VM fallback')):
+            result=transpile(source)
+        self.assertTrue(result.success,result.diagnostics)
+        self.assertEqual(result.backend,'native')
 
     def test_function_object_display_has_an_explicit_protocol_diagnostic(self):
         sources=['def rec(n):\n if n==0:return 0\n return rec(n-1)\nalias=rec\nprint(alias,rec(2))\n']
@@ -109,6 +110,10 @@ print(first(2))
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class FrameSelectionExecutionTests(unittest.TestCase):
     def compare(self,*args,**kwargs):return _heap.HeapExecutionTests.compare(self,*args,**kwargs)
+
+    def test_known_noncallable_keeps_runtime_error_after_argument_evaluation(self):
+        self.compare('def call_it(fn,n):return fn(n)\nprint(call_it(int(input()),2))\n',
+                     ('3\n','bad\n'))
 
     def test_finite_conditional_recursive_function_references(self):
         self.compare('def rec(n):\n if n==0:return 0\n return dispatch(n-1)\ndef other(n):return rec(n)\nif input():dispatch=rec\nelse:dispatch=other\nprint(rec(2))\n',('\n','selected\n'))

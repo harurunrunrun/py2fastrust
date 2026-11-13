@@ -28,7 +28,8 @@ def emit(emitter,node,setup,reference,old_kind):
     if reference[0]!="index":return None
     _,owner,index,stored=reference
     wanted=emitter.kind(node.target)
-    if (domain(stored)not in _SCALARS or old_kind!=stored or wanted!=stored
+    if (index.kind not in {'int','bool','int_bool'}
+            or domain(stored)not in _SCALARS or old_kind!=stored or wanted!=stored
             or not scalar_rhs(emitter,node.value)):
         return None
     guard,offset,previous=(emitter.fresh()for _ in range(3))

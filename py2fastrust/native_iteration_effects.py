@@ -151,7 +151,7 @@ class Recorder:
         owned container's element layout. Identity proofs must additionally see
         children stored through aliases or caller-owned clear/refill functions.
         """
-        from .native_constraints import (Value,Variable,Projection,TupleValue,IteratorValue,ShapeConstraint,BOTTOM,UNKNOWN,value)
+        from .native_constraints import (Value,Variable,Projection,TupleValue,IteratorValue,RangeValue,ShapeConstraint,BOTTOM,UNKNOWN,value)
         result=Value(unbound=item.unbound,unknown=item.unknown)
         for part in item.alternatives:
             if isinstance(part,(Variable,Projection)):
@@ -181,7 +181,8 @@ class Recorder:
                     resolved=self.provenance(source,active)
                     sources.update(self.solver.iteration_allocations(resolved))
                     may_call|=self.iteration_may_call_resolved(resolved)
-                result=result.join(value(IteratorValue(self.provenance(part.item,active),frozenset(sources),may_call,part.source_inputs)))
+                cls=RangeValue if isinstance(part,RangeValue)else IteratorValue
+                result=result.join(value(cls(self.provenance(part.item,active),frozenset(sources),may_call,part.source_inputs)))
             else:result=result.join(value(part))
         return result
 

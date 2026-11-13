@@ -2,15 +2,21 @@
 import ast
 
 
-def requires_frames(unit,analysis):
+def requires_frames(unit,analysis,integer="i64"):
     reached={site for facts in analysis.scopes.values()for site in facts.expressions}
-    return any(isinstance(node,(ast.For,ast.While))and node.orelse
+    from .native_assertions import literal_truth
+    bits=0 if integer=='bigint'else 128 if integer=='i128'else 64
+    return any(isinstance(node,(ast.For,ast.While))
+               and (node.orelse or isinstance(node,ast.While)and literal_truth(node.test,bits)is not None)
                and unit.ordinal(node.iter if isinstance(node,ast.For)else node.test)in reached
                for node in ast.walk(unit.tree))
 
 
 def condition(model,node):
-    if not isinstance(node,ast.While)or not node.orelse:return None
+    # Literal tests are total and cannot change between iterations. An always-
+    # true loop has no exhaustion edge, even when its source has no else.
+    # Reached break edges are collected separately by Model.block.
+    if not isinstance(node,ast.While):return None
     from .native_assertions import literal_truth
     bits=0 if model.integer=='bigint'else 128 if model.integer=='i128'else 64
     return literal_truth(node.test,bits)

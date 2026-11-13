@@ -8,13 +8,13 @@ from .native_types import alternatives
 
 TARGETS = frozenset({'list', 'tuple', 'tuple_sequence', 'str', 'bytes',
                      'int', 'bool', 'int_bool', 'float', 'none'})
-INDICES = TARGETS
+INDICES = TARGETS | frozenset({'function','range'})
 
 
 def supported(owner, index):
     from .native_classes import domain
     from .native_unions import union_kind
-    return (union_kind(owner)
+    return ((union_kind(owner)or union_kind(index)or index not in {'int','bool','int_bool'})
             and any(domain(kind) == 'list' for kind in alternatives(owner))
             and all(domain(kind) in TARGETS for kind in alternatives(owner))
             and index is not None
@@ -69,13 +69,20 @@ def requires_frames(unit, analysis):
             # alternatives suffice to choose analysis, never to certify a
             # storage ABI or operation. The typed model still solves both.
             index = facts.expressions.get(unit.ordinal(node.slice))
-            if index is None or any(domain(kind) not in INDICES for kind in alternatives(index)):
+            from .native_constraints import IteratorValue
+            index_value=facts.values.get(unit.ordinal(node.slice))
+            iterable_index=(index is None and index_value is not None
+                and not index_value.unknown and not index_value.unbound
+                and any(isinstance(value,IteratorValue)for value in index_value.alternatives))
+            if not iterable_index and(index is None or any(domain(kind) not in INDICES for kind in alternatives(index))):
                 continue
             members = flow.resolve(facts.values.get(unit.ordinal(node.value)))
             if not members:
                 continue
             lists = [member for member in members if isinstance(member, Allocation) and member.category == 'list']
             other = [member for member in members if member not in lists]
+            if lists and not other and(iterable_index or any(kind not in {'int','bool','int_bool'}for kind in alternatives(index))):
+                return True
             if lists and other and all(
                     isinstance(member, str) and member in TARGETS - {'list', 'tuple', 'tuple_sequence'}
                     or isinstance(member, TupleValue)

@@ -13,6 +13,7 @@ def tag(target):
     from .native_bound_methods import BoundMethodTarget
     from .native_module_calls import BuiltinRef
     from .references import BuiltinIdentity
+    if getattr(target,'_native_instance_function_target',False):return 'I'+str(target.definition)+'O'+str(target.class_definition)
     if isinstance(target,BoundMethodTarget):return 'D'+str(target.definition)
     if isinstance(target,BuiltinRef):return 'M_'+target.module+'_'+target.name
     if isinstance(target,BuiltinIdentity):return 'B_'+target.name
@@ -100,8 +101,11 @@ class Registry:
         from .references import BuiltinIdentity
         model=self.model;provider=model.callable_cells
         if isinstance(target,BoundMethodTarget):
-            field_type='Rc<ClassBoundMethod'+str(target.definition)+'>'
-            if isinstance(target,ClassMethodTarget):
+            from .native_source_function_descriptors import structure
+            field_type='Rc<'+(structure(target)if getattr(target,'_native_instance_function_target',False)else'ClassBoundMethod'+str(target.definition))+'>'
+            if getattr(target,'_native_instance_function_target',False):
+                equal=identity_equal(model,target._native_receiver_kind,'left.bound.receiver','right.bound.receiver')+'&&left.bound.function==right.bound.function'
+            elif isinstance(target,ClassMethodTarget):
                 equal='Rc::ptr_eq(&left.bound.receiver,&right.bound.receiver)&&left.bound.function==right.bound.function'
             else:
                 equal=identity_equal(model,InstanceType(target.owner),'left.bound.receiver','right.bound.receiver')
@@ -155,13 +159,16 @@ class Registry:
             if isinstance(target,ClassMethodTarget):
                 from .native_aot_callables import AotFunctionType
                 function_type=family_type(AotFunctionType((target.definition,)))
-                fields='receiver:ClassClassRef,function:'+function_type
+                receiver=('ClassHandle_'+str(target.class_definition)if getattr(target,'_native_instance_function_target',False)else'ClassClassRef')
+                fields='receiver:'+receiver+',function:'+function_type
             else:
                 owner=self.model.classes[target.owner]
                 fields='receiver:ClassHandle_'+str(owner.index)
                 from .native_callable_field_demand import demand
                 if getattr(provider.bound_methods,'linked',False)and demand(self.model,target).module:fields+=',module:ClassModuleRef'
-            declarations.append('struct ClassBoundMethod'+str(target.definition)+'{'+fields+'}')
+            from .native_source_function_descriptors import structure
+            name=structure(target)if getattr(target,'_native_instance_function_target',False)else'ClassBoundMethod'+str(target.definition)
+            declarations.append('struct '+name+'{'+fields+'}')
         for target in tuple(self.targets.values()):
             layout=self.layout(target);name=payload_type(target)
             declarations.append('#[derive('+('Clone'if layout.fields else'Clone,Copy')+')]\nstruct '+name+'{'+','.join(field+':'+kind for field,kind in layout.fields)+'}')

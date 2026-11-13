@@ -548,4 +548,6 @@ class Mappings:
         result.append(self.defaultdicts.runtime(emitter))
         result.append(self.views.runtime(emitter))
         result.append(self.counters.runtime())
+        from .native_mapping_method_callables import runtime as mapping_method_runtime
+        result.append(mapping_method_runtime(self.model,emitter))
         return '\n'.join(result)

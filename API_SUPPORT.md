@@ -61,9 +61,45 @@ bodies reach a fair fixed point before still-empty list storage is finalized
 with an uninhabited element kind. Range truth compares its immutable endpoints
 and step sign, including ranges whose length cannot fit a machine index.
 
+
+Builtin list slice assignment supports insertion, replacement, removal and
+extended slices through captured original targets. RHS expressions precede
+receiver/bound expressions; bound expressions run left to right before step,
+start and stop conversion. Zero steps fail before lower-bound conversion.
+Registered iterable RHS values are fully materialized before mutation, keeping
+self-assignment snapshots, shared element identity, callback mutations and
+partial exceptions. Normalization uses the receiver length after iteration;
+extended slices check replacement length before storing elements. Checked
+remaining-size hints handle actual forward/reverse range cursors without
+calling the original source object's `__len__`.
+
+Augmented slice references capture the original receiver and bounds once;
+proved list addition and integral repetition are supported. General iterable
+`__iadd__`, custom bound `__index__` and escaping generator expressions retain
+specific diagnostics. Finite builtin list index alternatives preserve
+runtime type errors; fused augmented stores require an integral index, and an
+uninhabited target read stops before RHS evaluation.
+
+Retained ranges support ordinary and extended slicing, including negative
+steps, nested slices and counts larger than `usize` or signed machine indices.
+The adapter uses exact structural counts and preserves the selected integer
+policy for source values and bounds. In fixed-width modes the composed range
+start, stop and step must remain representable: otherwise slicing raises a
+positioned `OverflowError`, including endpoint alignment for empty/full slices.
+BigInt mode composes these fields exactly. Range iterators remain distinct
+from range values and do not gain a slicing protocol.
+
 Fixed-target unpacking of finite builtin list/tuple alternatives uses an exact
 length check and Rust local snapshots, releasing temporary list leases before
 target stores and retaining shared mutable elements without iterator allocation.
+
+Proved missing attributes on closed builtin values raise `AttributeError` at
+the original lookup, including specialized source-function frames. The receiver
+runs once before call arguments; a lookup with no normal result prevents all
+argument evaluation, including positional and keyword spreads. Actual `None`
+callee values still evaluate arguments before their call `TypeError`. General
+keyword-mapping expansion and unproved descriptor/member protocols retain
+positioned diagnostics.
 
 Proved bounded primitive remainders in i128 mode can use i64 remainder
 instructions while retaining the selected integer policy and both operand
@@ -123,6 +159,56 @@ Eager tuple construction and ordinary assignment retain the original evaluated
 prefix and error, then omit unreachable stores/statements. Point facts are
 recomputed when inputs widen; Python `None` remains a real value. This does not
 resolve every recursive or temporally changing container type constraint.
+
+
+Native real/complex power results support addition and subtraction with builtin
+int/bool/float and complex leaves. Both source operands evaluate before ordered
+numeric conversions, including BigInt conversion errors. Finite real/complex
+alternatives retain their actual runtime result; complex comparison, other
+complex arithmetic and nonempty numeric formatting remain explicit boundaries.
+
+
+Fixed-module star imports bind the original source export values into the actual
+importing namespace. Declared public names preserve runtime presence, so absent
+conditional exports do not overwrite existing bindings. Protected literal
+`__all__` sequences retain order, duplicates, private names and partial-binding
+errors; package from-lists preload children before importer bindings. The
+original AST nodes and official scope owners are retained. Computed/observably
+mutable export sequences, module attribute hooks, undeclared late public exports
+and canonical modules lacking complete export inventories remain diagnostics.
+
+Saved builtin mapping methods retain their original receiver and lookup
+identity, including temporary dictionaries passed to `map`. Native adapters
+cover dictionary-family `__getitem__`, `get` and `setdefault`, with original
+argument/error order and defaultdict/Counter behavior. Ordinary Python functions
+stored in class slots bind the actual instance when read; class reads and
+instance-dictionary function values keep their own descriptor behavior. Bound
+method equality uses the actual function and receiver identities.
+An immediately invoked, statically resolved instance method keeps its private
+bound-call payload on the Rust stack. Saved or observable method values retain
+their normal object identity.
+
+Fresh builtin `list(set_value)` materializations support a subsequent total
+builtin sort when allocation and binding analysis proves that traversal order
+cannot be observed first. The proof follows private aliases and source helper
+parameters; published namespace aliases require a nonfallible continuation
+until ordering. Captures, callbacks, escapes and cleanup paths that can expose
+the original order retain a specific unsupported diagnostic. Generic observable
+set iteration remains unfinished.
+
+Canonical `random` exports `seed` (integer/None), `random`, `getrandbits`,
+`randrange`, `randint` and `shuffle` use shared native MT19937 state. Seeded
+streams match the tested CPython 3.14 implementation; rejection sampling uses
+exact structural values before public integer-policy normalization. Numeric
+lists/arrays support shuffle. Other seed encodings, generator objects and
+unimplemented exports retain explicit diagnostics; a partial adapter never
+stands in for the module's complete star-import namespace.
+
+Literal-proved while-loop conditions preserve their real normal exits. An
+infinite loop with no reachable outer break does not invent an implicit `None`
+return; nested breaks remain owned by their own loops. Loops omitted by a false
+literal retain official unbound-local errors. Effectful/computed tests keep
+conservative control-flow analysis.
 
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
@@ -209,7 +295,7 @@ zero-to-negative and integer-to-float overflow errors. Binary64 bases with
 integral exponents return binary64 and preserve overflow and signed-zero behavior.
 Floating exponents accept builtin int/bool/float bases and return a finite
 binary64/complex alternative. Print, string/repr conversion, truth testing and
-int/float conversion errors observe the actual result. Complex arithmetic,
+int/float conversion errors observe the actual result. Other complex arithmetic,
 comparison and nonempty numeric formatting remain positioned boundaries; see
 [COMPATIBILITY.md](COMPATIBILITY.md).
 

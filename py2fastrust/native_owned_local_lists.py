@@ -186,7 +186,9 @@ def prepare(emitter):
                     if not owned_load(model,kind)or not owned_lifetime(model):
                         valid=False;break
                     exports.add(id(node));continue
-                direct=isinstance(parent,ast.Subscript)and parent.value is node and not isinstance(parent.slice,ast.Slice)
+                direct=(isinstance(parent,ast.Subscript)and parent.value is node
+                        and not isinstance(parent.slice,ast.Slice)
+                        and emitter.kind(parent.slice)in {'int','bool','int_bool'})
                 length=(isinstance(parent,ast.Call)and parent.args==[node]and not parent.keywords
                         and static_builtin(emitter,parent.func,'len'))
                 method=parents.get(id(parent))if isinstance(parent,ast.Attribute)else None

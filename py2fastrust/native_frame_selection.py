@@ -129,6 +129,10 @@ def select_frames(unit,*,integer="i64"):
     from .native_mapping_deletion import requires_frames as mapping_delete_requires_frames
     if mapping_delete_requires_frames(unit,analysis):reasons+=('native indexed deletion protocols',)
     if floating_power:reasons+=('finite real/complex floating power results',)
+    from .native_mapping_method_callables import requires_frames as mapping_method_frames
+    if mapping_method_frames(unit,analysis):reasons+=('captured native mapping methods',)
+    from .native_unobserved_set_order import requires_frames as set_order_frames
+    if set_order_frames(unit,analysis):reasons+=('certified order-unobserved set materialization',)
     from .native_bytes_constructor import requires_frames as bytes_requires_frames
     if bytes_requires_frames(analysis):reasons+=('native bytes count/conversion protocol',)
     from .native_exit import requires_frames as exit_requires_frames
@@ -160,6 +164,8 @@ def select_frames(unit,*,integer="i64"):
     if any(site in recorded and isinstance(node,ast.Call)and any(isinstance(value,ast.Starred)for value in node.args)
            and requires_expansion(unit,analysis,node)
            for site,node in nodes.items()):reasons+=("expanded positional call arguments",)
+    if any(site in recorded and isinstance(node,ast.Call)and any(keyword.arg is None for keyword in node.keywords)
+           for site,node in nodes.items()):reasons+=("keyword expansion callee evaluation",)
     from .native_builtin_singletons import requires_frames as singleton_requires_frames
     if singleton_requires_frames(unit,analysis):reasons+=("canonical builtin singleton values",)
     from .native_exception_values import requires_frames as exception_requires_frames
@@ -175,7 +181,7 @@ def select_frames(unit,*,integer="i64"):
     from .native_frame_slices import requires_frames as slice_requires_frames
     if slice_requires_frames(unit,analysis):reasons+=("finite sequence slice alternatives and bounds",)
     from .native_loop_else import requires_frames as loop_else_requires_frames
-    if loop_else_requires_frames(unit,analysis):reasons+=("loop exhaustion and else control flow",)
+    if loop_else_requires_frames(unit,analysis,integer=integer):reasons+=("loop exhaustion and else control flow",)
     from .native_class_extrema import requires_frames as extrema_requires_frames
     if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
     from .native_class_sorting import requires_frames as sorting_requires_frames
@@ -206,6 +212,8 @@ def select_frames(unit,*,integer="i64"):
     if positional_requires_frames(unit,analysis):reasons+=("fixed list record positional constraints",)
     from .native_finite_list_writes import requires_frames as finite_list_writes_require_frames
     if finite_list_writes_require_frames(unit,analysis):reasons+=("finite builtin indexed assignment targets",)
+    from .native_finite_attributes import requires_frames as missing_attributes_require_frames
+    if missing_attributes_require_frames(unit,analysis):reasons+=("closed builtin lookup and call protocols",)
     from .native_owned_matrix_places import requires_frames as matrix_requires_frames
     if matrix_requires_frames(unit,analysis):reasons+=("private recursive vector matrix places",)
     if not reasons:references=None

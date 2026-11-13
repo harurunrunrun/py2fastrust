@@ -1,6 +1,7 @@
 """Typed defaultdict factories and missing reads over shared native storage."""
 import ast
 from dataclasses import dataclass,field
+from .native_mapping_method_callables import callable_kind
 from .native_types import alternatives
 
 
@@ -66,7 +67,7 @@ class DefaultDicts:
         if record.flavor!='defaultdict':return
         kind=shape(index)
         if kind is not None and not key_supported(kind):return
-        choices=[kind for kind in alternatives(shape(record.default_factory))if function_kind(kind)]
+        choices=[kind for kind in alternatives(shape(record.default_factory))if callable_kind(kind)]
         if not choices:return
         self.mappings.contribute_key(record,index,node)
         key=record.index
@@ -123,7 +124,7 @@ class DefaultDicts:
         record=wanted.record;record.emitted=True
         supplied=arguments[0]if arguments else Expression('()','none')
         def build(kind,text):
-            if kind!='none'and not function_kind(kind):
+            if kind!='none'and not callable_kind(kind):
                 from .native_classes import ClassUnsupported,domain
                 if domain(kind)=='object'or type(kind).__name__=='ClassReferenceType':
                     raise ClassUnsupported(node,'this default factory needs a user class/callable-object constructor protocol; a captured zero-argument callable ABI is not implemented for this object',types=(('factory',kind),),proof='captured default factory callable protocol')
@@ -165,7 +166,7 @@ class DefaultDicts:
         def branch(factory_kind,text):
             if factory_kind=='none':
                 return _error(emitter,node,wanted,'format!("KeyError: {}",'+emitter.show(key,node,True)+')').code
-            if not function_kind(factory_kind):
+            if not callable_kind(factory_kind):
                 return _error(emitter,node,wanted,'format!("TypeError: \'{}\' object is not callable",'+_type_name(emitter,Expression(text,factory_kind),node)+')').code
             site=self.calls.get((emitter.plan.index,id(node),record.index))
             if site is None:raise ClassUnsupported(node,'the missing-key factory has no proved zero-argument captured call site',proof='defaultdict captured factory demand')

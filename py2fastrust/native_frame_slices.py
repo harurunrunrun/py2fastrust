@@ -5,7 +5,7 @@ from .native_types import alternatives
 
 INTEGRAL=frozenset({'int','bool','int_bool'})
 SEQUENCES=frozenset({'list','str','bytes','tuple_sequence'})
-NONINDEXABLE=frozenset({'int','bool','int_bool','float','none','function','range'})
+NONINDEXABLE=frozenset({'int','bool','int_bool','float','none','function'})
 INVALID_BOUNDS=frozenset({'float','str','bytes','list','tuple','tuple_sequence','function','range'})
 
 
@@ -34,14 +34,20 @@ def fixed_tuple_indices(model,node,length):
 
 def requires_frames(unit,analysis):
     from .native_types import TupleSequenceType,ListType,immutable
+    from .native_range_slices import has_range_value
     nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}
     for facts in analysis.scopes.values():
+        if any(isinstance(node,ast.Subscript)and isinstance(node.ctx,ast.Store)
+               and isinstance(node.slice,ast.Slice)and unit.ordinal(node.value)in facts.values
+               for node in nodes.values()):return True
         for site in facts.expressions:
             node=nodes.get(site)
             if not isinstance(node,ast.Subscript)or not isinstance(node.slice,ast.Slice):continue
+            source=facts.values.get(unit.ordinal(node.value))
+            if has_range_value(source,analysis.heap):return True
             owner=facts.expressions.get(unit.ordinal(node.value))
             choices=alternatives(owner)
-            if owner is not None and (len(choices)>1 or any(kind=='bytes'or isinstance(kind,TupleSequenceType)for kind in choices)):
+            if owner is not None and (len(choices)>1 or any(kind in {'bytes','range'}or isinstance(kind,TupleSequenceType)for kind in choices)):
                 return True
             if any(isinstance(kind,ListType)and not immutable(kind.element)for kind in choices):return True
             for bound in (node.slice.lower,node.slice.upper,node.slice.step):
@@ -57,13 +63,16 @@ def analyze(model,plan,node,environment):
     owner=model.expression(plan,node.value,environment)
     from .native_source_items import source_owner,check_key
     if source_owner(model,owner)is not None:check_key(node)
+    captured_bounds=[]
     for bound in (node.slice.lower,node.slice.upper,node.slice.step):
-        if bound is None:continue
-        value=model.expression(plan,bound,environment)
+        if bound is None:captured_bounds.append(None);continue
+        value=model.expression(plan,bound,environment);captured_bounds.append(value)
         for kind in alternatives(shape(value)):
             if kind is None and not model.final:continue
             if domain(kind)not in INTEGRAL|{'none'}|INVALID_BOUNDS:
                 raise ClassUnsupported(bound,'this slice bound needs its user __index__ method; the typed sequence slice adapter supports builtin integral bounds and their builtin type errors',types=(('bound',kind),),proof='slice bound __index__ protocol')
+    from .native_list_slice_assignment import capture_read
+    capture_read(model,plan,node,owner,captured_bounds)
     result=model.cell(plan,node)
     for value in branches(owner):
         if value.tag == 'list':
@@ -76,6 +85,7 @@ def analyze(model,plan,node,environment):
             output=Cell(value.tag,(value.args[0],))
         elif value.tag in {'str','bytes'}:output=Cell(value.tag)
         elif value.tag in NONINDEXABLE:output=Cell('none')
+        elif value.tag=='range':output=Cell('range')
         elif tuple_cell(value):
             indices=fixed_tuple_indices(model,node,len(value.args))
             output=Cell('none')if indices is None else Cell('tuple',tuple(value.args[index]for index in indices))
@@ -104,6 +114,16 @@ def _bound(emitter,node,value):
     return emitter.at('Err::<Option<i128>,String>('+_string(message)+'.to_owned())',node)
 
 
+
+def convert_bounds(emitter,node,bounds):
+    """Convert the already captured slice: step and zero check precede bounds."""
+    names=[emitter.fresh()for _ in bounds]
+    setup='let '+names[2]+'='+_bound(emitter,node,bounds[2])+';'
+    setup+='if '+names[2]+'==Some(0){'+emitter.at('Err::<(),String>("ValueError: slice step cannot be zero".to_owned())',node)+';}'
+    setup+=''.join('let '+names[i]+'='+_bound(emitter,node,bounds[i])+';'for i in(0,1))
+    return setup,names
+
+
 def _owner(emitter,node,owner,bounds,wanted):
     from .native_classes import Expression,domain
     from .native_types import ListType,TupleSequenceType
@@ -122,11 +142,14 @@ def _owner(emitter,node,owner,bounds,wanted):
         return Expression('{'+setup+emitter.coerce(value,wanted,node)+'}',wanted)
     if tag in NONINDEXABLE:
         return _error(emitter,node,wanted,'format!("TypeError: \'{}\' object is not subscriptable",'+_type_name(emitter,owner,node)+')')
+    if tag=='range':
+        from .native_range_slices import emit as range_slice
+        return range_slice(emitter,node,owner,bounds,wanted)
     setup,owner=emitter.capture(owner)
     # Bound expressions were captured in source order. Builtin slice conversion
     # checks step first, then start and stop, after evaluating all expressions.
-    names=[emitter.fresh()for _ in bounds]
-    setup+=''.join(f'let {names[i]}={_bound(emitter,node,bounds[i])};'for i in (2,0,1))
+    converted,names=convert_bounds(emitter,node,bounds)
+    setup+=converted
     if tag=='array':length=f'{owner.code}.0.borrow().len()'
     elif tag=='list':length=f'{owner.code}.borrow().len()'
     elif tag=='str':length=f'{owner.code}.'+('byte_len()'if emitter.model.string_mode=='ascii'else'codepoint_len()')
@@ -174,4 +197,5 @@ def emit(emitter,node,wanted):
 def runtime(model):
     if not getattr(model,'native_frame_slices_required',False):return ''
     from .native_slices import SLICE_HELPERS
-    return SLICE_HELPERS
+    from .native_range_slices import runtime as range_runtime
+    return SLICE_HELPERS+range_runtime(model)

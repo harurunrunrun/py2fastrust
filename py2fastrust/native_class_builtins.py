@@ -312,6 +312,7 @@ def _type_name(emitter,value,node):
             if isinstance(target,BuiltinIdentity):
                 return _string('Quitter'if target.name in {'exit','quit'}else'type'if target.name in TYPE_NAMES else'builtin_function_or_method')
             adapter=emitter.model.callable_cells.member_adapters.get(target.module)
+            if adapter is not None and hasattr(adapter,'member_type_name'):return _string(adapter.member_type_name(target.name))
             return _string('type'if adapter is not None and target.name in getattr(adapter,'TYPES',())else'builtin_function_or_method')
         return dispatch(emitter,value.kind,value.code,name,borrow=True)
     return _string({"none":"NoneType"}.get(tag,tag))
@@ -493,8 +494,15 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         if name=="all":test="!("+test+")"
         return Expression("{"+setup+"loop{"+f"let Some({current})=({pulled.code}) else{{break {str(name=='all').lower()};}};if {test}{{break {str(name=='any').lower()};}}"+"}}","bool")
     elif name == "list":
+        from .native_unobserved_set_order import selected as unobserved_set
         def wrap(values):return values if owned_list else f'class_list({values})'
         if not arguments:code=wrap(f"Vec::<{self.rust_type(wanted.element)}>::new()")
+        elif unobserved_set(self.model,self.plan,node,arguments[0].kind):
+            from .native_unobserved_set_order import construct
+            before,source=self.capture(construct(self,node,arguments[0]))
+            pulled=self.model.iterators.pull(self,node,source);current=self.fresh();values=self.fresh()
+            item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
+            code="{"+before+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}"+wrap(values)+"}"
         elif self.model.mappings.views.element(arguments[0].kind)is not None:
             before,source=self.capture(self.model.iterators.construct(self,node,arguments[0]))
             pulled=self.model.iterators.pull(self,node,source);current=self.fresh();values=self.fresh()

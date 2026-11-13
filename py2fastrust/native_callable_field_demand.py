@@ -304,6 +304,8 @@ def prepare(model):model.callable_field_demand=Registry(model)
 
 
 def demand(model,target):
+    if target in getattr(model,"instance_function_definitions",()):
+        return Demand(reason="bound descriptor retains the actual source function instance")
     registry=getattr(model,'callable_field_demand',None)
     if registry is None:return Demand()
     if registry.barrier:return Demand(reason=registry.barrier)

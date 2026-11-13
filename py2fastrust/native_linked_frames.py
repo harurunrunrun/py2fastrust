@@ -103,6 +103,8 @@ class LinkedModel(Model):
         from .native_linked_members import MathAdapter,SysAdapter
         provider.register_member_adapter('math',MathAdapter)
         provider.register_member_adapter('sys',SysAdapter)
+        from .native_random import RandomAdapter
+        provider.register_member_adapter('random',RandomAdapter)
         from .native_arrays import ArrayAdapter
         provider.register_member_adapter('array',ArrayAdapter)
         from .native_typing_aliases import TypingAdapter
@@ -199,6 +201,9 @@ class LinkedModel(Model):
         return super().expression(plan,node,environment)
 
     def attribute_value(self,plan,node,receiver,environment):
+        from .native_source_function_descriptors import analyze as function_descriptor
+        value=function_descriptor(self.class_namespaces,plan,node,receiver,environment)
+        if value is not None:return value
         if receiver.root().tag=='object':
             owner=self.classes[receiver.root().args[0]]
             member=self.class_namespaces.members.get((owner.index,self.resolved_name(plan,node)))
@@ -247,8 +252,8 @@ class LinkedModel(Model):
 
     def import_statement(self,plan,node,environment):
         linker=self.module_linker
-        if isinstance(node,ast.ImportFrom)and any(alias.name=='*'for alias in node.names):
-            raise ClassUnsupported(node,"star imports need export enumeration, __all__ evaluation and conditional binding/builtin lookup for each imported name; that namespace protocol is not yet implemented on the linked native path")
+        from .native_star_imports import analyze as analyze_star
+        if analyze_star(self,plan,node,environment):return True
         bindings=self.unit.import_bindings(node)
         linker.imports[(plan.index,id(node))]=bindings
         for binding in bindings:
@@ -375,6 +380,9 @@ class LinkedEmitter(Emitter):
         return super().show(value,node,quoted)
 
     def expression(self,node):
+        from .native_source_function_descriptors import emit as function_descriptor
+        descriptor=function_descriptor(self.model.class_namespaces,self,node)
+        if descriptor is not None:return descriptor
         value=self.model.class_namespaces.named_tuples.emit_attribute(self,node)
         if value is not None:return value
         from .native_typing_metadata import registry
@@ -494,6 +502,9 @@ class LinkedEmitter(Emitter):
         return call(self,f"class_import_{module.number}(class_scope.clone())",module.initializer,node)
 
     def emit_import(self,node):
+        from .native_star_imports import emit as emit_star
+        star=emit_star(self,node)
+        if star is not None:return star
         bindings=self.model.module_linker.imports[(self.plan.index,id(node))]
         linker=self.model.module_linker
         lines=[]

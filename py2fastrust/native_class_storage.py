@@ -68,6 +68,9 @@ def validate(cell,node,integer,*,field_value=False,seen=frozenset(),model=None):
         if registry is None or not registry.owns(cell.tag):
             raise ClassUnsupported(node,"this iterator value is not owned by the current typed iterator registry; its payload and lifetime edges have no matching family proof",proof="registered typed iterator payload and ownership graph")
         return
+    if getattr(cell.tag,"_native_bound_mapping_method",False):
+        model.mappings.validate(cell.tag.receiver,node,seen)
+        return
     if getattr(cell.tag,"_native_stored_reference",False):return
     if id(cell)in seen:
         raise ClassUnsupported(node,"recursive nested element storage needs cycle-aware layout/lifetime management, which is not implemented",proof="finite nested storage layout")

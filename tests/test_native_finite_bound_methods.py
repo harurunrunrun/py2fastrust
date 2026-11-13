@@ -268,6 +268,12 @@ UNSUPPORTED = {'builtin_descriptor_mixed_receiver': 'class Item:\n'
                                   'print(obj.val())\n'}
 
 
+for _newly_supported in ('mixed_data_and_method_value','finite_classmethod_descriptor'):
+    _source=UNSUPPORTED.pop(_newly_supported)
+    _digest=hashlib.sha256(_source.encode()).hexdigest()
+    for _flag in (0,1):CASES.append((_newly_supported+'_'+str(_flag),_source,str(_flag)+'\n',_digest))
+
+
 class FiniteMethodBoundaryTests(unittest.TestCase):
     def test_mixed_descriptor_families_are_positioned(self):
         for name,source in UNSUPPORTED.items():
@@ -277,8 +283,8 @@ class FiniteMethodBoundaryTests(unittest.TestCase):
                     self.assertFalse(result.success)
                     self.assertEqual(result.diagnostics[0].code,"E006")
                     self.assertGreater(result.diagnostics[0].line,0)
-                    self.assertIn("method acquisition",result.diagnostics[0].message)
-                    self.assertIn("adapter" if name!="finite_classmethod_descriptor" else "descriptor",result.diagnostics[0].message)
+                    self.assertIn("descriptor",result.diagnostics[0].message)
+                    self.assertIn("receiver",result.diagnostics[0].message)
 
 
 @unittest.skipUnless(shutil.which("rustc"),"rustc is required")

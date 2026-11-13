@@ -155,15 +155,21 @@ class ExpandedCalls:
         from .native_classes import Cell, ClassUnsupported, shape
         from .native_aot_callables import function_kind
         from .native_bound_methods import BoundMethodTarget
+        key = plan.index, id(node)
+        self.model.callable_cells.abrupt_callees.discard(key)
+        callee=self.model.expression(plan,node.func,environment)
+        abrupt=self.model.callable_cells.abrupt_callee(plan,node,callee)
+        if abrupt is not None:
+            self.sites.pop(key,None)
+            return abrupt
         try:
             arguments = normalize_call(node, allow_starred=True)
         except CallBindingError as error:
             raise ClassUnsupported(node, str(error), proof="expanded keyword mapping protocol") from None
-        key = plan.index, id(node)
         if key not in self.sites:
             self.sites[key] = ExpandedSite(node, arguments, Cell(), Cell(), self.model.cell(plan, node))
         site = self.sites[key]
-        self._contribute(site.callee, self.model.expression(plan, node.func, environment), node.func)
+        self._contribute(site.callee, callee, node.func)
         segments = []
         for original, argument in zip(node.args, arguments.positional):
             value = self.model.expression(plan, argument.expression, environment)

@@ -110,7 +110,7 @@ for _ in range(count):
         self.differential(source,[b'4\n-2.5\n0\n0.5\n3\n'],profiles=(False,True))
 
     def test_unsupported_complex_observer_is_positioned(self):
-        cases=[('z+1','complex arithmetic'),('z==0','complex comparison'),('format(z,".2f")','complex')]
+        cases=[('z*1','complex arithmetic'),('z==0','complex comparison'),('format(z,".2f")','complex')]
         for observer,reason in cases:
             result=transpile('x=float(input())\nz=x**0.5\nprint('+observer+')\n',
                              TranspileOptions(filename='complex_observer.py'))

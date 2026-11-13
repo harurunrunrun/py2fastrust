@@ -47,6 +47,7 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,"_native_bound_mapping_method",False):return "function"
     if getattr(kind,'_native_array',False):return 'array'
     if getattr(kind,'_native_exception_class',False):return 'exception_class'
     if getattr(kind,'_native_exception_value',False):return 'exception_value'
@@ -494,9 +495,12 @@ class Model:
 
     def field(self, owner, name, node, writing=False):
         if name in owner.methods:
-            if writing:
-                raise ClassUnsupported(node,"shadowing this method on an instance needs instance-dictionary storage and descriptor lookup precedence; that per-instance method replacement is not implemented",proof="instance method shadowing and descriptor lookup")
-            raise ClassUnsupported(node,"reading this method as a value requires a bound-method carrier retaining its receiver; direct method calls are supported, but storing or passing that bound method is not implemented",proof="bound receiver lifetime and callable identity")
+            registry=getattr(self,'class_namespaces',None)
+            member=registry.members.get((owner.index,name))if registry is not None else None
+            if not(writing and member is not None and member.descriptor=='function'and not registry.special_name(name)):
+                if writing:
+                    raise ClassUnsupported(node,"shadowing this decorated/special method requires its instance descriptor replacement protocol",proof="special instance method replacement")
+                raise ClassUnsupported(node,"reading this method requires its retained bound descriptor adapter",proof="bound receiver lifetime and callable identity")
         if name.startswith("__") and name.endswith("__"):
             raise ClassUnsupported(node)
         result = owner.fields.setdefault(name, Field(name))
@@ -1288,6 +1292,9 @@ class Model:
             if value is not None:return value
         if getattr(shape(receiver),'_native_cmp_key',False):
             raise ClassUnsupported(node,'functools.KeyWrapper attribute '+repr(node.attr)+' requires exposed wrapper-object storage; this native adapter currently supports captured comparison-key factories in sorted and list.sort',types=(('receiver',shape(receiver)),),proof='exposed comparison-key object attributes')
+        from .native_mapping_method_callables import acquire as acquire_mapping_method
+        method=acquire_mapping_method(self,plan,node,receiver)
+        if method is not None:return method
         default=self.mappings.defaultdicts.attribute(plan,node,receiver,environment)
         if default is not None:return default
         deque=self.deques.analyze_attribute(plan,node,receiver)
@@ -1385,6 +1392,9 @@ class Model:
                 return
         if isinstance(node,ast.Subscript):
             owner = self.expression(plan,node.value,environment).root()
+            if isinstance(node.slice,ast.Slice):
+                from .native_list_slice_assignment import analyze as analyze_slice_store
+                if analyze_slice_store(self,plan,node,owner,value,environment):return
             from .native_source_items import source_owner,check_key
             if source_owner(self,owner)is not None:check_key(node)
             if getattr(owner.tag,'_native_array',False)and isinstance(node.slice,ast.Slice):
@@ -1538,11 +1548,18 @@ class Model:
             elif isinstance(node,ast.AugAssign):
                 left = self.expression(plan,node.target,environment)
                 self.augmented[(plan.index,id(node))] = left
+                from .native_abrupt_values import empty,mark
+                if empty(left):
+                    mark(self);environment=None;continue
                 right = self.expression(plan,node.value,environment)
+                from .native_list_slice_assignment import check_augmented
+                check_augmented(self,plan,node,right)
                 value = self.binary(plan,node,node.op,left,right,environment=environment)
                 from .native_source_items import captured_store as source_item_store
                 from .native_arrays import captured_store as array_store
+                from .native_list_slice_assignment import captured_store as slice_store
                 if(not self.deques.indexes.captured_store(plan,node.target,value)
+                        and not slice_store(self,plan,node.target,value,environment)
                         and not array_store(self,plan,node.target,value,environment)
                         and not source_item_store(self,plan,node.target,value,environment)):
                     self.target(plan,node.target,value,environment)
@@ -1689,6 +1706,7 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,"_native_bound_mapping_method",False):return value.rust
         if getattr(value,"_native_array",False):return value.rust
         if getattr(value,'_native_exception_class',False):return 'ClassExceptionClass'+value.name
         if getattr(value,'_native_exception_value',False):return 'Rc<ClassExceptionValue'+str(value.record.index)+'>'
@@ -1860,6 +1878,8 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        if getattr(value.kind,"_native_bound_mapping_method",False):
+            raise ClassUnsupported(node,"displaying a captured builtin mapping method requires its receiver address representation; that method display observer is not implemented",types=(("value",value.kind),),proof="builtin mapping method display identity")
         from .native_source_display import show as source_show
         source=source_show(self,value,node,representation)
         if source is not None:return source
@@ -2015,6 +2035,9 @@ class Emitter:
         if isinstance(node,(ast.Dict,ast.Set,ast.DictComp,ast.SetComp)):
             return self.model.mappings.emit_expression(self,node)
         if isinstance(node,ast.Attribute):
+            from .native_mapping_method_callables import read as read_mapping_method
+            method=read_mapping_method(self,node,wanted)
+            if method is not None:return method
             from .native_finite_attributes import selected,emit
             if selected(self.model,self.plan,node):
                 before,receiver=self.capture(self.expression(node.value))
@@ -2169,6 +2192,9 @@ class Emitter:
         return self.binary_builtin(operator,left,right,node,wanted)
 
     def binary_builtin(self, operator, left, right, node, wanted):
+        from .native_complex import additive as complex_additive
+        value=complex_additive(self,operator,left,right,node,wanted)
+        if value is not None:return value
         from .native_float_powers import frame as floating_power
         power=floating_power(self,operator,left,right,node,wanted)
         if power is not None:return power
@@ -2215,6 +2241,9 @@ class Emitter:
             lambda kind,code:self.comparison(operator,Expression(f"({code}).clone()",kind),right,node))
         if union_kind(right.kind):return project(right.kind,right.code,
             lambda kind,code:self.comparison(operator,left,Expression(f"({code}).clone()",kind),node))
+        from .native_mapping_method_callables import comparison as mapping_method_comparison
+        mapped_method=mapping_method_comparison(self,operator,left,right,node)
+        if mapped_method is not None:return mapped_method
         from .native_exception_values import comparison as exception_comparison
         exception=exception_comparison(operator,left,right)
         if exception is not None:return exception
@@ -2618,6 +2647,9 @@ class Emitter:
         return setup+self.store_reference(reference,value,target)
 
     def reference(self, target):
+        from .native_list_slice_assignment import reference as slice_reference
+        sliced=slice_reference(self,target)
+        if sliced is not None:return sliced
         from .native_scalar_data_results import reference as data_reference
         data=data_reference(self,target)
         if data is not None:return data
@@ -2691,6 +2723,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=='list_slice':
+            from .native_list_slice_assignment import load
+            return load(self,reference,node,kind or self.kind(node))
         if reference[0]=='array_index':
             from .native_arrays import emit_index
             return emit_index(self,node,reference[1],reference[2],kind or reference[3])
@@ -2756,6 +2791,9 @@ class Emitter:
         return project_element(self,raw,owner.kind.element,requested or kind,node)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=='list_slice':
+            from .native_list_slice_assignment import store
+            return store(self,reference,value,node)
         if reference[0]=='array_index':
             from .native_arrays import emit_index
             return emit_index(self,node,reference[1],reference[2],value=value).code+';'
@@ -2907,6 +2945,7 @@ class Emitter:
             fused=emit(self,node,setup,reference,old_kind)
             if fused is not None:return fused
             before,old=self.capture(self.load_reference(reference,node.target,old_kind))
+            if isinstance(old.kind,EmptyType):return setup+before+'match '+old.code+'{}'
             more,right=self.capture(self.expression(node.value))
             from .native_record_places import target_kind
             wanted=target_kind(self,reference,node.target)
@@ -3425,6 +3464,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         value=files("py2fastrust").joinpath("stdlib",license_name).read_text(encoding="utf-8")
         pieces.append("\n".join("// "+line for line in value.splitlines()))
     pieces.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
+    from .native_random_runtime import runtime as random_runtime
+    pieces.append(random_runtime(model))
     from .native_array_runtime import runtime as array_runtime
     pieces.append(array_runtime(model))
     from .native_bytes_constructor import runtime as bytes_runtime
@@ -3480,6 +3521,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(expanded_runtime(model))
     from .native_frame_slices import runtime as slice_runtime
     pieces.append(slice_runtime(model))
+    from .native_list_slice_assignment import runtime as slice_assignment_runtime
+    pieces.append(slice_assignment_runtime(model))
     pieces.extend([_OUTPUT_HELPERS,runtime.joinpath("streaming_io.rs").read_text(encoding="utf-8"),
                    _text_helpers(runtime),_structural_helpers(integer),class_runtime,layouts,*bodies])
     from .native_integer_list_places import runtime as integer_place_runtime

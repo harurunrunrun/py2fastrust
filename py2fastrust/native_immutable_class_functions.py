@@ -4,6 +4,7 @@ import ast
 
 def sealed_member(model, member):
     """Instance field mutation does not replace a plain class method slot."""
+    if getattr(member,"function_slot_writes",False):return False
     from .native_value_classes import selected
     if selected(model, member.owner):
         return True

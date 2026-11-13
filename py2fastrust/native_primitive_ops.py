@@ -26,6 +26,12 @@ def classify(operator,left,right,integer):
     from .native_classes import domain
     a,b=domain(left),domain(right)
     if 'complex'in{a,b}:
+        if a in NUMERIC|{'complex'}and b in NUMERIC|{'complex'}and isinstance(operator,(ast.Add,ast.Sub)):
+            return PrimitivePlan('complex')
+        if a in {'list','tuple','str','bytes'}and isinstance(operator,ast.Add):return PrimitivePlan(error='concat')
+        if {a,b}&{'list','tuple','str','bytes'}and isinstance(operator,ast.Mult):return PrimitivePlan(error='repeat')
+        if a not in NUMERIC|{'complex'}or b not in NUMERIC|{'complex'}:
+            return PrimitivePlan(error='binary')
         return PrimitivePlan(protocol='complex arithmetic dispatch')
     if "list"in {a,b}:
         sealed=NUMERIC|{"str","bytes","tuple","none","function","globals_dict","range","list"}

@@ -1,4 +1,21 @@
-"""Immutable binary64 complex leaves; numeric arithmetic remains explicit."""
+"""Immutable binary64 complex leaves and ordered additive conversions."""
+import ast
+
+
+def additive(emitter,operator,left,right,node,wanted):
+    if not isinstance(operator,(ast.Add,ast.Sub))or 'complex'not in{left.kind,right.kind}:return None
+    numeric={'int','bool','int_bool','float','complex'}
+    if left.kind not in numeric or right.kind not in numeric:return None
+    from .native_classes import Expression
+    from .native_float_constructor import frame_value
+    emitter.model.complex_values_required=True
+    def convert(value):
+        if value.kind=='complex':return value
+        return Expression('NativeComplex{real:'+frame_value(emitter,value,node)+',imag:0.0}','complex')
+    before,first=emitter.capture(convert(left));more,second=emitter.capture(convert(right))
+    symbol='+'if isinstance(operator,ast.Add)else'-'
+    value=Expression('NativeComplex{real:'+first.code+'.real'+symbol+second.code+'.real,imag:'+first.code+'.imag'+symbol+second.code+'.imag}','complex')
+    return Expression('{'+before+more+emitter.coerce(value,wanted,node)+'}',wanted)
 
 RUNTIME=r'''
 #[derive(Clone,Copy,Debug)]

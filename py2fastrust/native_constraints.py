@@ -74,6 +74,11 @@ class IteratorValue:
 
 
 @dataclass(frozen=True)
+class RangeValue(IteratorValue):
+    """Canonical immutable range value, distinct from its iterator cursor."""
+
+
+@dataclass(frozen=True)
 class Computed:
     operation: str
     operands: tuple[Value,...]
@@ -613,9 +618,14 @@ class Solver:
             bounds=tuple(bounds)
             self.iteration_access.implicit(receiver,*bounds)
             item=self.field_values(receiver,"iteration")
-            allocation=self.allocation(term.site,"list",context);result=value(allocation);self.insert(result,"element",item)
-            if self.kind(receiver)=="str":result=value("str")
-            elif self.kind(receiver)=="bytes":result=value("bytes")
+            resolved=self.iteration_access.provenance(receiver)
+            if (resolved.alternatives and not resolved.unknown and not resolved.unbound
+                and all(isinstance(part,RangeValue)for part in resolved.alternatives)):
+                result=resolved
+            else:
+                allocation=self.allocation(term.site,"list",context);result=value(allocation);self.insert(result,"element",item)
+                if self.kind(receiver)=="str":result=value("str")
+                elif self.kind(receiver)=="bytes":result=value("bytes")
         elif op=="compare":
             for child in args[:2]:self.iteration_access.implicit((yield evaluate(child)))
             for child in args[2:]:
@@ -830,7 +840,8 @@ class Solver:
             deferred=(name in {'map','filter'}and(not args or not self.iteration_access.sealed_mapper(args[0],inputs,filtering=name=='filter')))
             may_call=(deferred or name=='iter'and len(args)!=1
                       or any(self.iteration_access.iteration_may_call(item)for item in inputs))
-            return value(IteratorValue(item,sources,may_call,self.iteration_access.iterator_inputs(inputs)))
+            cls=RangeValue if name=='range'else IteratorValue
+            return value(cls(item,sources,may_call,self.iteration_access.iterator_inputs(inputs)))
         if name=="next" and args:
             item=self.field_values(args[0],"iteration")
             return item.join(args[1]) if len(args)>1 else item

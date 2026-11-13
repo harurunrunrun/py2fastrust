@@ -112,6 +112,11 @@ class ClassNamespaces:
         if self.special_name(member.name)and not bind_alias(self,plan,node,value):
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,f"class-body metadata assignment {member.name!r} requires its compiler/metaclass namespace validation; that metadata protocol is not implemented",proof="class compiler metadata initialization and validation")
+        if member.plan is not None and not self.special_name(member.name):
+            if member.descriptor!='function':
+                from .native_classes import ClassUnsupported
+                raise ClassUnsupported(node,'replacing a decorated class descriptor with a raw class-body value needs a descriptor-object value carrier',proof='raw decorated descriptor replacement')
+            member.function_slot_writes=True
         self.contribute(member,value,node)
         environment[member.name]=value
         environment.definite.add(member.name)
@@ -200,7 +205,9 @@ class ClassNamespaces:
         from .native_classes import InstanceType
         if isinstance(kind,InstanceType):owners=(self.model.classes[kind.name],)
         else:owners=tuple(self.owners[choice.definition]for choice in self.class_choices(kind))
-        return any((owner.index,name)in self.members and self.members[(owner.index,name)].plan is not None and self.members[(owner.index,name)].descriptor!="function"for owner in owners)
+        return any((owner.index,name)in self.members and(self.members[(owner.index,name)].plan is not None and self.members[(owner.index,name)].descriptor!="function"
+                    or getattr(self.members[(owner.index,name)],'function_slot_writes',False)
+                    or name in owner.fields and owner.fields[name].written)for owner in owners)
 
     def class_choices(self,kind):
         from .native_types import alternatives
@@ -214,7 +221,7 @@ class ClassNamespaces:
         result=Cell()
         for choice in choices:
             member=self.member(self.owners[choice.definition],name)
-            value=member.function_cell if member.plan is not None else self.field(member,node)
+            value=member.function_cell if member.plan is not None and not getattr(member,"function_slot_writes",False)else self.field(member,node)
             self.model.namespace.contribute(result,value,node,force=True)
         return result
 
@@ -273,7 +280,9 @@ class ClassNamespaces:
             self.named_tuples.class_member_guard(member.owner,member.name,node,writing=True)
             self.check_metadata(member,node)
             if member.plan is not None:
-                raise ClassUnsupported(node,"rebinding a class method requires runtime descriptor and instance-attribute lookup updates; that mutation protocol is not implemented",proof="mutable class method descriptor lookup")
+                if member.descriptor!='function'or self.special_name(member.name):
+                    raise ClassUnsupported(node,"rebinding this decorated/special class descriptor requires its runtime descriptor-slot update protocol",proof="mutable special or decorated class descriptor")
+                member.function_slot_writes=True
             self.contribute(member,value,node,"attribute_store")
         self.model.remember(plan,node,value)
         return True
@@ -458,7 +467,11 @@ def requires_namespaces(program):
             if any(isinstance(member,ast.FunctionDef)and member.name in SUPPORTED_SLOTS for member in owner.body):return True
             if owner.bases or owner.keywords or owner.decorator_list:return True
             if any(isinstance(node,(ast.ClassDef,ast.Assign,ast.AugAssign,ast.Delete))or isinstance(node,ast.AnnAssign)and node.value is not None or isinstance(node,ast.FunctionDef)and node.decorator_list for node in owner.body):return True
+        method_names={member.name for owner in classes for member in owner.body
+                      if isinstance(member,ast.FunctionDef)and not member.decorator_list
+                      and not ClassNamespaces.special_name(member.name)}
         for node in executable_nodes(unit.tree):
+            if isinstance(node,ast.Attribute)and isinstance(node.ctx,ast.Store)and node.attr in method_names:return True
             if not isinstance(node,ast.Name)or not isinstance(node.ctx,ast.Load)or node.id not in names:continue
             parent=parents.get(id(node))
             if not(isinstance(parent,ast.Call)and parent.func is node):return True
