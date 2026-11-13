@@ -1896,14 +1896,17 @@ diagnostics.
 
 Direct cycles among plain source-class instances use a native trial-deletion
 collector when every field of the cyclic classes contains builtin scalar values,
-`None`, direct instance handles or finite alternatives of those kinds. Ordinary
+`None`, direct instance handles, fixed tuples recursively containing these values
+(including sealed native NamedTuple records), or finite alternatives of those
+kinds. Numeric tuple fields add no object edges. Ordinary
 source functions remain compiled Rust functions. Only eligible cyclic classes
 register weak handles; programs with an acyclic class ownership type graph
-receive no collector or changed scope storage. Collection counts each direct
-field edge, treats external aliases and
+receive no collector or changed scope storage. Collection counts each physical
+field edge, including repeated handles inside tuples, treats external aliases and
 borrowed nodes as roots, traces reachable nodes and clears unreachable optional
 fields without invoking Python callbacks. Geometric collection thresholds avoid
-repeated full scans while a live graph grows. Container-, callable- and
+repeated full scans while a live graph grows. Shared homogeneous tuple carriers,
+mutable containers, callable- and
 closure-mediated cycles, custom finalizers, weak references and resurrection
 remain explicit unsupported protocols; this is not general arena/container GC.
 

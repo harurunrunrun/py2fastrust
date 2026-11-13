@@ -986,13 +986,16 @@ a pending break. Literal true/false while conditions omit unreachable suites
 without resolving their contents. These loops compile to typed Rust control
 flow, without a bytecode interpreter or generic execution loop.
 
-Plain source-class cycles with scalar/`None`/direct-instance fields and their
-finite alternatives have a native trial-deletion collector. Weak registration,
-external alias counts and direct-edge tracing preserve live identities; borrowed
+Plain source-class cycles with scalar/`None`/direct-instance fields, fixed tuples
+recursively containing these values (including sealed native NamedTuple records),
+and their finite alternatives have a native trial-deletion collector. Weak registration,
+external alias counts and physical-edge tracing preserve live identities, including
+repeated handles inside tuples; borrowed
 objects are conservative roots. Collection clears unreachable field storage
 without source callbacks. Programs with acyclic class ownership types do not
 include the collector.
-Container/callable/closure-mediated cycles, `__del__`, weak-reference protocols
+Shared homogeneous tuple carriers, mutable-container/callable/closure-mediated
+cycles, `__del__`, weak-reference protocols
 and resurrection remain unsupported. This does not implement general arena or
 container collection.
 

@@ -1,5 +1,5 @@
 """Trial deletion for proved direct, callback-free source-class cycles."""
-from .native_types import NullableType,UnionType
+from .native_types import NullableType,UnionType,TupleType
 
 
 def _components(graph):
@@ -30,6 +30,7 @@ def _components(graph):
 def supported_field(kind):
     from .native_classes import InstanceType
     if isinstance(kind,InstanceType):return True
+    if isinstance(kind,TupleType):return all(supported_field(child)for child in kind.fields)
     if isinstance(kind,NullableType):return supported_field(kind.value)
     if isinstance(kind,UnionType):return all(supported_field(part)for part in kind.alternatives)
     return kind in {'int','bool','int_bool','float','str','bytes','none'}
@@ -46,7 +47,7 @@ def admit(model,graph):
             kind=shape(field.cell)
             if not supported_field(kind):
                 cycle=' ('+owner.node.name+' -> '+owner.node.name+')'if name in graph.get(name,())else''
-                raise ClassUnsupported(owner.node,'this class field participates in a reference cycle'+cycle+' and needs container/callable-mediated collection; the direct class collector supports only builtin scalar values, None and direct source-class references or their finite alternatives',operation='cyclic class field '+owner.node.name+'.'+getattr(field,'name',field_key),types=(('field',kind),),proof='direct callback-free class-cycle edges')
+                raise ClassUnsupported(owner.node,'this class field participates in a reference cycle'+cycle+' and needs container/callable-mediated collection; the direct class collector supports callback-free builtin scalar values, None, direct source-class references and fixed tuples of these values or their finite alternatives; mutable/shared containers and callable payloads need their own collection adapters',operation='cyclic class field '+owner.node.name+'.'+getattr(field,'name',field_key),types=(('field',kind),),proof='direct callback-free class-cycle edges')
     model.gc_classes=frozenset(cyclic)
     return model.gc_classes
 
@@ -55,6 +56,10 @@ def _trace(kind,code,tracked):
     from .native_classes import InstanceType
     from .native_unions import project,union_kind
     if union_kind(kind):return project(kind,code,lambda part,value:_trace(part,value,tracked))
+    if isinstance(kind,TupleType):
+        steps=[_trace(child,'('+code+').'+str(index),tracked)for index,child in enumerate(kind.fields)]
+        live=[step for step in steps if step!='()']
+        return '{'+';'.join(live)+';}'if live else'()'
     if isinstance(kind,InstanceType)and kind.name in tracked:
         return 'visit(Rc::as_ptr(&('+code+'))as usize)'
     return '()'
