@@ -29,7 +29,7 @@ def analyze(model,plan,node,identity,positional,keywords,environment,*,factory):
     if not positional or fixed_repeat==0:registry._contribute(record.pool_element,Cell(EMPTY),node)
     record.input_types=tuple(sources)
     fixed_rank=None if fixed_repeat is None else len(positional)*fixed_repeat
-    record.fixed_fields=(tuple(source.record.element for source in sources)*fixed_repeat
+    record.fixed_fields=(tuple(registry.item(source)for source in sources)*fixed_repeat
                          if fixed_rank is not None and fixed_rank<=64 else None)
     result=(Cell('tuple',record.fixed_fields)if record.fixed_fields is not None
             else Cell('tuple_sequence',(record.pool_element,)))

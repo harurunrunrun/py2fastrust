@@ -3037,3 +3037,19 @@ set that direct-string replacement flag; nested tuple-string interning keeps
 the tuple identity. Dynamic string-set construction keeps its ordinary typed
 path. Full source-owned string interning/reconstruction remains open alongside
 mixed constant-origin reconstruction; the compiler host is never its oracle.
+
+Finite alternatives of existing registered native cursor handles can pass through
+branches, source-function arguments and returns, and their typed consumers. The
+ordinary Rust union enum carries the selected original handle; it neither creates
+another Python iterator object nor resets a cursor. Each pull dispatches only to
+the selected compiled provider, and yielded values use the ordinary finite type
+join. Analysis joins the alternative callback environments without executing all
+callbacks sequentially. Iterator ownership, captured source values and length
+hints follow every actual provider alternative. Builtin consumers and admitted
+source `__iter__` methods retain the same cursor identity and partial state.
+Retained generator expressions also keep the selected outer cursor handle.
+Source-generator function parameters still have their existing owned-suspension
+boundary for iterator values, including a single cursor; this increment does
+not broaden that separate lifetime capability.
+Unresolved, unregistered or additional user iterator protocols remain positioned
+conversion boundaries; this does not add a universal iterator object or VM.

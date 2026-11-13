@@ -45,8 +45,10 @@ class SourceHint:
         from .native_unions import union_kind
         record = value.kind.record
         kind = shape(record.source)
-        state = emitter.fresh()
-        prefix = '{let ' + state + '=(' + value.code + ').borrow();'
+        owner, state = emitter.fresh(), emitter.fresh()
+        # A projected union arm can supply a temporary Rc expression. Extend
+        # its lifetime for this hint without cloning or moving the owner.
+        prefix = '{let ' + owner + '=&(' + value.code + ');let ' + state + '=' + owner + '.borrow();'
         if union_kind(kind):
             arms = []
             for index, choice in enumerate(alternatives(kind)):
@@ -110,16 +112,22 @@ class IndexedOwnerHint:
         return ()
 
     def emit(self, emitter, node, value):
-        state, owner = emitter.fresh(), emitter.fresh()
+        retained, state, owner = emitter.fresh(), emitter.fresh(), emitter.fresh()
         length = owner + '.0.borrow().len()'
         count = state + '.index'
         remaining = ('if ' + count + '<=(' + length + '){' + count + '}else{0_usize}'
                      if self.reverse else '(' + length + ').saturating_sub(' + count + ')')
-        return '{let ' + state + '=(' + value.code + ').borrow();' + state + '.source.as_ref().map_or(0,|' + owner + '|' + remaining + ')}'
+        return '{let ' + retained + '=&(' + value.code + ');let ' + state + '=' + retained + '.borrow();' + state + '.source.as_ref().map_or(0,|' + owner + '|' + remaining + ')}'
 
 
 def emit(emitter, node, value):
     from .native_classes import ClassUnsupported
+    from .native_finite_cursors import members
+    from .native_unions import union_kind
+    if union_kind(value.kind)and members(emitter.model.iterators,value.kind):
+        from .native_classes import Expression
+        from .native_unions import project
+        return project(value.kind,value.code,lambda kind,code:emit(emitter,node,Expression(code,kind)))
     capability = value.kind.record.hint_protocol
     if capability is None:
         raise ClassUnsupported(node, "this iterable consumer needs its iterator provider's remaining-length hint protocol; the provider has not published an absent-slot or implemented-state certificate",

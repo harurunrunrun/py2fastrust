@@ -193,7 +193,7 @@ def _pull(state, plan, node, value, include_source=True, seen=frozenset()):
             return effect
         if record.operation == 'zip':
             return effect
-        arguments = tuple(shape(source.record.element) for source in sources)
+        arguments = tuple(shape(iterators.item(source))for source in sources)
         if record.operation == 'filter' and shape(record.callback) == 'none':
             if not sealed_builtin(state.model, BuiltinIdentity('bool'), arguments):
                 return unknown(state)

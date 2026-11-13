@@ -78,13 +78,13 @@ class ItertoolsAdapter:
                                      for index,source in enumerate(record.input_values))
             if record.tool=='chain':
                 if not values:registry._contribute(record.element,Cell(EMPTY),node)
-                for source in record.input_types:registry._contribute(record.element,source.record.element,node)
+                for source in record.input_types:registry._contribute(record.element,registry.item(source),node)
             elif record.tool=='pairwise':
-                item=record.input_types[0].record.element
+                item=registry.item(record.input_types[0])
                 if isinstance(shape(item),EmptyType):result=Cell(EMPTY)
                 else:result=Cell('tuple',(item,item))
                 registry._contribute(record.element,result,node)
-            else:registry._contribute(record.element,record.input_types[0].record.element,node)
+            else:registry._contribute(record.element,registry.item(record.input_types[0]),node)
         return ToolCall(factory(record.kind),record)
 
     @staticmethod
@@ -109,7 +109,8 @@ class ItertoolsAdapter:
         if record.tool=='repeat':
             fields=['value:'+values[0].code,'remaining:'+("None"if values[1]is None else'Some('+_index(emitter,node,values[1],'repeat')+')')]
         elif record.tool=='chain':
-            for source in record.input_types:source.record.emitted=True
+            from .native_finite_cursors import mark_emitted
+            for source in record.input_types:mark_emitted(emitter.model.iterators,source)
             for index,value in enumerate(values):
                 fields.extend((f'original_{index}:Some({value.code})',f'active_{index}:None'))
             fields.extend(('index:0','done:false'))
@@ -186,10 +187,10 @@ class ItertoolsState:
         if record.tool=='chain':
             fields=['index:usize','done:bool']
             for index,(value,source)in enumerate(zip(record.input_values,record.input_types)):
-                fields.extend((f'original_{index}:Option<{emitter.rust_type(shape(value))}>',f'active_{index}:Option<ClassIterator_{source.index}>'))
+                fields.extend((f'original_{index}:Option<{emitter.rust_type(shape(value))}>',f'active_{index}:Option<{emitter.rust_type(source)}>'))
             return ','.join(fields)
-        fields=f'source:Option<ClassIterator_{record.input_types[0].index}>'
-        if record.tool=='pairwise':return fields+f',previous:Option<{emitter.rust_type(shape(record.input_types[0].record.element))}>'
+        fields=f'source:Option<{emitter.rust_type(record.input_types[0])}>'
+        if record.tool=='pairwise':return fields+f',previous:Option<{emitter.rust_type(shape(emitter.model.iterators.item(record.input_types[0])))}>'
         return fields+',index:usize,next:usize,stop:Option<usize>,step:usize'
 
     @staticmethod
@@ -201,7 +202,7 @@ class ItertoolsState:
             return Expression('{let mut '+state+'='+value.code+'.borrow_mut();match '+state+'.remaining{Some(0)=>None,Some(n)=>{'+state+'.remaining=Some(n-1);Some('+state+'.value.clone())},None=>Some('+state+'.value.clone())}}',kind)
         if record.tool=='chain':return ItertoolsState._chain(registry,emitter,node,value,active)
         source=emitter.fresh();current=emitter.fresh();label='itertools_pull_'+emitter.fresh()
-        item_kind=shape(record.input_types[0].record.element)
+        item_kind=shape(registry.item(record.input_types[0]))
         nested=registry.pull(emitter,node,Expression(source,record.input_types[0]),active+(record.index,))
         code="'"+label+':{let Some('+source+')=({'+value.code+'.borrow().source.clone()})else{break \''+label+' None;};'
         cleanup='{let mut state='+value.code+'.borrow_mut();state.source=None;'+('state.previous=None;'if record.tool=='pairwise'else'')+'}'

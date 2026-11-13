@@ -86,6 +86,8 @@ class Iterators:
         from .native_source_iteration import has_protocol
         from .native_classes import domain
         parts=alternatives(kind)
+        from .native_finite_cursors import members
+        if members(self,kind):return True
         sequence_union=len(parts)>1 and any(domain(part)in {'list','tuple','tuple_sequence','range'}for part in parts)
         error_source=for_loop and any(default_noniterable(self.model,part)for part in parts)
         return sequence_union or error_source or any(isinstance(part,EmptyType)or part in {'str','bytes'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in parts) or needs_cursor(self.model,kind)
@@ -129,6 +131,8 @@ class Iterators:
             protocol=analyze(self,plan,node,value,environment)
             if protocol is not None:return protocol
         if iterator_kind(kind)and operation=="source":return kind
+        from .native_finite_cursors import members
+        if operation=='source'and members(self,kind):return kind
         record=self._record(plan,node,operation,identity)
         from .native_iterator_hints import SourceHint
         record.hint_protocol=SourceHint(reverse=operation=='reverse')
@@ -182,7 +186,7 @@ class Iterators:
         record.hint_protocol=ABSENT
         self._contribute(record.callback,callback,node)
         record.input_type=self.source(plan,node,source,environment=environment)
-        self._contribute(record.element,record.input_type.record.element,node)
+        self._contribute(record.element,self.item(record.input_type),node)
         return Cell(record.kind)
 
     def map(self,plan,node,callback,sources,environment=None):
@@ -208,7 +212,10 @@ class Iterators:
         if not sources:self._contribute(record.element,Cell(EMPTY),node)
         return Cell(record.kind)
 
-    def item(self,kind):return kind.record.element
+    def item(self,kind):
+        from .native_finite_cursors import item
+        result=item(self,kind)
+        return result if result is not None else kind.record.element
 
     def demand(self,plan,node,value,environment,active=()):
         from .native_classes import Cell,Environment,ClassUnsupported,shape
@@ -216,6 +223,10 @@ class Iterators:
         if has_protocol(self.model,shape(value)):
             return self.demand(plan,node,Cell(self.source(plan,node,value,environment=environment)),environment,active)
         if getattr(shape(value),'_native_class_generator',False):return self.model.generators.demand(plan,node,value,environment)
+        from .native_finite_cursors import members
+        from .native_types import UnionType
+        if isinstance(value.root().tag,UnionType)and members(self,value.root().tag):
+            value=self.model.cell_for_kind(value.root().tag)
         if value.root().tag=="union":
             result=Cell();branches=[]
             for choice in value.root().args:
@@ -271,6 +282,9 @@ class Iterators:
 
     def may_call(self,kind,seen=frozenset()):
         from .native_classes import shape
+        from .native_finite_cursors import members
+        parts=members(self,kind)
+        if parts:return any(self.may_call(part,seen)for part in parts)
         if not iterator_kind(kind)or kind.index in seen:return False
         record=kind.record
         if hasattr(record,"adapter"):return record.adapter.may_call(self,record,seen)
@@ -289,10 +303,11 @@ class Iterators:
 
     def snapshot(self):
         from .native_classes import shape
+        from .native_finite_cursors import signature
         return tuple((record.operation,shape(record.source),shape(record.element),
                       shape(record.callback)if record.callback is not None else None,
-                      None if record.input_type is None else record.input_type.index,
-                      tuple(source.index for source in record.input_types))
+                      None if record.input_type is None else signature(record.input_type),
+                      tuple(signature(source)for source in record.input_types))
                      for record in self.records)
 
     def construct(self,emitter,node,source,*,kind=None,not_iterable=None):
@@ -300,6 +315,9 @@ class Iterators:
         from .native_source_iteration import construct
         protocol=construct(self,emitter,node,source)
         if protocol is not None:return protocol
+        from .native_finite_cursors import construct as finite_construct
+        finite=finite_construct(self,emitter,node,source,kind)
+        if finite is not None:return finite
         from .native_bytearray import construct_cursor as bytearray_cursor
         bytearray=bytearray_cursor(self,emitter,node,source,kind)
         if bytearray is not None:return bytearray
@@ -379,6 +397,9 @@ class Iterators:
 
     def _pull(self,emitter,node,value,active=()):
         from .native_classes import ClassUnsupported,Expression,shape,domain
+        from .native_finite_cursors import pull as finite_pull
+        finite=finite_pull(self,emitter,node,value,active)
+        if finite is not None:return finite
         kind=value.kind
         if not iterator_kind(kind):raise ClassUnsupported(node)
         record=kind.record;record.emitted=True
@@ -569,12 +590,12 @@ class Iterators:
             if not record.emitted:continue
             if hasattr(record,"adapter"):fields=record.adapter.fields(emitter,record)
             elif record.operation in {"map","zip"}:
-                fields=",".join(f"source_{index}:ClassIterator_{source.index}"for index,source in enumerate(record.input_types))
+                fields=",".join(f"source_{index}:{emitter.rust_type(source)}"for index,source in enumerate(record.input_types))
                 if record.operation=="map":fields+=f",callback:{emitter.rust_type(shape(record.callback))}"
                 fields+=(","if fields else"")+"strict:bool"
-            elif record.operation=="enumerate":fields=f"source:ClassIterator_{record.input_type.index},index:NativeInt"
+            elif record.operation=="enumerate":fields=f"source:{emitter.rust_type(record.input_type)},index:NativeInt"
             elif record.operation=="filter":
-                fields=f"source:ClassIterator_{record.input_type.index},callback:{emitter.rust_type(shape(record.callback))}"
+                fields=f"source:{emitter.rust_type(record.input_type)},callback:{emitter.rust_type(shape(record.callback))}"
             else:
                 kind=shape(record.source);tag=domain(kind)
                 from .native_unions import union_kind

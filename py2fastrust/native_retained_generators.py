@@ -130,7 +130,7 @@ class Registry:
                     parent_scope=capture_parent.parent
         first=self.model.expression(parent,node.generators[0].iter,environment)
         record.outer=self.model.iterators.source(parent,node,first,('retained_outer',record.iterator.index),environment=environment)
-        record.frame.arguments['.0']=Cell(record.outer)
+        record.frame.arguments['.0']=self.model.cell_for_kind(record.outer)
         record.creation=Environment(environment)
         from .native_class_comprehensions import _normalizer
         record.semantic=_normalizer(self.model,parent,environment).comprehension(node)
@@ -153,7 +153,7 @@ class Registry:
         def element(values,semantic):
             self.model.iterators._contribute(record.element,self.model.expression(frame,semantic.element,values),semantic.element)
             return record.element
-        analyze(self.model,frame,expression.node,inside,contribute=element,first_value=Cell(expression.outer),semantic=expression.semantic)
+        analyze(self.model,frame,expression.node,inside,contribute=element,first_value=self.model.cell_for_kind(expression.outer),semantic=expression.semantic)
         expression.body=self.model.comprehensions[frame.index,id(expression.node)]
         self.model.exceptions.require(expression.node)
         return None
@@ -212,7 +212,7 @@ class Registry:
         emitter.logical_scope='<genexpr>';emitter.logical_binding_scope=scope
         emitter.primitive_parameters={};emitter.readonly_owned_parameters={}
         emitter.owned_local_lists={};emitter.owned_matrices={};emitter.record_places={}
-        fields=['scope:ClassScope','outer:ClassIterator_'+str(expression.outer.index)]
+        fields=['scope:ClassScope','outer:'+emitter.rust_type(expression.outer)]
         lexical=self.model.lexical;own=lexical.environments.get(scope)if expression.body is not None else None
         if own is not None:
             fields.append('environment:Rc<'+lexical.environment_type(scope)+'>')

@@ -138,7 +138,12 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
             from .native_source_reversal import analyze as source_reverse
             result=source_reverse(model,plan,node,arguments[0],environment)
             if result is not None:return model.remember(plan,node,result)
-        return cell(model.iterators.source(plan,node,arguments[0],operation="reverse"if name=="reversed"else"source",environment=environment))
+        cursor=model.iterators.source(plan,node,arguments[0],operation="reverse"if name=="reversed"else"source",environment=environment)
+        from .native_finite_cursors import members
+        if members(model.iterators,cursor):
+            value=model.cell_for_kind(cursor)
+            return cell(value.tag,value.args)
+        return cell(cursor)
     if name == "next" and 1<=len(arguments)<=2 and not keywords:
         model.exceptions.require(node)
         from .native_class_iterators import iterator_kind
@@ -269,7 +274,9 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=F
         return emit_numeric(emitter,node,identity,arguments,keywords,wanted)
     # Inspect finite tagged alternatives over captured values. Arguments and
     # keyword expressions have already run; these matches never replay them.
-    if identity.name in {"len","abs","int","bool","float","list","sum","next"}and arguments and union_kind(arguments[0].kind):
+    from .native_finite_cursors import members as finite_cursors
+    finite_id=(identity.name=='id'and arguments and finite_cursors(emitter.model.iterators,arguments[0].kind))
+    if (identity.name in {"len","abs","int","bool","float","list","sum","next"}or finite_id)and arguments and union_kind(arguments[0].kind):
         value=arguments[0]
         code=project(value.kind,value.code,lambda kind,code:emit(emitter,node,identity,
             [Expression(f"({code}).clone()",kind)]+arguments[1:],keywords,wanted,raw_kind).code)

@@ -27,6 +27,7 @@ def analyze(registry,plan,node,value,environment):
     from .native_classes import ClassUnsupported,shape
     from .native_guard_flow import AnalysisPending
     from .native_class_iterators import iterator_kind
+    from .native_finite_cursors import members
     from .native_aot_callables import analyze_values
     model=registry.model;kind=shape(value)
     if not has_protocol(model,kind):return None
@@ -51,7 +52,7 @@ def analyze(registry,plan,node,value,environment):
     if returned is None:
         if not model.final:raise AnalysisPending()
         raise ClassUnsupported(node,'source __iter__ return storage is unresolved after source-method analysis',proof='resolved source __iter__ cursor')
-    if not iterator_kind(returned):
+    if not(iterator_kind(returned)or members(registry,returned)):
         raise ClassUnsupported(node,'source __iter__ must return a registered native iterator; this return value needs noniterator TypeError handling or an unimplemented user __next__ protocol',types=(('__iter__ return',returned),),proof='registered source __iter__ result protocol')
     return returned
 

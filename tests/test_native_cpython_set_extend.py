@@ -111,15 +111,12 @@ BOUNDARY_CASES={'union_source_cursor': 'def select(flag):\n'
                                'values.extend(select(int(input())))\n'
                                'print(values)\n'}
 
-class CPSetExtendBoundaryTests(unittest.TestCase):
-    def test_existing_cursor_union_keeps_its_positioned_provider_boundary(self):
+@unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+class CPSetExtendCursorUnionTests(unittest.TestCase):
+    def test_original_existing_cursor_unions_execute_unchanged(self):
         for name,source in BOUNDARY_CASES.items():
-            for integer in ('i64','i128','bigint'):
-                with self.subTest(name=name,integer=integer):
-                    result=transpile(source,TranspileOptions(integer=integer,filename='set_extend.py'))
-                    self.assertFalse(result.success)
-                    self.assertTrue(any(item.code=='E006' and item.line==6 and 'typed pull-state adapter' in item.message
-                                        for item in result.diagnostics),result.diagnostics)
+            with self.subTest(name=name):
+                support.AnnotationAndAssertionExecutionTests.compare(self,source,('0\n','1\n'))
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')

@@ -1401,6 +1401,10 @@ class Model:
 
     def item(self, value, node):
         value = value.root()
+        if value.tag=='union'or isinstance(value.tag,UnionType):
+            from .native_finite_cursors import item as finite_item
+            finite=finite_item(self.iterators,shape(value))
+            if finite is not None:return finite
         if getattr(value.tag,'_native_bytearray',False):return Cell('int')
         if getattr(value.tag,"_native_array",False):return Cell(value.tag.element)
         deque=self.deques.element(shape(value))
@@ -3184,7 +3188,8 @@ class Emitter:
         setup+=cache
         self.loops.pop()
         current=self.fresh()
-        if domain(source.kind)=="iterator":
+        from .native_finite_cursors import members as finite_cursors
+        if domain(source.kind)=="iterator"or finite_cursors(self.model.iterators,source.kind):
             pulled=self.model.iterators.pull(self,node,source)
             prefix=f"'{label}:loop{{let Some({current})=({pulled.code}) else{{break;}};"
             item=Expression(current,pulled.kind)

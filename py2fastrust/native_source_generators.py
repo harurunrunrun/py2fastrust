@@ -206,7 +206,7 @@ class GeneratorBuilder(Builder):
             from .native_source_iteration import has_protocol
             source_node=node if has_protocol(self.emitter.model,source.kind)else node.iter
             kind=self.emitter.model.iterators.source(self.plan,source_node,original,('generator_for',id(node)))
-            cursor='cursor_'+str(len(self.extra));self.extra[cursor]=('Option<ClassIterator_'+str(kind.index)+'>','None')
+            cursor='cursor_'+str(len(self.extra));self.extra[cursor]=('Option<'+self.emitter.rust_type(kind)+'>','None')
             created=self.emitter.model.iterators.construct(self.emitter,source_node,source,kind=kind)
             self.emit('frame.'+cursor+'=Some('+created.code+');')
             head,body,otherwise,after=self.new(),self.new(),self.new(),self.new();self.end(('jump',head));self.current=head

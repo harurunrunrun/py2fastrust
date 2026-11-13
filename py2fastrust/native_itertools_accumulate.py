@@ -35,7 +35,7 @@ def analyze(model,plan,node,identity,positional,keywords,environment,*,factory):
     registry._contribute(record.callback,values[1]if values[1]is not None else Cell('none'),node)
     registry._contribute(record.initial,values[2]if values[2]is not None else Cell('none'),node)
     record.input_types=(registry.source(plan,node,values[0],('accumulate',0),environment=environment),)
-    registry._contribute(record.element,record.input_types[0].record.element,node)
+    registry._contribute(record.element,registry.item(record.input_types[0]),node)
     for kind in alternatives(shape(record.initial)):
         if kind is not None and kind!='none':registry._contribute(record.element,model.cell_for_kind(kind),node)
     return ToolCall(factory(record.kind),record)
@@ -99,7 +99,7 @@ class AccumulateState:
     @staticmethod
     def fields(emitter,record):
         from .native_classes import shape
-        return (f'source:ClassIterator_{record.input_types[0].index},pending:bool,'
+        return (f'source:{emitter.rust_type(record.input_types[0])},pending:bool,'
                 f'total:Option<{emitter.rust_type(shape(record.element))}>,callback:{emitter.rust_type(shape(record.callback))}')
 
     @staticmethod
