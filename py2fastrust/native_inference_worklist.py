@@ -36,12 +36,9 @@ def analyze(model, plan):
     for name, value in plan.arguments.items():
         model.canonical_local(plan, name, value)
     try:
-        remaining = model.analyze_body(plan, environment)
+        model.analyze_body(plan, environment)
     except AnalysisPending:
         return
-    if remaining is not None:
-        from .native_classes import Cell, merge
-        merge(plan.result, Cell('none'), plan.node)
 
 
 def solve(model):

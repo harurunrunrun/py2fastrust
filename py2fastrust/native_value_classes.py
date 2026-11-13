@@ -91,7 +91,12 @@ class Registry:
         return self.kind(plan,node.value if isinstance(node,ast.Starred)else node)
 
     def own_nodes(self,plan):
-        stack=list(reversed(plan.node.body if isinstance(plan.node.body,list)else[plan.node.body]))
+        if getattr(plan,'_native_retained_expression',False):
+            clause=plan.node.generators[0]
+            roots=[clause.target,*clause.ifs,plan.node.elt]
+        else:
+            roots=plan.node.body if isinstance(plan.node.body,list)else[plan.node.body]
+        stack=list(reversed(roots))
         while stack:
             node=stack.pop();yield node
             if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)):
@@ -106,6 +111,10 @@ class Registry:
                 # Its reached FunctionPlan owns its body; defaults are evaluated
                 # here and are covered by capture and fresh-name uses below.
                 stack.extend(reversed([*node.args.defaults,*[x for x in node.args.kw_defaults if x is not None]]))
+                continue
+            retained=getattr(self.model,'retained_generators',None)
+            if isinstance(node,ast.GeneratorExp)and retained is not None and (plan.index,id(node))in retained.sites:
+                stack.append(node.generators[0].iter)
                 continue
             stack.extend(reversed(list(ast.iter_child_nodes(node))))
 
@@ -246,6 +255,8 @@ class Registry:
                     binding=self.bindings.get(self.model.unit.ordinal(node))
                     if binding is not None and binding.role=='load'and binding.scope!=binding.owner:
                         raise Unproved('instance or instance container is captured by a different lexical scope')
+            if getattr(plan,'_native_retained_expression',False):
+                raise Unproved('suspended generator-expression frame has no fresh-instance transfer certificate')
             flow=Flow(self,owner,plan,refs,initializer,self_name)
             if isinstance(plan.node.body,list):flow.block(plan.node.body,{})
             else:flow.expression(plan.node.body,{})

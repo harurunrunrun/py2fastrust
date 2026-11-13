@@ -392,6 +392,32 @@ class Solver:
             else:result=result.join(value(part))
         return result
 
+    def typing_provenance(self,item,active=frozenset()):
+        """Resolve selected value paths without erasing structural type bounds.
+
+        Shape constraints supply lower-bound types rather than object origins.
+        The separate alias/provenance walk must continue to discard them.
+        Actual allocation identities stay intact so kind() can reject real
+        recursive heap layouts, while cyclic symbolic equations add no bound.
+        """
+        result=Value(unbound=item.unbound,unknown=item.unknown)
+        for part in item.alternatives:
+            if isinstance(part,ShapeConstraint):result=result.join(value(part.kind))
+            elif isinstance(part,(Variable,Projection)):
+                if part in active:continue
+                if isinstance(part,Variable):incoming=self.variables.get(part,BOTTOM)
+                else:
+                    owner=self.typing_provenance(part.receiver,active|{part})
+                    opaque=frozenset(member for member in owner.alternatives
+                                     if isinstance(member,(Computed,Projection)))
+                    if opaque:
+                        result=result.join(value(Projection(Value(opaque),part.role,part.index)))
+                        owner=Value(owner.alternatives-opaque,owner.unbound,owner.unknown)
+                    incoming=self.field_values(owner,part.role,part.index)
+                result=result.join(self.typing_provenance(incoming,active|{part}))
+            else:result=result.join(value(part))
+        return result
+
     def lookup(self,name,state,globals,locals):
         if name in state:return state[name]
         if name in locals:return MISSING
@@ -1040,6 +1066,21 @@ class Solver:
                 operands=tuple(self.kind(operand,active) for operand in part.operands)
                 current=self.computed(part.operation,operands)
             elif isinstance(part,Projection):
+                if part in active:continue
+                owner_values=self.typing_provenance(part.receiver,active|{part})
+                if(owner_values.alternatives and not owner_values.unknown
+                        and all(isinstance(member,(Allocation,TupleValue,IteratorValue,TupleType,ListType,TupleSequenceType,DequeType,SetType,DictType))
+                                for member in owner_values.alternatives)):
+                    # A scalar field can depend on another field of the same
+                    # container graph. Resolve the selected value path before
+                    # asking for the layout of every containing allocation.
+                    # Actual heap recursion still retains Allocation identities
+                    # and is rejected by the allocation guard above.
+                    selected=self.field_values(owner_values,part.role,part.index)
+                    current=self.kind(self.typing_provenance(selected,active|{part}),active|{part})
+                    if current is None:return None
+                    result=join_types(result,current)
+                    continue
                 owner=self.kind(part.receiver,active)
                 current=EMPTY
                 if owner is None:return None

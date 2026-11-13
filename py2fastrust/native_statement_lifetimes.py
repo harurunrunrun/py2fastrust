@@ -21,7 +21,7 @@ class LocalFlow(Flow):
         self.exits={}
         self.headers={}
         self.after={}
-        if not isinstance(plan.node.body,list):raise UnsupportedFlow
+        if not isinstance(getattr(plan.node,'body',None),list):raise UnsupportedFlow
         self.block(plan.node.body,set(),None,None)
 
     def statement(self,node,after,breaking,continuing):

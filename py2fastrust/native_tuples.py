@@ -63,7 +63,7 @@ def coerce_structural(expression,kind,coerce):
         if not isinstance(expression.kind,TupleType) or len(kind.fields)!=len(expression.kind.fields):
             raise _Unsupported
         if expression.kind==kind:
-            return f"({expression.code}).clone()"
+            return expression.code if expression.owned else f"({expression.code}).clone()"
         fields=[coerce(_Expression(f"native_tuple_copy.{index}",source),target)
                 for index,(source,target) in enumerate(zip(expression.kind.fields,kind.fields))]
         return f"{{let native_tuple_copy=({expression.code}).clone(); {tuple_code(fields)}}}"
@@ -209,7 +209,18 @@ def try_expression(generator,node,environment):
         if any(not immutable(value.kind) for value in values):
             raise _Unsupported("this tuple payload needs value/identity or mutable-alias handling beyond the registered native scalar tuple fields; the required tuple storage/protocol adapter is not implemented",node=node,operation="tuple allocation",types=(("tuple",TupleType(tuple(value.kind for value in values))),),proof="tuple payload value and identity semantics")
         kind=TupleType(tuple(value.kind for value in values));_mark(generator,kind)
-        return _Expression(tuple_code(value.code for value in values),kind,length=len(values))
+        # Each field becomes a by-value Rust operand before the outer tuple
+        # exists. Copy or clone a borrowed payload here; cloning the completed
+        # tuple cannot repair a move from a still-live Python binding.
+        def copied(kind):
+            from .native_types import NullableType,is_maybe
+            if isinstance(kind,TupleType):return all(copied(field) for field in kind.fields)
+            if isinstance(kind,NullableType):return copied(kind.value)
+            if is_maybe(kind):return copied(unmaybe(kind))
+            return kind in {"bool","float","none"} or bool(generator.bits) and kind in {"int","int_bool"}
+        fields=(value.code if value.owned or copied(value.kind) else generator.coerce(value,value.kind)
+                for value in values)
+        return _Expression(tuple_code(fields),kind,length=len(values))
     if isinstance(node,ast.Name):
         binding=environment.get(node.id)
         if isinstance(binding,_Binding) and isinstance(binding.kind,TupleType):

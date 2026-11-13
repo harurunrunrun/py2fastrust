@@ -303,7 +303,7 @@ def _type_name(emitter,value,node):
     if tag=="iterator"and value.kind.record.operation in {"filter","map","zip","enumerate"}:
         return _string(value.kind.record.operation)
     if tag=="iterator"and hasattr(value.kind.record,"tool"):return _string("itertools."+value.kind.record.tool)
-    if tag=="iterator"and value.kind.record.operation=='source_generator':return '"generator"'
+    if tag=="iterator"and value.kind.record.operation in {'source_generator','retained_generator_expression'}:return '"generator"'
     if tag=="iterator"and value.kind.record.operation in {'bytearray_source','bytearray_reverse'}:
         return _string('bytearray_iterator'if value.kind.record.operation=='bytearray_source'else'reversed')
     if tag=="iterator"and value.kind.record.operation=='source':

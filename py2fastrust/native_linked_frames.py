@@ -352,7 +352,8 @@ class LinkedEmitter(Emitter):
 
     def location_code(self):
         from .native import _string
-        return f"({_string(self.plan.source_unit.filename)},{_string(getattr(self,'logical_scope',self.plan.scope))})"
+        from .native_source_filenames import reference
+        return f"({reference(self.model,self.plan.source_unit.filename)},{_string(getattr(self,'logical_scope',self.plan.scope))})"
 
     def prepare_call_context(self,callee,receiver,constructor,defining_module=None,*,node=None):
         from .native_classes import InstanceType

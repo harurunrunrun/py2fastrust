@@ -109,6 +109,8 @@ def _model_proof(model):
         raise Unproved('source graph is recursive, suspended or exceeds the synchronous chain proof')
     if getattr(model, 'gc_classes', ()) or any(owner.used and '__del__' in owner.methods for owner in model.classes.values()):
         raise Unproved('collection or a finalizer can reenter source calls')
+    if getattr(getattr(model,'retained_generators',None),'records',None):
+        raise Unproved('a retained generator expression keeps cursor/capture state outside ordinary call-frame lifetime proofs')
     if model.generators.records:
         raise Unproved('a generator can contribute suspended logical depth')
     if any(getattr(plan,'source_generator',None)is not None for plan in plans.values()):

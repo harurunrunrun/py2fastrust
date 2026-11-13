@@ -108,7 +108,8 @@ class Generators:
         from .native_classes import Cell,ClassUnsupported
         from .native_class_comprehensions import _normalizer
         if not self._immediate(plan,node,environment):
-            raise ClassUnsupported(node,'this generator expression needs general iteration or stored suspension state; only immediate builtin collectors are implemented, and a suspended comprehension frame retaining lexical bindings and nested-loop positions is still required',proof='nonescaping generator consumer and retained suspension state')
+            from .native_retained_generators import registry
+            return registry(self.model).analyze(plan,node,environment)
         key=plan.index,id(node)
         record=self.sites.get(key)
         if record is None:
@@ -138,6 +139,8 @@ class Generators:
 
     def construct(self,emitter,node):
         from .native_classes import Expression
+        retained=getattr(self.model,'retained_generators',None)
+        if retained is not None and(emitter.plan.index,id(node))in retained.sites:return retained.construct(emitter,node)
         record=self.sites[(emitter.plan.index,id(node))]
         setup,first=emitter.capture(emitter.expression(node.generators[0].iter))
         outer=self.model.iterators.construct(emitter,node,first,kind=record.outer)

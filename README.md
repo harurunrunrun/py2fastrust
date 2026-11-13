@@ -296,6 +296,10 @@ arbitrary-precision integer temporaries or acquire standard input solely to
 convert an existing value. Unicode digit and whitespace data is included only
 when the selected Unicode profile and retained operations require it.
 Immediately consumed generator expressions use typed loops for reductions.
+Retained generator expressions with one `for` clause use owned, typed Rust
+iterator frames. Unpacking, filters, live lexical cells, shared cursors and
+`close()` preserve creation versus pull timing. Nested clauses, async iteration
+and injected `send`/`throw` protocols remain explicit native capability gaps.
 All integer modes also support character-based string slicing,
 `strip`/`lstrip`/`rstrip`, `count`, and `join` over proved string streams.
 

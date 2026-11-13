@@ -99,6 +99,8 @@ def instance_classes(model,kind,node):
         raise ClassUnsupported(node,'type() of this NamedTuple needs a retained per-value class-definition holder; the immutable tuple payload does not expose that class identity yet',types=(('value',kind),),proof='NamedTuple actual class-definition holder')
     if kind=='int_bool':return (class_kind(model,'int'),class_kind(model,'bool'))
     if getattr(kind,'_native_bytearray',False):return (class_kind(model,'bytearray'),)
+    if getattr(getattr(kind,'record',None),'operation',None)in {'source_generator','retained_generator_expression'}:
+        return (class_kind(model,'generator'),)
     if kind in {'int','bool','float','str','bytes','complex','range','none'}:return (class_kind(model,'NoneType'if kind=='none'else kind),)
     if isinstance(kind,ListType):return (class_kind(model,'list'),)
     if isinstance(kind,(TupleType,TupleSequenceType)):return (class_kind(model,'tuple'),)

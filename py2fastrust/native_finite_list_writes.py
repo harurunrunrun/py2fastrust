@@ -7,7 +7,7 @@ Python's assignment error after target operand evaluation.
 from .native_types import alternatives
 
 TARGETS = frozenset({'list', 'tuple', 'tuple_sequence', 'str', 'bytes',
-                     'int', 'bool', 'int_bool', 'float', 'none'})
+                     'int', 'bool', 'int_bool', 'float', 'none', 'function'})
 INDICES = TARGETS | frozenset({'function','range'})
 
 

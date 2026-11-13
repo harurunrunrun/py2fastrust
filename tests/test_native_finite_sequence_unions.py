@@ -105,10 +105,82 @@ print(list(stream(missing,size)))
 }
 
 BOUNDARIES={
-'assert_callback_rebinds_the_later_iterable':(14,'for-loop','iterable=None'),
-'generator_body_observes_assert_before_the_loop':(7,'source generator','owned source generator frame payload'),
 'list_iteration_keeps_live_mutation':(10,'items.append','None | list[int]'),
 }
+
+CASES.update({
+'live_mutation_through_a_known_owner_alias':('''class Factory:
+    def __init__(self):self.buffer=[1,2,3]
+    def build(self,missing):return None if missing else self.buffer
+factory=Factory()
+for item in factory.build(int(input())):
+    if item<3:factory.buffer.append(item+3)
+    print(item)
+print(factory.buffer)
+''',('0\n','1\n')),
+'pure_none_iteration_raises_before_body_or_else':('''class Worker:
+    def run(self):
+        for item in None:print('body',item)
+        else:print('else')
+        print('after')
+Worker().run()
+''',('',)),
+'pure_scalar_iteration_keeps_its_actual_type_error':('''class Worker:
+    def run(self,value):
+        for item in value:print(item)
+flag=int(input())
+Worker().run(None if flag else 1.5)
+''',('0\n','1\n')),
+'enumerate_captures_source_before_start_effects':(FACTORY+'''items=Factory().build(int(input()),2)
+def begin():
+    global items
+    items=None
+    print('start')
+    return 4
+for position,item in enumerate(items,begin()):print(position,item)
+print(items is None)
+''',('0\n','1\n')),
+'generator_none_elements_are_real_values':('''class Factory:
+    def build(self,missing,size):return None if missing else [None]*size
+def stream(missing,size):
+    items=Factory().build(missing,size)
+    assert items,'empty values'
+    for item in items:yield item
+missing,size=map(int,input().split())
+print(list(stream(missing,size)))
+''',('0 2\n','0 0\n','1 2\n')),
+'generator_reused_local_retains_real_none_and_integer_values':('''class Factory:
+    def build(self,missing):return None if missing else [None,None]
+def stream(missing):
+    items=Factory().build(missing)
+    assert items,'empty values'
+    for item in items:yield item
+    for item in range(2):yield item
+print(list(stream(int(input()))))
+''',('0\n','1\n')),
+'generator_reused_loop_local_keeps_all_stored_types':(FACTORY+'''def stream(missing):
+    items=Factory().build(missing,2)
+    assert items,'empty values'
+    for item in items:yield item
+    for item in ('a','b'):yield item
+print(list(stream(int(input()))))
+''',('0\n','1\n')),
+'generator_zero_trip_target_stays_unbound':(FACTORY+'''def stream(size):
+    items=Factory().build(False,size)
+    for item in items:pass
+    yield item
+print(list(stream(int(input()))))
+''',('0\n','2\n')),
+'generator_actual_callable_retention_stays_guarded':(FACTORY+'''def callback():return 7
+def stream():
+    items=Factory().build(False,2)
+    for item in items:yield item
+    item=callback
+    yield item()
+print(list(stream()))
+''',('',)),
+})
+BOUNDARIES['generator_actual_callable_retention_stays_guarded']=(8,'source generator','owned source generator frame payload')
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class FiniteSequenceUnionTests(unittest.TestCase):

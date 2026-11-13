@@ -32,6 +32,9 @@ def requires_environments(unit,analysis,targets):
 
 def own_return_values(unit,node):
     """Nested returns do not determine an enclosing function's result ABI."""
+    if isinstance(node,ast.GeneratorExp):
+        yield node.elt
+        return
     if unit is None:
         if isinstance(node,ast.Lambda):
             yield node.body

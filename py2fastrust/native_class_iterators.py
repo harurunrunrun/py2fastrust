@@ -80,13 +80,14 @@ class Iterators:
     def owns(self,kind):
         return iterator_kind(kind)and 0<=kind.index<len(self.records)and self.records[kind.index]is kind.record
 
-    def needs_source_cursor(self,kind):
+    def needs_source_cursor(self,kind,*,for_loop=False):
         from .native_class_deque_cursors import needs_cursor
         from .native_source_iteration import has_protocol
         from .native_classes import domain
         parts=alternatives(kind)
         sequence_union=len(parts)>1 and any(domain(part)in {'list','tuple','tuple_sequence','range'}for part in parts)
-        return sequence_union or any(isinstance(part,EmptyType)or part in {'str','bytes'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in parts) or needs_cursor(self.model,kind)
+        error_source=for_loop and any(default_noniterable(self.model,part)for part in parts)
+        return sequence_union or error_source or any(isinstance(part,EmptyType)or part in {'str','bytes'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in parts) or needs_cursor(self.model,kind)
 
     def immediate_integer_map(self,plan,node,environment):
         """Retain eager word parsing only for consumers with no saved cursor."""
@@ -274,6 +275,8 @@ class Iterators:
         for record in self.records:
             edges[("iterator",record.index)]={target for kind in record.kind._native_owned_kinds
                 if kind is not None for target in targets(kind)}
+            if hasattr(getattr(record,'adapter',None),'lifetime_edges'):
+                record.adapter.lifetime_edges(self.model,record,edges,targets)
 
     def snapshot(self):
         from .native_classes import shape
@@ -584,6 +587,9 @@ class Iterators:
         if any(record.emitted and record.operation=="reverse"for record in self.records):
             from .native_class_reverse_iterators import runtime as reverse_runtime
             result.insert(0,reverse_runtime(emitter))
+        from .native_retained_generators import runtime as retained_runtime
+        retained=retained_runtime(self.model)
+        if retained:result.append(retained)
         return "\n".join(result)
 
 

@@ -423,8 +423,20 @@ class Model:
                 site=self.unit.ordinal(node)if self.unit is not None else id(node)
                 allocation=self.value_constraints.allocation(site,'list',('class',plan.index)if identity is None else('class',plan.index,identity))
                 origins=frozenset({allocation})
-            self.constructors.setdefault(key,Cell(tag,tuple(args),list_origins=origins))
-            merge(result, Cell(tag, tuple(args),list_origins=origins), node,allow_unresolved=not self.final)
+            if tag=='tuple':
+                constructor=self.constructors.setdefault(key,Cell('tuple',tuple(Cell()for _ in args)))
+                if constructor.tag!='tuple'or len(constructor.args)!=len(args):raise ClassUnsupported(node)
+                # A tuple's stored ABI owns its position schemas. Widening a
+                # repeated constructor must not change an operand's earlier
+                # point value or unify independent mutable allocations.
+                for destination,source in zip(constructor.args,args):
+                    if not self.namespace.contribute(destination,source,node,force=True):
+                        self.contribute(destination,source,node)
+                values=tuple(self.flow_copy(value)for value in constructor.args)
+            else:
+                self.constructors.setdefault(key,Cell(tag,tuple(args),list_origins=origins))
+                values=tuple(args)
+            merge(result, Cell(tag,values,list_origins=origins), node,allow_unresolved=not self.final)
         if identity is None:self.records[key] = result
         if tag == "list":
             site=self.unit.ordinal(node) if self.unit is not None else id(node)
@@ -687,6 +699,8 @@ class Model:
                 tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else(),initialized_module_snapshot(self),property_snapshot(self))
 
     def analyze_body(self,plan,environment):
+        if getattr(plan,'_native_retained_expression',False):
+            return self.retained_generators.analyze_body(plan,environment)
         if isinstance(plan.node,ast.Lambda):
             from .native_function_body_binding_reads import begin as begin_initialized_module_calls
             begin_initialized_module_calls(self,plan)
@@ -695,6 +709,12 @@ class Model:
             return None
         result=self.block(plan,plan.node.body,environment)
         if getattr(plan,'source_generator',None)is not None:return None
+        if result is not None:
+            # Normal completion is a real result producer, including during
+            # final validation. Register it through the same directional flow
+            # as explicit returns so refreshing their sources cannot drop None.
+            value=self.cell(plan,plan.node,"none",identity="implicit_return")
+            self.contribute(plan.result,value,plan.node)
         if hasattr(self,'class_namespaces'):self.class_namespaces.named_tuples.finish_body(plan,result or environment)
         return result
 
@@ -1222,6 +1242,9 @@ class Model:
                 from .native_class_stdio import analyze as analyze_reader
                 return analyze_reader(self,plan,node,callable_.tag,arguments,keywords)
         if receiver is not None:
+            from .native_retained_generators import analyze_method as retained_method
+            retained=retained_method(self,plan,node,receiver,arguments,keywords,environment)
+            if retained is not None:return retained
             from .native_bytearray import analyze_method as bytearray_method
             bytearray=bytearray_method(self,plan,node,receiver,arguments,keywords,environment)
             if bytearray is not None:return bytearray
@@ -1641,7 +1664,7 @@ class Model:
                 if isinstance(node,ast.For):
                     value = self.expression(plan,node.iter,environment)
                     from .native_class_iterators import tuple_cursor_required
-                    if self.iterators.needs_source_cursor(shape(value)) or tuple_cursor_required(shape(value)):
+                    if self.iterators.needs_source_cursor(shape(value),for_loop=True) or tuple_cursor_required(shape(value)):
                         value=Cell(self.iterators.source(plan,node,value,environment=environment))
                     elif value.root().tag=='enumerate'and self.iterators.needs_source_cursor(shape(value.root().args[0])):
                         self.iterators.source(plan,node,value.root().args[0],environment=environment)
@@ -2569,6 +2592,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};"+exported+temporary+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_retained_generators import emit_method as retained_method
+        retained=retained_method(self,node)
+        if retained is not None:return retained
         from .native_bytearray import emit_method as bytearray_method
         bytearray=bytearray_method(self,node)
         if bytearray is not None:return bytearray
@@ -3114,7 +3140,7 @@ class Emitter:
                 if owned is not None:enumerated=True;source_node=immediate
         setup,source=owned if owned is not None else self.capture(self.expression(source_node))
         from .native_class_iterators import tuple_cursor_required
-        if self.model.iterators.needs_source_cursor(source.kind) or tuple_cursor_required(source.kind):
+        if self.model.iterators.needs_source_cursor(source.kind,for_loop=True) or tuple_cursor_required(source.kind):
             before,source=self.capture(self.model.iterators.construct(self,node,source));setup+=before
         counter=None
         if enumerated:
@@ -3191,6 +3217,7 @@ class Emitter:
         return "\n".join(data+references)
 
     def generate(self):
+        if getattr(self.plan,'_native_retained_expression',False):return ''
         from .native_source_generators import generate as generate_source_generator
         generator=generate_source_generator(self)
         if generator is not None:return generator
@@ -3682,4 +3709,6 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         from .rust_pruning import prune_rust_source
         result=prune_rust_source(result)
     from .native_notices import retain_native_notices
-    return retain_native_notices(result)
+    result=retain_native_notices(result)
+    from .native_source_filenames import finish as finish_source_filenames
+    return finish_source_filenames(model,result)

@@ -6,6 +6,13 @@ source-positioned `E006` diagnostic and no Rust file. They never select the
 retained general backend. `--no-optimize` disables optional helper pruning and
 keeps the same direct generation path.
 
+Repeated diagnostic filenames can share generated Rust constants when this
+reduces the retained source size. Pooling runs after helper and Unicode-data
+pruning, handles only compiler-registered location references, and preserves
+the exact filename and function/generator scope. User string literals, format
+strings and source text keep their original values. Unused entries emit no
+constant, and short or unprofitable references retain their inline form.
+
 ## Current public direct path
 
 Proved integer/boolean, string, and f64 scalars, BigInt scalar arithmetic and
@@ -100,6 +107,15 @@ proved list addition and integral repetition are supported. General iterable
 specific diagnostics. Finite builtin list index alternatives preserve
 runtime type errors; fused augmented stores require an integral index, and an
 uninhabited target read stops before RHS evaluation.
+
+Indexed stores through finite alternatives of a mutable builtin list and
+source, bound-method or builtin-function references retain operand order and
+list aliases. Selecting a callable raises its actual Python assignment error;
+an augmented read error occurs before the RHS. This capability requires a real
+mutable list alternative. Pure callable targets, custom index protocols and
+arbitrary metaclass assignment keep separate proof boundaries. Some method-field
+shadowing and module-member reference contexts still have unresolved native
+storage and produce positioned diagnostics.
 
 Retained ranges support ordinary and extended slicing, including negative
 steps, nested slices and counts larger than `usize` or signed machine indices.
@@ -270,6 +286,11 @@ infinite loop with no reachable outer break does not invent an implicit `None`
 return; nested breaks remain owned by their own loops. Loops omitted by a false
 literal retain official unbound-local errors. Effectful/computed tests keep
 conservative control-flow analysis.
+Normal function and method completion contributes a stable actual `None`
+producer through the same directional result flow as explicit returns. Final
+validation preserves that producer after zero-trip or exhausted source loops;
+refreshing an explicit return cannot narrow away the implicit return. Lambdas
+and generator yield protocols retain their separate completion rules.
 
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14
@@ -370,6 +391,15 @@ methods still requires their name/address object protocol. Default user objects
 raise ordering `TypeError` only when a comparison is actually needed; defining
 custom special methods remains an explicit unsupported class protocol.
 
+Native scalar constraints follow selected values through nested allocation,
+tuple and iterator paths before requesting complete containing layouts. Cyclic
+scalar dataflow can retain a proved scalar anchor without becoming a recursive
+heap type. Structural lower-bound types remain part of inference; physical
+alias provenance continues to contain actual allocation identities. Opaque
+computed owner paths retain their selected-value projection for type fallback,
+rather than being mistaken for empty cyclic equations. Unknown
+producers and genuinely recursive heap layouts remain explicit capability gaps.
+
 Generator expressions consumed by `sum`, `any`, `all`, `min`, or `max` lower to
 typed Rust loops, including proved nested clauses, filters, and
 `map`/`filter`/`enumerate`/`zip` adapters. Construction and iteration keep their
@@ -380,8 +410,19 @@ argument buffer directly, including nested clauses and filters, without an
 intermediate list. The first iterator is constructed at generator creation;
 body evaluation follows the consumer's actual timing. Body `StopIteration`
 becomes `RuntimeError`; a `map`/`filter` callback `StopIteration` ends one pull
-without permanently exhausting a resumable source. Escaping generators and
-unproved mutation still need direct implementation. Floating-point compensated
+without permanently exhausting a resumable source. Retained generator expressions
+with one synchronous `for` clause compile from their original AST/symbol-table
+scope into owned typed iterator frames. They support filters, target unpacking,
+live module/free cells, yielded native cursor handles, independent instances,
+shared exhaustion and `close()`. Their first iterator is obtained at creation;
+filters and elements run only when pulled. Suspended environment and cursor
+ownership is checked. Admission distinguishes each proved standard-module
+consumer's iterable positions from payload, count, initial, key and other
+arguments. Unknown or rebound callable identities retain the deferred path;
+being a standard-module member alone does not prove eager consumption.
+Multiple clauses, class-namespace creation, async clauses,
+`send`/`throw`, cyclic captures and recursive/asynchronous resume callbacks retain
+specific positioned diagnostics. Floating-point compensated
 `sum` is not implemented here.
 Ordinary `for` loops share these typed adapters, including string character
 iteration, `reversed`, destructuring `enumerate`/`zip`, and generator producers.
@@ -506,6 +547,10 @@ Structural type descriptors are shared by binding joins, declarations,
 function signatures, and tuple operations. Fixed tuples of immutable scalar
 values use ordinary Rust tuples and support aliases, unpacking, indexing,
 comparisons, Python-style printing, and typed function arguments/results.
+Tuple allocation materializes borrowed immutable fields before constructing the
+Rust tuple, so the same finite-union or non-Copy tuple operand may appear more
+than once. Owned temporaries move directly, and proved Copy fields retain plain
+copies; cloning a containing tuple is not used to repair an earlier field move.
 Possibly unbound tuple bindings use `Option<TupleType>` storage. Homogeneous variable-length tuples use immutable shared handles, including
 `tuple(map(int, input().split()))`; their length is checked when unpacked rather
 than inferred from later target counts. Indexing, iteration, printing, supported
@@ -966,6 +1011,14 @@ until the original producers reach a fair fixed point; no element type is
 invented. Assertions retain their original truth test, conditional message
 and failure order, and cursor capture preserves later name rebinding.
 
+Statement loops over actual `None` or numeric scalars report Python's iteration
+`TypeError` before executing the body or `else` suite. Source-generator frame
+validation can use a complete solved local ABI for exclusively loop-bound
+locals after checking every current concrete source and store. Earlier unknown
+loop projections do not become retained payload types; real `None`, all stored
+alternatives, unbound slots and ownership boundaries remain distinct. Opaque
+iterator captures and genuinely unresolved producers retain strict diagnostics.
+
 Typed frames dispatch finite list/scalar alternatives for list repetition and
 concatenation, including nullable counts and Python operand errors. Supported
 list `+=` and `*=` branches mutate the captured list handle; numeric branches
@@ -1238,6 +1291,14 @@ allocation provenance selects this typed frame path before emission when a
 binding can choose different list layouts; uniform primitive list choices keep
 their ordinary backend selection. No list contents are copied to reconcile a
 binding's alternatives.
+
+Tuple literals use independent constructor position schemas. Reanalysis can
+widen the stored tuple ABI without changing an operand's earlier guarded point
+type or unifying independent list allocations. Pending producers remain
+pending until the shared analysis reaches its fixed point. Generation converts
+each operand into its constructor position while preserving mutable handles,
+evaluation order, real `None` values and unbound-name errors. Methods on
+tuple-projected finite unions of list layouts still need their own adapters.
 
 A resolved call graph selects ordinary Rust functions for small acyclic class
 call paths. Recursive components, their callers and longer chains retain the

@@ -36,6 +36,8 @@ def synchronous(model,plan):
 
 def entry_result(model,plan):
     """Physical Result ABI is separate from source no-suspension ownership."""
+    if getattr(plan,'_native_retained_expression',False):
+        return model.retained_generators.synchronous(plan.retained_expression)
     from .native_typed_continuations import entry_result as continuation_entry
     return synchronous(model,plan)or continuation_entry(model,plan)
 

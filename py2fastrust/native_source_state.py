@@ -57,7 +57,8 @@ class Registry:
         self.coverage = []
         self.reasons = {}
         self.barrier = None
-        self.plans = {p.index: p for p in model.plans if p.reachable}
+        self.plans = {p.index: p for p in model.plans if p.reachable
+                      and not getattr(p, '_native_retained_expression', False)}
         self.nodes = {id(n): n for n in model.iter_nodes()}
         self.rows = tuple(model.iter_bindings())
         self.raw_own = {p.index: tuple(model.value_classes.own_nodes(p))

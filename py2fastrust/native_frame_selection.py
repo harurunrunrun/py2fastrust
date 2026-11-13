@@ -112,6 +112,9 @@ def select_frames(unit,*,integer="i64"):
     from .native_bytes_sequences import requires_frames as byte_sequence_frames
     if byte_sequence_frames(unit,analysis):
         return FrameSelection(True,('native immutable bytes repetition',),analysis,frozenset(),MappingProxyType({}))
+    from .native_retained_generators import requires_frames as retained_expressions
+    if retained_expressions(unit,analysis):
+        return FrameSelection(True,('retained original generator-expression frame',),analysis,frozenset(),MappingProxyType({}))
     from .native_callback_analysis import supplement
     analysis=supplement(unit,analysis,integer)
     from .native_float_powers import requires_frames as float_power_requires_frames

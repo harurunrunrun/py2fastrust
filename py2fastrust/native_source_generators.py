@@ -251,6 +251,49 @@ class GeneratorBuilder(Builder):
         return 'match frame.pc{'+','.join(str(index)+'=>{'+render(index)+'}'for index in sorted(self.resume_states))+',_=>unreachable!("source generator position")} '
 
 
+def _loop_local_schema(model,plan,name,values):
+    """Certify obsolete unknown projections against every current loop store.
+
+    Only compiler-unknown histories from an exclusively loop-bound local may
+    defer to its solved ABI. All actual values and current producers must be
+    complete and represented by that same slot; other histories stay strict.
+    """
+    from .native_classes import shape,domain
+    from .native_class_globals import complete
+    from .native_types import alternatives,join_types
+    if model.unit is None or not any(shape(value)is None for value in values):return None
+    stored=model.namespace.local_kind(plan,name)
+    if not complete(stored):return None
+    scope=model.lexical.scope(plan)
+    writers=[row for row in model.unit.bindings if row.owner==scope and row.name==name
+             and row.role not in {'load','parameter'}]
+    if not writers or any(row.role!='store'for row in writers):return None
+    targets={model.unit.ordinal(child):(child,node)for node in own_nodes(plan.node)if isinstance(node,ast.For)
+             for child in ast.walk(node.target)if isinstance(child,ast.Name)and isinstance(child.ctx,ast.Store)}
+    for row in writers:
+        binding=targets.get(row.node)
+        if binding is None:return None
+        target,loop=binding
+        if model.lexical.field_for(target)is not None:return None
+        source=model.records.get((plan.index,id(loop.iter)))
+        if source is None or not complete(shape(source)):return None
+        # Opaque iterator/protocol carriers can hide unresolved captures.
+        # This certificate covers concrete builtin source layouts only.
+        if any(domain(part)not in {'list','tuple','tuple_sequence','range','str','bytes','none','int','bool','int_bool','float'}
+               for part in alternatives(shape(source))):return None
+        current=model.records.get((plan.index,id(target)))
+        if current is None:return None
+        kind=shape(current)
+        if not complete(kind)or join_types(stored,kind)!=stored:return None
+    if name in plan.arguments:
+        kind=shape(plan.arguments[name])
+        if not complete(kind)or join_types(stored,kind)!=stored:return None
+    for value in values:
+        kind=shape(value)
+        if kind is not None and(not complete(kind)or join_types(stored,kind)!=stored):return None
+    return stored
+
+
 def generate(emitter):
     spec=getattr(emitter.plan,'source_generator',None)
     if spec is None:return None
@@ -279,9 +322,13 @@ def generate(emitter):
                 or receiver_type(model,plan,name)is not None
                 or parameter_type(model,plan,name)is not None):
             raise ClassUnsupported(plan.node,'source generator parameter '+repr(name)+' uses a borrowed native receiver; suspending that borrowed receiver requires an owned frame capture that is not implemented',proof='owned source generator receiver capture')
-    for value in (record.element,*plan.arguments.values(),*(value for values in plan.locals.values()for value in values)):
-        if not closed(shape(value)):
-            raise ClassUnsupported(plan.node,'this source generator retains a callable, iterator or object whose suspended lifetime/ownership is not implemented; the current frame supports builtin values and owned shared instance handles',types=(('retained value',shape(value)),),proof='owned source generator frame payload')
+    retained=[shape(record.element),*(shape(value)for value in plan.arguments.values())]
+    for name,values in plan.locals.items():
+        stored=_loop_local_schema(model,plan,name,values)
+        retained.extend([stored]if stored is not None else(shape(value)for value in values))
+    for kind in retained:
+        if not closed(kind):
+            raise ClassUnsupported(plan.node,'this source generator retains a callable, iterator or object whose suspended lifetime/ownership is not implemented; the current frame supports builtin values and owned shared instance handles',types=(('retained value',kind),),proof='owned source generator frame payload')
     # All frame places remain owned across Rust calls and suspension. Never
     # retain temporary native borrows or an optimizer's stack-local Vec place.
     emitter.primitive_parameters={};emitter.readonly_owned_parameters={}
