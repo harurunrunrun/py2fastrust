@@ -945,8 +945,13 @@ The ten `heapq` operations `heapify`, `heappush`, `heappop`, `heappushpop`,
 typed list. Supported payloads include immutable integer/bool, text/bytes and
 tuple values. Bare floats use Python's strict `<` comparison in every integer mode,
 including NaNs. Shared list handles preserve caller/row aliases and capture
-the receiver before later arguments run. Floating tuple identity, custom or
-fallible comparisons and `merge` remain unfinished.
+the receiver before later arguments run. Source-defined ordering and supported
+builtin tuple/list keys use a typed fallible comparator path. Comparison and
+truth callbacks run without active list borrows; C-accelerator comparison order,
+current-slot reloads, partial updates, errors and heapify traversal are retained.
+The primitive path remains unchanged. Floating tuple identity, nested source
+objects in sequence keys and `merge` remain unfinished. Retained CPython-adapted
+fallible helpers include their targeted attribution and license notice.
 
 `heapq.nlargest` and `nsmallest` use the shared typed iterable and callback
 adapters, including immediate generator expressions, saved cursors, class fields

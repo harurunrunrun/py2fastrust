@@ -42,6 +42,12 @@ def retain_native_notices(source: str) -> str:
             '// Copyright Python Software Foundation; PSF License Version 2.\n'
             '// Modifications: typed Rust index permutations and fallible synchronous/asynchronous callbacks.\n'+
             (''if notices else licenses['PYTHON_LICENSE.txt']))
+    if any(name.startswith('native_fallible_heap')for name in functions):
+        notices.append(
+            '// CPython-derived fallible heaps: Modules/_heapqmodule.c, Python 3.14.4.\n'
+            '// Copyright Python Software Foundation; PSF License Version 2.\n'
+            '// Modifications: typed Rust buffers, released borrows, positioned errors and synchronous/asynchronous callbacks.\n'+
+            (''if notices else licenses['PYTHON_LICENSE.txt']))
     suffix = "\n\n" + "\n\n".join(notices) if notices else ""
     code = strip_comments(source).strip()
     code = cleanup_rust_source(code)

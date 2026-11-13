@@ -319,7 +319,7 @@ floating-object identity and cyclic ownership remain explicit boundaries.
 
 | Module | Direct APIs | Remaining requirements |
 |---|---|---|
-| `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts; `nlargest`/`nsmallest` with captured keys | `merge`, custom rich comparisons, floating decorated tuple identity |
+| `heapq` | `heapify`, `heappush`, `heappop`, `heappushpop`, `heapreplace`, and all five `_max` counterparts, including source ordering and builtin sequence keys; `nlargest`/`nsmallest` with captured keys | `merge`, nested source-object sequence keys, floating decorated tuple identity |
 | `bisect` | `bisect`, `bisect_left`, `bisect_right`, `insort`, `insort_left`, `insort_right` with checked bounds and captured `key` callbacks | Arbitrary sequence protocols, custom/fallible comparisons |
 
 Canonical heap/bisection imports also work in typed class, closure and linked

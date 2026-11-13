@@ -1,5 +1,5 @@
 """Captured heapq operations on the original shared builtin list handle."""
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from .native_heapq import CORE,NAMES,orderable
 
 
@@ -7,6 +7,7 @@ from .native_heapq import CORE,NAMES,orderable
 class HeapCall:
     result:object
     error:str|None=None
+    comparators:dict=field(default_factory=dict)
 
 
 class Comparator:
@@ -49,22 +50,24 @@ class HeapAdapter:
         parameters=('heap','item')if len(arguments)==2 else('heap',)
         FunctionSignature.declaration(parameters,positional_only=parameters).plan(call_arguments)
         result=factory('none')if operation in {'heapify','heappush'}else factory()
+        record=HeapCall(result)
         known=False
         for heap in branches(arguments[0]):
             if heap.tag=='list':
                 known=True
                 if len(arguments)==2:model.contribute(heap.args[0],arguments[1],node)
                 element=shape(heap.args[0])
+                from .native_fallible_heapq import analyze as fallible_comparison
+                comparator=fallible_comparison(model,plan,node,identity.name,heap,environment)
+                if comparator is not None:record.comparators[shape(heap)]=comparator
                 if model.final and element is not None:
-                    if not orderable(element):
-                        raise ClassUnsupported(node,'heap comparisons need a proved non-fallible builtin ordering; these mutable/custom or mixed alternatives need a fallible comparator',types=(('element',element),),proof='non-reentrant heap comparison')
                     if model.integer=='bigint'and element!='float'and any(kind=='float'for kind in alternatives(element)):
                         raise ClassUnsupported(node,'this heap needs exact BigInt/float comparison; that numeric interoperation adapter is not implemented',proof='BigInt and binary64 heap ordering')
                 if operation not in {'heapify','heappush'}:
                     if not model.namespace.contribute(result,heap.args[0],node,force=True):model.contribute(result,heap.args[0],node)
             elif heap.tag is not None:known=True
         if known and result.root().tag is None and model.final:model.contribute(result,Cell('none'),node)
-        return HeapCall(result)
+        return record
 
     @staticmethod
     def emit(emitter,node,identity,record,arguments,keywords):
@@ -88,6 +91,9 @@ class HeapAdapter:
                 template=f'TypeError: {identity.name}() {label} must be list, not {{}}'
                 return _error(emitter,node,wanted,'format!('+_string(template)+','+typename+')').code
             element=heap.kind.element
+            if heap.kind in record.comparators:
+                from .native_fallible_heapq import emit
+                return emit(emitter,node,identity.name,heap,arguments,wanted,record.comparators[heap.kind])
             compare=_comparator(Comparator(emitter),element,node,maximum)
             args='&mut ('+heap.code+').borrow_mut()'
             if len(arguments)==2:args+=','+emitter.coerce(arguments[1],element,node)
@@ -104,10 +110,12 @@ class HeapAdapter:
 
 def runtime(model):
     names=getattr(model,'native_frame_heaps',())
-    if not names:return ''
+    from .native_fallible_heapq import runtime as fallible_runtime
+    fallible=fallible_runtime(model)
+    if not names:return fallible
     from .native_heapq import HELPERS
     from .rust_pruning import select_named_rust_items
     wanted=set(names)
     if wanted-{'native_heappush'}:wanted.add('native_heap_sink')
     wanted.add('native_heap_bubble')
-    return select_named_rust_items(HELPERS,wanted)
+    return select_named_rust_items(HELPERS,wanted)+('\n'+fallible if fallible else'')

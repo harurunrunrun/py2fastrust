@@ -48,6 +48,18 @@ fn main() { let text="const TEXT_PRINTABLE fn native_float_divmod"; }
         self.assertNotIn(UNICODE, result)
         self.assertNotIn("Copyright (c) 2026 py2fastrust contributors", result)
 
+    def test_fallible_heap_notice_requires_retained_helper_code(self):
+        for name in ('native_fallible_heapify','native_fallible_heap_bubble_async'):
+            result=retain_native_notices('fn '+name+'() {}')
+            self.assertIn('CPython-derived fallible heaps',result)
+            self.assertEqual(result.count(PSF),1)
+            self.assertNotIn(UNICODE,result)
+        text='fn main(){let label="fn native_fallible_heapify() {}";} // fn native_fallible_heap_bubble() {}'
+        self.assertNotIn(PSF,retain_native_notices(text))
+        combined=retain_native_notices('fn native_float_divmod(){} fn native_cmp_sort_indices(){} fn native_fallible_heapify(){}')
+        self.assertEqual(combined.count(PSF),1)
+        self.assertIn('CPython-derived fallible heaps',combined)
+
     def test_public_pruned_output_and_no_optimize_keep_required_notices(self):
         cases = (
             ("print(3)\n", True, False, False),
