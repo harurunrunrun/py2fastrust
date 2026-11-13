@@ -368,6 +368,39 @@ def _parse(source, tokens, comments, pairs, start=0, stop=None, owner=None, refe
     return result
 
 
+def _transparent_syscall_asm(tokens,index,pairs):
+    """A literal kernel entry instruction cannot hide a Rust symbol in text.
+
+    All operand expressions still pass through the ordinary dependency walk,
+    and the outer macro scan still checks every nested macro independently.
+    An absolute external path excludes a local/custom `asm` macro identity.
+    """
+    start=index-8
+    if start<0 or [token.text for token in tokens[start:index]]!=[':',':','std',':',':','arch',':',':']:
+        return False
+    if start and tokens[start-1].text not in {'{',';','=','(',','}:return False
+    if index+3>=len(tokens)or tokens[index+2].text!='(':return False
+    opening=index+2;closing=pairs.get(opening)
+    if (closing is None or tokens[opening+1].kind!='literal'
+            or tokens[opening+1].text!='"syscall"'):return False
+    cursor=opening+2
+    if cursor==closing:return True
+    if tokens[cursor].text!=',':return False
+    cursor+=1
+    operands={'in','out','lateout','inout','inlateout','const','sym','label','options','clobber_abi'}
+    while cursor<closing:
+        if tokens[cursor].kind=='identifier'and cursor+1<closing and tokens[cursor+1].text=='=':
+            cursor+=2
+        if cursor>=closing or tokens[cursor].text not in operands:return False
+        cursor+=1
+        while cursor<closing and tokens[cursor].text!=',':
+            if tokens[cursor].text in {'(','[','{'}:
+                cursor=pairs[cursor]+1
+            else:cursor+=1
+        cursor+=1
+    return cursor in {closing,closing+1}
+
+
 def prune_rust_source_with_report(source: str, *, roots=("main",),
                                   reference_names=None, select_unreachable=None, member_name=None) -> RustPruneResult:
     """Remove definitions unreachable from roots in generated standalone Rust.
@@ -385,7 +418,8 @@ def prune_rust_source_with_report(source: str, *, roots=("main",),
         builtin_macros={"assert","assert_eq","assert_ne","debug_assert","debug_assert_eq","debug_assert_ne","format","format_args","write","writeln","print","println","eprint","eprintln","matches","vec","unreachable","panic","todo","unimplemented","cfg","thread_local","stringify","concat","env","option_env","file","line","column","module_path","compile_error"}
         for index,token in enumerate(tokens[:-1]):
             if token.kind=="identifier" and index+2<len(tokens) and tokens[index+1].text=="!" and tokens[index+2].text in {"(","[","{"} and token.text not in builtin_macros|{"if","while","return","break","yield","let","match","else"}:
-                raise _Unsupported("unknown Rust macro: "+token.text)
+                if token.text!='asm'or not _transparent_syscall_asm(tokens,index,pairs):
+                    raise _Unsupported("unknown Rust macro: "+token.text)
             if token.text=="r" and tokens[index+1].text=="#":raise _Unsupported("raw Rust identifier")
             if token.text=="#":
                 opening=index+1+(tokens[index+1].text=="!")
