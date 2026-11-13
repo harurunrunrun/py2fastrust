@@ -3314,6 +3314,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         value=files("py2fastrust").joinpath("stdlib",license_name).read_text(encoding="utf-8")
         pieces.append("\n".join("// "+line for line in value.splitlines()))
     pieces.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
+    from .native_bytes_constructor import runtime as bytes_runtime
+    pieces.append(bytes_runtime(model))
     if getattr(model,'float_power_required',False):
         from .native_float_powers import RUNTIME as FLOAT_POWER_RUNTIME
         pieces.append(FLOAT_POWER_RUNTIME)

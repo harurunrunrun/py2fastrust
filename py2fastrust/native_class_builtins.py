@@ -15,6 +15,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=="bytes":
+        from .native_bytes_constructor import analyze as analyze_bytes
+        return analyze_bytes(model,plan,node,arguments,keywords,cell)
     if name=='slice':
         raise ClassUnsupported(node,'constructing a Python slice object is not implemented; the canonical slice type currently supports native isinstance guards only',proof='native Python slice object carrier')
     if name=='round':
@@ -322,6 +325,9 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         from .native_enumerate import emit as emit_enumerate
         return emit_enumerate(emitter,node,arguments,keywords,wanted)
     code=None
+    if name=="bytes":
+        from .native_bytes_constructor import emit as emit_bytes
+        return Expression(emit_bytes(self,node,arguments),wanted)
     if name=="globals":code="ClassGlobalsView(class_scope.globals.clone())"
     elif name in {"input","reader_text","reader_bytes","read_text","read_bytes"}:
         if name in {"reader_bytes","read_bytes"}:

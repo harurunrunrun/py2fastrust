@@ -71,6 +71,14 @@ value before the right operand, then stores through the original receiver and
 key. Shared returned rows retain alias identity. Unsupported descriptors,
 replaced slots, custom slice keys and deletion retain positioned diagnostics.
 
+
+Canonical `bytes()` and `bytes(count)` use checked native allocation; a bytes
+source retains its immutable value. Constructor aliases use the same binding
+proof. All arguments run before count/type errors, and counts are checked
+against the target index width before negative-count rejection. Text encodings,
+keyword arguments, iterable sources and custom conversion protocols remain
+specific diagnostics.
+
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
 Size checks precede blocking reads. Binary reads retain raw bytes, and default

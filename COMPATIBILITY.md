@@ -93,6 +93,14 @@ the right operand does not redirect the store. Returned lists preserve sharing;
 aliases retain their original function identity. Unsupported descriptors,
 replacements, slice-key protocols and indexed deletion remain diagnostics.
 
+
+Canonical `bytes()` and `bytes(count)` use checked native allocation; a bytes
+source retains its immutable value. Constructor aliases use the same binding
+proof. All arguments run before count/type errors, and counts are checked
+against the target index width before negative-count rejection. Text encodings,
+keyword arguments, iterable sources and custom conversion protocols remain
+specific diagnostics.
+
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14
 order: an explicit `!s`/`!r`/`!a` conversion runs before spec expressions, while

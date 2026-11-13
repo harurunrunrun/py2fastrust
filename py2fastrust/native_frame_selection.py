@@ -127,6 +127,8 @@ def select_frames(unit,*,integer="i64"):
     from .native_lexical_cells import requires_environments
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
     if floating_power:reasons+=('finite real/complex floating power results',)
+    from .native_bytes_constructor import requires_frames as bytes_requires_frames
+    if bytes_requires_frames(analysis):reasons+=('native bytes count/conversion protocol',)
     from .native_exit import requires_frames as exit_requires_frames
     if exit_requires_frames(analysis):reasons+=('native process termination unwinding',)
     from .native_sum_binding import requires_frames as sum_requires_frames
