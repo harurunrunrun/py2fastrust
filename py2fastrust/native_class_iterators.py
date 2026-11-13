@@ -83,7 +83,7 @@ class Iterators:
     def needs_source_cursor(self,kind):
         from .native_class_deque_cursors import needs_cursor
         from .native_source_iteration import has_protocol
-        return any(part in {'str','bytes'}or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in alternatives(kind)) or needs_cursor(self.model,kind)
+        return any(isinstance(part,EmptyType)or part in {'str','bytes'}or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in alternatives(kind)) or needs_cursor(self.model,kind)
 
     def immediate_integer_map(self,plan,node,environment):
         """Retain eager word parsing only for consumers with no saved cursor."""
@@ -131,6 +131,10 @@ class Iterators:
             choice=choice.root()
             if choice.tag=="union":
                 choices.extend(choice.args)
+                continue
+            from .native_types import EmptyType
+            if isinstance(choice.tag,EmptyType):
+                self._contribute(record.element,Cell(EMPTY),node)
                 continue
             if operation=="reverse":
                 deque_element=self.model.deques.element(shape(choice))
@@ -208,6 +212,7 @@ class Iterators:
                 self.model.replace_environment(environment,joined)
             return result
         kind=shape(value)
+        if isinstance(kind,EmptyType):return Cell(EMPTY)
         if value.root().tag=="enumerate":return Cell("tuple",(Cell("int"),self.demand(plan,node,value.root().args[0],environment,active)))
         if not iterator_kind(kind):return self.model.item(value,node)
         record=kind.record
@@ -283,6 +288,9 @@ class Iterators:
         kind=kind or self.sites[(emitter.plan.index,id(node),"source",None)].kind
         if iterator_kind(source.kind):return source
         record=kind.record;record.emitted=True
+        from .native_types import EmptyType
+        if isinstance(source.kind,EmptyType):
+            return Expression('native_empty::<'+emitter.rust_type(kind)+'>('+source.code+')',kind)
         tag=domain(source.kind)
         from .native_unions import project,union_kind
         if union_kind(source.kind):

@@ -101,6 +101,13 @@ callee values still evaluate arguments before their call `TypeError`. General
 keyword-mapping expansion and unproved descriptor/member protocols retain
 positioned diagnostics.
 
+Typed iterator construction preserves an operand with no normal result through
+the original failing expression, rather than treating it as an empty iterable.
+Pending source results can still widen at the semantic fixed point. A finite
+attribute adapter is used only while its current receiver point fact still
+proves that attribute family, so provisional missing lookups do not override
+later source-method binding.
+
 Proved bounded primitive remainders in i128 mode can use i64 remainder
 instructions while retaining the selected integer policy and both operand
 evaluations. Exact pre-modulo bounds are required; guards invalidated by

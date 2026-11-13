@@ -83,7 +83,9 @@ def analyze(model,plan,node,receiver,*,value=None):
 
 
 def selected(model,plan,node):
-    return(plan.index,id(node))in getattr(model,'finite_attribute_sites',())
+    if(plan.index,id(node))not in getattr(model,'finite_attribute_sites',()):return False
+    receiver=model.records.get((plan.index,id(node.value)))
+    return receiver is not None and _owners(model,plan,node,receiver)is not None
 
 
 def emit(emitter,node,receiver,wanted,*,value=None):
