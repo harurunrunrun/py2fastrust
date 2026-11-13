@@ -119,6 +119,15 @@ against the target index width before negative-count rejection. Text encodings,
 keyword arguments, iterable sources and custom conversion protocols remain
 specific diagnostics.
 
+
+Indexed deletion of native dictionaries, defaultdicts and Counters preserves
+receiver/key evaluation order and shared mapping identity. Queries use the
+existing builtin key hash/equality layouts; deleting a missing ordinary key
+raises `KeyError`, while Counter deletion retains its missing-key behavior.
+Default factories are not invoked. Live iterators observe the mapping mutation.
+Custom/floating key protocols and mixed nonmapping receivers retain specific
+diagnostics.
+
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14
 order: an explicit `!s`/`!r`/`!a` conversion runs before spec expressions, while

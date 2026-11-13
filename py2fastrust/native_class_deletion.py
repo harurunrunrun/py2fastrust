@@ -17,7 +17,9 @@ def analyze(model,plan,target,environment):
             if not analyze(model,plan,child,environment):
                 if not model.lexical.delete(plan,child,environment):model.namespace.delete(plan,child,environment)
         return True
-    if isinstance(target,ast.Subscript):return model.deques.indexes.analyze_delete(plan,target,environment)
+    if isinstance(target,ast.Subscript):
+        from .native_mapping_deletion import analyze as mapping_delete
+        return mapping_delete(model,plan,target,environment)or model.deques.indexes.analyze_delete(plan,target,environment)
     if not isinstance(target,ast.Attribute):return False
     from .native_classes import ClassUnsupported,shape
     receiver=model.expression(plan,target.value,environment).root()
@@ -52,7 +54,10 @@ def lower(emitter,target):
                       if emitter.model.lexical.field_for(child)is not None else delete(emitter,child))
             pieces.append(code)
         return ''.join(pieces)
-    if isinstance(target,ast.Subscript):return emitter.model.deques.indexes.emit_delete(emitter,target)
+    if isinstance(target,ast.Subscript):
+        from .native_mapping_deletion import emit as mapping_delete
+        code=mapping_delete(emitter,target)
+        return emitter.model.deques.indexes.emit_delete(emitter,target)if code is None else code
     if not isinstance(target,ast.Attribute):return None
     from .native import _string
     setup,reference=emitter.reference(target)

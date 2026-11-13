@@ -89,6 +89,15 @@ against the target index width before negative-count rejection. Text encodings,
 keyword arguments, iterable sources and custom conversion protocols remain
 specific diagnostics.
 
+
+Indexed deletion of native dictionaries, defaultdicts and Counters preserves
+receiver/key evaluation order and shared mapping identity. Queries use the
+existing builtin key hash/equality layouts; deleting a missing ordinary key
+raises `KeyError`, while Counter deletion retains its missing-key behavior.
+Default factories are not invoked. Live iterators observe the mapping mutation.
+Custom/floating key protocols and mixed nonmapping receivers retain specific
+diagnostics.
+
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
 Size checks precede blocking reads. Binary reads retain raw bytes, and default
