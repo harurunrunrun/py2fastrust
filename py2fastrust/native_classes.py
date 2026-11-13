@@ -1972,6 +1972,9 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        from .native_integer_digit_limits import show as show_limited_integer
+        limited=show_limited_integer(self,value,node,representation)
+        if limited is not None:return limited
         if getattr(value.kind,'_native_builtin_type',False):
             from .native_type_objects import show
             return show(value.kind)
@@ -3716,6 +3719,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}",{_string(filename)},line,function);}}\n'
                   f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);std::process::exit(1);}}}}')
     result=model.finish_runtime(model.generators.runtime("\n".join(pieces)))
+    from .native_integer_digit_limits import runtime as integer_digit_runtime
+    result=integer_digit_runtime(result,model)
     from .native_context_managers import runtime as context_runtime
     result=context_runtime(result,model)
     from .native_exception_runtime import runtime as exception_runtime

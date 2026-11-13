@@ -111,7 +111,11 @@ class Exceptions:
 
     def validate(self):
         from .native_classes import ClassUnsupported,shape
-        from .native_types import alternatives
+        from .native_types import alternatives,TupleType
+        from .native_integer_digit_limits import validate_payload
+        for record in self.records:
+            validate_payload(self.model,TupleType(tuple(shape(value)for value in record.arguments)),
+                             record.node,'An explicit exception argument tuple')
         retained=any(isinstance(kind,ExceptionValue)and kind.record.potentially_stored
                      for value,_ in self.raises.values()for kind in alternatives(shape(value)))
         if retained and self.identity_sites:

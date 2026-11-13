@@ -63,7 +63,12 @@ def emit(emitter,node,arguments,keywords,wanted):
         emitter.model.explicit_radix_used=True
         parser='native_radix_parse_text'if kind=='str'else'native_radix_parse_bytes'
         representation=('text_repr_str(('+code+').as_str())'if kind=='str'else'text_repr_bytes(&('+code+'))')
-        result=emitter.at(parser+'(&('+code+'),'+radix+').map_err(|_|format!("ValueError: invalid literal for int() with base {}: {:.200}",'+radix+','+representation+'))',node)
+        parsed=parser+'(&('+code+'),'+radix+')'
+        invalid='format!("ValueError: invalid literal for int() with base {}: {:.200}",'+radix+','+representation+')'
+        from .native_integer_digit_limits import active,parse_error
+        parsed=(parse_error(parsed,invalid)if active(emitter.model)else
+                parsed+'.map_err(|_|'+invalid+')')
+        result=emitter.at(parsed,node)
         return emitter.coerce(Expression(result,'int'),wanted,node)
     result=project(text.kind,text.code,parse)if union_kind(text.kind)else parse(text.kind,text.code)
     return Expression('{'+prefix+result+'}',wanted)

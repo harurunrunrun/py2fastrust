@@ -172,6 +172,8 @@ class DefaultDicts:
         before='let '+factory+'={let '+read+'='+owner.code+'.factory.borrow().clone();'+read+'};'
         def branch(factory_kind,text):
             if factory_kind=='none':
+                from .native_integer_digit_limits import guard_error_repr
+                guard_error_repr(emitter,key,node)
                 return _error(emitter,node,wanted,'format!("KeyError: {}",'+emitter.show(key,node,True)+')').code
             if not callable_kind(factory_kind):
                 return _error(emitter,node,wanted,'format!("TypeError: \'{}\' object is not callable",'+_type_name(emitter,Expression(text,factory_kind),node)+')').code

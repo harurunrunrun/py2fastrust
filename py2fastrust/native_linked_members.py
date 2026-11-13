@@ -23,11 +23,15 @@ class MathAdapter:
 
 
 class SysAdapter:
-    NAMES=frozenset({'exit','setrecursionlimit','getrecursionlimit'})
+    NAMES=frozenset({'exit','setrecursionlimit','getrecursionlimit',
+                     'set_int_max_str_digits','get_int_max_str_digits'})
 
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
         from .native_classes import ClassUnsupported,shape
+        from .native_integer_digit_limits import NAMES,analyze
+        if identity.name in NAMES:
+            return analyze(model,plan,node,identity,positional,keywords,factory=factory)
         if identity.name=='exit':
             from .native_exit import analyze,binding_error
             return MemberCall(analyze(model,plan,node,identity,positional,keywords,factory=factory),binding_error(identity,len(positional),keywords))
@@ -48,6 +52,9 @@ class SysAdapter:
     def emit(emitter,node,identity,record,positional,keywords):
         from .native import _string
         from .native_classes import Expression,shape
+        from .native_integer_digit_limits import NAMES,emit
+        if identity.name in NAMES:
+            return emit(emitter,node,identity,record,positional,keywords)
         kind=shape(record.result)
         if identity.name=='exit':
             from .native_exit import emit

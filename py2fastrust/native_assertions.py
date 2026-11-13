@@ -61,6 +61,9 @@ def lower(g,node,environment=None):
         captured=g.fresh()if framed else g.temporary()
         text=g.fresh()if framed else g.temporary()
         saved=_Expression(captured,value.kind,owned=False)
+        if framed:
+            from .native_integer_digit_limits import guard_deferred_repr
+            guard_deferred_repr(g,value,node.msg,'An AssertionError message')
         captured_code=value.code
         if not value.owned:
             from .native_types import reference_cloneable

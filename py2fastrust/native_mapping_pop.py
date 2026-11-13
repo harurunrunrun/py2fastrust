@@ -93,6 +93,8 @@ def _remove(emitter,node,owner,key,default,wanted):
     original=key
     def missing():
         if default is None:
+            from .native_integer_digit_limits import guard_error_repr
+            guard_error_repr(emitter,original,node)
             return _error(emitter,node,wanted,'format!("KeyError: {}",'+emitter.show(original,node,True)+')').code
         return emitter.coerce(default,wanted,node)
     def lookup(query):

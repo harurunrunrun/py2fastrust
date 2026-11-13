@@ -62,6 +62,8 @@ def emit(emitter,node):
             query=query_canonical(emitter,current,shape(kind.record.key))
             body='let '+removed+'=match '+query+'{Some('+canonical+')=>('+code+').borrow_mut().delete(&'+canonical+'),None=>false};'
             if kind.record.flavor!='Counter':
+                from .native_integer_digit_limits import guard_error_repr
+                guard_error_repr(emitter,current,node)
                 failure=emitter.at('Err::<(),String>(format!("KeyError: {}",'+emitter.show(current,node,True)+'))',node)
                 body+='if !'+removed+'{'+failure+';}'
             return '{'+body+'()}'

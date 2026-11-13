@@ -990,6 +990,34 @@ streams, binary output buffers and additional stream attributes/protocols remain
 positioned unsupported cases. Rebinding an imported module reference retains
 its existing separate namespace-ownership boundary.
 
+Canonical `sys.set_int_max_str_digits` and `sys.get_int_max_str_digits` share
+real native state across captured references and compiled functions. On this
+API-selected path the initial limit is 4300, zero disables it, and nonzero
+limits must be at least 640 and fit a signed C int. Arguments run before
+binding/index/range errors; failed setters retain the previous value. The
+setter accepts its `maxdigits` keyword. Builtin integer/boolean arguments and
+closed builtin type errors are supported; user `__index__` callbacks remain
+positioned unsupported protocols.
+
+Decimal and other non-power-of-two input conversions validate syntax and count
+digits, excluding separators/signs, before large integer construction. Leading
+zeros count. Power-of-two bases remain exempt, and fixed-width normalization
+still occurs after conversion. Original short fixed-width parsing loops are
+retained; short tokens do not read the limit state. In BigInt mode, direct
+str/repr/decimal formatting and pure builtin list/tuple/plain-dict displays use
+fallible observers. Print preserves already written text when a later
+conversion fails. Nondecimal integer presentation stays exempt.
+
+This slice does not enforce the default digit limit in older paths that use
+neither sys API: their previous unbounded conversion behavior is a remaining
+compatibility gap. API-using BigInt container views, Counter/defaultdict/deque
+displays and mixed custom-callback container displays require further fallible
+observer support. Numeric deferred exception payloads (including mapping
+KeyError and AssertionError messages) remain named boundaries where eager
+rendering would change Python's exception type or timing. Existing unsupported
+try/except routing is unchanged. No setter is discarded and no Display panic
+stands in for a Python conversion error.
+
 Trusted `sys.stdin`/`.buffer` imports and their `read`/`readline` aliases generate
 direct reads through the same buffered input object. Ordinary entry functions
 and function-local imports retain scope analysis. Text readers retain newlines

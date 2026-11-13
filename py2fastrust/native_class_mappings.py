@@ -461,6 +461,8 @@ class Mappings:
             if record.flavor=='defaultdict':absent=self.defaultdicts.missing(emitter,node,owner,key,wanted)
             elif record.flavor=='Counter':absent=emitter.coerce(Expression(emitter.literal(0),'int',0),wanted,node)
             else:
+                from .native_integer_digit_limits import guard_error_repr
+                guard_error_repr(emitter,key,node)
                 error='format!("KeyError: {}",'+emitter.show(key,node,True)+')'
                 absent=emitter.at(f'Err::<{emitter.rust_type(wanted)},String>({error})',node)
         else:absent=emitter.coerce(default,wanted,node)
@@ -522,6 +524,8 @@ class Mappings:
                 query=query_canonical(emitter,key,shape(kind.record.key))
                 body='let '+removed+'='+self.cpython_sets.query(emitter,node,Expression(text,kind),key,remove=True)+';'
                 if name=='remove':
+                    from .native_integer_digit_limits import guard_error_repr
+                    guard_error_repr(emitter,key,node)
                     failure=emitter.at('Err::<(),String>(format!("KeyError: {}",'+emitter.show(key,node,True)+'))',node)
                     body+='if !'+removed+'{'+failure+';}'
                 return '{'+body+'()}'

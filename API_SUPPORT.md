@@ -21,6 +21,14 @@ Linked module references also adapt `sys.setrecursionlimit` and
 `sys.getrecursionlimit`, including saved references. Replacing the standard
 stream objects requires an unimplemented stream-object protocol and is rejected.
 
+Canonical `sys.set_int_max_str_digits(maxdigits)` and
+`sys.get_int_max_str_digits()` have typed-frame adapters, including captured
+references and the setter's `maxdigits` keyword. API-using programs share a
+default 4300-digit limit, accept zero to disable it, and enforce the 640-digit
+minimum and C-int argument range. Parsing and supported fallible BigInt
+formatting use that state; see the remaining observer/default-path boundaries
+in [COMPATIBILITY.md](COMPATIBILITY.md).
+
 Canonical `sys.stdout.write(str)` and `sys.stdout.flush()` support direct calls,
 `from sys import stdout`, saved stream/method references, source parameters,
 closures and registered callable consumers. They share the buffered output,
@@ -683,6 +691,7 @@ uses the selected i64, i128 or BigInt policy.
 | `argv` | Arguments passed to the executable |
 | `exit` | Raises `SystemExit` |
 | `setrecursionlimit`, `getrecursionlimit` | Set and retrieve the recursion limit |
+| `set_int_max_str_digits`, `get_int_max_str_digits` | Direct typed-frame digit-limit state; bounded conversion/display support described above |
 | `exception`, `exc_info` | The active exception, including `except*` subgroups, inheritance across function calls, and generator suspension/resumption |
 
 Unlisted `sys` APIs are unsupported.
