@@ -212,7 +212,6 @@ class RetainedExpressionAnalysisTests(unittest.TestCase):
 
  def test_named_capability_boundaries(self):
   cases={
-   'multiple for clauses':'g=(x+y for x in [1] for y in [2])\nprint(list(g))',
    'send':'g=(x for x in [1])\nprint(g.send(None))',
    'throw':'g=(x for x in [1])\nprint(g.throw(ValueError))',
    'recursive/asynchronous':'g=(next(g) for x in [1])\nprint(next(g))',

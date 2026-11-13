@@ -21,6 +21,7 @@ class Expression:
     semantic:object=None
     creation:object=None
     body:object=None
+    inners:tuple=()
     emitted:bool=False
     helper:str|None=None
 
@@ -90,10 +91,12 @@ class Registry:
     def analyze(self,parent,node,environment):
         from .native_classes import Cell,Environment,ClassUnsupported
         from .native_types import EMPTY
-        if len(node.generators)!=1:
-            raise ClassUnsupported(node,'retained generator expressions with multiple for clauses need nested suspended cursors; this increment implements one for clause with filters and unpacking',proof='retained generator-expression nested cursors')
-        if node.generators[0].is_async:
+        if any(clause.is_async for clause in node.generators):
             raise ClassUnsupported(node,'async generator-expression iteration requires asynchronous Python iterator protocols; native retained expressions currently use synchronous for clauses',proof='retained generator-expression async iteration')
+        if len(node.generators)>1:
+            assignment=next((child for child in ast.walk(node)if isinstance(child,ast.NamedExpr)),None)
+            if assignment is not None:
+                raise ClassUnsupported(assignment,'assignment expressions inside multi-clause retained generators need a suspension-aware enclosing-binding effect proof; that additional walrus adapter is not implemented',proof='retained nested-generator assignment-expression effects')
         if parent.class_body is not None:
             raise ClassUnsupported(node,'a retained generator expression created in a class namespace requires class-body closure and global lookup separation; that capture context is not implemented',proof='retained generator-expression class namespace capture')
         key=parent.index,id(node)
@@ -108,7 +111,7 @@ class Registry:
             iterator.hint_protocol=ABSENT
             iterator.element=Cell(EMPTY);iterator.adapter=ADAPTER
             record=Expression(iterator,parent,frame,node,scope)
-            iterator.expression=record;frame.retained_expression=record
+            iterator.expression=record;iterator.expression_registry=self;frame.retained_expression=record
             frame.result=iterator.element
             self.model.plans.append(frame)
             self.sites[key]=record;self.records.append(record)
@@ -153,7 +156,15 @@ class Registry:
         def element(values,semantic):
             self.model.iterators._contribute(record.element,self.model.expression(frame,semantic.element,values),semantic.element)
             return record.element
-        analyze(self.model,frame,expression.node,inside,contribute=element,first_value=self.model.cell_for_kind(expression.outer),semantic=expression.semantic)
+        def retain_source(index,source,value,values):
+            if index==0:return value
+            kind=self.model.iterators.source(frame,source.node,value,('retained_inner',index),environment=values)
+            inners=list(expression.inners)
+            while len(inners)<index:inners.append(None)
+            inners[index-1]=kind;expression.inners=tuple(inners)
+            return self.model.cell_for_kind(kind)
+        adapt=retain_source if len(expression.node.generators)>1 else None
+        analyze(self.model,frame,expression.node,inside,contribute=element,first_value=self.model.cell_for_kind(expression.outer),semantic=expression.semantic,adapt_source=adapt)
         expression.body=self.model.comprehensions[frame.index,id(expression.node)]
         self.model.exceptions.require(expression.node)
         return None
@@ -175,6 +186,7 @@ class Registry:
         initial=['scope:class_scope.clone()','outer:'+outer.code,*fields]
         if expression.body is not None:
             initial.extend('target_'+str(index)+':None'for index,_ in enumerate(self.bindings(expression)))
+            initial.extend('inner_'+str(index)+':None'for index,_ in enumerate(expression.inners,1))
         expression.helper=self.generate(emitter,expression)
         state='ClassIteratorState_'+str(expression.iterator.index)
         frame='ClassRetainedExpressionFrame_'+str(expression.iterator.index)
@@ -196,12 +208,13 @@ class Registry:
     def bindings(self,expression):
         from .native_classes import shape
         result=[]
-        for target in ast.walk(expression.node.generators[0].target):
-            if not isinstance(target,ast.Name)or self.model.lexical.field_for(target)is not None:continue
-            name=self.model.resolved_name(expression.frame,target)
-            cell=self.model.records[expression.frame.index,id(target)]
-            entry=name,shape(cell)
-            if entry not in result:result.append(entry)
+        for clause in expression.node.generators:
+            for target in ast.walk(clause.target):
+                if not isinstance(target,ast.Name)or self.model.lexical.field_for(target)is not None:continue
+                name=self.model.resolved_name(expression.frame,target)
+                cell=self.model.records[expression.frame.index,id(target)]
+                entry=name,shape(cell)
+                if entry not in result:result.append(entry)
         return result
 
     def generate(self,parent_emitter,expression):
@@ -231,6 +244,8 @@ class Registry:
                 fields.append('target_'+str(index)+':Option<'+emitter.rust_type(kind)+'>')
                 bindings[name,kind]='frame.target_'+str(index)
             emitter.comprehension_bindings=[(set(expression.body.bindings),bindings)]
+            if len(expression.node.generators)>1:
+                return self.generate_nested(emitter,expression,fields,bindings)
             value=self.model.iterators.pull(emitter,expression.node,Expression('frame.outer.clone()',expression.outer))
             item=emitter.fresh()
             body='loop{let Some('+item+')=('+value.code+')else{return Ok(None);};'+_assign(emitter,expression.node.generators[0].target,Expression(item,value.kind),bindings)
@@ -242,6 +257,86 @@ class Registry:
         if not body:return layout
         return layout+'\nfn class_retained_expression_resume_'+i+'(frame:&mut ClassRetainedExpressionFrame_'+i+')->ClassResult<Option<'+emitter.rust_type(shape(expression.iterator.element))+'>>{let class_scope=frame.scope.clone();'+body+'}'
 
+    def generate_nested(self,emitter,expression,fields,bindings):
+        from .native_classes import Expression,shape,ClassUnsupported
+        from .native_class_comprehensions import _assign
+        if len(expression.inners)!=len(expression.node.generators)-1 or any(kind is None for kind in expression.inners):
+            raise ClassUnsupported(expression.node,'a nested retained generator clause has no solved registered cursor layout',proof='complete retained inner-cursor state')
+        self.validate_nested_ownership(expression)
+        i=str(expression.iterator.index)
+        frame='ClassRetainedExpressionFrame_'+i
+        result='ClassResult<Option<'+emitter.rust_type(shape(expression.iterator.element))+'>>'
+        fields.extend('inner_'+str(index)+':Option<'+emitter.rust_type(kind)+'>'for index,kind in enumerate(expression.inners,1))
+        helpers=[]
+        for index,clause in enumerate(expression.node.generators):
+            if index==0:
+                name='class_retained_expression_resume_'+i
+                cursor=Expression('frame.outer.clone()',expression.outer)
+            else:
+                name='class_retained_expression_clause_'+i+'_'+str(index)
+                cursor=Expression('frame.inner_'+str(index)+'.as_ref().expect("active retained inner cursor").clone()',expression.inners[index-1])
+            body='loop{'
+            if index<len(expression.inners):
+                child=str(index+1)
+                body+=('if frame.inner_'+child+'.is_some(){'
+                       'if let Some(value)=class_retained_expression_clause_'+i+'_'+child+'(frame)?{return Ok(Some(value));}'
+                       'frame.inner_'+child+'=None;}')
+            source_node=expression.node if index==0 else clause.iter
+            value=self.model.iterators.pull(emitter,source_node,cursor)
+            item=emitter.fresh()
+            body+='let Some('+item+')=('+value.code+')else{return Ok(None);};'
+            body+=_assign(emitter,clause.target,Expression(item,value.kind),bindings)
+            for condition in clause.ifs:
+                before,test=emitter.capture(emitter.condition(condition))
+                body+=before+'if !('+emitter.truth(test,condition)+'){continue;}'
+            if index<len(expression.inners):
+                next_clause=expression.node.generators[index+1]
+                before,source=emitter.capture(emitter.expression(next_clause.iter))
+                constructed=self.model.iterators.construct(emitter,next_clause.iter,source,kind=expression.inners[index])
+                body+=before+'frame.inner_'+str(index+1)+'=Some('+constructed.code+');'
+            else:
+                yielded=emitter.expression(expression.node.elt)
+                body+='return Ok(Some('+emitter.coerce(yielded,shape(expression.iterator.element),expression.node.elt)+'));'
+            body+='}'
+            helpers.append('fn '+name+'(frame:&mut '+frame+')->'+result+'{let class_scope=frame.scope.clone();'+body+'}')
+        return 'struct '+frame+'{'+','.join(fields)+'}\n'+'\n'.join(helpers)
+
+    def validate_nested_ownership(self,expression):
+        """An Rc ownership proof cannot supply a missing collector root facet."""
+        from .native_classes import ClassUnsupported,InstanceType,shape
+        from .native_types import ListType,TupleSequenceType,TupleType,UnionType,NullableType,MaybeType
+        seen=set();environments=set()
+        def environment(scope):
+            if scope in environments:return
+            environments.add(scope)
+            captured=self.model.lexical.environments.get(scope)
+            if captured is None:return
+            for cell in (*captured.fields.values(),*captured.defaults.values()):check(shape(cell))
+            if captured.parent is not None:environment(captured.parent)
+        def check(kind):
+            if kind is None:
+                raise ClassUnsupported(expression.node,'a retained inner cursor or target payload remains unresolved; its suspended ownership layout is not established',proof='resolved retained nested-generator payload')
+            if kind in seen:return
+            seen.add(kind)
+            if isinstance(kind,InstanceType)and getattr(self.model,'gc_classes',()):
+                raise ClassUnsupported(expression.node,'nested retained generators can retain a class instance while the class collector is active; traced roots for these suspended inner cursor and target fields are not implemented',types=(('retained instance',kind),),proof='traced nested-generator class roots')
+            if isinstance(kind,(ListType,TupleSequenceType)):check(kind.element)
+            elif isinstance(kind,TupleType):
+                for part in kind.fields:check(part)
+            elif isinstance(kind,UnionType):
+                for part in kind.alternatives:check(part)
+            elif isinstance(kind,(NullableType,MaybeType)):check(kind.value)
+            for owned in getattr(kind,'_native_owned_kinds',()):check(owned)
+            if getattr(kind,'_native_function_reference',False):
+                for definition in kind.definitions:
+                    target=self.model.lexical.plans.get(definition)
+                    if target is None:
+                        raise ClassUnsupported(expression.node,'a retained nested-generator callable has no registered official lexical plan for its suspended environment',proof='registered retained callable lexical owner')
+                    parent=self.model.lexical.parent_scope(target)
+                    if parent is not None:environment(parent)
+        for kind in(expression.outer,*expression.inners,shape(expression.iterator.element),*(kind for _,kind in self.bindings(expression))):check(kind)
+        environment(expression.scope)
+
     def runtime(self):return '\n'.join(record.helper for record in self.records if record.emitted and record.helper is not None)
 
 
@@ -249,7 +344,11 @@ class Adapter:
     def owned(self,record):
         from .native_classes import shape
         expression=record.expression
-        return tuple(value for value in(expression.outer,shape(record.element))if value is not None)
+        values=(expression.outer,shape(record.element))
+        if len(expression.node.generators)>1:
+            values+=expression.inners
+            if expression.body is not None:values+=tuple(kind for _,kind in record.expression_registry.bindings(expression))
+        return tuple(value for value in values if value is not None)
     def demand(self,iterators,plan,node,record,environment,active):return registry(iterators.model).demand(plan,node,record,environment,active)
     def may_call(self,iterators,record,seen):return True
     def fields(self,emitter,record):return 'frame:Option<ClassRetainedExpressionFrame_'+str(record.index)+'>,running:bool'

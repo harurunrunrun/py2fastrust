@@ -112,7 +112,7 @@ def _register_sources(model,plan,producer,value=None,environment=None):
     return value
 
 
-def analyze(model, plan, node, environment, *, contribute=None, first_value=None, semantic=None):
+def analyze(model, plan, node, environment, *, contribute=None, first_value=None, semantic=None, adapt_source=None):
     """Contribute actual element/storage facts without exporting local targets."""
     from .native_classes import Cell, Environment, ClassUnsupported,shape
     key=(plan.index,id(node))
@@ -154,6 +154,7 @@ def analyze(model, plan, node, environment, *, contribute=None, first_value=None
             except CallBindingError as error:
                 raise ClassUnsupported(clause.source.expression,str(error),proof="typed comprehension iterable")from None
             value=model.expression(plan,source.node,inside)
+        if adapt_source is not None:value=adapt_source(index,source,value,inside)
         if model.iterators.needs_source_cursor(shape(value)):
             value=Cell(model.iterators.source(plan,source.node,value,environment=inside))
         sources.append(source)

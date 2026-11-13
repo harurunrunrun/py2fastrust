@@ -464,16 +464,22 @@ intermediate list. The first iterator is constructed at generator creation;
 body evaluation follows the consumer's actual timing. Body `StopIteration`
 becomes `RuntimeError`; a `map`/`filter` callback `StopIteration` ends one pull
 without permanently exhausting a resumable source. Retained generator expressions
-with one synchronous `for` clause compile from their original AST/symbol-table
+with synchronous `for` clauses compile from their original AST/symbol-table
 scope into owned typed iterator frames. They support filters, target unpacking,
 live module/free cells, yielded native cursor handles, independent instances,
 shared exhaustion and `close()`. Their first iterator is obtained at creation;
-filters and elements run only when pulled. Suspended environment and cursor
-ownership is checked. Admission distinguishes each proved standard-module
+filters and elements run only when pulled. Inner iterators are acquired anew
+after each admitted parent item; their actual shared cursor handles and target
+bindings stay in the typed frame across suspension. Statically compiled Rust
+helpers use ordinary nested pull loops, with no operation interpreter. Suspended
+environment and cursor ownership is checked, including every inner provider and
+the actual handles returned by source `__iter__`. Additional traced roots for
+collected class instances are not implemented for these nested fields and remain
+a named boundary. Admission distinguishes each proved standard-module
 consumer's iterable positions from payload, count, initial, key and other
 arguments. Unknown or rebound callable identities retain the deferred path;
 being a standard-module member alone does not prove eager consumption.
-Multiple clauses, class-namespace creation, async clauses,
+Class-namespace creation, async clauses, nested-clause walrus effects,
 `send`/`throw`, cyclic captures and recursive/asynchronous resume callbacks retain
 specific positioned diagnostics. Floating-point compensated
 `sum` is not implemented here.
