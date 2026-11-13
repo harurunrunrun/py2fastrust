@@ -3703,7 +3703,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     from .native_class_calls import entry_result
     entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if entry_result(model,model.module)
            else "let result=class_execute(scope.clone(),class_function_0(scope.clone()));")
-    pieces.append("fn main(){use std::io::Write as _;let scope=ClassScope::new();"+entry+"\n"
+    pieces.append("fn main(){use std::io::Write as _;"+model.mappings.cpython_sets.entry()+"let scope=ClassScope::new();"+entry+"\n"
                   "std::io::stdout().write_all(scope.io.borrow().output.as_bytes()).unwrap();\n"
                   'if let Err(error)=result {eprintln!("Traceback (most recent call last):");\n'
                   'for &(line,function)in error.frames.iter().rev(){\n'

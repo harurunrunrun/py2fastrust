@@ -28,6 +28,8 @@ def retain_native_notices(source: str) -> str:
     tokens, _comments, _pairs = _lex(source)
     functions = {tokens[index + 1].text for index, token in enumerate(tokens[:-1])
                  if token.text == "fn"}
+    types = {tokens[index + 1].text for index, token in enumerate(tokens[:-1])
+             if token.text in {'struct','enum'}}
     notices = []
     if "native_float_divmod" in functions:
         attribution = (
@@ -48,6 +50,15 @@ def retain_native_notices(source: str) -> str:
             '// Copyright Python Software Foundation; PSF License Version 2.\n'
             '// Modifications: typed Rust buffers, released borrows, positioned errors and synchronous/asynchronous callbacks.\n'+
             (''if notices else licenses['PYTHON_LICENSE.txt']))
+    if 'NativeCPSet'in types or 'NativeCPHashSecret'in types or any(name.startswith('native_cp_hash_')for name in functions):
+        notices.append(
+            '// CPython-derived set tables and hashes: Objects/setobject.c, Objects/longobject.c, Objects/tupleobject.c, Python/pyhash.c and Python/bootstrap_hash.c, Python 3.14.4.\n'
+            '// Copyright Python Software Foundation; PSF License Version 2.\n'
+            '// Modifications: typed Rust storage, checked sizes, explicit 64-bit hashes and owned cursors.\n'+
+            (''if notices else licenses['PYTHON_LICENSE.txt']))
+    if 'native_cp_sip_round'in functions:
+        from .native_cpython_hash import SIPHASH_NOTICE
+        notices.append('// CPython-derived SipHash13; original csiphash implementation.\n'+'\n'.join('// '+line for line in SIPHASH_NOTICE.splitlines()))
     suffix = "\n\n" + "\n\n".join(notices) if notices else ""
     code = strip_comments(source).strip()
     code = cleanup_rust_source(code)

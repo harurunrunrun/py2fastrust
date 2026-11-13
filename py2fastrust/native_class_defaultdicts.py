@@ -34,6 +34,7 @@ class DefaultDicts:
         if len(arguments)>1:
             source=arguments[1];site.source=source
             self._initial(plan,node,site,source,environment)
+            record.source=source;record.source_type=site.source_type
         for name,value in keywords:
             self.mappings.contribute_key(record,Cell('str'),node)
             self.model.contribute(record.value,value,node)
@@ -132,6 +133,8 @@ class DefaultDicts:
             owner=emitter.fresh();code='let '+owner+'='+self.new(emitter,record,Expression('('+text+').clone()',kind))+';'
             if len(arguments)>1:code+=self._emit_initial(emitter,node,Expression(owner,wanted),arguments[1],self.sites[(emitter.plan.index,id(node))])
             from .native import _string
+            if keywords and self.mappings.views.positions_enabled():
+                code+=emitter.at(owner+'.mapping().borrow_mut().entries.prepare_keywords('+str(len(keywords))+')',node)+';'
             for key,value in keywords:code+=self.mappings._set(emitter,node,Expression(owner,wanted),Expression('NativeText::from('+_string(key)+')','str'),value)
             return '{'+code+owner+'}'
         code=project(supplied.kind,supplied.code,build)if union_kind(supplied.kind)else build(supplied.kind,supplied.code)
@@ -147,8 +150,12 @@ class DefaultDicts:
             return self.model.generators.consume(emitter,node,'defaultdict',source,[],{},'none',append_item=append).code+';'
         if mapping_kind(source.kind):
             cursor,pair=(emitter.fresh()for _ in range(2));old=source.kind.record
+            self.mappings.views.require_positions(source.kind,node)
             pulled=emitter.at(cursor+'.next(|key,value|(key.clone(),value.clone()))',node)
-            return '{let mut '+cursor+'=ClassMappingCursor::new('+source.code+');loop{let Some('+pair+')=('+pulled+')else{break;};'+self.mappings._set(emitter,node,owner,Expression(pair+'.0',shape(old.key)),Expression(pair+'.1',shape(old.value)))+'}}'
+            seed=''
+            if self.mappings.views.positions_enabled():
+                seed=emitter.at(owner.code+'.mapping().borrow_mut().entries.prepare_mapping_seed(&'+source.code+'.borrow().entries)',node)+';'
+            return '{'+seed+'let mut '+cursor+'=ClassMappingCursor::new('+source.code+');loop{let Some('+pair+')=('+pulled+')else{break;};'+self.mappings._set(emitter,node,owner,Expression(pair+'.0',shape(old.key)),Expression(pair+'.1',shape(old.value)))+'}}'
         if union_kind(source.kind):return project(source.kind,source.code,lambda kind,text:'{'+self._emit_initial(emitter,node,owner,Expression('('+text+').clone()',kind),site)+'}')+';'
         from .native_class_iterators import iterator_kind
         if iterator_kind(source.kind):before,iterator='',source
@@ -204,7 +211,10 @@ class DefaultDicts:
         data,factory=(emitter.fresh()for _ in range(2))
         value=Expression(factory,shape(owner.kind.record.default_factory))
         converted=emitter.coerce(value,shape(record.default_factory),node)
-        return '{let '+data+'='+owner.code+'.borrow().clone();let '+factory+'='+owner.code+'.factory.borrow().clone();Rc::new(ClassDefaultState_'+str(record.index)+'{data:RefCell::new('+data+'),factory:RefCell::new('+converted+')})}'
+        setup='let '+data+'='+owner.code+'.borrow().clone();'
+        if self.mappings.views.positions_enabled():
+            setup='let mut '+data+'='+owner.code+'.borrow().clone();'+emitter.at(data+'.entries.prepare_constructor_copy()',node)+';'
+        return '{'+setup+'let '+factory+'='+owner.code+'.factory.borrow().clone();Rc::new(ClassDefaultState_'+str(record.index)+'{data:RefCell::new('+data+'),factory:RefCell::new('+converted+')})}'
 
     def show(self,emitter,value,node):
         from .native_classes import Expression,shape,ClassUnsupported

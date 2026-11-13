@@ -181,6 +181,7 @@ class SetMethods:
             value=Expression('('+code+').clone()',kind)
             if isinstance(kind,EmptyType):return 'native_empty::<()>('+code+');'
             if mapping_kind(kind)and kind.record.category=='set':
+                if self.mappings.cpython_sets.owns(kind):return self.mappings.cpython_sets.merge(emitter,node,owner,value)
                 # All admitted key types are immutable builtin values. Hashing,
                 # equality and copying cannot run Python callbacks or expose
                 # the source's internal traversal. Aliases are an exact no-op.
@@ -192,6 +193,8 @@ class SetMethods:
                     body+='if !Rc::ptr_eq(&'+owner.code+ ',&'+other+'){'+loop+'}'
                 else:body+=loop
                 return body
+            if mapping_kind(kind)and kind.record.category=='dict':
+                return self.mappings.cpython_sets.from_mapping(emitter,node,owner,value)
             cursor=site.cursors[index,kind]
             before,iterator=emitter.capture(self.model.iterators.construct(emitter,node,value,kind=cursor))
             pulled=self.model.iterators.pull(emitter,node,iterator);item=emitter.fresh()

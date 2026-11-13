@@ -8,6 +8,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class AbsentHint:
+    def dictionary_sources(self, record):
+        return ()
+
     def emit(self, emitter, node, value):
         return '8_usize'
 
@@ -17,6 +20,9 @@ ABSENT = AbsentHint()
 
 @dataclass(frozen=True)
 class RepeatHint:
+    def dictionary_sources(self, record):
+        return ()
+
     def emit(self, emitter, node, value):
         # Infinite repeat's __length_hint__ raises TypeError; LengthHint
         # suppresses that exception and uses the consumer's default.
@@ -29,6 +35,9 @@ REPEAT = RepeatHint()
 @dataclass(frozen=True)
 class SourceHint:
     reverse: bool = False
+
+    def dictionary_sources(self, record):
+        return (record.source,)
 
     def emit(self, emitter, node, value):
         from .native_classes import shape
@@ -50,6 +59,9 @@ class SourceHint:
 
     def source(self, emitter, node, kind, source, index):
         from .native_classes import domain, ClassUnsupported
+        from .native_set_cursors import accepts, hint
+        if accepts(emitter.model, kind):
+            return hint(emitter, node, kind, source)
         tag = domain(kind)
         if getattr(kind, '_native_class_deque', False):
             return '(' + source + ').remaining'
@@ -83,13 +95,19 @@ class SourceHint:
             remaining = ('if ' + end + '<=(' + length + '){' + end + '}else{0_usize}'
                          if self.reverse else '(' + length + ').saturating_sub(' + end + ')')
             return current + '.as_ref().map_or(0,|' + owner + '|' + remaining + ')'
-        raise ClassUnsupported(node, "list.extend needs this source cursor's checked remaining-position length hint; that provider capability is not implemented",
+        from .native_dictionary_positions import dictionary_kind
+        if not self.reverse and dictionary_kind(kind):
+            return emitter.model.mappings.views.hint_cursor(emitter,node,kind,source)
+        raise ClassUnsupported(node, "this iterable consumer needs its source cursor's checked remaining-position length hint; that provider capability is not implemented",
                                types=(('iterator source', kind),), proof='registered source cursor remaining-length hint')
 
 
 @dataclass(frozen=True)
 class IndexedOwnerHint:
     reverse: bool = False
+
+    def dictionary_sources(self, record):
+        return ()
 
     def emit(self, emitter, node, value):
         state, owner = emitter.fresh(), emitter.fresh()
@@ -104,7 +122,7 @@ def emit(emitter, node, value):
     from .native_classes import ClassUnsupported
     capability = value.kind.record.hint_protocol
     if capability is None:
-        raise ClassUnsupported(node, "list.extend needs this iterator provider's remaining-length hint protocol; the provider has not published an absent-slot or implemented-state certificate",
+        raise ClassUnsupported(node, "this iterable consumer needs its iterator provider's remaining-length hint protocol; the provider has not published an absent-slot or implemented-state certificate",
                                types=(('iterable', value.kind),), proof='provider-owned iterator length hint')
     return capability.emit(emitter, node, value)
 

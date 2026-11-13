@@ -215,8 +215,9 @@ def emit_builtin(emitter,node,arguments,keywords,wanted):
             setup,original=emitter.capture(Expression('('+original.code+').clone()',original.kind))
         source=emitter.model.iterators.construct(emitter,node,Expression('('+original.code+').clone()',original.kind),kind=site.source_kind)
         before,source=emitter.capture(source);setup+=before
-        from .native_source_lengths import emit_hint,reserve_hint
-        hint=emit_hint(emitter,node,original,'sorted')
+        from .native_source_lengths import reserve_hint
+        from .native_materializer_hints import emit as materializer_hint
+        hint=materializer_hint(emitter,node,original,'sorted')
         if hint is not None:
             saved=emitter.fresh();setup+='let '+saved+'='+hint+';';hint=saved
         pulled=emitter.model.iterators.pull(emitter,node,source)

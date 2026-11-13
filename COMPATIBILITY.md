@@ -1483,15 +1483,43 @@ islice, pairwise, product and choice iterators use their actual absent hint;
 repeat, range, live builtin sequence and deque cursors use checked current
 state. Reverse text cursors count remaining Unicode codepoints in Unicode mode.
 A missing provider certificate stays unknown. Custom `__length_hint__` methods,
-dictionary-cursor remaining-position hints, stored `extend` method references,
-and existing general exception-handler/suspended-raise gaps are diagnosed.
-New nonlist extensions require the analyzed compilation unit to contain no
-dictionary-backed cursor or dictionary for-loop family. Source callbacks can
-access global cursors outside their owned fields, and reusable dictionary slots
-do not yet preserve insertion positions after same-size key replacement. This
-temporary conservative boundary also applies when an unrelated dictionary
-cursor is present. Ordinary dictionary lookups and existing list-to-list
-extensions retain their own paths. The underlying cursor repair remains open.
+stored `extend` method references, and existing general exception-handler or
+suspended-raise gaps are diagnosed.
+
+Forward builtin dictionary and live key/value/item-view cursors retain their
+actual typed owner, a logical entry position, and the original remaining yield
+budget. They follow CPython 3.14 entry-log growth, compaction, deletion and clear
+history rather than enumerating reusable storage slots. A transient size change
+makes the length hint zero without poisoning it; restoring the size before the
+next pull recovers the hint. A failed size check remains sticky. Exhaustion and
+a keys-changed error release the cursor owner, while a size error retains it.
+Value replacements remain live, and cursor aliases share the same state.
+
+Cursor construction and extension require a proved constructor/copy origin.
+The proof covers supported plain dict literals, comprehensions, typed pair
+iterables, mapping constructors and copies, and their supported Counter and
+defaultdict construction/copy policies. It preserves the distinct dense/sparse
+copy thresholds, keyword preallocation and literal allocation history. Canonical
+no-argument dict.clear resets that history without replacing the aliased owner.
+Custom mapping-key protocols, unproved dynamic or cyclic origins, chunked dict
+literal allocations, and reverse dictionary providers retain precise diagnostics.
+Existing unsupported mutation APIs such as dict.update and fromkeys are
+separate boundaries; a cursor capability does not implement those APIs. Sources
+with no dictionary cursor keep the previous ordered-store helper and generated
+list-to-list extension code.
+
+Canonical dict.popitem is supported directly in typed frames and through stored
+builtin method references, including Counter/defaultdict receivers. It removes
+the last inserted live entry, preserves the original key representative and
+mutable value identity, and raises KeyError on an empty dictionary. Receivers
+are captured before argument effects; all supplied arguments finish evaluation
+before the zero-argument signature error. Inherited methods report the defining
+dict signature and do not invoke a defaultdict factory. Captured aliases retain
+their owner across rebinding, with Python method equality and lookup identity.
+Immediate framed calls do not allocate a bound-method wrapper. Existing supported
+ordinary zero-argument calls keep their previous fast backend and generated code.
+New framed/captured popitem admission uses the same closed constructor/copy
+origin certificate; it does not bypass unsupported custom mapping-key protocols.
 Direct source ordering objects use the fallible rich-comparison sorter described
 below; nested container keys with source ordering callbacks remain a boundary.
 
@@ -2906,3 +2934,106 @@ every resolved module prefix and imported child is a canonical native adapter
 without a Python source initializer. Source-module retry boundaries remain
 explicit diagnostics. Empty primitive `str.format` specifications retain only
 the required string conversion helpers.
+## CPython-compatible typed set tables
+
+The typed frame backend stores admitted builtin sets in a concrete CPython
+3.14.4-compatible table, retaining the first equal key and the original mutable
+set identity. Supported keys remain integers/bools, None, bytes, representable
+strings, and recursively supported immutable tuple layouts. Custom/floating
+hash/equality protocols and heterogeneous key families without a proved ABI
+remain positioned conversion errors.
+
+The target hash layout is 64-bit little-endian CPython with SipHash13, using
+the LP64 seed parser of the Linux reference target. Generated
+code uses its own process secret and respects the existing `PYTHONHASHSEED`
+variable when secret-dependent set hashes are retained. Equal explicit numeric
+seeds give comparable CPython/Rust traversal; independently randomized processes
+do not promise equal traversal. Unneeded text hashing, Unicode data and their
+notices are omitted from numeric-only helper selection, including without the
+final optimizer pass.
+
+Native construction, add/remove/discard, zero-argument pop, copy, clear and update
+preserve table history. Source iteration, stored cursors, list/tuple collection,
+display and callback sorting use the actual table. Dictionary storage and the
+ordinary NativeKeySet backend remain separate. Observer selection uses actual
+shared set-allocation/type facts, so unchanged ordinary membership/total-sort
+paths can keep their existing backend.
+
+Canonical `list.extend` also consumes these set values and stored set cursors.
+Cursor acquisition precedes the original iterable's length hint. Set cursor
+hints use the actual shared cursor state: live size mismatches return zero and
+the following pull raises the set mutation error, while an exhausted cursor
+stays exhausted. Same-size replacements can leave unread keys after the
+original budget reaches zero. A negative remaining hint raises `ValueError`
+before any pull; it is never clamped to zero. These set capabilities do not
+relax the separate dictionary cursor admission boundary.
+Finite alternatives of set/list source values use their actual typed source
+arms. A finite union of distinct already-created cursor families still needs
+the separate iterator-value transport adapter and retains its positioned
+provider diagnostic.
+
+Canonical `list` and `sorted` materialization consult the original iterable's
+length hint after iterator acquisition and before the first pull. Native
+iterators use their provider's explicit absent-hint or checked-state capability,
+including signed set cursor budgets and range overflow. Original source-object
+length callbacks run once; a returned cursor's hint does not replace that owner
+callback. An unregistered provider remains a positioned conversion error.
+Python 3.14.4 tuple and bytearray constructors do not request this hint; reducers,
+comprehensions and set updates also retain their own hint-free consumption.
+Iterable `bytes` construction remains an explicit unsupported conversion
+protocol, rather than silently skipping its required original-owner hint.
+Direct range materialization retains the ordinary native Rust loop. It checks
+the original captured bounds and reserves the resulting vector before pulling;
+reversed ranges retain the same structural count. Source argument evaluation
+and zero-step validation precede that hint. Stored or returned range values
+which need the typed value transport select the corresponding native frame
+adapter from canonical callable and actual range-producer facts.
+
+Literal construction planning consults the official compiler with optimize=0
+on a copy of the original enclosing expression and its actual consumption
+context, including lazy wrappers, reused chained comparisons and linked source
+units. Only construction instructions attributed to that original literal are
+used. Fixed-width metadata constants follow the selected integer policy. Emission
+continues to evaluate the original nodes with the selected integer policy;
+compiler-host hashes, secrets and frozen-set slot order are never embedded.
+Starred set literals and unproved enclosing compilation contexts retain precise
+conversion diagnostics. Stored set-method values, additional set algebra and
+unimplemented argument/error signatures remain separate compatibility gaps.
+
+Exact builtin dictionary sources use CPython's dictionary bulk-resize path;
+admitted defaultdict and Counter sources insert incrementally. Mutable-set
+membership queries are supported when the stored builtin key family is proved
+disjoint from frozenset equality, preserving both original operand evaluations.
+Unproved frozen/custom equality families retain a positioned diagnostic.
+
+Mixed-history frozen constants remain an explicit compatibility gap. CPython's
+compile-unit constant cache can reuse an equal frozen set first constructed in
+unused, nested or subsequently eliminated source. The current adapter inventories
+possible original typed constant construction histories per SourceUnit, including
+constant segments in unused starred literals, and admits a cached family only
+when every possible history is identical or the existing closed effect/alias
+certificate proves that only order-insensitive results escape. Other differing
+possible histories produce
+a positioned constant-pool-origin diagnostic; their original cache provenance
+has not yet been reconstructed. No compiler-host frozen-set layout is embedded.
+Failed isolated metadata probes are recorded as an incomplete inventory, rather
+than as evidence that a contributor does not exist. An incomplete original
+SourceUnit blocks observable frozen-constant families with the failing source
+position and missing proof in the diagnostic. The existing closed effect/alias
+certificate may still establish that the unknown history is irrelevant; the
+target literal's own typed operand history must always be proved. A successfully
+proved runtime operand excludes only its own constant run. Other SourceUnits
+retain their separate inventories. This conservative boundary also covers
+unused, dead, default-value and lazy-annotation contributors.
+Module comparisons use fresh source compilation with bytecode-cache writes
+disabled; external `.pyc` constant serialization/history is not bundled.
+
+The set table/compiler-history target is the default GIL build of CPython.
+Frozen direct-string constants additionally require an unchanged-string or
+closed order-erasure certificate: CodeType interning can rebuild their table
+depending on the preexisting string intern pool. Unproved histories receive a
+positioned diagnostic. Numeric/bytes/None keys and ordinary tuple keys do not
+set that direct-string replacement flag; nested tuple-string interning keeps
+the tuple identity. Dynamic string-set construction keeps its ordinary typed
+path. Full source-owned string interning/reconstruction remains open alongside
+mixed constant-origin reconstruction; the compiler host is never its oracle.

@@ -149,3 +149,17 @@ pinned to commit `73876f1cbcf082d2b22722924b924d3d65a2f00e`. The fixture records
 each generator, seed, original input/answer checksum and any explicit reduction.
 The Apache-2.0 license is retained in `tests/fixtures/yosupo.LICENSE`. These test
 fixtures and generator dependencies are not bundled into generated Rust.
+The typed set-table and hash adapters in `native_cpython_set_runtime.py`,
+`native_cpython_hash.py`, `native_cpython_hash_secret.py` and
+`native_cpython_set_adapters.py` follow CPython 3.14.4's `Objects/setobject.c`,
+`Objects/longobject.c`, `Objects/tupleobject.c`, `Objects/unicodeobject.c`,
+`Objects/object.c`, `Python/bootstrap_hash.c`, `Python/initconfig.c`,
+`Python/pyhash.c`, `Python/codegen.c`, `Python/flowgraph.c` and
+`Python/bytecodes.c`. The existing bundled PSF license applies; generated native
+output retains its notice when these derived helpers remain.
+
+The SipHash routine in CPython's `Python/pyhash.c` additionally retains
+Copyright (c) 2013 Marek Majkowski and the MIT permission/disclaimer. Its full
+notice is retained as `SIPHASH_NOTICE` in `native_cpython_hash.py` and included
+in generated output only when the SipHash routine remains. These hash routines
+contain no Unicode character-data tables.

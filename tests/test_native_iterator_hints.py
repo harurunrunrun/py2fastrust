@@ -37,52 +37,19 @@ class IteratorHintExecutionTests(unittest.TestCase):
             support.AnnotationAndAssertionExecutionTests.compare(self,UNICODE,('',))
 
 class IteratorHintMetadataTests(unittest.TestCase):
-    def test_callback_global_cursor_is_not_an_owned_field_proof(self):
-        source='''mapping = {1:10, 2:20, 3:30}
-stream = iter(mapping)
-print(next(stream))
-def pull(ignored):
-    return next(stream)
-class Source:
-    def __iter__(self):
-        return map(pull, range(2))
-    def __len__(self):
-        del mapping[2]
-        mapping[4] = 40
-        return 2
-values = []
-values.extend(Source())
-print(values)
-'''
-        for integer in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=integer))
-            self.assertFalse(result.success)
-            self.assertTrue(any(d.code=='E006'and d.line==14
-                                and 'mutation-safe dictionary iterator position' in d.message
-                                for d in result.diagnostics),result.diagnostics)
+    def test_callback_global_cursor_preserves_original_effects(self):
+        source='mapping = {1:10, 2:20, 3:30}\nstream = iter(mapping)\nprint(next(stream))\ndef pull(ignored):\n    return next(stream)\nclass Source:\n    def __iter__(self):\n        return map(pull, range(2))\n    def __len__(self):\n        del mapping[2]\n        mapping[4] = 40\n        return 2\nvalues = []\nvalues.extend(Source())\nprint(values)\n'
+        support.AnnotationAndAssertionExecutionTests.compare(self,source,('',))
 
-    def test_source_wrapper_does_not_hide_unsafe_dictionary_cursor(self):
-        for integer in ('i64','i128','bigint'):
-            result=transpile(DICT_MUTATION_THROUGH_SOURCE,TranspileOptions(integer=integer))
-            self.assertFalse(result.success)
-            self.assertTrue(any(d.code=='E006'and d.line==11
-                                and 'mutation-safe dictionary iterator position' in d.message
-                                for d in result.diagnostics),result.diagnostics)
+    def test_source_wrapper_preserves_dictionary_positions(self):
+        support.AnnotationAndAssertionExecutionTests.compare(self,DICT_MUTATION_THROUGH_SOURCE,('',))
 
-    def test_canonical_map_dependency_does_not_hide_dictionary_cursor(self):
+    def test_canonical_map_preserves_dictionary_positions(self):
         source='values=[]\nvalues.extend(map(abs,iter({-3:0,2:0})))\nprint(values)\n'
-        for integer in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=integer))
-            self.assertFalse(result.success)
-            self.assertTrue(any(d.code=='E006'and d.line==2
-                                and 'mutation-safe dictionary iterator position' in d.message
-                                for d in result.diagnostics),result.diagnostics)
+        support.AnnotationAndAssertionExecutionTests.compare(self,source,('',))
 
-    def test_dictionary_remaining_position_is_not_guessed(self):
-        for integer in ('i64','i128','bigint'):
-            result=transpile(DICT_BOUNDARY,TranspileOptions(integer=integer))
-            self.assertFalse(result.success)
-            self.assertTrue(any(d.code=='E006'and d.line==5 and 'remaining-position' in d.message for d in result.diagnostics),result.diagnostics)
+    def test_dictionary_remaining_position_uses_actual_state(self):
+        support.AnnotationAndAssertionExecutionTests.compare(self,DICT_BOUNDARY,('',))
 
     def test_unknown_record_never_inherits_absence_from_operation_name(self):
         from types import SimpleNamespace

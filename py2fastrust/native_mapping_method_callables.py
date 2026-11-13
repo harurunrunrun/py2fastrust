@@ -3,7 +3,7 @@ import ast
 from dataclasses import dataclass
 from .native_types import alternatives,EMPTY
 
-METHODS=frozenset({'__getitem__','get','setdefault'})
+METHODS=frozenset({'__getitem__','get','setdefault','popitem'})
 
 
 @dataclass(frozen=True)
@@ -44,8 +44,12 @@ def supported(kind,name):
 def requires_frames(unit,analysis):
     from .native_constraints import Allocation
     from .native_key_types import DictType
+    parents={id(child):node for node in ast.walk(unit.tree)for child in ast.iter_child_nodes(node)}
     for node in ast.walk(unit.tree):
         if not isinstance(node,ast.Attribute)or node.attr not in METHODS:continue
+        parent=parents.get(id(node))
+        if (node.attr=='popitem'and isinstance(parent,ast.Call)and parent.func is node
+                and not parent.args and not parent.keywords):continue
         ordinal=unit.ordinal(node.value)
         for facts in analysis.scopes.values():
             value=facts.values.get(ordinal)
@@ -58,6 +62,9 @@ def acquire(model,plan,node,receiver):
     if not isinstance(node,ast.Attribute):return None
     kinds=alternatives(shape(receiver))
     if not kinds or not all(supported(kind,node.attr)for kind in kinds):return None
+    if node.attr=='popitem':
+        from .native_mapping_popitem import require_origin
+        require_origin(model,node,kinds)
     registry=getattr(model,'mapping_method_types',None)
     if registry is None:
         registry=model.mapping_method_types=set()
@@ -86,6 +93,9 @@ def read(emitter,node,wanted):
 
 def binding_error(kind,count,keywords):
     name=kind.name;record=kind.receiver.record
+    if name=='popitem':
+        from .native_mapping_popitem import binding_error as popitem_error
+        return popitem_error(count,keywords)
     owner='Counter'if record.flavor=='Counter'else'defaultdict'if record.flavor=='defaultdict'else'dict'
     if keywords:return f'TypeError: {owner}.{name}() takes no keyword arguments'
     if name=='__getitem__':return None if count==1 else f'TypeError: {owner}.__getitem__() takes exactly one argument ({count} given)'
@@ -105,6 +115,10 @@ def analyze_call(model,plan,node,kind,positional,keywords,environment,*,identity
     if calls is None:calls=model.mapping_method_calls={}
     calls.setdefault((plan.index,id(node)),set()).add(kind)
     record=kind.receiver.record
+    if kind.name=='popitem':
+        value=Cell('tuple',(record.key,record.value))
+        if not model.namespace.contribute(result,value,node,force=True):model.contribute(result,value,node)
+        return Invocation(result)
     if kind.name=='__getitem__':model.mappings.defaultdicts.analyze_get(plan,node,record,positional[0],environment)
     if kind.name=='setdefault':
         model.mappings.contribute_key(record,positional[0],node)
@@ -120,6 +134,9 @@ def emit_call(emitter,node,kind,record,callee,positional,keywords,wanted):
     from .native import _string
     if record.error:return _error(emitter,node,wanted,_string(record.error)+'.to_owned()')
     owner=Expression('('+callee+').receiver.clone()',kind.receiver)
+    if kind.name=='popitem':
+        from .native_mapping_popitem import remove
+        return remove(emitter,node,owner,wanted)
     key=positional[0]
     if kind.name=='__getitem__':return emitter.model.mappings.emit_get(emitter,node,owner,key,wanted)
     default=positional[1]if len(positional)==2 else Expression('()','none')

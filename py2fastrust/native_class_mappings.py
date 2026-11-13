@@ -159,6 +159,8 @@ class Mappings:
         self.defaultdicts=DefaultDicts(self)
         from .native_set_methods import SetMethods
         self.set_methods=SetMethods(self)
+        from .native_cpython_set_adapters import CPythonSets
+        self.cpython_sets=CPythonSets(self)
 
     def owns(self,kind):
         return mapping_kind(kind)and 0<=kind.index<len(self.records)and self.records[kind.index]is kind.record
@@ -301,12 +303,17 @@ class Mappings:
         if view is not None:
             self.methods[(plan.index,id(node))]=(receiver,node.func.attr)
             return view
+        from .native_mapping_popitem import analyze as analyze_popitem
+        popped=analyze_popitem(self.model,plan,node,receiver,arguments,keywords)
+        if popped is not None:return popped
         kinds=alternatives(shape(receiver))
         if not any(mapping_kind(kind)for kind in kinds):return None
         name=node.func.attr
         if keywords:raise ClassUnsupported(node,'mapping method keyword argument binding is not implemented for this signature',proof='mapping method argument binding')
         result=self.model.cell(plan,node)
         self.methods[(plan.index,id(node))]=(receiver,name)
+        if name=='clear'and not arguments and all(mapping_kind(kind)and kind.record.category=='dict'for kind in kinds):
+            return self.model.cell(plan,node,'none')
         if name=='copy'and not arguments:
             if len(kinds)!=1:raise ClassUnsupported(node,'copying these mapping alternatives needs a joined destination key/value ABI',proof='mapping copy result representation')
             old=kinds[0].record;record=self.record(plan,node,old.category,'copy',flavor=old.flavor);record.source=receiver
@@ -335,17 +342,31 @@ class Mappings:
             if argument is not None and not key_supported(argument)and not(not self.model.final and key_pending(argument)):
                 raise ClassUnsupported(node,'set deletion with this argument needs a Python hash/equality adapter that is not implemented',types=(('key',argument),),proof='set deletion query key')
             return self.model.cell(plan,node,'none')
+        if name=='pop'and not arguments:
+            for kind in kinds:
+                if not mapping_kind(kind)or kind.record.category!='set':raise ClassUnsupported(node)
+                self.model.contribute(result,kind.record.key,node)
+            return result
         raise ClassUnsupported(node,'mapping method '+repr(name)+' needs a native view/mutation/argument protocol not implemented by this adapter',proof='mapping method protocol')
 
     def rust_type(self,kind):return 'ClassMapping_'+str(kind.index)
 
     def _new(self,emitter,record):
         from .native_classes import shape
+        if record.category=='set':return self.cpython_sets.new(emitter,record)
         key,value=shape(record.key),shape(record.value)
-        return 'Rc::new(RefCell::new(NativeKeyDict::<'+emitter.rust_type(key)+','+emitter.rust_type(value)+','+canonical_type(key)+'>::new()))'
+        result='Rc::new(RefCell::new(NativeKeyDict::<'+emitter.rust_type(key)+','+emitter.rust_type(value)+','+canonical_type(key)+'>::new()))'
+        if record.category=='dict'and self.views.positions_enabled()and isinstance(record.node,ast.Dict):
+            from .native_dictionary_positions import literal_presize
+            count=literal_presize(record.node)
+            if count<=5:return result
+            owner=emitter.fresh()
+            result='{let '+owner+'='+result+';'+emitter.at(owner+'.borrow_mut().entries.presize_literal('+str(count)+')',record.node)+';'+owner+'}'
+        return result
 
     def _set(self,emitter,node,owner,key,value):
         from .native_classes import shape,Expression
+        if owner.kind.record.category=='set':return self.cpython_sets.insert(emitter,node,owner,key)
         record=owner.kind.record;wanted=shape(record.key)
         retained=emitter.coerce(Expression('('+key.code+').clone()',key.kind),wanted,node)
         stored=emitter.coerce(Expression('('+value.code+').clone()',value.kind),shape(record.value),node)
@@ -357,6 +378,7 @@ class Mappings:
         wanted=emitter.kind(node)
         if not mapping_kind(wanted):return None
         record=wanted.record;record.emitted=True
+        if isinstance(node,ast.Set):return self.cpython_sets.literal(emitter,node,wanted)
         if isinstance(node,(ast.DictComp,ast.SetComp)):
             from .native_class_comprehensions import Collector,emit
             def append(e,result,semantic):
@@ -387,8 +409,11 @@ class Mappings:
             if choices and all(mapping_kind(choice)for choice in choices):
                 from .native_unions import project,union_kind
                 def copy(kind,text):
+                    if name=='set':return self.cpython_sets.from_mapping(emitter,node,Expression(owner,wanted),Expression(text,kind))
                     stable,key,value,read=(emitter.fresh()for _ in range(4));old=kind.record
                     body=f'{{let {stable}=({text}).clone();let {read}={stable}.borrow();for ({key},{value})in {read}.entries.iter(){{'
+                    if name=='dict'and self.views.positions_enabled():
+                        body=f'{{let {stable}=({text}).clone();let {read}={stable}.borrow();'+emitter.at(owner+'.borrow_mut().entries.prepare_mapping_seed(&'+read+'.entries)',node)+f';for ({key},{value})in {read}.entries.iter(){{'
                     return body+self._set(emitter,node,Expression(owner,wanted),Expression(key+'.clone()',shape(old.key)),Expression(value+'.clone()',shape(old.value))if name=='dict'else Expression('()','none'))+'}}'
                 code+=(project(source.kind,source.code,copy)if union_kind(source.kind)else copy(source.kind,source.code))+';'
             else:
@@ -399,6 +424,8 @@ class Mappings:
                 else:key=Expression(item+'.0',pulled.kind.fields[0]);value=Expression(item+'.1',pulled.kind.fields[1])
                 code+=self._set(emitter,node,Expression(owner,wanted),key,value)+'}'
         from .native import _string
+        if name=='dict'and keywords and self.views.positions_enabled():
+            code+=emitter.at(owner+'.borrow_mut().entries.prepare_keywords('+str(len(keywords))+')',node)+';'
         for key,value in keywords.items():code+=self._set(emitter,node,Expression(owner,wanted),Expression('NativeText::from('+_string(key)+')','str'),value)
         return Expression('{'+code+owner+'}',wanted)
 
@@ -435,6 +462,9 @@ class Mappings:
         return self._set(emitter,node,owner,key,value)
 
     def emit_method(self,emitter,node):
+        from .native_mapping_popitem import emit as emit_popitem
+        popped=emit_popitem(emitter,node)
+        if popped is not None:return popped
         mutated=self.set_methods.emit(emitter,node)
         if mutated is not None:return mutated
         counted=self.counters.emit_method(emitter,node)
@@ -449,22 +479,37 @@ class Mappings:
         if getattr(wanted,'_native_mapping_view',False):code=self.views.emit(emitter,node,owner,wanted)
         elif name=='copy':
             record=wanted.record;record.emitted=True
-            if record.flavor=='defaultdict':code=self.defaultdicts.emit_copy(emitter,node,owner,wanted)
+            if record.category=='set':
+                copied=emitter.fresh();code='{let '+copied+'='+self._new(emitter,record)+';'+self.cpython_sets.merge(emitter,node,Expression(copied,wanted),owner)+copied+'}'
+            elif record.flavor=='defaultdict':code=self.defaultdicts.emit_copy(emitter,node,owner,wanted)
             else:
                 copied=emitter.fresh()
-                code='{let '+copied+'=('+owner.code+'.borrow()).clone();Rc::new(RefCell::new('+copied+'))}'
+                if record.category=='dict'and record.flavor=='dict'and self.views.positions_enabled():
+                    code='{let mut '+copied+'=('+owner.code+'.borrow()).clone();'+emitter.at(copied+'.entries.prepare_python_copy()',node)+';Rc::new(RefCell::new('+copied+'))}'
+                elif record.category=='dict'and record.flavor=='Counter'and self.views.positions_enabled():
+                    code='{let mut '+copied+'=('+owner.code+'.borrow()).clone();'+emitter.at(copied+'.entries.prepare_constructor_copy()',node)+';Rc::new(RefCell::new('+copied+'))}'
+                else:code='{let '+copied+'=('+owner.code+'.borrow()).clone();Rc::new(RefCell::new('+copied+'))}'
         elif name=='add':code='{'+self.emit_store(emitter,node,owner,arguments[0],Expression('()','none'))+'()}'
+        elif name=='clear':
+            from .native_unions import project
+            code=project(owner.kind,owner.code,lambda kind,text:'{('+text+').borrow_mut().clear();()}')
         elif name in {'remove','discard'}:
             from .native_unions import union_kind,project
             key=arguments[0]
             def branch(kind,text):
                 canonical_name=emitter.fresh();removed=emitter.fresh()
                 query=query_canonical(emitter,key,shape(kind.record.key))
-                body='let '+removed+'=match '+query+'{Some('+canonical_name+')=>('+text+').borrow_mut().delete(&'+canonical_name+'),None=>false};'
+                body='let '+removed+'='+self.cpython_sets.query(emitter,node,Expression(text,kind),key,remove=True)+';'
                 if name=='remove':
                     failure=emitter.at('Err::<(),String>(format!("KeyError: {}",'+emitter.show(key,node,True)+'))',node)
                     body+='if !'+removed+'{'+failure+';}'
                 return '{'+body+'()}'
+            code=project(owner.kind,owner.code,branch)if union_kind(owner.kind)else branch(owner.kind,owner.code)
+        elif name=='pop':
+            from .native_unions import project,union_kind
+            def branch(kind,text):
+                item=emitter.fresh();taken=emitter.at('('+text+').borrow_mut().pop()',node)
+                return '{let '+item+'='+taken+';'+emitter.coerce(Expression(item,shape(kind.record.key)),wanted,node)+'}'
             code=project(owner.kind,owner.code,branch)if union_kind(owner.kind)else branch(owner.kind,owner.code)
         else:
             default=arguments[1]if len(arguments)==2 else Expression('()','none')
@@ -489,7 +534,7 @@ class Mappings:
         from .native_classes import Cell,shape,ClassUnsupported
         kinds=alternatives(shape(source))
         if not kinds or not all(mapping_kind(kind)for kind in kinds):return None
-        if any(kind.record.category=='set'for kind in kinds)and shape(key)!='none':
+        if any(kind.record.category=='set'and not self.cpython_sets.owns(kind)for kind in kinds)and shape(key)!='none':
             raise ClassUnsupported(node,'a callable sorting key would expose set traversal and tie order; only proved key=None sorting is supported for typed sets',proof='order-insensitive set consumption')
         result=Cell()
         for kind in kinds:self.model.contribute(result,kind.record.key,node)
@@ -500,7 +545,8 @@ class Mappings:
         from .native_unions import project,union_kind
         def branch(kind,code):
             key=emitter.fresh();value=emitter.coerce(Expression(key+'.clone()',shape(kind.record.key)),element,node)
-            return '('+code+').borrow().entries.iter().map(|('+key+',_)|'+value+').collect::<Vec<'+emitter.rust_type(element)+'>>()'
+            entries='.entries().map(|('+key+',_,_)|'if kind.record.category=='set'else'.entries.iter().map(|('+key+',_)|'
+            return '('+code+').borrow()'+entries+value+').collect::<Vec<'+emitter.rust_type(element)+'>>()'
         return project(source.kind,source.code,branch)if union_kind(source.kind)else branch(source.kind,source.code)
 
     def show(self,emitter,value,node):
@@ -509,7 +555,9 @@ class Mappings:
         if record.flavor=='defaultdict':return self.defaultdicts.show(emitter,value,node)
         if record.flavor=='Counter':return self.counters.show(emitter,value,node)
         if record.category=='set':
-            raise ClassUnsupported(node,'set display would expose traversal order; the typed set adapter currently proves order-insensitive sorted/membership consumers only',proof='set traversal-order observation')
+            key,read,text=(emitter.fresh()for _ in range(3))
+            shown=emitter.show(Expression(key+'.clone()',shape(record.key)),node,True)
+            return '{let '+read+'=('+value.code+').borrow();let '+text+'=if '+read+'.is_empty(){"set()".to_owned()}else{format!("{{{}}}",'+read+'.entries().map(|('+key+',_,_)|'+shown+').collect::<Vec<_>>().join(", "))};'+text+'}'
         before,value=emitter.capture(Expression('('+value.code+').clone()',value.kind))
         key,item,read=(emitter.fresh()for _ in range(3))
         a=emitter.show(Expression(key+'.clone()',shape(record.key)),node,True)
@@ -521,7 +569,15 @@ class Mappings:
         if not mapping_kind(right.kind):return None
         record=right.kind.record
         if isinstance(operator,(ast.In,ast.NotIn)):
-            if not key_supported(left.kind):
+            if mapping_kind(left.kind)and left.kind.record.category=='set'and record.category=='set':
+                from .native_cpython_set_adapters import frozenset_disjoint
+                if not frozenset_disjoint(shape(record.key)):
+                    raise ClassUnsupported(node,'mutable-set membership needs a frozenset fallback whose equality against this stored key family is not proved',types=(('stored key',shape(record.key)),),proof='set-query frozenset hash/equality fallback')
+                # Both original operands are already captured by the comparison
+                # emitter. CP's mutable-set fallback hashes retained entries and
+                # cannot equal any key in this callback-free closed family.
+                code='false'
+            elif not key_supported(left.kind):
                 from .native_class_builtins import _type_name
                 from .native import _string
                 leaf=unhashable_leaf(left.kind)
@@ -531,7 +587,8 @@ class Mappings:
                 code=emitter.at('Err::<bool,String>(format!('+message+','+query_type_name(emitter,left,node)+','+_string(leaf)+'))',node)
             else:
                 key=emitter.fresh();query=query_canonical(emitter,left,shape(record.key))
-                code='{let value=match '+query+'{Some('+key+')=>'+right.code+'.borrow().contains(&'+key+'),None=>false};value}'
+                lookup=self.cpython_sets.query(emitter,node,right,left)if record.category=='set'else'match '+query+'{Some('+key+')=>'+right.code+'.borrow().contains(&'+key+'),None=>false}'
+                code='{let value='+lookup+';value}'
             return '!('+code+')'if isinstance(operator,ast.NotIn)else code
         if mapping_kind(left.kind)and isinstance(operator,(ast.Is,ast.IsNot)):
             code='Rc::ptr_eq(&'+left.code+','+'&'+right.code+')'if left.kind==right.kind else'false'
@@ -541,20 +598,24 @@ class Mappings:
     def runtime(self,emitter):
         from .native_classes import shape
         if not self.records:return ''
-        from .native_ordered_entries import ORDERED_HELPERS
+        from .native_ordered_entries import ORDERED_HELPERS,POSITIONED_HELPERS
         from .native_key_containers import HELPERS,BIG_HASH
         from .native_constraint_lowering import EMPTY_HELPERS
-        result=[ORDERED_HELPERS,HELPERS]
+        dictionaries=any(record.category=='dict'for record in self.records)
+        result=[POSITIONED_HELPERS if self.views.positions_enabled()else ORDERED_HELPERS,HELPERS]if dictionaries else[]
         tuple_runtime=getattr(self.model,'materialized_tuple',False)or any(plan.reachable and getattr(plan,'variadic_element',None)is not None for plan in self.model.plans)
         if not tuple_runtime and not any(record.emitted and isinstance(shape(record.element),EmptyType)for record in self.model.iterators.records):result.append(EMPTY_HELPERS)
-        if self.model.integer=='bigint':result.append(BIG_HASH)
+        if self.model.integer=='bigint'and dictionaries:result.append(BIG_HASH)
         for record in self.records:
             key,value=shape(record.key),shape(record.value)
-            payload=self.defaultdicts.owner_type(record)if record.flavor=='defaultdict'else'RefCell<NativeKeyDict<'+emitter.rust_type(key)+','+emitter.rust_type(value)+','+canonical_type(key)+'>>'
+            payload=self.cpython_sets.payload(emitter,record)if record.category=='set'else self.defaultdicts.owner_type(record)if record.flavor=='defaultdict'else'RefCell<NativeKeyDict<'+emitter.rust_type(key)+','+emitter.rust_type(value)+','+canonical_type(key)+'>>'
             result.append('type ClassMapping_'+str(record.index)+'=Rc<'+payload+'>;')
         result.append(self.defaultdicts.runtime(emitter))
         result.append(self.views.runtime(emitter))
+        result.append(self.cpython_sets.runtime())
         result.append(self.counters.runtime())
         from .native_mapping_method_callables import runtime as mapping_method_runtime
         result.append(mapping_method_runtime(self.model,emitter))
+        from .native_mapping_popitem import runtime as popitem_runtime
+        result.append(popitem_runtime(self.model))
         return '\n'.join(result)

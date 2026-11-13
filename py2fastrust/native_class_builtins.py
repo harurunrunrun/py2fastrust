@@ -536,6 +536,9 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
             pulled=self.model.iterators.pull(self,node,arguments[0]);current=self.fresh();values=self.fresh()
             item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
             from .native_source_lengths import reserve_hint
+            if length_hint is None:
+                from .native_materializer_hints import emit as materializer_hint
+                length_hint=materializer_hint(self,node,arguments[0],'list')
             reserve=reserve_hint(self,node,values,length_hint)
             code="{"+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();"+reserve+f"loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}"+wrap(values)+"}"
         elif domain(arguments[0].kind)=="list":
@@ -555,7 +558,12 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
                 item=self.fresh()
                 converted=self.coerce(Expression(item,'int'),wanted.element,node)
                 values+=f".map(|{item}|{converted})"
-            code=wrap(f"({values}).collect::<Vec<_>>()")
+            from .native_materializer_hints import emit as materializer_hint
+            from .native_source_lengths import reserve_hint
+            retained=self.fresh()
+            hint=materializer_hint(self,node,arguments[0],'list')
+            reserve=reserve_hint(self,node,retained,hint)
+            code='{'+f'let mut {retained}=Vec::<{self.rust_type(wanted.element)}>::new();'+reserve+retained+'.extend('+values+');'+wrap(retained)+'}'
         elif domain(arguments[0].kind)=="tuple":
             value=arguments[0]
             elements=[self.coerce(Expression(f"{value.code}.{i}.clone()",kind),wanted.element,node)for i,kind in enumerate(value.kind.fields)]

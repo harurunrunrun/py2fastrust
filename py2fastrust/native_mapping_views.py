@@ -38,7 +38,7 @@ class ViewRecord:
 def view_kind(kind):return isinstance(kind,ViewType)
 
 
-CURSORS=r'''
+OWNER_TRAIT=r'''
 trait ClassMappingOwner{
     type Key;type Value;type Canonical:Eq+std::hash::Hash;
     fn mapping(&self)->&RefCell<NativeKeyDict<Self::Key,Self::Value,Self::Canonical>>;
@@ -47,18 +47,28 @@ impl<K,V,C:Eq+std::hash::Hash> ClassMappingOwner for RefCell<NativeKeyDict<K,V,C
     type Key=K;type Value=V;type Canonical=C;
     fn mapping(&self)->&RefCell<NativeKeyDict<K,V,C>>{self}
 }
-struct ClassMappingCursor<O:ClassMappingOwner>{source:Rc<O>,expected:usize,slot:usize,exhausted:bool,failed:bool}
+'''
+
+CURSORS=OWNER_TRAIT+r'''
+struct ClassMappingCursor<O:ClassMappingOwner>{source:Option<Rc<O>>,expected:usize,position:usize,remaining:usize,failed:bool}
 impl<O:ClassMappingOwner> ClassMappingCursor<O>{
     fn new(source:Rc<O>)->Self{
-        let (expected,slot)={let read=source.mapping().borrow();(read.len(),read.entries.head)};
-        Self{source,expected,slot,exhausted:false,failed:false}
+        let expected=source.mapping().borrow().len();
+        Self{source:Some(source),expected,position:0,remaining:expected,failed:false}
+    }
+    fn length_hint(&self)->usize{
+        if self.failed{return 0;}
+        self.source.as_ref().map_or(0,|source|if source.mapping().borrow().len()==self.expected{self.remaining}else{0})
     }
     fn next<R,F:FnOnce(&O::Key,&O::Value)->R>(&mut self,project:F)->Result<Option<R>,String>{
-        if self.exhausted{return Ok(None);}
-        let read=self.source.mapping().borrow();
+        let source=match &self.source{Some(source)=>source.clone(),None=>return Ok(None)};
+        let read=source.mapping().borrow();
         if self.failed||read.len()!=self.expected{self.failed=true;return Err("RuntimeError: dictionary changed size during iteration".to_owned());}
-        if self.slot==NATIVE_ENTRY_NONE{self.exhausted=true;return Ok(None);}
-        let slot=self.slot;self.slot=read.entries.slots[slot].next;
+        let mut position=self.position;
+        while position<read.entries.positions.len()&&read.entries.positions[position]==NATIVE_ENTRY_NONE{position+=1;}
+        if position>=read.entries.positions.len(){drop(read);self.source=None;return Ok(None);}
+        if self.remaining==0{drop(read);self.source=None;return Err("RuntimeError: dictionary keys changed during iteration".to_owned());}
+        let slot=read.entries.positions[position];self.position=position+1;self.remaining-=1;
         let pair=&read.entries[slot];Ok(Some(project(&pair.0,&pair.1)))
     }
 }
@@ -69,6 +79,29 @@ impl<O:ClassMappingOwner> ClassMappingCursor<O>{
 class Views:
     def __init__(self,mappings):
         self.mappings=mappings;self.model=mappings.model;self.records=[];self.sites={};self.iteration_elements={}
+
+    def positions_enabled(self):
+        from .native_classes import shape
+        from .native_dictionary_positions import primitive_sources,dictionary_kind
+        return any(dictionary_kind(kind)for source in primitive_sources(self.model)for kind in alternatives(shape(source)))
+
+    def hint_cursor(self,emitter,node,kind,code):
+        from .native_classes import shape
+        self.require_positions(kind,node)
+        sources=alternatives(shape(kind.record.source))if view_kind(kind)else(kind,)
+        if not view_kind(kind):return '('+code+').length_hint()'
+        record=kind.record;arms=[]
+        for index,source in enumerate(sources):
+            arms.append('ClassMappingViewCursor_'+str(record.index)+'::V'+str(index)+'(cursor)=>cursor.length_hint()')
+        return 'match &('+code+'){'+','.join(arms)+'}'
+
+    def require_positions(self,kind,node):
+        from .native_classes import shape,ClassUnsupported
+        from .native_dictionary_positions import proved,dictionary_kind
+        if not dictionary_kind(kind):return
+        sources=alternatives(shape(kind.record.source))if view_kind(kind)else(kind,)
+        if not all(proved(source,self.model)for source in sources):
+            raise ClassUnsupported(node,'this dictionary cursor comes from an unproved constructor/copy origin; its entry-position history and remaining-length hint are not implemented',types=(('dictionary cursor source',kind),),proof='source-owned dictionary entry-position history')
 
     def snapshot(self):
         from .native_classes import shape
@@ -94,6 +127,8 @@ class Views:
 
     def element(self,kind):
         from .native_class_mappings import mapping_kind
+        from .native_set_cursors import accepts
+        if accepts(self.model,kind):return kind.record.key
         if mapping_kind(kind)and kind.record.category=='dict':return kind.record.key
         if view_kind(kind):return kind.record.element
         choices=alternatives(kind)
@@ -158,6 +193,8 @@ class Views:
     def cursor_payload(self,emitter,kind):
         from .native_classes import shape
         from .native_class_mappings import mapping_kind,canonical_type
+        from .native_set_cursors import accepts,payload
+        if accepts(self.model,kind):return payload(emitter,kind)
         if view_kind(kind):
             kind.record.cursor_emitted=True
             return 'ClassMappingViewCursor_'+str(kind.index)
@@ -170,6 +207,9 @@ class Views:
     def construct_cursor(self,emitter,kind,code):
         from .native_classes import shape
         from .native_unions import project,union_kind
+        from .native_set_cursors import accepts,construct
+        if accepts(self.model,kind):return construct(code)
+        self.require_positions(kind,kind.record.node)
         if not view_kind(kind):return 'ClassMappingCursor::new('+code+')'
         record=kind.record;record.cursor_emitted=True;source=shape(record.source);choices=alternatives(source)
         def branch(part,text):return 'ClassMappingViewCursor_'+str(record.index)+'::V'+str(choices.index(part))+'(ClassMappingCursor::new(('+text+').clone()))'
@@ -178,6 +218,8 @@ class Views:
 
     def pull_cursor(self,emitter,node,kind,code,wanted):
         from .native_classes import shape
+        from .native_set_cursors import accepts,pull
+        if accepts(self.model,kind):return pull(emitter,node,kind,code,wanted)
         if not view_kind(kind):
             part=self.project(emitter,kind,'keys','key','value')
             converted=emitter.coerce(part,wanted,node)
@@ -192,7 +234,8 @@ class Views:
 
     def runtime(self,emitter):
         from .native_classes import shape
-        result=[CURSORS]
+        dictionaries=any(record.category=='dict'for record in self.mappings.records)
+        result=([CURSORS]if self.positions_enabled()else[OWNER_TRAIT])if dictionaries else[]
         for record in self.records:
             result.append('struct ClassMappingView_'+str(record.index)+'{source:'+emitter.rust_type(shape(record.source))+'}')
             if record.cursor_emitted:

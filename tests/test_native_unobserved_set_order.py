@@ -1,4 +1,4 @@
-"""Set order is hidden by proved typed consumers rather than exposed publicly."""
+"""Legacy order erasure and actual CP-compatible typed set observations."""
 import shutil,unittest
 import test_native_stdio as stdio_tests
 from py2fastrust import transpile,TranspileOptions
@@ -122,63 +122,69 @@ print(run(input()))
 
 
 class UnobservedSetOrderGuards(unittest.TestCase):
-    def reject(self,source):
-        for mode in ('i64','i128','bigint'):
-            with self.subTest(integer=mode,source=source):
-                result=transpile(source,TranspileOptions(integer=mode,filename='order.py'))
-                self.assertFalse(result.success)
-                self.assertTrue(result.diagnostics)
-                self.assertIn('unobserved set traversal',result.diagnostics[0].message)
-                self.assertGreater(result.diagnostics[0].line,0)
+    setUpClass=classmethod(stdio_tests.NativeStdioTests.setUpClass.__func__)
+    tearDownClass=classmethod(stdio_tests.NativeStdioTests.tearDownClass.__func__)
+    compile=stdio_tests.NativeStdioTests.compile
+    differential=stdio_tests.NativeStdioTests.differential
 
-    def test_direct_and_alias_order_observers_are_rejected(self):
+    def observe(self,source):
+        self.differential(source,[b'0\n',b'1\n'],profiles=(False,True))
+
+    def boundary(self,source,part):
+        for mode in ('i64','i128','bigint'):
+            result=transpile(source,TranspileOptions(integer=mode,filename='order.py'))
+            self.assertFalse(result.success)
+            self.assertIn(part,result.diagnostics[0].message)
+
+    def test_direct_and_alias_order_observers_match_cpython(self):
         for continuation in ['print(a)','saved=a\nprint(saved)','print(a[0])','other=[a]','return a']:
             source='def run():\n    a=list(set([4,1,9,1]))\n'+''.join('    '+line+'\n'for line in continuation.splitlines())+'    a.sort()\nrun()\n'
-            self.reject(source)
+            if continuation=='return a':self.boundary(source,"Cannot lower call 'a.sort'")
+            else:self.observe(source)
 
-    def test_published_namespace_abrupt_paths_do_not_hide_order(self):
-        self.reject('''def fail(items):
+    def test_published_namespace_abrupt_paths_preserve_order(self):
+        self.observe('''def fail(items):
     1//0
     items.sort()
 values=list(set([4,1,9]))
 fail(values)
 ''')
-        self.reject('''if int(input()): reverse=True
+        self.observe('''if int(input()): reverse=True
 values=list(set([4,1,9]))
 values.sort(reverse=reverse)
 ''')
-        self.reject('''values=list(set([4,1,9]))
+        self.observe('''values=list(set([4,1,9]))
 1//0
 values.sort()
 ''')
-        self.reject('''values=list(set([4,1,9]))
+        self.observe('''values=list(set([4,1,9]))
 print('before')
 values.sort()
 ''')
 
-    def test_class_publication_and_generator_captures_do_not_hide_escapes(self):
-        self.reject('''class Published:
+    def test_class_publication_and_generator_captures_preserve_escapes(self):
+        self.observe('''class Published:
     values=list(set([4,1,9]))
 print(Published.values)
 ''')
 
-    def test_original_allocation_must_be_erased_not_only_a_copy(self):
-        self.reject('a=list(set([4,1,9]))\nb=sorted(a)\nprint(a,b)\n')
+    def test_original_allocation_keeps_order_when_only_a_copy_is_sorted(self):
+        self.observe('a=list(set([4,1,9]))\nb=sorted(a)\nprint(a,b)\n')
 
-    def test_conditional_rebinding_does_not_prove_the_wrong_allocation(self):
-        self.reject('flag=int(input())\na=list(set([4,1,9]))\nold=a\nif flag:\n    a=[]\na.sort()\nprint(old)\n')
+    def test_conditional_rebinding_preserves_both_allocations(self):
+        self.observe('flag=int(input())\na=list(set([4,1,9]))\nold=a\nif flag:\n    a=[]\na.sort()\nprint(old)\n')
 
-    def test_short_circuit_sort_does_not_dominate_an_observer(self):
-        self.reject('flag=int(input())\na=list(set([4,1,9]))\nflag and a.sort()\nprint(a)\n')
-        self.reject('flag=int(input())\na=list(set([4,1,9]))\nflag < 0 < (a.sort() or 3)\nprint(a)\n')
+    def test_short_circuit_sort_preserves_short_circuit_order(self):
+        self.observe('flag=int(input())\na=list(set([4,1,9]))\nflag and a.sort()\nprint(a)\n')
+        self.observe('flag=int(input())\na=list(set([4,1,9]))\nflag < 0 < (a.sort() or 3)\nprint(a)\n')
 
-    def test_unknown_callbacks_and_captured_aliases_are_rejected(self):
-        self.reject('''def inspect(): print(a)
+    def test_unknown_callbacks_and_captured_aliases_match_cpython(self):
+        self.observe('''def inspect(): print(a)
 a=list(set([4,1,9]))
 inspect()
 a.sort()
 ''')
-        self.reject('''def identity(items,flag):
+        self.observe('''def identity(items,flag):
     if flag: return []
     return items
 flag=int(input())
@@ -188,12 +194,12 @@ b.sort()
 print(a)
 ''')
 
-    def test_key_and_reverse_callbacks_cannot_observe_unsorted_storage(self):
-        self.reject('''a=list(set([4,1,9]))
+    def test_key_and_reverse_callbacks_observe_actual_table_order(self):
+        self.observe('''a=list(set([4,1,9]))
 a.sort(key=lambda x:x)
 print(a)
 ''')
-        self.reject('''def inspect(items):
+        self.observe('''def inspect(items):
     print(items)
     return False
 a=list(set([4,1,9]))
@@ -201,15 +207,15 @@ a.sort(reverse=inspect(a))
 print(a)
 ''')
 
-    def test_cleanup_handlers_and_zero_iteration_paths_are_rejected(self):
-        self.reject('''class Cleanup:
+    def test_cleanup_handlers_and_zero_iteration_paths_match_cpython(self):
+        self.observe('''class Cleanup:
     def __enter__(self): return self
     def __exit__(self,a,b,c): return False
 a=list(set([4,1,9]))
 with Cleanup():
     a.sort()
 ''')
-        self.reject('''a=list(set([4,1,9]))
+        self.observe('''a=list(set([4,1,9]))
 for _ in range(int(input())):
     a.sort()
 print(a)
@@ -220,13 +226,16 @@ print(a)
     def __del__(self): print('finalizer')
 a=list(set([1,3]))
 a.sort()
-''','__del__'),('a=list(set([1.0,2.0]))\na.sort()\n','key'),('''def make():
-    captured=(values for _ in range(1))
-    values=list(set([4,1,9]))
-    return captured
-print(list(make()))
-''','generator expression')]:
+''','__del__'),('a=list(set([1.0,2.0]))\na.sort()\n','key')]:
             result=transpile(source,TranspileOptions(filename='boundary.py'))
             self.assertFalse(result.success)
             self.assertIn(part,result.diagnostics[0].message)
 
+
+    def test_retained_generator_keeps_late_captured_set_values(self):
+        self.observe('''def make():
+    captured=(values for _ in range(1))
+    values=list(set([4,1,9]))
+    return captured
+print(list(make()))
+''')

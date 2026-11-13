@@ -64,6 +64,7 @@ class Counters:
         self.model.contribute(record.value,Cell('int'),node)
         site=CounterSite(Cell(record.kind),'construct');self.sites[(plan.index,id(node))]=site
         if arguments:self._source(plan,node,site,arguments[0],environment)
+        record.source=site.source;record.source_type=site.source_type
         self._keywords(record,keywords,node)
         return factory(record.kind)
 
@@ -154,6 +155,8 @@ class Counters:
             if keywords:
                 from .native import _string
                 empty=emitter.fresh();code+='let '+empty+'='+owner.code+'.borrow().is_empty();'
+                if site.name=='update'and self.mappings.views.positions_enabled():
+                    code+='if '+empty+'{'+emitter.at(owner.code+'.borrow_mut().entries.prepare_keywords('+str(len(keywords))+')',node)+';}'
                 for key,amount in keywords:
                     code+=self._add(emitter,node,owner,Expression('NativeText::from('+_string(key)+')','str'),amount,subtract=site.name=='subtract',replace_if_empty=empty if site.name=='update'else None)
             return '{'+code+'()}'
@@ -216,10 +219,14 @@ class Counters:
             empty=emitter.fresh()if not subtract else None
             code='let '+empty+'='+owner.code+'.borrow().is_empty();'if empty else''
             def branch(kind,text):
+                self.mappings.views.require_positions(kind,node)
                 cursor,item,key,value=(emitter.fresh()for _ in range(4))
                 key_kind=shape(kind.record.key);value_kind=shape(kind.record.value)
                 pull=emitter.at(cursor+'.next(|key,value|(key.clone(),value.clone()))',node)
-                body='let mut '+cursor+'=ClassMappingCursor::new(('+text+').clone());loop{let Some('+item+')=('+pull+')else{break;};let ('+key+','+value+')='+item+';'
+                seed=''
+                if empty and self.mappings.views.positions_enabled():
+                    info=emitter.fresh();seed='if '+empty+'{let '+info+'={('+text+').borrow().entries.mapping_seed()};'+emitter.at(owner.code+'.borrow_mut().entries.prepare_mapping_info('+info+')',node)+';}'
+                body=seed+'let mut '+cursor+'=ClassMappingCursor::new(('+text+').clone());loop{let Some('+item+')=('+pull+')else{break;};let ('+key+','+value+')='+item+';'
                 body+=self._add(emitter,node,owner,Expression(key,key_kind),Expression(value,value_kind),subtract=subtract,replace_if_empty=None if subtract else empty)
                 return '{'+body+'}}'
             return code+(project(source.kind,source.code,branch)if union_kind(source.kind)else branch(source.kind,source.code))+';'
@@ -238,6 +245,8 @@ class Counters:
         if keywords:
             from .native import _string
             empty=emitter.fresh();code+='let '+empty+'='+owner+'.borrow().is_empty();'
+            if self.mappings.views.positions_enabled():
+                code+='if '+empty+'{'+emitter.at(owner+'.borrow_mut().entries.prepare_keywords('+str(len(keywords))+')',node)+';}'
             for key,amount in keywords:
                 code+=self._add(emitter,node,value,Expression('NativeText::from('+_string(key)+')','str'),amount,replace_if_empty=empty)
         return Expression('{'+code+owner+'}',wanted)

@@ -172,7 +172,7 @@ def _sort_code(g,owner,element,node,environment,reverse,key,*,forbidden_owners=(
             f"{owner}.clear();\nfor (_, {item}) in {decorated} {{{owner}.push({item});}}")
 
 
-def _collect(g,source,node,*,constructed=False):
+def _collect(g,source,node,*,constructed=False,range_hint=False):
     from .native_iterators import TraceContext, _owned
     if source.integer_words is not None:
         prefix=""if constructed else source.construct()
@@ -196,7 +196,11 @@ def _collect(g,source,node,*,constructed=False):
     result = g.temporary()
     action = g.at(f"native_typed_push(&mut {result},{_clone(g,value,element)})",node) + ";"
     body = source.emit(action,TraceContext(g.scope_name(),g.expression_trace_id),g.line_code(node))
-    code = ("" if constructed else source.construct()) + f"\nlet mut {result}:{rust_type(kind)}=Vec::new();\n" + body + f"\n{result}"
+    hint=''
+    if range_hint:
+        from .native_materializer_hints import ordinary_range_reserve
+        hint=ordinary_range_reserve(g,source,node,result)
+    code = ("" if constructed else source.construct()) + f"\nlet mut {result}:{rust_type(kind)}=Vec::new();\n" + hint + body + f"\n{result}"
     return _Expression("{\n" + code + "\n}",kind,length=source.length)
 
 
@@ -250,7 +254,7 @@ def try_expression(g, node, environment):
         source=Planner(g,borrow_input_words=plan.kind is ConsumerKind.LIST
             and borrow_immediate_input(g,plan.source,environment)).lower(plan.source,environment,allow_set=order_free)
         if plan.kind is ConsumerKind.LIST:
-            return _collect(g,source,node)
+            return _collect(g,source,node,range_hint=True)
         lines=[source.setup+("\n"+source.begin if source.eager else "")]
         checkpoint=len(g.expression_mutations)
         options,reverse,key=_sort_options(g,plan,environment,source.owners if source.eager else ())
@@ -260,7 +264,7 @@ def try_expression(g, node, environment):
                for name in source.owners):
             source.length=None
             source.nonempty=False
-        result=_collect(g,source,node,constructed=True)
+        result=_collect(g,source,node,constructed=True,range_hint=True)
         if not source.eager:lines.append(source.begin)
         owner=g.temporary()
         lines.append(f"let mut {owner}={result.code};")

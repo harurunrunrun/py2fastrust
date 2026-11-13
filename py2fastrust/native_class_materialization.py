@@ -22,6 +22,10 @@ def list_source(model,plan,node,source,environment=None):
     if root.tag=="union":
         return Cell("union",tuple(list_source(model,plan,node,choice,environment)for choice in root.args))
     kind=shape(source)
+    from .native_types import alternatives
+    kinds=alternatives(kind)
+    if kinds and all(model.mappings.cpython_sets.owns(part)for part in kinds):
+        return Cell(model.iterators.source(plan,node,source,environment=environment))
     from .native_unobserved_set_order import source as set_source
     unordered=set_source(model,plan,node,source,environment)
     if unordered is not None:return unordered

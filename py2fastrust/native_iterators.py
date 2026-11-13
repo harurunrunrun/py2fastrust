@@ -545,9 +545,11 @@ class Planner:
             raise _Unsupported
         cursor = self.g.temporary()
         setup = source.construct() + f"\nlet {cursor} = ({source.iterator}).rev();"
-        return self.leaf(setup, "", cursor, source.fields, source.owners,
+        result=self.leaf(setup, "", cursor, source.fields, source.owners,
                          eager=True, tupled=source.tupled,
                          length=source.length, nonempty=source.nonempty)
+        result.range_capture=source.range_capture
+        return result
 
     def zip_stream(self, plan, environment):
         node=plan.node

@@ -255,6 +255,13 @@ CASES.update({'named_tuple_original_key_type': 'from typing import NamedTuple\n'
                                 ' return value\n'
                                 's.update(map(observe,[2,{}]))\n'})
 
+CASES.update({
+    'cp_table_for_observer':"values={1,2}\nfor value in values:print(value)\n",
+    'cp_table_list_observer':"values={1,2}\nprint(list(values))\n",
+    'cp_table_filter_update':"s=set()\ns.update(filter(None,{1,2}))\n",
+    'cp_table_filter_update_contents':"s=set()\ns.update(filter(None,{1,2}))\nprint(sorted(s))\n",
+})
+
 class SetMethodTests(unittest.TestCase):
     check=support.IteratorExecutionTests.check
     cases=CASES
@@ -369,16 +376,9 @@ class SetMethodTests(unittest.TestCase):
     def test_multiple_star_keyword_after_materialization(self):
         self.check('multiple_star_keyword_after_materialization')
 
-    def test_order_observers_are_not_admitted(self):
-        sources=("values={1,2}\nfor value in values:print(value)\n",
-                 "values={1,2}\nprint(list(values))\n",
-                 "s=set()\ns.update(filter(None,{1,2}))\n")
-        for source in sources:
-            for mode in ('i64','i128','bigint'):
-                with self.subTest(source=source,mode=mode):
-                    result=support.transpile(source,support.TranspileOptions(integer=mode,license='none'))
-                    self.assertFalse(result.success)
-                    self.assertTrue(all(d.code=='E006' and d.line>0 for d in result.diagnostics),result.diagnostics)
+    def test_order_observers_use_the_actual_cp_table(self):
+        for name in ('cp_table_for_observer','cp_table_list_observer','cp_table_filter_update','cp_table_filter_update_contents'):
+            with self.subTest(name=name):self.check(name)
 
     def test_unimplemented_hash_and_stored_methods_are_named(self):
         sources=("s=set()\ns.update([1.5])\n",

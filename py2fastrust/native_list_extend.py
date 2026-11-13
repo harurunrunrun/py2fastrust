@@ -47,28 +47,14 @@ def analyze(model, plan, node, receiver, source, environment):
     analyze_hint(model, plan, node, source, environment, 'list.extend')
     item = model.iterators.demand(plan, node, Cell(cursor), environment)
     if model.final:
-        guard_dictionary_cursors(model, node)
+        guard_dictionary_cursors(model,node)
     model.contribute(receiver.root().args[0], item, node)
     model.list_extend_sites[key] = cursor
 
 
-def guard_dictionary_cursors(model, node):
-    from .native_classes import ClassUnsupported, shape
-    from .native_types import alternatives
-    # Callbacks can read a global cursor that is absent from their owned fields.
-    # Until that primitive has safe insertion positions, new consumers require
-    # its absence throughout the analyzed compilation unit.
-    sources = [shape(record.source) for record in model.iterators.records]
-    units = getattr(model.unit, 'source_units', (model.unit,))
-    trees = [unit.tree for unit in units if unit is not None] or [model.tree]
-    iterables = {id(statement.iter) for tree in trees for statement in ast.walk(tree)
-                 if isinstance(statement, (ast.For, ast.comprehension))}
-    sources.extend(shape(value) for (_, identity), value in model.records.items()
-                   if identity in iterables)
-    if any(model.mappings.views.element(choice) is not None
-           for source in sources for choice in alternatives(source)):
-        raise ClassUnsupported(node, 'list.extend in a compilation unit containing dictionary-backed cursors needs mutation-safe insertion-position and remaining-position state; source callbacks can access global cursors, and the current reusable-slot dictionary cursor cannot preserve same-size key replacement',
-                               proof='mutation-safe dictionary iterator position')
+def guard_dictionary_cursors(model,node):
+    from .native_dictionary_positions import guard
+    guard(model,node)
 
 
 def emit(emitter, node, storage, source):
@@ -168,27 +154,19 @@ def hint_value(emitter, node, value):
 
 
 def runtime(model):
-    if not getattr(model, 'list_extend_runtime', False):
+    extending = getattr(model, 'list_extend_runtime', False)
+    if not extending and not getattr(model, 'list_extend_range', False) and not getattr(model, 'iterator_hint_reverse_range', False):
         return ''
     reserve = '''fn class_list_extend_reserve<T>(values:&mut Vec<T>,hint:usize)->Result<(),String>{
         if let Some(total)=values.len().checked_add(hint).filter(|total|*total<=isize::MAX as usize){
             if total>isize::MAX as usize/std::mem::size_of::<usize>(){return Err("MemoryError".to_owned());}
             values.try_reserve(hint).map_err(|_|"MemoryError".to_owned())?;
         }Ok(())}
-    '''
+    ''' if extending else ''
     from .native_iterator_hints import runtime as hint_runtime
     reserve += hint_runtime(model)
     if not getattr(model, 'list_extend_range', False):
         return reserve
-    if model.integer == 'bigint':
-        count = '''let one=Int::from_i128(1);
-            let (distance,step)=if step.is_negative(){if start<=stop{return Ok(0);}(start.sub(stop),step.abs())}
-                else{if start>=stop{return Ok(0);}(stop.sub(start),step.clone())};
-            let length=distance.sub(&one).divmod(&step).unwrap().0.add(&one);
-            length.to_i128().and_then(|value|isize::try_from(value).ok()).map(|value|value as usize)'''
-    else:
-        count = '''let distance=if *step>0{if start>=stop{return Ok(0); }(*stop as u128).wrapping_sub(*start as u128)}
-                else{if start<=stop{return Ok(0);}(*start as u128).wrapping_sub(*stop as u128)};
-            let length=(distance-1)/(step.unsigned_abs()as u128)+1;
-            isize::try_from(length).ok().map(|value|value as usize)'''
+    from .native_materializer_hints import range_count
+    count = range_count(model.integer)
     return reserve + 'fn class_list_extend_range_length(start:&NativeInt,stop:&NativeInt,step:&NativeInt)->Result<usize,String>{(' + '{' + count + '}' + ').ok_or_else(||"OverflowError: Python int too large to convert to C ssize_t".to_owned())}'

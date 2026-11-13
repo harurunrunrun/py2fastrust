@@ -109,6 +109,9 @@ def select_frames(unit,*,integer="i64"):
     from .native_list_extend import requires_frames as extend_requires_frames
     if extend_requires_frames(unit,analysis):
         return FrameSelection(True,('canonical list extension iterable protocols',),analysis,frozenset(),MappingProxyType({}))
+    from .native_materializer_hints import requires_frames as materializer_hint_frames
+    if materializer_hint_frames(analysis):
+        return FrameSelection(True,('canonical range materializer length hints',),analysis,frozenset(),MappingProxyType({}))
     from .native_abrupt_values import requires_attribute_frames
     if requires_attribute_frames(unit,analysis):
         return FrameSelection(True,('uninhabited attribute receiver',),analysis,frozenset(),MappingProxyType({}))
@@ -150,6 +153,8 @@ def select_frames(unit,*,integer="i64"):
     if set_order_frames(unit,analysis):reasons+=('certified order-unobserved set materialization',)
     from .native_set_methods import requires_frames as set_method_frames
     if set_method_frames(unit,analysis):reasons+=('canonical native set mutations',)
+    from .native_cpython_set_adapters import requires_frames as cpython_set_frames
+    if cpython_set_frames(unit,analysis):reasons+=('CPython-compatible native set traversal',)
     from .native_type_objects import requires_frames as type_objects_frames
     if type_objects_frames(unit,analysis):reasons+=('actual builtin class-object values',)
     from .native_bytes_constructor import requires_frames as bytes_requires_frames
