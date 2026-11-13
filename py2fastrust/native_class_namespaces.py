@@ -448,6 +448,8 @@ def requires_namespaces(program):
     native_adapters=native_adapter_module_names(program)
     for unit in program.units:
         if unit.name in native_adapters:continue
+        from .native_source_class_cells import requires_namespace
+        if requires_namespace(unit):return True
         classes=[node for node in executable_nodes(unit.tree)if isinstance(node,ast.ClassDef)]
         names={node.name for node in classes}
         parents={id(child):parent for parent in executable_nodes(unit.tree)for child in ast.iter_child_nodes(parent)}

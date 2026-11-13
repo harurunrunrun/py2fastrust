@@ -65,7 +65,9 @@ def analyze_subscript(model,plan,node,owner,index):
                     if -len(value.args)<=literal<len(value.args):inputs.append(value.args[literal])
                 else:inputs.extend(value.args)
             elif value.tag in {"str","bytes"}:inputs.append(Cell("str"if value.tag=="str"else"int"))
-    if not inputs:inputs.append(Cell("none"))
+    if not inputs:
+        from .native_abrupt_values import bottom
+        return bottom(model,plan,node)
     for value in inputs:
         if not model.namespace.contribute(result,value,node,force=True):model.contribute(result,value,node)
     return model.remember(plan,node,result)

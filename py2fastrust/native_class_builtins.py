@@ -396,7 +396,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         from .native_source_lengths import emit_length
         source_length=emit_length(self,node,value)
         if source_length is not None:return source_length
-        if domain(value.kind)=='dict_view':length=self.model.mappings.views.length(self,value)
+        if domain(value.kind)=='array':length=value.code+'.0.borrow().len()'
+        elif domain(value.kind)=='dict_view':length=self.model.mappings.views.length(self,value)
         elif domain(value.kind)in {"list","dict","set","deque"}:length=f"{value.code}.borrow().len()"
         elif domain(value.kind)=="str":
             length=f"{value.code}."+("len()"if self.model.string_mode=="ascii"else"codepoint_len()")
@@ -442,6 +443,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
             name=_type_name(emitter,value,node)
             return _error(emitter,node,wanted,f'format!("TypeError: bad operand type for abs(): \'{{}}\'",{name})')
     elif name == "id":
+        if domain(arguments[0].kind)=='array':
+            return Expression('class_from_usize(Rc::as_ptr(&'+arguments[0].code+'.0)as usize)',wanted)
         if domain(arguments[0].kind)not in{"exception_value","object","list","iterator","dict","set","dict_view"}:raise ClassUnsupported(node)
         from .native_value_classes import identity
         code=f"class_from_usize({identity(emitter.model,arguments[0].kind,arguments[0].code)})"

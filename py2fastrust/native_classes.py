@@ -47,6 +47,7 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,'_native_array',False):return 'array'
     if getattr(kind,'_native_exception_class',False):return 'exception_class'
     if getattr(kind,'_native_exception_value',False):return 'exception_value'
     if getattr(kind,"_native_builtin_singleton",False):return "builtin_singleton"
@@ -256,7 +257,7 @@ class Environment(dict):
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
-    DATA = {"exception_class","exception_value","builtin_singleton", "int", "bool", "int_bool", "union", "str", "bytes", "float", "complex", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict","dict","set","dict_view"}
+    DATA = {'int_bool', 'function', 'exception_value', 'range', 'dict', 'object', 'exception_class', 'union', 'globals_dict', 'complex', 'float', 'bool', 'dict_view', 'str', 'tuple_sequence', 'none', 'bytes', 'array', 'tuple', 'builtin_singleton', 'list', 'int', 'set'}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -726,7 +727,7 @@ class Model:
         self.specializations.enable()
         if self.specializations.enabled:self.infer_until_stable()
         self.final = True
-        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or self.exceptions.raises or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)or getattr(self,'source_generators_used',False)else None
+        self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or self.exceptions.raises or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)or getattr(self,'source_generators_used',False)or getattr(self,'native_abrupt_values_used',False)else None
         self.module.visible_definitions = set()
         self.block(self.module, self.tree.body, dict(self.global_symbols))
         for plan in self.plans[1:]:
@@ -845,7 +846,8 @@ class Model:
             literal_positions(self,result,values,node)
             return result
         if isinstance(node, ast.Tuple):
-            return self.cell(plan, node, "tuple", tuple(self.expression(plan, value, environment) for value in node.elts))
+            from .native_abrupt_values import analyze_tuple
+            return analyze_tuple(self,plan,node,environment)
         if isinstance(node, ast.Attribute):
             receiver=self.expression(plan,node.value,environment)
             return self.attribute_value(plan,node,receiver,environment)
@@ -854,9 +856,14 @@ class Model:
                 from .native_frame_slices import analyze
                 return analyze(self,plan,node,environment)
             owner = self.expression(plan, node.value, environment).root()
+            from .native_abrupt_values import subscript_operand
+            abrupt=subscript_operand(self,plan,node,owner,1)
+            if abrupt is not None:return abrupt
             from .native_source_items import source_owner,check_key
             if source_owner(self,owner)is not None:check_key(node)
             index = self.expression(plan, node.slice, environment).root()
+            abrupt=subscript_operand(self,plan,node,index,2)
+            if abrupt is not None:return abrupt
             captured=self.subscript_item(plan,node,owner,index,environment)
             if captured is not None:return captured
             indexed=self.deques.indexes.analyze_read(plan,node,owner,index)
@@ -995,6 +1002,9 @@ class Model:
         return self.binary_builtin(plan,node,operator,left,right,identity=identity)
 
     def binary_builtin(self, plan, node, operator, left, right, *, identity=None):
+        from .native_arrays import analyze_binary as array_binary
+        array=array_binary(self,plan,node,operator,left,right,identity=identity)
+        if array is not None:return array
         cell=lambda tag=None,args=():self.cell(plan,node,tag,args,identity=identity)
         a, b = left.root(), right.root()
         if a.tag is None or b.tag is None:
@@ -1176,6 +1186,9 @@ class Model:
                 from .native_class_stdio import analyze as analyze_reader
                 return analyze_reader(self,plan,node,callable_.tag,arguments,keywords)
         if receiver is not None:
+            from .native_arrays import analyze_method as array_method
+            array=array_method(self,plan,node,receiver,arguments,keywords,environment)
+            if array is not None:return array
             from .native_text_join import analyze as analyze_join
             joined=analyze_join(self,plan,node,receiver,arguments,keywords,environment)
             if joined is not None:return joined
@@ -1247,6 +1260,9 @@ class Model:
 
     def attribute_value(self,plan,node,receiver,environment):
         receiver=receiver.root()
+        from .native_arrays import attribute as array_attribute
+        array=array_attribute(self,plan,node,receiver)
+        if array is not None:return array
         if any(getattr(kind,'_native_exception_class',False)or getattr(kind,'_native_exception_value',False)for kind in alternatives(shape(receiver))):
             raise ClassUnsupported(node,'exception attribute '+repr(node.attr)+' needs exception argument, traceback or descriptor metadata; that exception-object attribute protocol is not implemented',types=(('receiver',shape(receiver)),),proof='exception object attribute and metadata protocol')
         if isinstance(receiver.tag,EmptyType)and not self.final:
@@ -1288,11 +1304,15 @@ class Model:
     def attribute_target(self,plan,node,receiver,value,environment):return False
 
     def subscript_item(self,plan,node,owner,index,environment):
+        from .native_arrays import indexed
+        array=indexed(self,plan,node,owner,index,environment)
+        if array is not None:return array
         from .native_source_items import analyze
         return analyze(self,plan,node,owner,index,environment)
 
     def item(self, value, node):
         value = value.root()
+        if getattr(value.tag,"_native_array",False):return Cell(value.tag.element)
         deque=self.deques.element(shape(value))
         if deque is not None:return deque
         mapping=self.mappings.views.element(shape(value))
@@ -1352,7 +1372,11 @@ class Model:
             owner = self.expression(plan,node.value,environment).root()
             from .native_source_items import source_owner,check_key
             if source_owner(self,owner)is not None:check_key(node)
+            if getattr(owner.tag,'_native_array',False)and isinstance(node.slice,ast.Slice):
+                raise ClassUnsupported(node,'array slice assignment needs a same-type buffer splice/extended-slice write adapter; native array slice mutation is not implemented',proof='native array slice assignment')
             index=self.expression(plan,node.slice,environment)
+            from .native_arrays import indexed as array_store
+            if array_store(self,plan,node,owner,index,environment,value)is not None:return
             from .native_source_items import analyze as source_item_store
             if source_item_store(self,plan,node,owner,index,environment,value)is not None:return
             if self.deques.indexes.analyze_store(plan,node,owner,index,value):return
@@ -1443,9 +1467,12 @@ class Model:
             if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal))or future_directive(node):
                 continue
             if isinstance(node,ast.Expr):
-                self.expression(plan,node.value,environment)
+                value=self.expression(plan,node.value,environment)
                 from .native_exit import never_returns
-                if never_returns(self,plan,node.value):
+                from .native_abrupt_values import empty,mark
+                if empty(value):
+                    mark(self);environment=None
+                elif never_returns(self,plan,node.value):
                     self.native_abrupt_calls_used=True
                     environment=None
             elif isinstance(node,ast.Assign):
@@ -1470,13 +1497,20 @@ class Model:
                         value = self.expression(plan,node.value,environment)
                 else:
                     value = self.expression(plan,node.value,environment)
-                for target in node.targets:
-                    self.target(plan,target,value,environment)
+                from .native_abrupt_values import empty,mark
+                if empty(value):
+                    mark(self);environment=None
+                else:
+                    for target in node.targets:
+                        self.target(plan,target,value,environment)
             elif isinstance(node,ast.AnnAssign):
                 from .native_annotations import metadata_target
                 if node.value is not None:
                     metadata_target(self,plan,node.target,environment)
-                    self.target(plan,node.target,self.expression(plan,node.value,environment),environment)
+                    value=self.expression(plan,node.value,environment)
+                    from .native_abrupt_values import empty,mark
+                    if empty(value):mark(self);environment=None
+                    else:self.target(plan,node.target,value,environment)
                 else:
                     from .native_annotations import target_inputs
                     for expression in target_inputs(node.target):self.expression(plan,expression,environment)
@@ -1492,10 +1526,17 @@ class Model:
                 right = self.expression(plan,node.value,environment)
                 value = self.binary(plan,node,node.op,left,right,environment=environment)
                 from .native_source_items import captured_store as source_item_store
+                from .native_arrays import captured_store as array_store
                 if(not self.deques.indexes.captured_store(plan,node.target,value)
+                        and not array_store(self,plan,node.target,value,environment)
                         and not source_item_store(self,plan,node.target,value,environment)):
                     self.target(plan,node.target,value,environment)
             elif isinstance(node,ast.Delete):
+                for target in node.targets:
+                    if isinstance(target,ast.Subscript):
+                        owner=self.expression(plan,target.value,environment)
+                        if getattr(shape(owner),'_native_array',False):
+                            raise ClassUnsupported(target,'array element/slice deletion is not implemented by the native numeric-buffer adapter',proof='native array deletion protocol')
                 from .native_annotations import metadata_target
                 from .native_class_deletion import analyze
                 for target in node.targets:
@@ -1633,6 +1674,7 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,"_native_array",False):return value.rust
         if getattr(value,'_native_exception_class',False):return 'ClassExceptionClass'+value.name
         if getattr(value,'_native_exception_value',False):return 'Rc<ClassExceptionValue'+str(value.record.index)+'>'
         if getattr(value,"_native_builtin_singleton",False):return "NativeNotImplemented"
@@ -1760,6 +1802,7 @@ class Emitter:
         from .native_source_lengths import emit_truth
         source_truth=emit_truth(self,node,value,identity=identity)
         if source_truth is not None:return source_truth
+        if getattr(value.kind,"_native_array",False):return "{let result=!"+value.code+".0.borrow().is_empty();result}"
         if getattr(value.kind,'_native_exception_class',False)or getattr(value.kind,'_native_exception_value',False):return 'true'
         if getattr(value.kind,"_native_builtin_singleton",False):
             from .native_builtin_singletons import truth
@@ -1836,7 +1879,7 @@ class Emitter:
             return show_callable(self,value,node)
         if tag=="globals_dict":
             raise ClassUnsupported(node,"displaying this globals dictionary needs value lookup and ordered dictionary repr; the live namespace view currently implements binding membership, length and identity",proof="module namespace value/iteration protocol")
-        if tag in {"int","bool","int_bool","str","bytes","none","object","list","float"}:
+        if tag in {"array","int","bool","int_bool","str","bytes","none","object","list","float"}:
             return f"ClassDisplay::class_{'repr' if representation else 'str'}(&({value.code}))"
         raise ClassUnsupported(node)
 
@@ -1939,6 +1982,9 @@ class Emitter:
             result = f"{slot}.clone().ok_or_else(||{_string(kind+': '+message)}.to_owned())"
             return Expression(self.at(result,node),wanted)
         if isinstance(node,ast.Tuple):
+            from .native_abrupt_values import emit_tuple
+            abrupt=emit_tuple(self,node,wanted)
+            if abrupt is not None:return abrupt
             raw=shape(self.model.constructors[(self.plan.index,id(node))])
             values=[self.coerce(self.expression(value),kind,value)for value,kind in zip(node.elts,raw.fields)]
             return self.encoded(tuple_code(values),raw,wanted,node)
@@ -1966,6 +2012,12 @@ class Emitter:
                 receiver=self.expression(node.value)
                 return Expression("{let _="+receiver.code+";()}",wanted)
             receiver = self.expression(node.value)
+            from .native_arrays import emit_attribute as array_attribute
+            array=array_attribute(self,node,receiver,wanted)
+            if array is not None:
+                before,retained=self.capture(receiver)
+                array=array_attribute(self,node,retained,wanted)
+                return Expression('{'+before+array.code+'}',wanted)
             if domain(receiver.kind)=="deque"or union_kind(receiver.kind)and any(domain(part)=="deque"for part in alternatives(receiver.kind)):
                 return self.model.deques.emit_attribute(self,node,receiver,wanted)
             if domain(receiver.kind) != "object":
@@ -1979,8 +2031,14 @@ class Emitter:
             if isinstance(node.slice,ast.Slice):
                 from .native_frame_slices import emit
                 return emit(self,node,wanted)
+            from .native_abrupt_values import emit_subscript
+            abrupt=emit_subscript(self,node,wanted)
+            if abrupt is not None:return abrupt
             setup,owner = self.capture(self.expression(node.value))
             index_setup,index = self.capture(self.expression(node.slice))
+            from .native_arrays import emit_index as array_index
+            indexed=array_index(self,node,owner,index,wanted)
+            if indexed is not None:return Expression('{'+setup+index_setup+indexed.code+'}',wanted)
             from .native_source_items import emit as source_item
             indexed=source_item(self,node,owner,index,wanted)
             if indexed is not None:return Expression('{'+setup+index_setup+indexed.code+'}',wanted)
@@ -2095,6 +2153,9 @@ class Emitter:
         from .native_float_powers import frame as floating_power
         power=floating_power(self,operator,left,right,node,wanted)
         if power is not None:return power
+        from .native_arrays import emit_binary as array_binary
+        array=array_binary(self,operator,left,right,node,wanted)
+        if array is not None:return array
         from .native_integral_powers import frame as integral_power
         power=integral_power(self,operator,left,right,node,wanted)
         if power is not None:return power
@@ -2153,7 +2214,9 @@ class Emitter:
         if "complex" in {a,b}:
             raise ClassUnsupported(node,"complex comparison operators require native numeric comparison support",types=(("left",left.kind),("right",right.kind)),proof="complex comparison observer")
         if isinstance(operator,(ast.Is,ast.IsNot)):
-            if a==b=="function":
+            if a==b=='array':
+                code='Rc::ptr_eq(&'+left.code+'.0,&'+right.code+'.0)'if left.kind==right.kind else'false'
+            elif a==b=="function":
                 from .native_callable_carriers import comparison
                 code=comparison(self,left,right,identity=True)
             elif a==b and a in {"object","list","iterator","dict_view","cmp_key"}:
@@ -2384,6 +2447,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};"+exported+temporary+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_arrays import emit_method as array_method
+        array=array_method(self,node)
+        if array is not None:return array
         from .native_class_binding_contexts import instance_test
         tested=instance_test(self,node)
         if tested is not None:return tested
@@ -2573,6 +2639,8 @@ class Emitter:
         if isinstance(target,ast.Subscript):
             setup,owner=self.capture(self.expression(target.value))
             more,index=self.capture(self.expression(target.slice))
+            from .native_arrays import array_kind
+            if array_kind(owner.kind):return setup+more,('array_index',owner,index,self.kind(target))
             if isinstance(owner.kind,InstanceType):
                 return setup+more,('source_item',owner,index,self.kind(target))
             if all(getattr(kind,"_native_class_mapping",False)for kind in alternatives(owner.kind)):
@@ -2604,6 +2672,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=='array_index':
+            from .native_arrays import emit_index
+            return emit_index(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]=='source_item':
             from .native_source_items import emit
             return emit(self,node,reference[1],reference[2],kind or reference[3])
@@ -2666,6 +2737,9 @@ class Emitter:
         return project_element(self,raw,owner.kind.element,requested or kind,node)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=='array_index':
+            from .native_arrays import emit_index
+            return emit_index(self,node,reference[1],reference[2],value=value).code+';'
         if reference[0]=='source_item':
             from .native_source_items import emit
             return emit(self,node,reference[1],reference[2],value=value).code+';'
@@ -2715,6 +2789,9 @@ class Emitter:
                          if reached is None or(self.plan.index,id(value))in reached)
 
     def statement(self, node):
+        from .native_abrupt_values import emit_statement
+        abrupt=emit_statement(self,node)
+        if abrupt is not None:return abrupt
         from .native_scalar_data_locals import statement as snapshot_statement
         snapshot=snapshot_statement(self,node)
         if snapshot is not None:return snapshot
@@ -2815,7 +2892,11 @@ class Emitter:
             from .native_record_places import target_kind
             wanted=target_kind(self,reference,node.target)
             if wanted is None:wanted=self.kind(node.target)
-            if domain(old.kind)=="list"and isinstance(node.op,ast.Add)and domain(right.kind)=="list":
+            from .native_arrays import emit_binary as array_binary
+            array=array_binary(self,node.op,old,right,node,wanted,inplace=True)
+            if array is not None:
+                operation='';result=array
+            elif domain(old.kind)=="list"and isinstance(node.op,ast.Add)and domain(right.kind)=="list":
                 operation=f"class_list_extend(&{old.code},&{right.code});"
                 result=Expression(old.code,old.kind)
             elif domain(old.kind)=="list"and isinstance(node.op,ast.Mult)and domain(right.kind)in {"int","bool","int_bool"}:
@@ -3325,6 +3406,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         value=files("py2fastrust").joinpath("stdlib",license_name).read_text(encoding="utf-8")
         pieces.append("\n".join("// "+line for line in value.splitlines()))
     pieces.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
+    from .native_array_runtime import runtime as array_runtime
+    pieces.append(array_runtime(model))
     from .native_bytes_constructor import runtime as bytes_runtime
     pieces.append(bytes_runtime(model))
     if getattr(model,'float_power_required',False):

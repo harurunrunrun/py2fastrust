@@ -44,7 +44,12 @@ def candidates(emitter,node):
     from .native_classes import domain
     if isinstance(node,ast.For)and(emitter.model.iterators.may_call(emitter.kind(node.iter))or emitter.model.iterators.effects(emitter.plan,node)):return {}
     roots=[node.test,*node.body]if isinstance(node,ast.While)else[node.target,*node.body]
-    nodes=[child for root in roots for child in ast.walk(root)]
+    reached=getattr(emitter.model,'reached_statements',None)
+    def walk(current):
+        if isinstance(current,ast.stmt)and reached is not None and(emitter.plan.index,id(current))not in reached:return
+        yield current
+        for child in ast.iter_child_nodes(current):yield from walk(child)
+    nodes=[child for root in roots for child in walk(root)]
     if any(isinstance(child,(ast.Lambda,ast.ListComp,ast.SetComp,ast.DictComp,ast.GeneratorExp,ast.FunctionDef,ast.ClassDef))for child in nodes):return {}
     if any(isinstance(child,ast.Attribute)and isinstance(child.ctx,(ast.Store,ast.Del))for child in nodes):return {}
     from .native_callback_effects import may_call

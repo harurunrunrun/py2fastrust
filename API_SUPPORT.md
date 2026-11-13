@@ -98,6 +98,21 @@ Default factories are not invoked. Live iterators observe the mapping mutation.
 Custom/floating key protocols and mixed nonmapping receivers retain specific
 diagnostics.
 
+
+Canonical `array.array` with a literal numeric typecode uses target C-width
+`Vec<T>` storage behind a shared handle. Numeric construction, raw native-endian
+bytes, indexed reads/stores, forward/reverse cursors, slice reads, repetition,
+concatenation and the implemented mutation/conversion methods retain sharing
+and checked conversions. Supported codes are `bBhHiIlLqQfd`; `u`/`w`, varying
+typecodes, slice writes/deletion, buffer exports and unlisted object conversion
+protocols remain specific diagnostics.
+
+Known failing builtin subscripts have no normal result in native flow analysis.
+Eager tuple construction and ordinary assignment retain the original evaluated
+prefix and error, then omit unreachable stores/statements. Point facts are
+recomputed when inputs widen; Python `None` remains a real value. This does not
+resolve every recursive or temporally changing container type constraint.
+
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
 Size checks precede blocking reads. Binary reads retain raw bytes, and default
@@ -105,6 +120,17 @@ or closed literal UTF-8 `bytes.decode` calls can produce native text. Reader
 keyword/invalid-arity call errors, custom size `__index__`, other codecs/error
 handlers and some exception-only frame-selection cases remain positioned
 diagnostics.
+
+
+Implicit lexical `__class__` reads in ordinary source methods use the official
+scope owner and a private cell in the captured defining-module generation. The
+cell receives the actual class object when creation succeeds, before public
+name binding. Class aliases, saved methods, nested functions and class-name
+replacement/deletion preserve that lexical identity; local/parameter/global
+uses of the same spelling keep their own bindings. An early method call during
+class-body execution keeps the empty-cell `NameError`. Mutable nonlocal class
+cells, repeated/local class definitions, source inheritance and zero-argument
+`super()` retain explicit implementation boundaries.
 
 Typed source-class namespaces support ordinary nested classes and scalar/list
 class data, including aliases, rebinding, deletion and instance-field precedence.

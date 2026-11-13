@@ -311,6 +311,9 @@ class ModuleLinker:
         from .native_classes import Cell,shape
         from .native_types import union_type
         if isinstance(node,ast.Name):
+            from .native_source_class_cells import analyze as analyze_class_cell
+            value=analyze_class_cell(self.model,plan,node)
+            if value is not None:return value
             name=self.model.resolved_name(plan,node)
             if name in environment:return environment[name]
             values=self.model.namespace.incoming.get(name,{})

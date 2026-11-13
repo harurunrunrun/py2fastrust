@@ -103,6 +103,8 @@ class LinkedModel(Model):
         from .native_linked_members import MathAdapter,SysAdapter
         provider.register_member_adapter('math',MathAdapter)
         provider.register_member_adapter('sys',SysAdapter)
+        from .native_arrays import ArrayAdapter
+        provider.register_member_adapter('array',ArrayAdapter)
         from .native_typing_aliases import TypingAdapter
         provider.register_member_adapter('typing',TypingAdapter)
         from .native_itertools import ItertoolsAdapter
@@ -170,6 +172,8 @@ class LinkedModel(Model):
                     key=self.definition_name(node)
                     if key in self.classes:raise ClassUnsupported(node)
                     self.register_function(node,key)
+        from .native_source_class_cells import validate as validate_class_cells
+        validate_class_cells(self)
         linker.seed_namespaces()
 
     def expression(self,plan,node,environment):
@@ -177,6 +181,9 @@ class LinkedModel(Model):
         metadata=registry(self).analyze(plan,node,environment)
         if metadata is not None:return metadata
         if isinstance(node,ast.Name):
+            from .native_source_class_cells import analyze as analyze_class_cell
+            value=analyze_class_cell(self,plan,node)
+            if value is not None:return value
             value=self.class_namespaces.read_name(plan,node,environment)
             if value is not None:return value
         if isinstance(node,ast.Name)and node.id in ANNOTATION_METADATA:
@@ -374,6 +381,9 @@ class LinkedEmitter(Emitter):
         metadata=registry(self.model).emit(self,node)
         if metadata is not None:return metadata
         if isinstance(node,ast.Name):
+            from .native_source_class_cells import emit as emit_class_cell
+            value=emit_class_cell(self,node)
+            if value is not None:return value
             value=self.model.class_namespaces.emit_name(self,node)
             if value is not None:return value
         if isinstance(node,ast.Attribute)and(self.plan.index,id(node))in self.model.class_namespaces.attribute_reads:
@@ -577,7 +587,8 @@ class LinkedEmitter(Emitter):
             wanted=dict(self.model.namespace.fields())[key]
             stored=self.coerce(Expression(created+'.clone()',ClassReferenceType(owner.index)),wanted,node)
             from .native_published_metadata import publication
-            return result+f"let {created}={value};"+publication(self,owner,created)+f"class_scope.globals.borrow_mut().value_{index}=Some({stored});"+self.model.class_namespaces.named_tuples.emit_retain_definition(self,node,owner,created)
+            from .native_source_class_cells import publication as publish_class_cell
+            return result+f"let {created}={value};"+publish_class_cell(self.model,owner,created)+publication(self,owner,created)+f"class_scope.globals.borrow_mut().value_{index}=Some({stored});"+self.model.class_namespaces.named_tuples.emit_retain_definition(self,node,owner,created)
         return result
 
     def assign_name(self,target,value):
@@ -598,7 +609,9 @@ def render_linked_runtime(model,source):
         namespace_names,_=linker.namespace_names()
         initialized+=(','if initialized else'')+'present:['+','.join('false'for _ in namespace_names)+']'
     assert source.count('struct ClassGlobals{')==1
-    source=source.replace('struct ClassGlobals{',"struct ClassGlobals{class_module_id:usize,class_module_status:u8,class_pending_children:Vec<&'static str>,",1)
+    from .native_source_class_cells import layout as class_cell_layout
+    cell_fields,cell_initial=class_cell_layout(model)
+    source=source.replace('struct ClassGlobals{',"struct ClassGlobals{class_module_id:usize,class_module_status:u8,class_pending_children:Vec<&'static str>,"+cell_fields,1)
     old='globals:Rc::new(RefCell::new(ClassGlobals{'+initialized+'}))'
     assert source.count(old)==1
     source=source.replace(old,'globals:class_globals,modules:class_modules',1)
@@ -651,7 +664,7 @@ def render_linked_runtime(model,source):
              'struct ClassClassReference{definition:usize,module:ClassModuleRef}',
              'type ClassClassRef=Rc<ClassClassReference>;',
              'impl ClassScope{fn with_module(&self,globals:ClassModuleRef)->Self{Self{control:self.control.clone(),io:self.io.clone(),globals,modules:self.modules.clone()}}}',
-             'fn class_module_globals(module:usize)->ClassModuleRef{let globals=Rc::new(RefCell::new(ClassGlobals{class_module_id:module,class_module_status:if module==0{1}else{0},class_pending_children:Vec::new(),'+initialized+'}));match module{'+
+             'fn class_module_globals(module:usize)->ClassModuleRef{let globals=Rc::new(RefCell::new(ClassGlobals{class_module_id:module,class_module_status:if module==0{1}else{0},class_pending_children:Vec::new(),'+cell_initial+initialized+'}));match module{'+
              ','.join(f'{number}=>{{'+''.join(values)+'}'for number,values in sorted(implicit.items()))+',_=>unreachable!()}globals}',
              'fn class_module_export_error(globals:&ClassModuleRef,name:&str,name_repr:&str,importing:bool)->String{'
              'let (module,status,pending)={let values=globals.borrow();(values.class_module_id,values.class_module_status,values.class_pending_children.iter().any(|value|*value==name))};'

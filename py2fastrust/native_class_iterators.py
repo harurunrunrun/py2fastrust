@@ -83,7 +83,7 @@ class Iterators:
     def needs_source_cursor(self,kind):
         from .native_class_deque_cursors import needs_cursor
         from .native_source_iteration import has_protocol
-        return any(part in {'str','bytes'}or has_protocol(self.model,part)for part in alternatives(kind)) or needs_cursor(self.model,kind)
+        return any(part in {'str','bytes'}or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in alternatives(kind)) or needs_cursor(self.model,kind)
 
     def immediate_integer_map(self,plan,node,environment):
         """Retain eager word parsing only for consumers with no saved cursor."""
@@ -113,6 +113,9 @@ class Iterators:
     def source(self,plan,node,value,identity=None,*,operation="source",environment=None):
         from .native_classes import ClassUnsupported,shape,tuple_cell
         kind=shape(value)
+        from .native_arrays import source_cursor
+        array=source_cursor(self,plan,node,value,identity,operation)
+        if array is not None:return array
         if operation=='source':
             from .native_source_iteration import analyze
             protocol=analyze(self,plan,node,value,environment)
@@ -274,6 +277,9 @@ class Iterators:
         from .native_source_iteration import construct
         protocol=construct(self,emitter,node,source)
         if protocol is not None:return protocol
+        from .native_arrays import construct_cursor
+        array=construct_cursor(self,emitter,node,source,kind)
+        if array is not None:return array
         kind=kind or self.sites[(emitter.plan.index,id(node),"source",None)].kind
         if iterator_kind(source.kind):return source
         record=kind.record;record.emitted=True
