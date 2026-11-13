@@ -106,6 +106,12 @@ def select_frames(unit,*,integer="i64"):
     if any(isinstance(node,ast.ClassDef)for node in ast.walk(unit.tree)):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
     analysis=analyze(unit)
+    from .native_bytearray import requires_frames as bytearray_requires_frames
+    if bytearray_requires_frames(analysis):
+        return FrameSelection(True,('native mutable bytearray storage and protocols',),analysis,frozenset(),MappingProxyType({}))
+    from .native_bytes_sequences import requires_frames as byte_sequence_frames
+    if byte_sequence_frames(unit,analysis):
+        return FrameSelection(True,('native immutable bytes repetition',),analysis,frozenset(),MappingProxyType({}))
     from .native_callback_analysis import supplement
     analysis=supplement(unit,analysis,integer)
     from .native_float_powers import requires_frames as float_power_requires_frames
@@ -133,6 +139,8 @@ def select_frames(unit,*,integer="i64"):
     if mapping_method_frames(unit,analysis):reasons+=('captured native mapping methods',)
     from .native_unobserved_set_order import requires_frames as set_order_frames
     if set_order_frames(unit,analysis):reasons+=('certified order-unobserved set materialization',)
+    from .native_type_objects import requires_frames as type_objects_frames
+    if type_objects_frames(unit,analysis):reasons+=('actual builtin class-object values',)
     from .native_bytes_constructor import requires_frames as bytes_requires_frames
     if bytes_requires_frames(analysis):reasons+=('native bytes count/conversion protocol',)
     from .native_exit import requires_frames as exit_requires_frames

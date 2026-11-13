@@ -31,7 +31,7 @@ def analyze(model, plan, node, name, arguments, keywords, *, factory):
         if name != 'ord' and tag == 'object':
             raise ClassUnsupported(node, f'{name} on this object needs its __index__ special-method protocol; the native adapter currently accepts builtin integers and booleans',
                                    types=(('argument', choice),), proof='radix integer-index object protocol')
-        accepted = tag in ({'str', 'bytes'} if name == 'ord' else {'int', 'bool', 'int_bool'})
+        accepted = tag in ({'str', 'bytes', 'bytearray'} if name == 'ord' else {'int', 'bool', 'int_bool'})
         results.append(('int' if name == 'ord' else 'str') if accepted else 'none')
     result = factory()
     model.contribute(result, model.cell_for_kind(union_type(*results)), node)
@@ -51,13 +51,16 @@ def emit(emitter, node, name, arguments, keywords, wanted):
         value = Expression(f'({code}).clone()', kind)
         tag = domain(kind)
         if name == 'ord':
-            if tag not in {'str', 'bytes'}:
+            if tag not in {'str', 'bytes', 'bytearray'}:
                 return _error(emitter, node, wanted,
                     'format!("TypeError: ord() expected string of length 1, but {} found",'
                     + _type_name(emitter, value, node) + ')').code
             before, value = emitter.capture(value)
             length = emitter.fresh()
-            if tag == 'bytes':
+            if tag=='bytearray':
+                size=f'{value.code}.0.borrow().len()'
+                ordinal=f'{value.code}.0.borrow()[0] as usize'
+            elif tag == 'bytes':
                 size = f'{value.code}.len()'
                 ordinal = f'{value.code}[0] as usize'
             else:

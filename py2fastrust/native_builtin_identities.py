@@ -16,7 +16,8 @@ FUNCTIONS = frozenset(name for name, value in vars(builtins).items()
 
 def names():
     from .native_class_builtins import SUPPORTED
-    return FUNCTIONS | SUPPORTED | {'slice'}
+    from .native_type_objects import NEW_VALUES
+    return FUNCTIONS | SUPPORTED | {'slice'} | NEW_VALUES
 
 
 @lru_cache(None)

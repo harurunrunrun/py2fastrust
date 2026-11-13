@@ -116,6 +116,7 @@ def matches_builtin_reversed(emitter,value):
     from .native_classes import shape,domain
     from .native_types import alternatives
     from .native_unions import union_kind
+    if domain(value.kind)=='iterator'and value.kind.record.operation=='bytearray_reverse':return 'true'
     if domain(value.kind)!='iterator'or value.kind.record.operation!='reverse':return 'false'
     record=value.kind.record;source=shape(record.source)
     def result(kind):return str(domain(kind)in {'tuple','tuple_sequence','str','bytes'}).lower()

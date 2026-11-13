@@ -3,7 +3,7 @@ import ast
 from .references import BuiltinIdentity
 
 
-TYPE_NAMES = frozenset({'classmethod', 'int', 'bool', 'float', 'str', 'bytes', 'list', 'range',
+TYPE_NAMES = frozenset({'classmethod', 'int', 'bool', 'float', 'str', 'bytes', 'bytearray', 'list', 'range',
                         'slice', 'tuple', 'dict', 'set', 'map', 'zip', 'filter', 'enumerate', 'reversed'})
 
 
@@ -41,6 +41,8 @@ def emit(emitter, node, arguments):
         return str(tag == name).lower()
 
     def check(classes):
+        from .native_type_objects import BuiltinClass,isinstance_match
+        if isinstance(classes.kind,BuiltinClass):return isinstance_match(emitter,value,classes.kind,node)
         if union_kind(classes.kind):
             return project(classes.kind, classes.code,
                            lambda kind, code: check(Expression(code, kind)))

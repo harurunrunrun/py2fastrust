@@ -33,7 +33,7 @@ def is_method(kind):return isinstance(kind,MappingMethod)
 
 def callable_kind(kind):
     from .native_aot_callables import function_kind
-    return function_kind(kind)or is_method(kind)
+    return function_kind(kind)or is_method(kind)or getattr(kind,'_native_builtin_type',False)
 
 
 def supported(kind,name):

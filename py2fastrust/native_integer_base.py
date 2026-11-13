@@ -55,6 +55,9 @@ def emit(emitter,node,arguments,keywords,wanted):
     radix=emitter.fresh();prefix='let '+radix+':u32='+code+';'
     text=arguments[0]
     def parse(kind,code):
+        if getattr(kind,'_native_bytearray',False):
+            data=emitter.fresh()
+            return '{let '+data+'=('+code+').0.borrow().clone();'+parse('bytes',data)+'}'
         if kind not in {'str','bytes'}:
             return _error(emitter,node,wanted,'"TypeError: int() can\'t convert non-string with explicit base".to_owned()').code
         emitter.model.explicit_radix_used=True

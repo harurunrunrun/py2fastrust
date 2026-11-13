@@ -168,6 +168,29 @@ recomputed when inputs widen; Python `None` remains a real value. This does not
 resolve every recursive or temporally changing container type constraint.
 
 
+Canonical `bytearray` values use a distinct shared `Vec<u8>` carrier. Empty,
+integer-count, bytes/bytearray-copy and admitted integral-iterable constructors,
+index reads/stores, read slices and contiguous/extended slice assignment retain
+byte validation, sharing and Python evaluation order. Slice RHS values are
+materialized before mutation, and bounds use the receiver length after source
+callbacks. Repetition, concatenation, append, bytes/bytearray extend, clear, copy,
+reverse, forward/reverse cursors and builtin display/numeric consumers are
+supported. Immutable bytes repetition uses the same checked size rules.
+Encoding overloads, custom indices, external buffer exports, slice augmented
+assignment/deletion, generic iterable extend and generator-expression collectors
+remain explicit diagnostics. Source generator-function iterables use the
+existing typed cursor.
+
+Canonical one-argument `type(value)` returns actual native class objects for
+registered value kinds, including builtin classes and retained source-instance
+class definitions. Class aliases, callbacks, finite alternatives and class-name
+rebinding retain identity. Registered constructors use their existing typed call
+adapters when invoked through a returned class. Stored builtin classes remain
+callable through class and instance attributes without an implicit receiver.
+Three-argument dynamic class construction, unregistered metatypes/constructors,
+unproved source-class holders, unsupported class metadata and builtin
+class-object address observers retain positioned diagnostics.
+
 Native real/complex power results support addition and subtraction with builtin
 int/bool/float and complex leaves. Both source operands evaluate before ordered
 numeric conversions, including BigInt conversion errors. Finite real/complex
@@ -276,17 +299,17 @@ format/display methods, complex values, dynamic string format templates and
 
 Canonical `ord`, `bin`, `oct`, and `hex` calls have direct native lowering,
 including saved aliases, callback arguments and class fields. `ord` accepts
-single-character strings and single-byte bytes. Radix calls accept integers and
+single-character strings and single-byte bytes/bytearray. Radix calls accept integers and
 booleans, including signed minima and BigInt magnitudes. Custom `__index__`
 objects and `chr` still require their native protocols.
 
 Explicit-base `int(text, base)` and `int(text, base=...)` calls have direct
-lowering for builtin strings and bytes, including saved aliases, class fields
+lowering for builtin strings, bytes and bytearray, including saved aliases, class fields
 and multi-source `map` callbacks. Bases 0 and 2 through 36 support signs,
 prefixes and underscores; invalid bases and literals retain Python errors.
 Fixed-width results wrap at the selected width. ASCII parsing scans bytes;
 Unicode mode uses the pinned decimal-digit and whitespace tables. Custom base
-`__index__` objects, bytearray/buffer storage and CPython conversion
+`__index__` objects, external buffer storage and CPython conversion
 digit limits remain unfinished.
 
 Builtin `divmod` supports captured integral/boolean calls in every integer mode,

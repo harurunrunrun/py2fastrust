@@ -464,8 +464,10 @@ class ModuleLinker:
         if module.name=='builtins'and name in builtin_value_names():
             from .native_classes import Cell
             identity=BuiltinIdentity(name)
-            provider.builtin_used.add(identity)
-            value=provider.canonical_builtin_cells.setdefault(identity,Cell("function",(identity,)))
+            from .native_type_objects import builtin_value
+            special=builtin_value(self.model,identity)
+            if special is None:provider.builtin_used.add(identity)
+            value=provider.canonical_builtin_cells.setdefault(identity,special if special is not None else Cell("function",(identity,)))
             self.model.namespace.flow_cells.add(value.root())
         else:
             adapter=provider.member_adapters.get(module.name)
@@ -507,7 +509,8 @@ def needs_linking(program,*,integer="i64"):
     native_adapters=native_adapter_module_names(program)
     reached_with=any(isinstance(node,ast.With)for unit in program.units if unit.name not in native_adapters for node in ast.walk(unit.tree))
     from .native_exit import requires_linking as exit_requires_linking
-    return reached_with or requires_namespaces(program)or needs_linked_members(program,integer=integer)or builtin_namespace or exit_requires_linking(program)or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
+    from .native_type_objects import requires_linking as type_requires_linking
+    return type_requires_linking(program)or reached_with or requires_namespaces(program)or needs_linked_members(program,integer=integer)or builtin_namespace or exit_requires_linking(program)or any(module.origin in {'user','namespace'}or module.origin=='vendored'and module.name not in VENDORED_MODULES
                for module in program.modules)
 
 

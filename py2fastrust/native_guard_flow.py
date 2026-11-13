@@ -102,6 +102,8 @@ def _classinfo(model,plan,node,environment):
     value=model.records.get((plan.index,id(node)))
     if value is None:return None
     kind=shape(value)
+    from .native_type_objects import BuiltinClass
+    if isinstance(kind,BuiltinClass)and kind.name in TYPE_NAMES:return [('builtin',kind.name)]
     if isinstance(kind,ClassReferenceType):
         owner=next(owner for owner in model.classes.values()if owner.index==kind.definition)
         if not isinstance(owner.node,ast.ClassDef)or owner.node.bases or owner.node.keywords:return None

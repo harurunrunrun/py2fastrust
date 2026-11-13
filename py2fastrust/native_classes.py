@@ -47,7 +47,9 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,'_native_builtin_type',False):return 'builtin_type'
     if getattr(kind,"_native_bound_mapping_method",False):return "function"
+    if getattr(kind,'_native_bytearray',False):return 'bytearray'
     if getattr(kind,'_native_array',False):return 'array'
     if getattr(kind,'_native_exception_class',False):return 'exception_class'
     if getattr(kind,'_native_exception_value',False):return 'exception_value'
@@ -256,9 +258,9 @@ class Environment(dict):
 
 
 class Model:
-    BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
+    BUILTINS = {"type","input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
-    DATA = {'int_bool', 'function', 'exception_value', 'range', 'dict', 'object', 'exception_class', 'union', 'globals_dict', 'complex', 'float', 'bool', 'dict_view', 'str', 'tuple_sequence', 'none', 'bytes', 'array', 'tuple', 'builtin_singleton', 'list', 'int', 'set'}
+    DATA = {'int_bool', 'function', 'exception_value', 'range', 'dict', 'object', 'exception_class', 'union', 'globals_dict', 'complex', 'float', 'bool', 'dict_view', 'str', 'tuple_sequence', 'none', 'bytes', 'bytearray', 'array', 'tuple', 'builtin_singleton', 'list', 'int', 'set'}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -669,6 +671,7 @@ class Model:
             values.append(value)
 
     def snapshot(self):
+        from .native_function_body_binding_reads import snapshot as initialized_module_snapshot
         from .native_class_extrema import snapshot as extrema_snapshot
         from .native_typing_metadata import snapshot as metadata_snapshot
         from .native_list_positions import snapshot as position_snapshot
@@ -679,10 +682,12 @@ class Model:
                       for key,state in sorted(self.loop_feedback.items())),
                 self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else(),
                 tuple(tuple(shape(value)for value in record.arguments)for record in self.exceptions.records),position_snapshot(self),
-                tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else())
+                tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else(),initialized_module_snapshot(self))
 
     def analyze_body(self,plan,environment):
         if isinstance(plan.node,ast.Lambda):
+            from .native_function_body_binding_reads import begin as begin_initialized_module_calls
+            begin_initialized_module_calls(self,plan)
             environment=Environment(environment)
             self.contribute(plan.result,self.expression(plan,plan.node.body,environment),plan.node.body)
             return None
@@ -1021,6 +1026,12 @@ class Model:
         return self.binary_builtin(plan,node,operator,left,right,identity=identity)
 
     def binary_builtin(self, plan, node, operator, left, right, *, identity=None):
+        from .native_bytes_sequences import analyze as bytes_sequence
+        byte_sequence=bytes_sequence(self,plan,node,operator,left,right,identity)
+        if byte_sequence is not None:return byte_sequence
+        from .native_bytearray import analyze_binary as bytearray_binary
+        bytearray=bytearray_binary(self,plan,node,operator,left,right,identity)
+        if bytearray is not None:return bytearray
         from .native_arrays import analyze_binary as array_binary
         array=array_binary(self,plan,node,operator,left,right,identity=identity)
         if array is not None:return array
@@ -1080,6 +1091,8 @@ class Model:
         return (set(getattr(environment,"enclosing_global_names",environment))|set(caller.visible_definitions or ()))if self.is_module_plan(caller)else caller.global_names
 
     def activate_frame(self,caller,node,callee,environment):
+        from .native_function_body_binding_reads import activate as activate_initialized_module_calls
+        activate_initialized_module_calls(self,caller,node,callee,environment)
         names=self.call_global_names(caller,callee,environment)
         if names is None:raise ClassUnsupported(node)
         if callee.global_names is None:callee.global_names=set(names)
@@ -1205,6 +1218,9 @@ class Model:
                 from .native_class_stdio import analyze as analyze_reader
                 return analyze_reader(self,plan,node,callable_.tag,arguments,keywords)
         if receiver is not None:
+            from .native_bytearray import analyze_method as bytearray_method
+            bytearray=bytearray_method(self,plan,node,receiver,arguments,keywords,environment)
+            if bytearray is not None:return bytearray
             from .native_arrays import analyze_method as array_method
             array=array_method(self,plan,node,receiver,arguments,keywords,environment)
             if array is not None:return array
@@ -1278,6 +1294,9 @@ class Model:
         raise ClassUnsupported(node)
 
     def attribute_value(self,plan,node,receiver,environment):
+        from .native_type_objects import analyze_attribute
+        typed=analyze_attribute(self,plan,node,receiver)
+        if typed is not None:return typed
         receiver=receiver.root()
         from .native_arrays import attribute as array_attribute
         array=array_attribute(self,plan,node,receiver)
@@ -1326,6 +1345,9 @@ class Model:
     def attribute_target(self,plan,node,receiver,value,environment):return False
 
     def subscript_item(self,plan,node,owner,index,environment):
+        from .native_bytearray import indexed as bytearray_index
+        bytearray=bytearray_index(self,plan,node,owner,index,environment)
+        if bytearray is not None:return bytearray
         from .native_arrays import indexed
         array=indexed(self,plan,node,owner,index,environment)
         if array is not None:return array
@@ -1334,6 +1356,7 @@ class Model:
 
     def item(self, value, node):
         value = value.root()
+        if getattr(value.tag,'_native_bytearray',False):return Cell('int')
         if getattr(value.tag,"_native_array",False):return Cell(value.tag.element)
         deque=self.deques.element(shape(value))
         if deque is not None:return deque
@@ -1393,6 +1416,8 @@ class Model:
         if isinstance(node,ast.Subscript):
             owner = self.expression(plan,node.value,environment).root()
             if isinstance(node.slice,ast.Slice):
+                from .native_bytearray import analyze_slice_store as bytearray_slice_store
+                if bytearray_slice_store(self,plan,node,owner,value,environment):return
                 from .native_list_slice_assignment import analyze as analyze_slice_store
                 if analyze_slice_store(self,plan,node,owner,value,environment):return
             from .native_source_items import source_owner,check_key
@@ -1400,6 +1425,8 @@ class Model:
             if getattr(owner.tag,'_native_array',False)and isinstance(node.slice,ast.Slice):
                 raise ClassUnsupported(node,'array slice assignment needs a same-type buffer splice/extended-slice write adapter; native array slice mutation is not implemented',proof='native array slice assignment')
             index=self.expression(plan,node.slice,environment)
+            from .native_bytearray import indexed as bytearray_store
+            if bytearray_store(self,plan,node,owner,index,environment,value)is not None:return
             from .native_arrays import indexed as array_store
             if array_store(self,plan,node,owner,index,environment,value)is not None:return
             from .native_source_items import analyze as source_item_store
@@ -1459,6 +1486,9 @@ class Model:
         if hasattr(destination,"definite"):destination.definite=set(source.definite)
 
     def block(self, plan, statements, environment):
+        if statements is getattr(plan.node,'body',None):
+            from .native_function_body_binding_reads import begin as begin_initialized_module_calls
+            begin_initialized_module_calls(self,plan)
         environment = Environment(environment)
         for node in statements:
             if environment is None:
@@ -1556,10 +1586,12 @@ class Model:
                 check_augmented(self,plan,node,right)
                 value = self.binary(plan,node,node.op,left,right,environment=environment)
                 from .native_source_items import captured_store as source_item_store
+                from .native_bytearray import captured_store as bytearray_store
                 from .native_arrays import captured_store as array_store
                 from .native_list_slice_assignment import captured_store as slice_store
                 if(not self.deques.indexes.captured_store(plan,node.target,value)
                         and not slice_store(self,plan,node.target,value,environment)
+                        and not bytearray_store(self,plan,node.target,value,environment)
                         and not array_store(self,plan,node.target,value,environment)
                         and not source_item_store(self,plan,node.target,value,environment)):
                     self.target(plan,node.target,value,environment)
@@ -1567,6 +1599,8 @@ class Model:
                 for target in node.targets:
                     if isinstance(target,ast.Subscript):
                         owner=self.expression(plan,target.value,environment)
+                        if getattr(shape(owner),'_native_bytearray',False):
+                            raise ClassUnsupported(target,'bytearray element/slice deletion is not implemented by the native mutable-byte adapter',proof='native bytearray deletion protocol')
                         if getattr(shape(owner),'_native_array',False):
                             raise ClassUnsupported(target,'array element/slice deletion is not implemented by the native numeric-buffer adapter',proof='native array deletion protocol')
                 from .native_annotations import metadata_target
@@ -1706,7 +1740,9 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,'_native_builtin_type',False):return value.rust
         if getattr(value,"_native_bound_mapping_method",False):return value.rust
+        if getattr(value,'_native_bytearray',False):return value.rust
         if getattr(value,"_native_array",False):return value.rust
         if getattr(value,'_native_exception_class',False):return 'ClassExceptionClass'+value.name
         if getattr(value,'_native_exception_value',False):return 'Rc<ClassExceptionValue'+str(value.record.index)+'>'
@@ -1835,6 +1871,7 @@ class Emitter:
         from .native_source_lengths import emit_truth
         source_truth=emit_truth(self,node,value,identity=identity)
         if source_truth is not None:return source_truth
+        if getattr(value.kind,'_native_bytearray',False):return "{let result=!"+value.code+".0.borrow().is_empty();result}"
         if getattr(value.kind,"_native_array",False):return "{let result=!"+value.code+".0.borrow().is_empty();result}"
         if getattr(value.kind,'_native_exception_class',False)or getattr(value.kind,'_native_exception_value',False):return 'true'
         if getattr(value.kind,"_native_builtin_singleton",False):
@@ -1846,6 +1883,7 @@ class Emitter:
         if union_kind(value.kind):return project(value.kind,value.code,
             lambda kind,code:self.truth(Expression(code,kind),node))
         tag = domain(value.kind)
+        if tag=='builtin_type':return 'true'
         if tag in {"dict","set"}:return self.model.mappings.truth(self,value)
         if tag in {"int","bool","int_bool"}:
             return self.numeric.truth(self.scalar(value))
@@ -1878,6 +1916,9 @@ class Emitter:
         raise ClassUnsupported(self.plan.node)
 
     def show(self, value, node, representation=False):
+        if getattr(value.kind,'_native_builtin_type',False):
+            from .native_type_objects import show
+            return show(value.kind)
         if getattr(value.kind,"_native_bound_mapping_method",False):
             raise ClassUnsupported(node,"displaying a captured builtin mapping method requires its receiver address representation; that method display observer is not implemented",types=(("value",value.kind),),proof="builtin mapping method display identity")
         from .native_source_display import show as source_show
@@ -1918,7 +1959,7 @@ class Emitter:
             return show_callable(self,value,node)
         if tag=="globals_dict":
             raise ClassUnsupported(node,"displaying this globals dictionary needs value lookup and ordered dictionary repr; the live namespace view currently implements binding membership, length and identity",proof="module namespace value/iteration protocol")
-        if tag in {"array","int","bool","int_bool","str","bytes","none","object","list","float"}:
+        if tag in {"bytearray","array","int","bool","int_bool","str","bytes","none","object","list","float"}:
             return f"ClassDisplay::class_{'repr' if representation else 'str'}(&({value.code}))"
         raise ClassUnsupported(node)
 
@@ -1939,6 +1980,9 @@ class Emitter:
         return result
 
     def expression(self, node):
+        from .native_type_objects import emit_attribute
+        typed=emit_attribute(self,node)
+        if typed is not None:return typed
         from .native_source_state import total_read
         state_value=total_read(self,node)
         if state_value is not None:return state_value
@@ -2078,6 +2122,9 @@ class Emitter:
             if abrupt is not None:return abrupt
             setup,owner = self.capture(self.expression(node.value))
             index_setup,index = self.capture(self.expression(node.slice))
+            from .native_bytearray import emit_index as bytearray_index
+            indexed=bytearray_index(self,node,owner,index,wanted)
+            if indexed is not None:return Expression('{'+setup+index_setup+indexed.code+'}',wanted)
             from .native_arrays import emit_index as array_index
             indexed=array_index(self,node,owner,index,wanted)
             if indexed is not None:return Expression('{'+setup+index_setup+indexed.code+'}',wanted)
@@ -2198,6 +2245,12 @@ class Emitter:
         from .native_float_powers import frame as floating_power
         power=floating_power(self,operator,left,right,node,wanted)
         if power is not None:return power
+        from .native_bytes_sequences import emit as bytes_sequence
+        byte_sequence=bytes_sequence(self,operator,left,right,node,wanted)
+        if byte_sequence is not None:return byte_sequence
+        from .native_bytearray import emit_binary as bytearray_binary
+        bytearray=bytearray_binary(self,operator,left,right,node,wanted)
+        if bytearray is not None:return bytearray
         from .native_arrays import emit_binary as array_binary
         array=array_binary(self,operator,left,right,node,wanted)
         if array is not None:return array
@@ -2229,6 +2282,9 @@ class Emitter:
         return self.encoded(result.code,raw,wanted,node,result.constant)
 
     def comparison(self, operator, left, right, node):
+        from .native_type_objects import comparison as type_comparison
+        typed=type_comparison(self,operator,left,right,node)
+        if typed is not None:return typed
         self.model.operators.implicit_comparison_guard(self,operator,left,right,node)
         return self.comparison_builtin(operator,left,right,node)
 
@@ -2258,6 +2314,9 @@ class Emitter:
         from .native_variadic import comparison as tuple_sequence_comparison
         sequence_result=tuple_sequence_comparison(self,operator,left,right,node)
         if sequence_result is not None:return sequence_result
+        from .native_bytearray import comparison as bytearray_comparison
+        bytearray=bytearray_comparison(self,operator,left,right,node)
+        if bytearray is not None:return bytearray
         a,b = domain(left.kind),domain(right.kind)
         if "complex" in {a,b}:
             raise ClassUnsupported(node,"complex comparison operators require native numeric comparison support",types=(("left",left.kind),("right",right.kind)),proof="complex comparison observer")
@@ -2495,6 +2554,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};"+exported+temporary+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_bytearray import emit_method as bytearray_method
+        bytearray=bytearray_method(self,node)
+        if bytearray is not None:return bytearray
         from .native_arrays import emit_method as array_method
         array=array_method(self,node)
         if array is not None:return array
@@ -2647,6 +2709,9 @@ class Emitter:
         return setup+self.store_reference(reference,value,target)
 
     def reference(self, target):
+        from .native_bytearray import reference as bytearray_reference
+        bytearray=bytearray_reference(self,target)
+        if bytearray is not None:return bytearray
         from .native_list_slice_assignment import reference as slice_reference
         sliced=slice_reference(self,target)
         if sliced is not None:return sliced
@@ -2690,6 +2755,7 @@ class Emitter:
         if isinstance(target,ast.Subscript):
             setup,owner=self.capture(self.expression(target.value))
             more,index=self.capture(self.expression(target.slice))
+            if getattr(owner.kind,'_native_bytearray',False):return setup+more,('bytearray_index',owner,index,self.kind(target))
             from .native_arrays import array_kind
             if array_kind(owner.kind):return setup+more,('array_index',owner,index,self.kind(target))
             if isinstance(owner.kind,InstanceType):
@@ -2723,6 +2789,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=='bytearray_index':
+            from .native_bytearray import emit_index
+            return emit_index(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]=='list_slice':
             from .native_list_slice_assignment import load
             return load(self,reference,node,kind or self.kind(node))
@@ -2791,6 +2860,12 @@ class Emitter:
         return project_element(self,raw,owner.kind.element,requested or kind,node)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=='bytearray_slice':
+            from .native_bytearray import store_slice
+            return store_slice(self,reference,value,node)
+        if reference[0]=='bytearray_index':
+            from .native_bytearray import emit_index
+            return emit_index(self,node,reference[1],reference[2],value=value).code+';'
         if reference[0]=='list_slice':
             from .native_list_slice_assignment import store
             return store(self,reference,value,node)
@@ -2950,9 +3025,13 @@ class Emitter:
             from .native_record_places import target_kind
             wanted=target_kind(self,reference,node.target)
             if wanted is None:wanted=self.kind(node.target)
+            from .native_bytearray import emit_binary as bytearray_binary
+            bytearray=bytearray_binary(self,node.op,old,right,node,wanted,inplace=True)
             from .native_arrays import emit_binary as array_binary
             array=array_binary(self,node.op,old,right,node,wanted,inplace=True)
-            if array is not None:
+            if bytearray is not None:
+                operation='';result=bytearray
+            elif array is not None:
                 operation='';result=array
             elif domain(old.kind)=="list"and isinstance(node.op,ast.Add)and domain(right.kind)=="list":
                 operation=f"class_list_extend(&{old.code},&{right.code});"
@@ -3291,6 +3370,14 @@ def _class_layouts(model,emitter):
         if constructor:
             suffix="?;"if synchronous(model,constructor)else".await?;"
             receiver='&mut object'if owned_object else'&object'if unboxed or stack_constructor else'object.clone()'
+            if constructor.signature.parameters:
+                parameter=constructor.signature.parameters[0]
+                actual=InstanceType(model.class_key(owner));wanted=shape(constructor.arguments[parameter])
+                if wanted!=actual:
+                    from .native_scalar_data_parameters import parameter_type
+                    if owned_object or unboxed or stack_constructor or parameter_type(model,constructor,parameter)is not None:
+                        raise ClassUnsupported(constructor.node,'this mixed initializer receiver needs an identity-preserving borrowed/inline argument adapter; that constructor receiver ABI is not implemented',types=(('actual receiver',actual),('initializer receiver',wanted)),proof='mixed initializer receiver ownership and argument ABI')
+                    receiver=emitter.coerce(Expression('object.clone()',actual),wanted,constructor.node)
             body+=f"class_function_{constructor.index}(class_scope.clone(),{receiver}"+(","+",".join(args)if args else"")+ ")"+suffix
         if synchronous(model,constructor):
             wrapped='Rc::new(object)'if stack_constructor else'object'
@@ -3466,6 +3553,10 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
     from .native_random_runtime import runtime as random_runtime
     pieces.append(random_runtime(model))
+    from .native_bytes_sequences import runtime as bytes_sequence_runtime
+    pieces.append(bytes_sequence_runtime(model))
+    from .native_bytearray_runtime import runtime as bytearray_runtime
+    pieces.append(bytearray_runtime(model))
     from .native_array_runtime import runtime as array_runtime
     pieces.append(array_runtime(model))
     from .native_bytes_constructor import runtime as bytes_runtime
@@ -3501,6 +3592,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     from .native_builtin_singletons import runtime as singleton_runtime
     singleton_layout=singleton_runtime(model)
     if singleton_layout:pieces.append(singleton_layout)
+    from .native_type_objects import runtime as type_runtime
+    pieces.append(type_runtime(model))
     from .native_variadic import runtime as variadic_runtime
     pieces.append(variadic_runtime(model))
     from .native_class_materialization import empty_runtime

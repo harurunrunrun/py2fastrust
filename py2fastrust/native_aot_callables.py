@@ -71,6 +71,7 @@ class CallSite:
     constructors: dict=field(default_factory=dict)
     exception_constructors:dict=field(default_factory=dict)
     mapping_methods:dict=field(default_factory=dict)
+    builtin_classes:dict=field(default_factory=dict)
 
 
 def function_kind(kind):return isinstance(kind,AotFunctionType)
@@ -213,6 +214,9 @@ class CallableCells:
             if lexical is not None:
                 self.used.update(lexical.root().args)
                 return lexical
+        from .native_function_body_binding_reads import read as initialized_module_read
+        initialized=initialized_module_read(self,plan,node)
+        if initialized is not None:return initialized
         from .native_builtin_identities import names as builtin_value_names
         SUPPORTED=builtin_value_names()
         if isinstance(node,ast.Name)and self.model.module_owner(self.owner(plan,node)):
@@ -226,8 +230,10 @@ class CallableCells:
                     raise ClassUnsupported(node,"this imported builtin-shadow binding is not definitely initialized in every call context; a namespace-owned imported-object carrier is required for runtime lookup before/after import",proof="import binding lifetime across call contexts")
                 from .native_classes import Cell
                 identity=BuiltinIdentity(spelling)
-                self.builtin_used.add(identity)
-                builtin=self.builtin_cells.setdefault(name,Cell("function",(identity,)))
+                from .native_type_objects import builtin_value
+                special=builtin_value(self.model,identity)
+                if special is None:self.builtin_used.add(identity)
+                builtin=self.builtin_cells.setdefault(name,special if special is not None else Cell("function",(identity,)))
                 # A declaration's identity cannot be widened by a local alias
                 # phi. Keep value flow directional, as for module/default cells.
                 self.model.namespace.flow_cells.add(builtin.root())
@@ -414,6 +420,9 @@ class CallableCells:
 
     def reference_expression(self,identity):
         from .native_classes import Expression
+        from .native_type_objects import builtin_value
+        special=builtin_value(self.model,identity)
+        if special is not None:return Expression(special.tag.rust,special.tag)
         if isinstance(identity,BuiltinRef):self.member_value(identity)
         else:self.builtin_used.add(identity)
         return Expression(variant(identity),AotFunctionType.from_targets((identity,)))
@@ -422,6 +431,9 @@ class CallableCells:
         from .native_classes import Expression
         identity=self.builtin_sites.get((emitter.plan.index,id(node)))
         if identity is None:return None
+        from .native_type_objects import builtin_value
+        special=builtin_value(self.model,identity)
+        if special is not None:return Expression(special.tag.rust,special.tag)
         return Expression(variant(identity),AotFunctionType((),(identity,)))
 
 
@@ -439,6 +451,11 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
     from .native_builtin_callables import analyze as analyze_builtin
     from .native_module_linking import ClassReferenceType
     for branch in alternatives(kind)if kind is not None else():
+        from .native_type_objects import BuiltinClass,analyze_constructor
+        if isinstance(branch,BuiltinClass):
+            record=analyze_constructor(self,plan,node,branch,arguments,positional,keywords,environment)
+            site.builtin_classes[branch]=record
+            if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
         from .native_class_stdio import READERS,analyze as analyze_reader
         if branch in READERS:
             value=analyze_reader(self.model,plan,node,branch,positional,keywords,
@@ -632,6 +649,8 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
         from .native_class_stdio import READERS,emit as emit_reader
         if kind in READERS:
             return emit_reader(emitter,node,kind,positional,keywords,wanted).code
+        from .native_type_objects import BuiltinClass,emit_constructor
+        if isinstance(kind,BuiltinClass):return emit_constructor(emitter,node,kind,site.builtin_classes[kind],positional,keywords,wanted).code
         from .native_mapping_method_callables import is_method,emit_call
         if is_method(kind):return emit_call(emitter,node,kind,site.mapping_methods[kind],code,positional,keywords,wanted).code
         if getattr(kind,'_native_exception_class',False):

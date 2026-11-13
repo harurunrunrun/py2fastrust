@@ -525,7 +525,8 @@ def runtime(source,model,emitter):
             else:
                 builtin=model.callable_cells.builtin_cells[name]
                 from .references import BuiltinIdentity
-                fallback=emitter.coerce(Expression(variant(BuiltinIdentity(model.callable_cells.spelling(name))),shape(builtin)),kind,model.module.node)
+                actual=model.callable_cells.reference_expression(BuiltinIdentity(model.callable_cells.spelling(name)))
+                fallback=emitter.coerce(actual,kind,model.module.node)
                 loaded=f"Ok(scope.globals.borrow().value_{index}.clone().unwrap_or_else(||{fallback}))"
         else:loaded=f"scope.globals.borrow().value_{index}.clone().ok_or_else(||{error}.to_owned())"
         declaration+=(f"fn class_global_get_{index}(scope:&ClassScope)->Result<{emitter.rust_type(kind)},String>{{{loaded}}}\n")

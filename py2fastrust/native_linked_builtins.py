@@ -41,7 +41,8 @@ class LinkedBuiltinBindings:
         sources=self.model.namespace.incoming.get(key,{})
         for value in sources.values():
             kind=shape(value)
-            if not getattr(kind,'_native_function_reference',False)or kind.targets!=(identity,):
+            from .native_type_objects import canonical_matches
+            if not canonical_matches(kind,identity):
                 return UnknownReference(self.model.resolved_name(plan,node),'canonical builtins namespace binding may be replaced')
         return identity
 

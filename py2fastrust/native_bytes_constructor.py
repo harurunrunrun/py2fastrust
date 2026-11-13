@@ -13,6 +13,7 @@ def analyze(model,plan,node,arguments,keywords,factory):
     if arguments:
         from .native_types import alternatives,EmptyType
         for kind in alternatives(shape(arguments[0])):
+            if getattr(kind,'_native_bytearray',False):continue
             if isinstance(kind,EmptyType)or kind is None or kind in {'int','bool','int_bool','bytes','float','none','str'}:continue
             raise ClassUnsupported(node,'bytes() from this value needs its iterable, __bytes__ or __index__ conversion protocol; those object/iterable forms are not implemented by the native bytes constructor',types=(('source',kind),),proof='native bytes source conversion')
     model.native_bytes_constructor_required=True
@@ -28,6 +29,7 @@ def emit(emitter,node,arguments):
     if union_kind(value.kind):return project(value.kind,value.code,lambda kind,code:emit(emitter,node,[Expression(code,kind)]))
     from .native_types import EmptyType
     if isinstance(value.kind,EmptyType):return 'native_empty::<Vec<u8>>('+value.code+')'
+    if getattr(value.kind,'_native_bytearray',False):return '{let result=('+value.code+').0.borrow().clone();result}'
     if value.kind=='bytes':return '('+value.code+').clone()'
     if value.kind in {'int','bool','int_bool'}:return emitter.at('class_bytes_count(&('+emitter.number(value)+'))',node)
     message='"TypeError: string argument without an encoding".to_owned()'if value.kind=='str'else'format!("TypeError: cannot convert \'{}\' object to bytes",'+_type_name(emitter,value,node)+')'

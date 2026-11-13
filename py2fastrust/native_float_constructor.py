@@ -87,6 +87,12 @@ def frame_value(emitter,value,node):
         number=emitter.number(value)
         if emitter.model.integer=='bigint':return emitter.at('('+number+').ratio(&Int::exact_small(1)).map_err(|_|"OverflowError: int too large to convert to float".to_owned())',node)
         return '('+number+') as f64'
+    if tag=='bytearray':
+        temporary,data=emitter.fresh(),emitter.fresh()
+        _parser(emitter.model,'native_scalar_float_ascii')
+        representation=emitter.show(Expression(temporary,value.kind),node,True)
+        call='native_scalar_float_ascii(&'+data+').map_err(|_|format!("ValueError: could not convert string to float: {}",'+representation+'))'
+        return '{let '+temporary+'='+value.code+';let '+data+'='+temporary+'.0.borrow().clone();'+emitter.at(call,node)+'}'
     if tag in {'str','bytes'}:
         temporary=emitter.fresh()
         captured=Expression(temporary,value.kind)

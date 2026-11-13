@@ -80,7 +80,7 @@ def analyze(model,plan,node,environment):
             # references. Register that allocation just like a list literal;
             # an unknown origin would otherwise alias every source list.
             output=model.cell(plan,node,'list',(value.args[0],),identity=('slice_list',))
-        elif getattr(value.tag,'_native_array',False):output=Cell(value.tag)
+        elif getattr(value.tag,'_native_array',False)or getattr(value.tag,'_native_bytearray',False):output=Cell(value.tag)
         elif value.tag == 'tuple_sequence':
             output=Cell(value.tag,(value.args[0],))
         elif value.tag in {'str','bytes'}:output=Cell(value.tag)
@@ -150,7 +150,7 @@ def _owner(emitter,node,owner,bounds,wanted):
     # checks step first, then start and stop, after evaluating all expressions.
     converted,names=convert_bounds(emitter,node,bounds)
     setup+=converted
-    if tag=='array':length=f'{owner.code}.0.borrow().len()'
+    if tag in {'array','bytearray'}:length=f'{owner.code}.0.borrow().len()'
     elif tag=='list':length=f'{owner.code}.borrow().len()'
     elif tag=='str':length=f'{owner.code}.'+('byte_len()'if emitter.model.string_mode=='ascii'else'codepoint_len()')
     else:length=f'{owner.code}.len()'
@@ -161,10 +161,10 @@ def _owner(emitter,node,owner,bounds,wanted):
     else:
         values,position=emitter.fresh(),emitter.fresh()
         element=owner.kind.element if tag in {'list','tuple_sequence'}else None
-        raw_type=owner.kind.raw if tag=='array'else emitter.rust_type(element)if element is not None else'u8'
+        raw_type=owner.kind.raw if tag=='array'else'u8'if tag=='bytearray'else emitter.rust_type(element)if element is not None else'u8'
         setup+=f'let mut {values}=Vec::<{raw_type}>::new();'
         setup+=emitter.at(f'{values}.try_reserve({indices}.len()).map_err(|_|"MemoryError: cannot allocate slice".to_owned())',node)+';'
-        if tag=='array':
+        if tag in {'array','bytearray'}:
             read=emitter.fresh()
             setup+=f'{{let {read}={owner.code}.0.borrow();for {position} in {indices}{{{values}.push({read}[{position}]);}}}}'
             value=Expression(f'{owner.kind.rust}(Rc::new(RefCell::new({values})))',owner.kind)

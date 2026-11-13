@@ -88,6 +88,8 @@ class ArrayAdapter:
         kind=retain(model,ArrayType(code));record=ArrayCall(factory(kind),kind)
         if len(positional)==2:
             source=positional[1];tag=shape(source)
+            if getattr(tag,'_native_bytearray',False):
+                raise ClassUnsupported(node,'array construction from bytearray requires its raw bytes buffer rather than integer iteration; that mutable-buffer initializer is not implemented',proof='array constructor bytearray buffer export')
             if tag not in {'bytes','str'}:
                 record.source=model.iterators.source(plan,node,source,('array_initializer',code),environment=environment)
                 model.iterators.demand(plan,node,model.cell_for_kind(record.source),environment)
@@ -361,6 +363,8 @@ def analyze_method(model,plan,node,owner,arguments,keywords,environment):
         else:
             record.source=model.iterators.source(plan,node,value,('array_method',name),environment=environment)
             model.iterators.demand(plan,node,model.cell_for_kind(record.source),environment)
+    if not error and name=='frombytes'and getattr(shape(arguments[0]),'_native_bytearray',False):
+        raise ClassUnsupported(node,'array.frombytes() from bytearray requires its mutable bytes-buffer export adapter; that buffer source form is not implemented',proof='array frombytes bytearray buffer export')
     if not hasattr(model,'native_array_methods'):
         model.native_array_methods={}
         from .native_callback_effects import register

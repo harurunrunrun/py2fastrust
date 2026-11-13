@@ -6,7 +6,7 @@ and the adapter never traverses/evaluates argument ASTs a second time.
 import ast
 from .references import BuiltinIdentity
 
-SUPPORTED=frozenset({"exit","quit","classmethod","staticmethod","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bool","float","len","abs","id","globals","isinstance",
+SUPPORTED=frozenset({"type","exit","quit","classmethod","staticmethod","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bytearray","bool","float","len","abs","id","globals","isinstance",
                      "round","range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
 
 
@@ -15,6 +15,12 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='type':
+        from .native_type_objects import analyze_type
+        return analyze_type(model,plan,node,arguments,keywords,cell)
+    if name=='bytearray':
+        from .native_bytearray import analyze_constructor
+        return analyze_constructor(model,plan,node,arguments,keywords,environment,cell)
     if name=="bytes":
         from .native_bytes_constructor import analyze as analyze_bytes
         return analyze_bytes(model,plan,node,arguments,keywords,cell)
@@ -243,6 +249,9 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=F
     if arguments and getattr(arguments[0].kind,'_native_class_generator',False):
         from .native_immediate_generators import CONSUMERS
         if identity.name in CONSUMERS:return emitter.model.generators.consume(emitter,node,identity.name,arguments[0],arguments,keywords,wanted)
+    if identity.name=='type':
+        from .native_type_objects import emit_type
+        return emit_type(emitter,node,arguments,keywords,wanted)
     if identity.name == 'isinstance':
         from .native_type_checks import emit as emit_type_check
         return emit_type_check(emitter,node,arguments)
@@ -289,6 +298,8 @@ def _type_name(emitter,value,node):
         return _string(value.kind.record.operation)
     if tag=="iterator"and hasattr(value.kind.record,"tool"):return _string("itertools."+value.kind.record.tool)
     if tag=="iterator"and value.kind.record.operation=='source_generator':return '"generator"'
+    if tag=="iterator"and value.kind.record.operation in {'bytearray_source','bytearray_reverse'}:
+        return _string('bytearray_iterator'if value.kind.record.operation=='bytearray_source'else'reversed')
     if tag=="iterator"and value.kind.record.operation=='source':
         from .native_classes import shape
         source=domain(shape(value.kind.record.source))
@@ -347,6 +358,9 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         from .native_enumerate import emit as emit_enumerate
         return emit_enumerate(emitter,node,arguments,keywords,wanted)
     code=None
+    if name=='bytearray':
+        from .native_bytearray import emit_constructor
+        return emit_constructor(self,node,arguments,keywords)
     if name=="bytes":
         from .native_bytes_constructor import emit as emit_bytes
         return Expression(emit_bytes(self,node,arguments),wanted)
@@ -397,7 +411,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         from .native_source_lengths import emit_length
         source_length=emit_length(self,node,value)
         if source_length is not None:return source_length
-        if domain(value.kind)=='array':length=value.code+'.0.borrow().len()'
+        if domain(value.kind)in {'array','bytearray'}:length=value.code+'.0.borrow().len()'
         elif domain(value.kind)=='dict_view':length=self.model.mappings.views.length(self,value)
         elif domain(value.kind)in {"list","dict","set","deque"}:length=f"{value.code}.borrow().len()"
         elif domain(value.kind)=="str":
@@ -418,6 +432,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         elif domain(arguments[0].kind) in {"int","bool","int_bool"}:code=self.number(arguments[0])
         elif arguments[0].kind=='str':code=self.at(f"class_parse_text(&{arguments[0].code})",node)
         elif arguments[0].kind=='bytes':code=self.at(f"class_parse_bytes(&{arguments[0].code})",node)
+        elif getattr(arguments[0].kind,'_native_bytearray',False):
+            data=self.fresh();code='{let '+data+'='+arguments[0].code+'.0.borrow().clone();'+self.at('class_parse_bytes(&'+data+')',node)+'}'
         elif arguments[0].kind=='float':
             operation="Int::from_f64"if self.model.integer=="bigint"else"native_float_integer"
             code=self.at(f"{operation}({arguments[0].code})",node)
@@ -444,7 +460,9 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
             name=_type_name(emitter,value,node)
             return _error(emitter,node,wanted,f'format!("TypeError: bad operand type for abs(): \'{{}}\'",{name})')
     elif name == "id":
-        if domain(arguments[0].kind)=='array':
+        if getattr(arguments[0].kind,'_native_builtin_type',False):
+            raise ClassUnsupported(node,'id() of a builtin class needs a stable runtime class-object address; the native class carrier preserves equality and is, but its address observer is not implemented',types=(('class',arguments[0].kind),),proof='stable builtin class-object address')
+        if domain(arguments[0].kind)in {'array','bytearray'}:
             return Expression('class_from_usize(Rc::as_ptr(&'+arguments[0].code+'.0)as usize)',wanted)
         if domain(arguments[0].kind)not in{"exception_value","object","list","iterator","dict","set","dict_view"}:raise ClassUnsupported(node)
         from .native_value_classes import identity

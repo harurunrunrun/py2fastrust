@@ -5,6 +5,7 @@ from .native_key_types import DictType,SetType
 
 def frame_storable(kind):
     """Storage proof only; each consuming operation still proves its protocol."""
+    if getattr(kind,'_native_bytearray',False):return True
     if getattr(kind,'_native_array',False):return True
     if isinstance(kind,EmptyType)or kind in {"int","bool","int_bool","float","str","bytes","none","range"}:return True
     if isinstance(kind,(NullableType,MaybeType)):return frame_storable(kind.value)

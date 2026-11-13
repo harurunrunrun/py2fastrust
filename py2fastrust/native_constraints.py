@@ -426,6 +426,7 @@ class Solver:
             elif part=="deque_int":result=result.join(value("int"))
             elif part=="str":result=result.join(value("str"))
             elif part=="bytes":result=result.join(value("int"))
+            elif getattr(part,'_native_bytearray',False):result=result.join(value('int'))
             elif isinstance(part,(Variable,Computed,Projection)):result=result.join(value(Projection(value(part),role,index)))
             else:result=result.join(UNKNOWN)
         return Value(result.alternatives,result.unbound or item.unbound,result.unknown or item.unknown)
@@ -626,6 +627,7 @@ class Solver:
                 allocation=self.allocation(term.site,"list",context);result=value(allocation);self.insert(result,"element",item)
                 if self.kind(receiver)=="str":result=value("str")
                 elif self.kind(receiver)=="bytes":result=value("bytes")
+                elif getattr(self.kind(receiver),'_native_bytearray',False):result=value(self.kind(receiver))
         elif op=="compare":
             for child in args[:2]:self.iteration_access.implicit((yield evaluate(child)))
             for child in args[2:]:
@@ -799,6 +801,9 @@ class Solver:
                 return value(result_kind(identity))
             return UNKNOWN
         name=identity.name
+        if name=='bytearray':
+            from .native_bytearray import BYTEARRAY
+            return value(BYTEARRAY)
         if name in {"int","float","str","bool","bytes"}:return value(name)
         if name in {"bin","oct","hex"}:return value("str")
         if name=="abs" and args:return self.compute("unary:UAdd",(args[0],))
@@ -1049,6 +1054,7 @@ class Solver:
                             for field in shape.fields:item=join_types(item,field)
                     elif shape=="str":item="str"
                     elif shape=="bytes":item="int"
+                    elif getattr(shape,'_native_bytearray',False):item='int'
                     elif isinstance(shape,EmptyType):item=EMPTY
                     else:return None
                     current=join_types(current,item)
@@ -1075,6 +1081,11 @@ class Solver:
         if len(kinds)!=2:return None
         first,second=kinds
         operator=operation.removeprefix("binary:")
+        if any(getattr(kind,'_native_bytearray',False)for kind in kinds):
+            from .native_bytearray import BYTEARRAY
+            if operator=='Mult'and (second if first==BYTEARRAY else first)in {'int','bool','int_bool'}:return BYTEARRAY
+            if operator=='Add'and set(kinds)<={BYTEARRAY,'bytes'}:return 'bytes'if first=='bytes'else BYTEARRAY
+        if "bytes"in kinds and operator=="Mult"and (second if first=="bytes"else first)in {"int","bool","int_bool"}:return "bytes"
         if first==second=="str" and operator=="Add":return "str"
         if "str" in kinds and operator=="Mult" and (second if first=="str" else first) in numeric-{"float"}:return "str"
         if set(kinds)<=numeric:

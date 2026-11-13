@@ -32,6 +32,12 @@ class LinkedCallableCells(CallableCells):
     def stable_direct(self,plan,node,environment=None):return False
 
     def value(self,plan,node,environment):
+        from .native_class_body_function_reads import read as published_function
+        value=published_function(self,plan,node)
+        if value is not None:return value
+        from .native_function_body_binding_reads import read as initialized_module_read
+        value=initialized_module_read(self,plan,node)
+        if value is not None:return value
         value=self.linked_builtins.value(plan,node,environment)
         return super().value(plan,node,environment)if value is None else value
 
@@ -48,6 +54,9 @@ class LinkedCallableCells(CallableCells):
         if value is not None and isinstance(value.root().tag,ClassReferenceType):return False
         if value is not None and isinstance(node.func,ast.Attribute):
             if getattr(shape(value),"_native_function_reference",False):return True
+            from .native_type_objects import BuiltinClass
+            from .native_types import alternatives
+            if any(isinstance(kind,BuiltinClass)for kind in alternatives(shape(value))):return True
         if isinstance(node.func,ast.Attribute):
             receiver=self.receivers.get((plan.index,id(node)))
             if receiver is None:receiver=self.model.module_linker.pure_cell(plan,node.func.value,environment)

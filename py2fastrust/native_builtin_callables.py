@@ -13,6 +13,9 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name=='type':
+        from .native_type_objects import binding_error as type_binding
+        return type_binding(count,keywords)
     if name=='round':
         from .native_class_round import bind
         return bind([None]*count,[(item.name,None)for item in keywords],None)[1]

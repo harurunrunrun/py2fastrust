@@ -209,6 +209,19 @@ recomputed when inputs widen; Python `None` remains a real value. This does not
 resolve every recursive or temporally changing container type constraint.
 
 
+Canonical `bytearray` values use a distinct shared `Vec<u8>` carrier. Empty,
+integer-count, bytes/bytearray-copy and admitted integral-iterable constructors,
+index reads/stores, read slices and contiguous/extended slice assignment retain
+byte validation, sharing and Python evaluation order. Slice RHS values are
+materialized before mutation, and bounds use the receiver length after source
+callbacks. Repetition, concatenation, append, bytes/bytearray extend, clear, copy,
+reverse, forward/reverse cursors and builtin display/numeric consumers are
+supported. Immutable bytes repetition uses the same checked size rules.
+Encoding overloads, custom indices, external buffer exports, slice augmented
+assignment/deletion, generic iterable extend and generator-expression collectors
+remain explicit diagnostics. Source generator-function iterables use the
+existing typed cursor.
+
 Native real/complex power results support addition and subtraction with builtin
 int/bool/float and complex leaves. Both source operands evaluate before ordered
 numeric conversions, including BigInt conversion errors. Finite real/complex
@@ -280,12 +293,12 @@ remain unfinished. Fixed-width input normalization still follows the chosen
 integer mode.
 
 Explicit-base `int(text, base)` and `int(text, base=...)` calls have direct
-lowering for builtin strings and bytes, including saved aliases, class fields
+lowering for builtin strings, bytes and bytearray, including saved aliases, class fields
 and multi-source `map` callbacks. Bases 0 and 2 through 36 support signs,
 prefixes and underscores; invalid bases and literals retain Python errors.
 Fixed-width results wrap at the selected width. ASCII parsing scans bytes;
 Unicode mode uses the pinned decimal-digit and whitespace tables. Custom base
-`__index__` objects, bytearray/buffer storage and CPython conversion
+`__index__` objects, external buffer storage and CPython conversion
 digit limits remain unfinished.
 
 Fixed-name imports now compile supported user modules, pure-Python packages and
@@ -919,6 +932,33 @@ order, including invalid later members, and runtime variadic tuples use the
 same protocol. This does not add source-class inheritance, metaclass
 `__instancecheck__`, or arbitrary union-type objects.
 
+Canonical one-argument `type(value)` returns finite builtin class objects for
+represented scalar/container kinds, source and verified callable kinds, and
+retained source-instance class references. Builtin classes preserve equality,
+`is`, aliases, defaults, truth, `str`/`repr`, and `__name__`/`__qualname__`/`__module__`.
+Returned classes invoke the existing constructor adapters; ordinary callbacks
+and `defaultdict` factories use their real class callability and argument errors.
+Stored builtin classes remain callable through class and instance attributes
+without an implicit receiver.
+Source-instance lookup reads its retained definition holder even after the
+public class name is rebound. Returned builtin classes participate in local
+`isinstance` guards; shared global subjects retain conservative facts.
+Three-argument dynamic class construction, unrepresented metatypes and class
+attributes, builtin class addresses, and unsupported constructor protocols
+remain positioned diagnostics. Further callback/rebinding contexts that lack
+a proved source-class holder retain their specific holder diagnostic.
+No Python function identity substitutes for a
+returned class object.
+
+Module bindings that shadow builtins preserve their actual values in ordinary
+functions and source methods when original publication or all caller contexts
+prove initialization without executable deletion or namespace reflection.
+Rebinding keeps every actual callable producer and its defaults, closure,
+receiver and defining module. Caller facts intersect and are recomputed when
+bodies are revisited; unknown or potentially unbound contexts retain ordinary
+builtin lookup. Argument effects precede body lookup while the original callee
+is captured before its arguments.
+
 Typed frames dispatch finite list/scalar alternatives for list repetition and
 concatenation, including nullable counts and Python operand errors. Supported
 list `+=` and `*=` branches mutate the captured list handle; numeric branches
@@ -1061,6 +1101,19 @@ previously saved aliases keep their value. Repeated definition instances,
 callable objects, function
 metadata, variadic keyword packs and general
 dynamic namespaces still require implementation.
+
+Class-body reads of an already published module function retain its actual
+callable identity and defaults when its name shadows a builtin. Publication and
+binding presence are proved separately from payload stability: supported later
+assignments remain in the typed dispatch union, and only an impossible
+missing-name builtin fallback is removed. Single unconditional module stores use the same original namespace lookup
+after publication, including unresolved producers, real `None`, noncallable
+values and captured function/closure/method payloads.
+Deletion, exception-alias cleanup, reflection and unproved namespace access keep
+conservative handling. An unbinding inside an entirely unreferenced ordinary
+module function can be ruled out using all source units' official references;
+implicit module protocols and imported/member/callback references cannot use
+that proof. Decorated module-function publication remains an explicit boundary.
 
 Reading a supported ordinary instance method as a value captures its receiver
 in a fresh typed method object. Saved, returned and container-held methods use
