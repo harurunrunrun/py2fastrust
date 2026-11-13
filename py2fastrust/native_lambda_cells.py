@@ -136,8 +136,12 @@ class LambdaCells:
         lines=[];fields=[]
         parent=self.model.lexical.parent_scope(plan)
         if parent:
-            owner=self.model.lexical.expression_environment(emitter,parent)
-            fields.append(f'environment:({owner}).clone()')
+            from .native_lexical_capture_views import construct
+            view=construct(emitter,plan)
+            if view is not None:fields.append('environment:'+view)
+            else:
+                owner=self.model.lexical.expression_environment(emitter,parent)
+                fields.append(f'environment:({owner}).clone()')
         for index,(name,expression)in enumerate(plan.defaults.items()):
             if name in plan.default_literals:continue
             before,value=emitter.capture(emitter.expression(expression));lines.append(before)
@@ -166,16 +170,23 @@ class LambdaCells:
         for definition in self.active:
             plan=self.plans[definition];node=('lambda',definition);edges[node]=set()
             parent=self.model.lexical.parent_scope(plan)
-            if parent:edges[node].add(('environment',parent))
+            from .native_lexical_capture_views import edges as capture_edges
+            captured=capture_edges(self.model,definition)
+            if captured is not None:edges[node].update(captured)
+            elif parent:edges[node].add(('environment',parent))
             for cell in plan.default_cells.values():edges[node].update(targets(shape(cell)))
 
     def runtime(self,emitter):
         from .native_classes import shape
-        lines=[]
+        from .native_lexical_capture_views import runtime,parent_type
+        views=runtime(self.model,emitter)
+        lines=[views]if views else[]
         for definition in sorted(self.active):
             plan=self.plans[definition];fields=[]
             parent=self.model.lexical.parent_scope(plan)
-            if parent:fields.append('environment:std::rc::Rc<'+self.model.lexical.environment_type(parent)+'>')
+            if parent:
+                view=parent_type(self.model,plan)
+                fields.append('environment:'+(view or'std::rc::Rc<'+self.model.lexical.environment_type(parent)+'>'))
             for index,name in enumerate(plan.defaults):
                 if name not in plan.default_literals:
                     fields.append(f'default_{index}:'+emitter.rust_type(shape(plan.default_cells[name])))

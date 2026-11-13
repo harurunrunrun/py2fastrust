@@ -283,7 +283,11 @@ class LexicalCells:
         overrides=getattr(emitter,"comprehension_environments",{})
         if scope in overrides:return overrides[scope]
         own=self.scope(emitter.plan)
-        if own==scope and own in self.environments:return 'class_lexical_environment'
+        if own==scope and own in self.environments:
+            if getattr(emitter.plan,'source_generator',None)is not None:
+                from .native_classes import ClassUnsupported
+                raise ClassUnsupported(emitter.plan.node,"a source generator's own captured local cells require an owned lexical environment persisted in its resumable frame; that frame field and its lifetime edges are not implemented",proof='owned source generator lexical environment across suspension')
+            return 'class_lexical_environment'
         current=self.parent_scope(emitter.plan)
         code=getattr(emitter,'lexical_environment_override',None)or'class_lexical_parent'
         while current not in {scope,0,None}:
@@ -301,7 +305,10 @@ class LexicalCells:
         from .native_call_context_effects import unused_parent,borrowed_parent
         if unused_parent(self.model,plan):return ''
         parent=self.parent_scope(plan)
-        return ''if not parent else f',class_lexical_parent:'+('&'if borrowed_parent(self.model,plan)else'')+f'std::rc::Rc<{self.environment_type(parent)}>'
+        from .native_lexical_capture_views import parent_type
+        view=parent_type(self.model,plan)
+        kind=view or f'std::rc::Rc<{self.environment_type(parent)}>'
+        return ''if not parent else f',class_lexical_parent:'+('&'if borrowed_parent(self.model,plan)else'')+kind
 
     def error_message(self,emitter,node):
         binding=self.binding(node);name=binding.name
@@ -315,8 +322,12 @@ class LexicalCells:
         field=self.field_for(node)
         if field is None:return None
         environment,name,schema=field;index=sorted(environment.fields).index(name)
-        owner=self.expression_environment(emitter,environment.scope)
-        code=f'class_lexical_get_{environment.scope}_{index}(&({owner})).ok_or_else(||{_string(self.error_message(emitter,node))}.to_owned())'
+        from .native_lexical_capture_views import optional_read
+        code=optional_read(emitter,environment.scope,name)
+        if code is None:
+            owner=self.expression_environment(emitter,environment.scope)
+            code=f'class_lexical_get_{environment.scope}_{index}(&({owner}))'
+        code+=f'.ok_or_else(||{_string(self.error_message(emitter,node))}.to_owned())'
         from .native_scalar_heap_constants import lexical_getter
         code=lexical_getter(emitter,node,shape(schema),code)
         value=Expression(emitter.at(code,node),shape(schema))
@@ -414,7 +425,12 @@ class LexicalCells:
                 parent=self.environment_type(environment.parent)
                 fields.append(f'parent:std::rc::Rc<{parent}>');initial.append('parent');parameters.append(f'parent:std::rc::Rc<{parent}>')
             for index,(name,cell)in enumerate(sorted(environment.fields.items())):
-                kind=emitter.rust_type(shape(cell));fields.append(f'value_{index}:std::cell::RefCell<Option<{kind}>>');initial.append(f'value_{index}:std::cell::RefCell::new(None)')
+                kind=emitter.rust_type(shape(cell))
+                from .native_lexical_capture_views import shared
+                cell_type=f'std::cell::RefCell<Option<{kind}>>';value='std::cell::RefCell::new(None)'
+                if shared(self.model,scope,name):
+                    cell_type='std::rc::Rc<'+cell_type+'>';value='std::rc::Rc::new('+value+')'
+                fields.append(f'value_{index}:'+cell_type);initial.append(f'value_{index}:'+value)
                 lines.append(f'fn class_lexical_get_{scope}_{index}(owner:&std::rc::Rc<{self.environment_type(scope)}>)->Option<{kind}>{{owner.value_{index}.borrow().clone()}}')
             for definition in sorted(environment.functions):
                 fields.append(f'defined_{definition}:std::cell::Cell<bool>');initial.append(f'defined_{definition}:std::cell::Cell::new(false)')
@@ -433,6 +449,8 @@ class LexicalCells:
         """Reject unproved Rc cycles rather than retain every dead invocation."""
         from .native_classes import ClassUnsupported,InstanceType,shape
         from .native_types import ListType,TupleType,TupleSequenceType,NullableType,MaybeType,UnionType
+        from .native_lexical_capture_views import prepare,shared,cell_node
+        prepare(self)
         def targets(kind):
             from .native_module_linking import ClassReferenceType
             if isinstance(kind,ClassReferenceType)and hasattr(self.model,'properties'):
@@ -465,7 +483,13 @@ class LexicalCells:
             if not environment.plan.reachable:continue
             node=('environment',scope);edges[node]=set()
             if environment.parent:edges[node].add(('environment',environment.parent))
-            for cell in(*environment.fields.values(),*environment.defaults.values()):
+            for name,cell in environment.fields.items():
+                self.model.storage(cell,environment.plan.node)
+                if shared(self.model,scope,name):
+                    binding=cell_node(scope,name);edges[node].add(binding)
+                    edges[binding]=set(targets(shape(cell)))
+                else:edges[node].update(targets(shape(cell)))
+            for cell in environment.defaults.values():
                 self.model.storage(cell,environment.plan.node)
                 edges[node].update(targets(shape(cell)))
         for name,owner in self.model.classes.items():

@@ -125,6 +125,14 @@ class schemas and opaque iterator payload types. Field types come from original
 stores, and absent fields retain their real bound-method fallback. Unknown
 producers retain positioned diagnostics.
 
+Indexed-store rejection also waits for already reached source callees to finish
+their fair type/effect analysis. This includes list elements that provisionally
+contain scalar placeholders before a helper establishes their actual list
+alternatives. Supported stores contribute their normal constraints first;
+unresolved index/value schemas never supply a guessed receiver or runtime value.
+Final unsupported targets remain positioned diagnostics, and generated stores
+retain Python's evaluation order and runtime scalar-arm errors.
+
 Retained ranges support ordinary and extended slicing, including negative
 steps, nested slices and counts larger than `usize` or signed machine indices.
 The adapter uses exact structural counts and preserves the selected integer
@@ -684,6 +692,20 @@ Frame dictionary indexing, assignment, numeric augmented entries, membership,
 `get`, `setdefault`, and shallow `copy` preserve shared payload identity. They
 retain the original key on equal-key overwrites. Set membership, `add`, `copy`,
 length, truth and `sorted(..., key=None)` use the same typed key adapter.
+Canonical builtin `set.update(*iterables)` and `set.clear()` preserve the shared
+owner and return `None`. Calls capture the receiver and evaluate/expand every
+argument before mutation; update then consumes sources sequentially, retaining
+earlier insertions when a later source or unhashable element raises. Existing
+typed iterable adapters supply list, tuple, range, text/bytes, dictionary/view,
+iterator and admitted source-generator sources without holding a destination
+borrow across callbacks. Actual builtin set sources use a separate callback-free
+contents operation over immutable builtin keys, with self-update as a no-op;
+this does not expose or certify their internal traversal order. Clear empties
+the existing owner, including aliases. Explicit keywords and invalid clear
+arity raise after their argument effects, and positional `*` expansion retains
+Python's sole-star versus multiple-segment evaluation schedule. Stored/unbound
+set mutation method values, custom/floating hash protocols and unsupported
+iterator payload lifetimes retain positioned capability diagnostics.
 Observable set traversal/display and callable sorting keys that expose set tie
 order remain diagnosed. Frame dictionaries provide live `keys`, `items` and `values` views, preserving
 captured owner identity, insertion order, current values and mutable payload
@@ -1256,7 +1278,17 @@ Each expression evaluation creates a fresh typed function instance with its own
 captured default values. Lexical captures and list-comprehension targets use
 shared cells, preserving late binding, nested comprehension lifetimes and
 first-iterable evaluation order. Official free-symbol information selects the
-environment actually retained by a lambda. Named functions and lambdas share
+environment actually retained by a lambda. Direct lambda bodies created in
+ordinary function frames can retain typed views of exactly their ordinary free
+data cells, including cells owned by grandparent frames. Those cells remain
+strongly shared with legacy sibling functions, preserving escaping aliases,
+rebindings, deletion, defaults and lambda-instance identity. Captured callable
+or object back-edges, nested lambda activation frames and static FunctionDef
+binding views keep their existing lifetime boundaries; this phase does not
+weaken genuine closure-cycle checks. Source-generator parents and yielding
+lambda bodies do not enter this ordinary capture ABI. Accessing a source
+generator's own captured local environment remains a positioned suspension
+layout diagnostic until that environment is persisted in the resumable frame. Named functions and lambdas share
 the same finite callable carrier and direct Rust dispatch. Imported lambda
 lifetimes, reflection and cycle collection remain
 required work.

@@ -152,12 +152,18 @@ class ExpandedCalls:
     def analyze(self, plan, node, environment):
         if not any(isinstance(value, ast.Starred) for value in node.args):
             return None
+        receiver=None
+        if isinstance(node.func,ast.Attribute)and node.func.attr in {'update','clear'}:
+            receiver=self.model.expression(plan,node.func.value,environment)
+            mutated=self.model.mappings.set_methods.analyze_expanded(plan,node,receiver,environment)
+            if mutated is not None:return mutated
         from .native_classes import Cell, ClassUnsupported, shape
         from .native_aot_callables import function_kind
         from .native_bound_methods import BoundMethodTarget
         key = plan.index, id(node)
         self.model.callable_cells.abrupt_callees.discard(key)
-        callee=self.model.expression(plan,node.func,environment)
+        callee=(self.model.expression(plan,node.func,environment)if receiver is None else
+                self.model.attribute_value(plan,node.func,receiver,environment))
         abrupt=self.model.callable_cells.abrupt_callee(plan,node,callee)
         if abrupt is not None:
             self.sites.pop(key,None)
@@ -333,6 +339,8 @@ class ExpandedCalls:
         return before + "loop{" + f"let Some({current})=({pulled.code}) else{{break;}};{push}{vector}.push({item});" + "}"
 
     def emit(self, emitter, node):
+        mutated=self.model.mappings.set_methods.emit(emitter,node,expanded=True)
+        if mutated is not None:return mutated
         from .native_classes import Expression, shape
         site = self.sites.get((emitter.plan.index, id(node)))
         if site is None:return None

@@ -11,7 +11,8 @@ from py2fastrust import transpile,TranspileOptions
 from py2fastrust.frontend import build_program
 from py2fastrust.call_semantics import normalize_call,CallBindingError
 from py2fastrust.native_frame_selection import select_frames
-from py2fastrust.native_classes import Model
+from py2fastrust.native_classes import Model,try_generate_classes
+from py2fastrust.native_module_linking import needs_linking
 import test_native_iterator_reductions as execution
 
 SOURCES = {'basic_print_list_tuple_range': 'answers=[2,3,5]\n'
@@ -304,12 +305,27 @@ class ExpandedCallProofTests(unittest.TestCase):
         self.assertEqual(ast.dump(node,include_attributes=True),before)
 
     def test_proved_ordinary_integer_print_retains_its_direct_adapter(self):
-        for source in ("values=[1,2]\nprint(*values)\n","from collections import deque\nvalues=deque([1,2])\nprint(*values,sep=':')\n"):
-            self.assertFalse(select_frames(build_program(source).main).required)
-            for integer in ("i64","i128","bigint"):
-                with patch("py2fastrust.native_classes.try_generate_classes",side_effect=AssertionError("ordinary print needs no frame")):
-                    result=transpile(source,TranspileOptions(integer=integer))
-                self.assertTrue(result.success,result.diagnostics)
+        source="values=[1,2]\nprint(*values)\n"
+        program=build_program(source)
+        for integer in ("i64","i128","bigint"):
+            self.assertFalse(select_frames(program.main,integer=integer).required)
+            self.assertFalse(needs_linking(program,integer=integer))
+            with patch("py2fastrust.native_classes.try_generate_classes",side_effect=AssertionError("ordinary print needs no frame")),patch("py2fastrust.codegen.generate",side_effect=AssertionError("VM entered")):
+                result=transpile(source,TranspileOptions(integer=integer))
+            self.assertTrue(result.success,result.diagnostics)
+            self.assertEqual(result.backend,'native')
+
+    def test_imported_deque_keeps_its_canonical_linked_type(self):
+        source="from collections import deque\nvalues=deque([1,2])\nprint(*values,sep=':')\n"
+        program=build_program(source)
+        for integer in ("i64","i128","bigint"):
+            self.assertFalse(select_frames(program.main,integer=integer).required)
+            self.assertTrue(needs_linking(program,integer=integer))
+            with patch("py2fastrust.native_classes.try_generate_classes",wraps=try_generate_classes)as frames,patch("py2fastrust.codegen.generate",side_effect=AssertionError("VM entered")):
+                result=transpile(source,TranspileOptions(integer=integer))
+            self.assertTrue(result.success,result.diagnostics)
+            self.assertEqual(result.backend,'native')
+            self.assertEqual(frames.call_count,1)
 
     def test_reached_general_expansion_selects_frames_before_lowering(self):
         for source in ("print(*range(3))\n","def f(a,b):return a+b\nprint(f(*[1,2]))\n","def print(*items):return len(items)\nprint(*[1,2])\n"):
@@ -371,6 +387,7 @@ class ExpandedCallExecutionTests(unittest.TestCase):
 def case(source):
     def run(self):self.compare(source)
     return run
+SOURCES['basic_canonical_linked_integer_deque_print']="from collections import deque\nvalues=deque([1,2])\nprint(*values,sep=':')\n"
 for name,source in SOURCES.items():setattr(ExpandedCallExecutionTests,"test_"+name,case(source))
 
 if __name__=="__main__":unittest.main()

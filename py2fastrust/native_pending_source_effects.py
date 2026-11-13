@@ -185,20 +185,25 @@ class Registry:
                 tuple(sorted(self.released.items())))
 
 
-def wait_for_indexed_receiver(model,plan,node,receiver):
+def wait_for_indexed_receiver(model,plan,node,receiver,*,store_operands=None):
     if model.final or model.unit is None:return
     from .native_classes import shape,domain
     from .native_types import alternatives
     from .native_bound_methods import BoundMethodTarget
     kind=shape(receiver);choices=alternatives(kind)
-    if any(domain(choice)=='list'for choice in choices):return
+    if store_operands is None and any(domain(choice)=='list'for choice in choices):return
     owners=set()
     for choice in choices:
         for target in getattr(choice,'methods',()):
             if not isinstance(target,BoundMethodTarget):continue
             if hasattr(target,'class_definition')and not getattr(target,'_native_instance_function_target',False):continue
             if target.owner in model.classes:owners.add(target.owner)
-    if owners:registry(model).wait(plan,node,owners)
+    if owners or store_operands is not None:registry(model).wait(plan,node,owners)
+    if store_operands is not None:
+        from .native_class_globals import complete
+        if not all(complete(shape(value))for value in (receiver,*store_operands)):
+            from .native_guard_flow import AnalysisPending
+            raise AnalysisPending()
 
 
 def begin_sweep(model):

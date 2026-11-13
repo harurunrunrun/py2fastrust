@@ -1480,14 +1480,12 @@ class Model:
             if owner.tag=="union":
                 from .native_finite_list_writes import analyze
                 if analyze(self,plan,node,owner,index,value):return
-                from .native_pending_source_effects import wait_for_indexed_receiver
-                wait_for_indexed_receiver(self,plan,node,owner)
-                raise ClassUnsupported(node,"indexed assignment through finite owner alternatives needs per-alternative target storage and correlated value projection; that write adapter is not implemented",types=(("receiver",shape(owner)),),proof="per-alternative indexed write storage")
-            if owner.tag=='function':
-                from .native_pending_source_effects import wait_for_indexed_receiver
-                wait_for_indexed_receiver(self,plan,node,owner)
             if owner.tag is None and not self.final:
                 return
+            from .native_pending_source_effects import wait_for_indexed_receiver
+            wait_for_indexed_receiver(self,plan,node,owner,store_operands=(index,value))
+            if owner.tag=="union":
+                raise ClassUnsupported(node,"indexed assignment through finite owner alternatives needs per-alternative target storage and correlated value projection; that write adapter is not implemented",types=(("receiver",shape(owner)),),proof="per-alternative indexed write storage")
         raise ClassUnsupported(node)
 
     def bind_name(self,plan,node,value,environment):

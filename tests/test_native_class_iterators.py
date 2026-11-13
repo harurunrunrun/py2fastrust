@@ -197,12 +197,53 @@ CASES.update({'empty_max': 'values=filter(None,())\nprint(max(values))\n',
 REFERENCE="""import json,sys
 try:exec(compile(sys.argv[1],sys.argv[2],'exec'),{'__name__':'__main__'})
 except BaseException as error:
- frames=[];trace=error.__traceback__
- while trace is not None:
-  if trace.tb_frame.f_code.co_filename==sys.argv[2]:frames.append((str(trace.tb_lineno),trace.tb_frame.f_code.co_name))
-  trace=trace.tb_next
- print(json.dumps({'message':type(error).__name__+(': '+str(error)if str(error)else''),'frames':frames}),file=sys.stderr);sys.exit(1)
+ chain=[];seen=set()
+ def collect(current):
+  seen.add(id(current));previous=None;relation=None
+  if current.__cause__ is not None:previous=current.__cause__;relation='cause'
+  elif current.__context__ is not None and not current.__suppress_context__:previous=current.__context__;relation='context'
+  if previous is not None and id(previous)not in seen:collect(previous)
+  else:relation=None
+  frames=[];trace=current.__traceback__
+  while trace is not None:
+   if trace.tb_frame.f_code.co_filename==sys.argv[2]:frames.append((str(trace.tb_lineno),trace.tb_frame.f_code.co_name))
+   trace=trace.tb_next
+  text=str(current);message=type(current).__name__+(': '+text if text else'')
+  chain.append({'message':message,'frames':frames,'relation':relation})
+ collect(error)
+ frames=[frame for entry in chain for frame in entry['frames']]
+ print(json.dumps({'message':chain[-1]['message'],'frames':frames,'chain':chain}),file=sys.stderr);sys.exit(1)
 """
+
+
+class IteratorOracleTests(unittest.TestCase):
+    def reference(self,source):
+        actual=subprocess.run([sys.executable,'-I','-S','-c',REFERENCE,source,'oracle_case.py'],capture_output=True,text=True,timeout=10)
+        self.assertEqual(actual.returncode,1)
+        return json.loads(actual.stderr)
+
+    def test_explicit_cause_keeps_original_generator_and_outer_frames(self):
+        failure=self.reference('cursor=iter([1])\nprint(*(next(cursor)for unused in range(2)))\n')
+        self.assertEqual(failure['message'],'RuntimeError: generator raised StopIteration')
+        self.assertEqual(failure['frames'],[['2','<genexpr>'],['2','<module>']])
+        self.assertEqual([entry['message']for entry in failure['chain']],['StopIteration','RuntimeError: generator raised StopIteration'])
+        self.assertEqual([entry['relation']for entry in failure['chain']],[None,'cause'])
+
+    def test_implicit_context_keeps_both_tracebacks(self):
+        failure=self.reference("try:\n 1//0\nexcept ZeroDivisionError:\n raise ValueError('next')\n")
+        self.assertEqual(failure['frames'],[['2','<module>'],['4','<module>']])
+        self.assertEqual([entry['relation']for entry in failure['chain']],[None,'context'])
+
+    def test_suppressed_context_does_not_invent_a_cause_frame(self):
+        failure=self.reference("try:\n 1//0\nexcept ZeroDivisionError:\n raise ValueError('next')from None\n")
+        self.assertEqual(failure['frames'],[['4','<module>']])
+        self.assertEqual(len(failure['chain']),1)
+        self.assertIsNone(failure['chain'][0]['relation'])
+
+    def test_cyclic_explicit_cause_is_recorded_once(self):
+        failure=self.reference("left=ValueError('left')\nright=RuntimeError('right')\nleft.__cause__=right\nright.__cause__=left\nraise left\n")
+        self.assertEqual(failure['frames'],[['5','<module>']])
+        self.assertEqual([entry['message']for entry in failure['chain']],['RuntimeError: right','ValueError: left'])
 
 
 class IteratorProofTests(unittest.TestCase):
@@ -263,6 +304,10 @@ class IteratorExecutionTests(unittest.TestCase):
                         if failure:
                             self.assertEqual(actual.stderr.splitlines()[-1],failure['message'])
                             self.assertEqual(re.findall(r'File ".*?", line (\d+), in ([^\n]+)',actual.stderr),[tuple(item)for item in failure['frames']])
+                            for entry in failure['chain']:
+                                self.assertIn(entry['message'],actual.stderr)
+                                if entry['relation']=='cause':self.assertIn('The above exception was the direct cause',actual.stderr)
+                                elif entry['relation']=='context':self.assertIn('During handling of the above exception',actual.stderr)
                         else:self.assertEqual(actual.stderr,'')
 
     def test_filter_predicates(self):

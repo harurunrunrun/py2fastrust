@@ -157,6 +157,8 @@ class Mappings:
         self.counters=Counters(self)
         from .native_class_defaultdicts import DefaultDicts
         self.defaultdicts=DefaultDicts(self)
+        from .native_set_methods import SetMethods
+        self.set_methods=SetMethods(self)
 
     def owns(self,kind):
         return mapping_kind(kind)and 0<=kind.index<len(self.records)and self.records[kind.index]is kind.record
@@ -173,10 +175,11 @@ class Mappings:
 
     def snapshot(self):
         from .native_classes import shape
-        return tuple((r.category,r.flavor,shape(r.key),shape(r.value),shape(r.default_factory)if r.default_factory is not None else None)for r in self.records),self.views.snapshot()
+        return tuple((r.category,r.flavor,shape(r.key),shape(r.value),shape(r.default_factory)if r.default_factory is not None else None)for r in self.records),self.views.snapshot(),self.set_methods.snapshot()
 
     def default_uninhabited(self):
         from .native_classes import Cell,merge
+        self.set_methods.default_empty()
         for record in self.records:
             for value in (record.key,record.value):
                 if value is record.value and record.flavor=='defaultdict'and self.defaultdicts.pending_value(record):continue
@@ -290,6 +293,8 @@ class Mappings:
 
     def analyze_method(self,plan,node,receiver,arguments,keywords,environment):
         from .native_classes import shape,Cell,ClassUnsupported
+        mutated=self.set_methods.analyze(plan,node,receiver,arguments,keywords,environment)
+        if mutated is not None:return mutated
         counted=self.counters.analyze_method(plan,node,receiver,arguments,keywords,environment)
         if counted is not None:return counted
         view=self.views.analyze(plan,node,receiver,arguments,keywords)
@@ -430,6 +435,8 @@ class Mappings:
         return self._set(emitter,node,owner,key,value)
 
     def emit_method(self,emitter,node):
+        mutated=self.set_methods.emit(emitter,node)
+        if mutated is not None:return mutated
         counted=self.counters.emit_method(emitter,node)
         if counted is not None:return counted
         from .native_classes import Expression,shape

@@ -25,7 +25,10 @@ class GeneratorLambdaOwnership(unittest.TestCase):
         for mode in ('i64','i128','bigint'):
             result=transpile(CASES['real_environment_cycle'],TranspileOptions(integer=mode,license='none'))
             self.assertFalse(result.success)
-            self.assertTrue(any(d.code=='E006'and d.line>0 and 'retained suspension state'in d.message for d in result.diagnostics),result.diagnostics)
+            self.assertTrue(any(d.code=='E006'and d.line==3
+                                and 'list.extend'in d.message
+                                and 'ordered iterable consumption and element conversion'in d.message
+                                for d in result.diagnostics),result.diagnostics)
     def test_direct_collector_cycle_remains_named(self):
         source='def make():\n values=list(lambda:values for unused in range(2))\n return values\nprint(len(make()))\n'
         for mode in ('i64','i128','bigint'):

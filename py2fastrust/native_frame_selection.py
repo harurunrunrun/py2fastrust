@@ -142,6 +142,8 @@ def select_frames(unit,*,integer="i64"):
     if mapping_method_frames(unit,analysis):reasons+=('captured native mapping methods',)
     from .native_unobserved_set_order import requires_frames as set_order_frames
     if set_order_frames(unit,analysis):reasons+=('certified order-unobserved set materialization',)
+    from .native_set_methods import requires_frames as set_method_frames
+    if set_method_frames(unit,analysis):reasons+=('canonical native set mutations',)
     from .native_type_objects import requires_frames as type_objects_frames
     if type_objects_frames(unit,analysis):reasons+=('actual builtin class-object values',)
     from .native_bytes_constructor import requires_frames as bytes_requires_frames
