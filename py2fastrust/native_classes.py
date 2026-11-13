@@ -462,7 +462,11 @@ class Model:
         if source.tag is None:return destination
         kind=shape(source)
         from .native_pending_value_shapes import deferred
-        if deferred(kind):return destination
+        # Mutable allocation elements need their producer-cell evidence even
+        # before a pair's scalar fields resolve; withholding it can alias
+        # sibling pending return lists through a generic cursor summary.
+        if deferred(kind)and not any(member.root()is destination.root()for member in self.member_allocations):
+            return destination
         if immutable(kind):
             allocation=self.member_allocations.get(destination)
             if allocation is not None:variable=Variable(allocation.site,"element")
