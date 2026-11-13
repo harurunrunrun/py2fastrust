@@ -117,6 +117,10 @@ class Adapter:
 
     def may_call(self,registry,record,seen):return True
 
+    def lifetime_edges(self,model,record,edges,targets):
+        from .native_source_generator_environments import lifetime_edges
+        lifetime_edges(model,record,edges)
+
     def fields(self,emitter,record):
         return 'frame:Option<ClassSourceGeneratorFrame_'+str(record.generator_plan.index)+'>,running:bool'
 
@@ -163,7 +167,9 @@ class GeneratorBuilder(Builder):
         def framed_slot(instance,name,kind):return 'frame.'+slot(name,kind)
         emitter.slot=MethodType(framed_slot,emitter)
         from .native_classes import Expression,shape
+        from .native_source_generator_environments import captured_parameter
         for index,name in enumerate(self.plan.runtime_parameters):
+            if captured_parameter(emitter,name):continue
             kind=shape(self.plan.arguments[name]);stored=emitter.model.namespace.local_kind(self.plan,name)or kind
             place=emitter.slot(name,stored)[6:]
             self.arguments.append((place,emitter.coerce(Expression('class_argument_'+str(index),kind),stored,self.plan.node)))
@@ -301,8 +307,6 @@ def generate(emitter):
     from .native_class_calls import entry_result
     from .native_class_binding_contexts import parameter
     model=emitter.model;plan=emitter.plan;record=spec.record;record.emitted=True
-    if model.lexical.signature(plan):
-        raise ClassUnsupported(plan.node,'source generator free/nonlocal cells require retaining their original lexical environment across suspension; that capture layout is not implemented',proof='source generator lexical environment capture')
     if not entry_result(model,plan):
         raise ClassUnsupported(plan.node,'source generator body calls require a resumable recursive call continuation; this generator slice supports bounded ordinary native calls',proof='source generator synchronous typed call region')
     from .native_types import ListType,TupleType,TupleSequenceType,NullableType,UnionType,EmptyType
@@ -323,6 +327,8 @@ def generate(emitter):
                 or parameter_type(model,plan,name)is not None):
             raise ClassUnsupported(plan.node,'source generator parameter '+repr(name)+' uses a borrowed native receiver; suspending that borrowed receiver requires an owned frame capture that is not implemented',proof='owned source generator receiver capture')
     retained=[shape(record.element),*(shape(value)for value in plan.arguments.values())]
+    from .native_source_generator_environments import retained_kinds
+    retained.extend(retained_kinds(model,plan))
     for name,values in plan.locals.items():
         stored=_loop_local_schema(model,plan,name,values)
         retained.extend([stored]if stored is not None else(shape(value)for value in values))
@@ -333,16 +339,19 @@ def generate(emitter):
     # retain temporary native borrows or an optimizer's stack-local Vec place.
     emitter.primitive_parameters={};emitter.readonly_owned_parameters={}
     emitter.owned_local_lists={};emitter.owned_matrices={};emitter.record_places={}
+    from .native_source_generator_environments import prepare,frame_fields,factory_initialize,resume_initialize
+    prepare(emitter)
     builder=GeneratorBuilder(emitter);fields,initial=builder.declarations()
+    frame_fields(emitter,fields,initial)
     context=parameter(model,plan)
     if context:
         fields['class_definition']='ClassClassRef';initial['class_definition']='class_defining_class.clone()'
     i=str(plan.index);name='ClassSourceGeneratorFrame_'+i
     layout='struct '+name+'{scope:ClassScope,pc:usize,'+','.join(key+':'+kind for key,kind in fields.items())+'}'
     params=','.join('class_argument_'+str(index)+':'+emitter.rust_type(shape(plan.arguments[key]))for index,key in enumerate(plan.runtime_parameters))
-    signature='class_scope:ClassScope'+context+(','+params if params else'')
-    factory='fn '+emitter.function_name(plan)+'('+signature+')->ClassResult<ClassIterator_'+str(record.index)+'>{Ok(Rc::new(RefCell::new(ClassIteratorState_'+str(record.index)+'{running:false,frame:Some('+name+'{scope:class_scope,pc:0,'+','.join(key+':'+value for key,value in initial.items())+'})}))) }'
+    signature='class_scope:ClassScope'+model.lexical.signature(plan)+context+(','+params if params else'')
+    factory='fn '+emitter.function_name(plan)+'('+signature+')->ClassResult<ClassIterator_'+str(record.index)+'>{'+factory_initialize(emitter)+'Ok(Rc::new(RefCell::new(ClassIteratorState_'+str(record.index)+'{running:false,frame:Some('+name+'{scope:class_scope,pc:0,'+','.join(key+':'+value for key,value in initial.items())+'})}))) }'
     body=builder.body()
     captured='let class_defining_class=&frame.class_definition;'if context else''
-    resume='fn class_source_generator_resume_'+i+'(frame:&mut '+name+')->ClassResult<Option<'+emitter.rust_type(shape(record.element))+'>>{let class_scope=frame.scope.clone();'+captured+body+'}'
+    resume='fn class_source_generator_resume_'+i+'(frame:&mut '+name+')->ClassResult<Option<'+emitter.rust_type(shape(record.element))+'>>{let class_scope=frame.scope.clone();'+captured+resume_initialize(emitter)+body+'}'
     return layout+'\n'+factory+'\n'+resume

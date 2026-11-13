@@ -34,8 +34,18 @@ native structured Rust. Iterator sources retained by suspended loops participate
 in ownership validation. Generator exhaustion and PEP 479 exception chaining
 retain their separate behavior.
 
+Typed source-generator frames can own their real local and enclosing lexical
+environments. Captured parameter cells are initialized at generator creation;
+the body and nonlocal mutations still run only on pulls. Every resume restores
+owned environment handles, preserving aliasing, live rebinding, deletion,
+mutable defaults and partial consumption without suspending Rust borrows.
+Captured locals use those cells alone rather than duplicate frame slots.
+Iterator-to-environment ownership edges participate in the existing cycle
+checks. Callable/iterator payloads, unsafe object ownership and genuine closure
+cycles remain explicit boundaries.
+
 `send`/`throw`/`close`, expression yields, `yield from`, non-`None` return values,
-cleanup/exception statements, lexical captures, opaque retained payloads and
+cleanup/exception statements, opaque retained payloads and
 recursive resume regions still produce specific source-positioned diagnostics.
 Ordinary call-depth elimination is withheld for reached suspended source frames
 until its lifetime proof covers suspension. Unreachable generator declarations
@@ -371,6 +381,10 @@ Producer conversion errors and consumer cardinality errors retain their own
 source frames. Exact builtin list/tuple unpacking reports the complete sequence
 length in Python 3.14's excess-value error. Lazy producers inspect only the
 first excess item and retain the error without a full-length claim.
+Unpack adapters are replaced on each original target analysis. If a producer
+widens from an uninhabited element to a fixed tuple, lowering uses that current
+positional tuple layout and does not retain the earlier empty cursor. Genuine
+uninhabited producers keep their checked empty path.
 General dynamic callable values and conflicting core-name
 rebinding still require direct implementation.
 Dynamic builtin-list row unpacking is selected from reached allocation facts before
@@ -1286,9 +1300,10 @@ rebindings, deletion, defaults and lambda-instance identity. Captured callable
 or object back-edges, nested lambda activation frames and static FunctionDef
 binding views keep their existing lifetime boundaries; this phase does not
 weaken genuine closure-cycle checks. Source-generator parents and yielding
-lambda bodies do not enter this ordinary capture ABI. Accessing a source
-generator's own captured local environment remains a positioned suspension
-layout diagnostic until that environment is persisted in the resumable frame. Named functions and lambdas share
+lambda bodies do not enter this ordinary capture-view ABI; supported source
+generator frames retain their own real lexical environment instead. Yielding
+lambda bodies and unsupported suspended payloads keep their positioned
+diagnostics. Named functions and lambdas share
 the same finite callable carrier and direct Rust dispatch. Imported lambda
 lifetimes, reflection and cycle collection remain
 required work.

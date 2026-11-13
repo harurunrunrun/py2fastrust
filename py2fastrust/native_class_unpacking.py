@@ -68,6 +68,9 @@ def analyze(model, plan, target, value, environment,*,bind_target=None):
     from .native_types import EMPTY
     from .native_unions import union_kind
     from .native_class_iterators import default_noniterable
+    # A provisional iterator element may later become a directly bound tuple.
+    # Only this visit's adapter proof may survive into native emission.
+    _sites(model).pop((plan.index,id(target)),None)
     if getattr(shape(value),'_native_class_generator',False)and not has_star(target):
         member=model.generators.demand(plan,target,value,environment)
         for child in target.elts:
@@ -159,7 +162,7 @@ def emit(emitter, target, value,*,assign_target=None):
             if count<minimum:
                 wanted=('at least 'if record.star is not None else'')+str(minimum)
                 message=f'ValueError: not enough values to unpack (expected {wanted}, got {count})'
-            else:message=f'ValueError: too many values to unpack (expected {expected})'
+            else:message=f'ValueError: too many values to unpack (expected {expected}, got {count})'
             return setup+emitter.at('Err::<(),String>('+_string(message)+'.to_owned())',target)+';'
         members=[]
         for i,node in enumerate(target.elts):

@@ -102,6 +102,16 @@ CASES={'alias_row_swap': ['first=[1]\n'
                                       'a[index()],a[0]=(7,)\n',
                                       ['']]}
 
+SLICE_UNPACK_SOURCE='values=[0,1,2]\nvalues[:1],values[1:]=[7],[8,9]\n'
+CASES.update({
+ 'supported_slice_unpacking_original': (SLICE_UNPACK_SOURCE, ('',)),
+ 'slice_unpacking_observable_result': (SLICE_UNPACK_SOURCE+'print(values)\n', ('',)),
+ 'extended_slice_unpacking_keeps_aliases': (
+     'values=[0,1,2,3]\nalias=values\n'
+     'values[::2],values[1::2]=[7,8],[9,10]\n'
+     'print(values,alias,alias is values)\n', ('',)),
+})
+
 class OrderedUnpackExecution(unittest.TestCase):
     setUpClass=classmethod(helpers.NativeLambdaCallbackTests.setUpClass.__func__)
     tearDownClass=classmethod(helpers.NativeLambdaCallbackTests.tearDownClass.__func__)
@@ -119,15 +129,11 @@ for _name, (_source, _inputs) in CASES.items():
 
 
 class OrderedUnpackDiagnostics(unittest.TestCase):
-    def test_slice_unpacking_names_the_missing_store_adapter(self):
-        source='values=[0,1,2]\nvalues[:1],values[1:]=[7],[8,9]\n'
+    def test_slice_unpacking_uses_the_proved_store_adapter(self):
         for integer in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=integer,filename='targets.py'))
-            self.assertFalse(result.success)
-            message=' '.join(str(item)for item in result.diagnostics)
-            self.assertIn('indexed/attribute unpacking',message)
-            self.assertIn('slice-store adapter',message)
-            self.assertIn('targets.py:2:',message)
+            result=transpile(SLICE_UNPACK_SOURCE,TranspileOptions(integer=integer,filename='targets.py'))
+            self.assertTrue(result.success,result.diagnostics)
+            self.assertEqual(result.backend,'native')
 
     def test_mapping_unpacking_names_the_unproved_place(self):
         source='values={0:1}\nvalues[0],other=2,3\nprint(values,other)\n'

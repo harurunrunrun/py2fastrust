@@ -158,7 +158,8 @@ def _materialize(emitter,node,value,site,element):
         from .native_classes import domain
         if domain(value.kind)=='list':
             item=emitter.fresh()
-            code+='{let source='+value.code+'.borrow();'+emitter.at(values+'.try_reserve(source.len()).map_err(|_|"MemoryError: cannot allocate slice assignment".to_owned())',node)+';'
+            before,retained=emitter.capture(value)
+            code+='{'+before+'let source='+retained.code+'.borrow();'+emitter.at(values+'.try_reserve(source.len()).map_err(|_|"MemoryError: cannot allocate slice assignment".to_owned())',node)+';'
             code+='for '+item+' in source.iter(){'+values+'.push('+emitter.coerce(Expression(item+'.clone()',value.kind.element),element,node)+');}}'
             return code,values
     error=lambda source:'"TypeError: must assign iterable to extended slice".to_owned()'

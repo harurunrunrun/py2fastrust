@@ -285,6 +285,9 @@ class LexicalCells:
         own=self.scope(emitter.plan)
         if own==scope and own in self.environments:
             if getattr(emitter.plan,'source_generator',None)is not None:
+                from .native_source_generator_environments import own_expression
+                captured=own_expression(emitter,scope)
+                if captured is not None:return captured
                 from .native_classes import ClassUnsupported
                 raise ClassUnsupported(emitter.plan.node,"a source generator's own captured local cells require an owned lexical environment persisted in its resumable frame; that frame field and its lifetime edges are not implemented",proof='owned source generator lexical environment across suspension')
             return 'class_lexical_environment'

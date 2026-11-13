@@ -1,6 +1,7 @@
 """Builtin slice stores preserve captured references, snapshots and exceptions."""
 import unittest
 import test_native_class_iterators as iterator_tests
+import test_native_annotations_assertions as assertion_tests
 from py2fastrust import transpile,TranspileOptions
 
 CASES={
@@ -223,10 +224,18 @@ class ListSliceAssignmentExecutionTests(iterator_tests.IteratorExecutionTests):
 for _name in tuple(vars(iterator_tests.IteratorExecutionTests)):
  if _name.startswith('test_'):setattr(ListSliceAssignmentExecutionTests,_name,None)
 
+ESCAPING_GENERATOR_SOURCE='a=[]\nsaved=a[:]=(value for value in [1,2])\n'
+
+class RetainedSliceGeneratorTests(unittest.TestCase):
+ compare=assertion_tests.AnnotationAndAssertionExecutionTests.compare
+ def test_original_multi_target_generator_assignment(self):
+  self.compare(ESCAPING_GENERATOR_SOURCE,('',))
+ def test_saved_generator_is_exhausted_after_slice_assignment(self):
+  self.compare(ESCAPING_GENERATOR_SOURCE+'print(a,list(saved))\n',('',))
+
 class ListSliceAssignmentGuards(unittest.TestCase):
- def test_custom_index_and_escaping_generator_boundaries_are_explicit(self):
+ def test_custom_index_and_inplace_iterable_boundaries_are_explicit(self):
   cases=(('class Index:\n def __index__(self):return 1\na=[1,2]\na[Index():]=[3]\n','__index__'),
-   ('a=[]\nsaved=a[:]=(value for value in [1,2])\n','generator'),
    ('a=[1,2]\na[:]+=iter([3])\n','__iadd__'))
   for source,fragment in cases:
    with self.subTest(source=source):
