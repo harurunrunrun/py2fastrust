@@ -15,7 +15,10 @@ def analyze(model,plan,node,site,environment,*,method):
         if element is None:continue
         index=('sorting_less',method,branch)
         comparison=model.operators.comparison(plan,node,index,ast.Lt(),element,element,inside)
-        if comparison is not None:site.rich_comparisons[branch]=index
+        if comparison is not None:
+            site.rich_comparisons[branch]=index
+            from .native_source_lengths import analyze_truth
+            analyze_truth(model,plan,node,comparison,inside,identity=('sorting_truth',method,branch))
     if site.rich_comparisons:
         model.replace_environment(environment,model.join(environment,inside,node,'sorting_comparison'))
 
@@ -40,7 +43,8 @@ def emit(emitter,node,values,element,reverse,key,site):
     before,left=emitter.capture(left);more,right=emitter.capture(right);before+=more
     comparison=emitter.model.operators.emit_comparison(emitter,node,site.rich_comparisons[key.kind],ast.Lt(),left,right,repeat_left_not_implemented_if=homogeneous)
     more,comparison=emitter.capture(comparison);before+=more
-    body=before+'Ok::<bool,NativeError>('+emitter.truth(comparison,node)+')'
+    truth_identity=('sorting_truth',*site.rich_comparisons[key.kind][1:])
+    body=before+'Ok::<bool,NativeError>('+emitter.truth(comparison,node,identity=truth_identity)+')'
     asynchronous=not entry_result(emitter.model,emitter.plan)
     modes=getattr(emitter.model,'cmp_sort_modes',None)
     if modes is None:modes=set();emitter.model.cmp_sort_modes=modes

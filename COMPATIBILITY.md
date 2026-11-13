@@ -41,8 +41,24 @@ identity and shared position. Yield-based methods retain owned source-instance
 handles across suspension when their ownership graph is safe; borrowed/GC
 captures and ownership cycles remain guarded. Manual `__next__` protocols,
 alternate `__iter__` descriptors and unresolved/noniterator results remain
-explicit diagnostics. Other class protocols, including custom display and
-`__reversed__`, retain their separate implementation boundaries.
+explicit diagnostics. Other class protocols retain their separate boundaries.
+
+Ordinary source `__len__` methods serve `len()`, truth fallback, conditions and
+boolean operators; `__bool__` takes precedence and must return an actual bool.
+Length results require integer/index-compatible values, nonnegative values and
+an index-sized result. Original source callbacks, mutations and exceptions keep
+their evaluation order. Custom returned `__index__` objects, inherited slot
+lookup and nonfunction special-method descriptors remain explicit diagnostics.
+`list(source)` and `sorted(source)` consult the original source length after
+creating its iterator, suppress only `TypeError` from this hint, and check its
+allocation size. `tuple(source)` follows the returned iterator without an extra
+original-source length callback. User-defined cursor `__next__` and
+`__length_hint__` protocols remain unsupported and are diagnosed.
+
+Ordinary source `__reversed__` methods run once and return their actual value,
+including shared cursor/list identity. The result is not prematurely checked for
+iteration: its consumer decides whether it is iterable. Custom sequence fallback
+through `__len__`/`__getitem__` remains a separate unsupported reverse adapter.
 
 Fixed-target unpacking of finite builtin list/tuple type alternatives checks
 length and snapshots values into Rust locals before storing any target. It
@@ -77,10 +93,12 @@ retain ordinary formatting and source-method return-type errors.
 Membership expressions call a directly defined source `__contains__` method
 with the original owner and item. Operand evaluation, callback side effects,
 chained-comparison short circuits and `not in` negation preserve Python order.
-Builtin return values use their normal truth conversion; Python 3.14
-`NotImplemented` truth conversion raises `TypeError`. Unsupported descriptors,
-replaced slots, iterator/sequence membership fallback and instance-valued result
-truth protocols remain specific diagnostics until those adapters are connected.
+Builtin return values use their normal truth conversion; source-instance
+results call the original `__bool__` or `__len__`, preserving callback effects
+and strict return checks. The same truth callbacks serve rich-sort comparisons.
+Python 3.14 `NotImplemented` truth conversion raises `TypeError`. Unsupported
+descriptors, replaced slots and iterator/sequence membership fallback remain
+specific diagnostics.
 
 
 Source indexed reads, stores and augmented assignments call ordinary original

@@ -329,11 +329,11 @@ class LinkedEmitter(Emitter):
         from .native_class_binding_contexts import borrowed_constructor
         return ['&('+defining_class+')'if borrowed_constructor(self.model,constructor)else'('+defining_class+').clone()']
 
-    def truth(self,value,node=None):
+    def truth(self,value,node=None,*,identity=None):
         from .native_typing_metadata import reject_observation
         reject_observation(value.kind,node or self.plan.node)
         if isinstance(value.kind,(ModuleType,ClassReferenceType)):return "true"
-        return super().truth(value,node)
+        return super().truth(value,node,identity=identity)
 
     def comparison(self,operator,left,right,node):
         from .native_typing_metadata import reject_observation

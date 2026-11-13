@@ -13,7 +13,7 @@ BINARY={
  ast.BitAnd:('and','&'),ast.BitOr:('or','|'),ast.BitXor:('xor','^')}
 UNARY={ast.UAdd:('__pos__','+'),ast.USub:('__neg__','-'),ast.Invert:('__invert__','~')}
 UNARY_SLOTS=frozenset(name for name,_ in UNARY.values())
-SUPPORTED_SLOTS=UNARY_SLOTS|{'__contains__','__getitem__','__iter__','__repr__','__setitem__','__str__'}
+SUPPORTED_SLOTS=UNARY_SLOTS|{'__contains__','__getitem__','__iter__','__repr__','__setitem__','__str__','__len__','__bool__','__reversed__'}
 
 BINARY_SLOTS=frozenset('__'+prefix+name+'__'for name,_ in BINARY.values()for prefix in ('','r','i'))
 COMPARISON={ast.Eq:('__eq__','__eq__','=='),ast.NotEq:('__ne__','__ne__','!='),ast.Lt:('__lt__','__gt__','<'),ast.LtE:('__le__','__ge__','<='),ast.Gt:('__gt__','__lt__','>'),ast.GtE:('__ge__','__le__','>=')}

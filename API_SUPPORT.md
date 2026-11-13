@@ -41,6 +41,15 @@ builtin consumers, comprehensions, unpacking and supported collection/iterator
 constructors. Their cursor identity, sharing and evaluation order are retained.
 Owned source-instance generator captures are supported with lifetime checks;
 manual `__next__`, alternate descriptors and unsafe captures remain diagnostics.
+Direct ordinary source `__len__`/`__bool__` callbacks support explicit length,
+builtin bool, conditions and boolean operators, including strict bool results,
+negative/overflow length errors and original callback effects. List/sorted
+construction preserves original-owner length hints and their TypeError-only
+suppression; tuple construction follows the returned cursor. User `__index__`
+results, inherited slots, alternate descriptors and user `__length_hint__`
+remain explicit diagnostics. Source `__reversed__` returns the actual callback
+result once, retaining its identity without an extra iterator-result check.
+
 Fixed-target unpacking of finite builtin list/tuple alternatives uses an exact
 length check and Rust local snapshots, releasing temporary list leases before
 target stores and retaining shared mutable elements without iterator allocation.
@@ -58,10 +67,11 @@ recursion. Unsupported publication/descriptor cases, custom mapping/deque repr
 callbacks and recursive tuples lacking stable identity remain diagnostics.
 
 Direct source `__contains__` methods support `in`/`not in`, including builtin
-truth-valued returns, callback effects and chained comparisons. Nonfunction or
-replaced slots, implicit iteration fallback and unconnected instance-result
-truth protocols produce positioned diagnostics. `NotImplemented` results retain
-Python 3.14's truth-conversion `TypeError`.
+returns and source-instance `__bool__`/`__len__` results, callback effects and
+chained comparisons. Rich sorting also truth-converts source comparison results
+through those callbacks. Nonfunction/replaced slots and implicit iteration
+fallback remain positioned diagnostics. `NotImplemented` membership results
+retain Python 3.14's truth-conversion `TypeError`.
 
 
 Ordinary source `__getitem__` and `__setitem__` methods support indexed reads,
@@ -575,7 +585,7 @@ deque with at least two elements invalidates live cursors, including a rotation
 by zero. Reversal changes the values seen by existing cursors without invalidating
 them. A reverse deque cursor checks mutations while active and stays exhausted
 after its last item, matching Python's distinct forward/reverse cursor rules.
-Custom `__reversed__`, sequence fallback methods, and user `__index__` adapters
+Custom sequence fallback methods and user `__index__` adapters
 remain explicit conversion boundaries.
 
 

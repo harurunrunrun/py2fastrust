@@ -84,11 +84,16 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     if name == "input" and not arguments and not keywords:
         return cell("str")
     if name in {"int","str","bool","float"} and len(arguments) <= 1 and not keywords:
+        if name=='bool'and arguments:
+            from .native_source_lengths import analyze_truth
+            analyze_truth(model,plan,node,arguments[0],environment)
         if name=='str'and arguments:
             from .native_source_display import analyze as analyze_display
             analyze_display(model,plan,node,arguments[0],environment)
         return cell({"int":"int","str":"str","bool":"bool","float":"float"}[name])
     if name == "len" and len(arguments) == 1 and not keywords:
+        from .native_source_lengths import analyze_length
+        analyze_length(model,plan,node,arguments[0],environment)
         return cell("int")
     if name in {"abs","id"} and len(arguments) == 1 and not keywords:
         if name=='id':
@@ -120,6 +125,10 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         result=model.iterators.zip(plan,node,arguments,environment)
         return cell(result.root().tag)
     if name in {"iter","reversed"} and len(arguments)==1 and not keywords:
+        if name=='reversed':
+            from .native_source_reversal import analyze as source_reverse
+            result=source_reverse(model,plan,node,arguments[0],environment)
+            if result is not None:return model.remember(plan,node,result)
         return cell(model.iterators.source(plan,node,arguments[0],operation="reverse"if name=="reversed"else"source",environment=environment))
     if name == "next" and 1<=len(arguments)<=2 and not keywords:
         model.exceptions.require(node)
@@ -155,7 +164,10 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         result = cell("list",(Cell(),))
         if arguments:
             from .native_class_materialization import list_source
-            arguments=[list_source(model,plan,node,arguments[0],environment)]
+            original=arguments[0]
+            arguments=[list_source(model,plan,node,original,environment)]
+            from .native_source_lengths import analyze_hint
+            analyze_hint(model,plan,node,original,environment,'list')
             self.contribute(result.root().args[0],self.iterators.demand(plan,node,arguments[0],environment),node)
         return result
     if name == "sum" and 1 <= len(arguments) <= 2 and not keywords:
@@ -185,7 +197,7 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     return None
 
 
-def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=False):
+def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=False,length_hint=None):
     from .native_classes import Expression
     from .native_unions import project,union_kind
     from .native_builtin_singletons import has_singleton
@@ -310,7 +322,7 @@ def _error(emitter,node,kind,message):
     return Expression(emitter.at(f'Err::<{emitter.rust_type(kind)},String>({message})',node),kind)
 
 
-def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=False):
+def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=False,length_hint=None):
     from .native import _Expression
     from .native_classes import Expression,ClassUnsupported,domain
     from .native_types import ListType
@@ -318,8 +330,17 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
     name=identity.name
     from .native_source_iteration import has_protocol
     if name in {'list','sum','min','max','any','all'}and arguments and has_protocol(self.model,arguments[0].kind):
-        setup,source=self.capture(self.model.iterators.construct(self,node,arguments[0]))
-        result=_emit(self,node,identity,[source]+arguments[1:],keywords,wanted,raw_kind,owned_list=owned_list)
+        original=arguments[0]
+        if name=='list':
+            setup,original=self.capture(Expression('('+original.code+').clone()',original.kind))
+            before,source=self.capture(self.model.iterators.construct(self,node,Expression('('+original.code+').clone()',original.kind)));setup+=before
+            from .native_source_lengths import emit_hint
+            hint=emit_hint(self,node,original,'list')
+            if hint is not None:
+                saved=self.fresh();setup+='let '+saved+'='+hint+';';hint=saved
+        else:
+            setup,source=self.capture(self.model.iterators.construct(self,node,original));hint=None
+        result=_emit(self,node,identity,[source]+arguments[1:],keywords,wanted,raw_kind,owned_list=owned_list,length_hint=hint)
         return Expression('{'+setup+result.code+'}',result.kind)
     if name=="enumerate":
         from .native_enumerate import emit as emit_enumerate
@@ -372,6 +393,9 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         code = "{"+"".join(pieces)+"()}"
     elif name == "len":
         value=arguments[0]
+        from .native_source_lengths import emit_length
+        source_length=emit_length(self,node,value)
+        if source_length is not None:return source_length
         if domain(value.kind)=='dict_view':length=self.model.mappings.views.length(self,value)
         elif domain(value.kind)in {"list","dict","set","deque"}:length=f"{value.code}.borrow().len()"
         elif domain(value.kind)=="str":
@@ -442,6 +466,10 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
     elif name == "zip":
         return self.model.iterators.emit_multiple(self,node,arguments,keywords.get("strict",Expression("false","bool",False)),wanted)
     elif name in {"iter","reversed"}:
+        if name=='reversed':
+            from .native_source_reversal import emit as source_reverse
+            result=source_reverse(self,node,arguments[0],wanted)
+            if result is not None:return result
         return self.model.iterators.construct(self,node,arguments[0],kind=wanted)
     elif name == "next":
         from .native_class_iterators import iterator_kind
@@ -472,7 +500,9 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
         elif domain(arguments[0].kind)=="iterator":
             pulled=self.model.iterators.pull(self,node,arguments[0]);current=self.fresh();values=self.fresh()
             item=self.coerce(Expression(current,pulled.kind),wanted.element,node)
-            code="{"+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}"+wrap(values)+"}"
+            from .native_source_lengths import reserve_hint
+            reserve=reserve_hint(self,node,values,length_hint)
+            code="{"+f"let mut {values}=Vec::<{self.rust_type(wanted.element)}>::new();"+reserve+f"loop{{let Some({current})=({pulled.code}) else{{break;}};{values}.push({item});}}"+wrap(values)+"}"
         elif domain(arguments[0].kind)=="list":
             source=arguments[0]
             if source.kind.element==wanted.element:code=wrap(f"{source.code}.borrow().clone()")

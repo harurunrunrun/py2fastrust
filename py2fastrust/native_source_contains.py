@@ -33,6 +33,8 @@ def analyze(operators,plan,node,index,operator,left,right,environment):
                 CallArguments((Argument(node),Argument(node)),()),[second,first],[],environment,
                 identity=('source_contains',index,a,b))
             branch.phases.append(Phase(member,True,callback))
+            from .native_source_lengths import analyze_truth
+            analyze_truth(model,plan,node,callback.result,environment,identity=('source_contains_truth',index,a,b))
             branch.complete=shape(callback.result)is not None
             model.exceptions.require(node)
     return site.result
@@ -64,9 +66,7 @@ def emit(operators,emitter,node,index,operator,left,right):
         def truth(kind,code):
             if kind==NOT_IMPLEMENTED:
                 return emitter.at('Err::<bool,String>("TypeError: NotImplemented should not be used in a boolean context".to_owned())',node)
-            if isinstance(kind,InstanceType):
-                raise ClassUnsupported(node,'source __contains__ returns an instance whose __bool__/__len__ truth protocol has not been connected to this membership callback',proof='membership result truth conversion')
-            try:return emitter.truth(Expression('('+code+').clone()',kind),node)
+            try:return emitter.truth(Expression('('+code+').clone()',kind),node,identity=('source_contains_truth',index,first.kind,second.kind))
             except ClassUnsupported:
                 raise ClassUnsupported(node,'source __contains__ returned a value without an implemented native truth conversion',types=(('return',kind),),proof='membership result truth conversion')from None
         result=project(returned.kind,returned.code,truth)if union_kind(returned.kind)else truth(returned.kind,returned.code)

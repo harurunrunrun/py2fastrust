@@ -927,14 +927,17 @@ class Model:
             return result
         if isinstance(node, ast.BoolOp):
             result = self.cell(plan, node)
-            for index,value in enumerate(node.values):
-                if index==0:item=self.expression(plan,value,environment)
-                else:
-                    skipped=Environment(environment)
-                    taken=Environment(environment)
-                    item=self.expression(plan,value,taken)
-                    self.replace_environment(environment,self.join(skipped,taken,node))
+            def visit(index,current):
+                value=node.values[index]
+                item=self.expression(plan,value,current)
                 self.contribute(result,item,node)
+                if index+1<len(node.values):
+                    from .native_source_lengths import analyze_truth
+                    analyze_truth(self,plan,value,item,current)
+                    skipped=Environment(current);taken=Environment(current)
+                    visit(index+1,taken)
+                    self.replace_environment(current,self.join(skipped,taken,node))
+            visit(0,environment)
             return result
         if isinstance(node, ast.IfExp):
             self.condition(plan, node.test, environment)
@@ -978,7 +981,10 @@ class Model:
         if isinstance(node,ast.UnaryOp)and isinstance(node.op,ast.Not):
             self.condition(plan,node.operand,environment)
             return self.cell(plan,node,"bool")
-        return self.expression(plan,node,environment)
+        value=self.expression(plan,node,environment)
+        from .native_source_lengths import analyze_truth
+        analyze_truth(self,plan,node,value,environment)
+        return value
 
     def binary(self, plan, node, operator, left, right, *, identity=None, environment=None):
         if any(isinstance(shape(value),EmptyType)for value in(left,right)):
@@ -1750,7 +1756,10 @@ class Emitter:
         setup=f"let {owner}:{self.rust_type(value.kind)}={value.code};"
         return Expression("{"+setup+f"let {result}={truth};{result}"+"}","bool")
 
-    def truth(self, value, node=None):
+    def truth(self, value, node=None,*,identity=None):
+        from .native_source_lengths import emit_truth
+        source_truth=emit_truth(self,node,value,identity=identity)
+        if source_truth is not None:return source_truth
         if getattr(value.kind,'_native_exception_class',False)or getattr(value.kind,'_native_exception_value',False):return 'true'
         if getattr(value.kind,"_native_builtin_singleton",False):
             from .native_builtin_singletons import truth
@@ -3373,6 +3382,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
                    _text_helpers(runtime),_structural_helpers(integer),class_runtime,layouts,*bodies])
     from .native_integer_list_places import runtime as integer_place_runtime
     pieces.append(integer_place_runtime(model))
+    from .native_source_lengths import runtime as source_length_runtime
+    pieces.append(source_length_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)

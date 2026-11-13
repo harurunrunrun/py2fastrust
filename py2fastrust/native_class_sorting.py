@@ -58,6 +58,8 @@ def _analyze(model,plan,node,source,key,environment,*,method,error=None):
             element=model.mappings.sorted_element(source,key,node)
             if element is None:
                 kind=model.iterators.source(plan,node,source,environment=environment)
+                from .native_source_lengths import analyze_hint
+                analyze_hint(model,plan,node,source,environment,'sorted')
                 element=model.iterators.demand(plan,node,Cell(kind),environment)
     site=SortSite(key,element,source_kind=kind,error=error)
     _sites(model)[(plan.index,id(node))]=site
@@ -206,10 +208,20 @@ def emit_builtin(emitter,node,arguments,keywords,wanted):
     elif domain(arguments[0].kind)=='list'and arguments[0].kind.element==element:
         materialize=f'let mut {values}={arguments[0].code}.borrow().clone();'
     else:
-        source=emitter.model.iterators.construct(emitter,node,arguments[0],kind=site.source_kind)
-        setup,source=emitter.capture(source);pulled=emitter.model.iterators.pull(emitter,node,source)
+        original=arguments[0]
+        from .native_source_iteration import has_protocol
+        setup=''
+        if has_protocol(emitter.model,original.kind):
+            setup,original=emitter.capture(Expression('('+original.code+').clone()',original.kind))
+        source=emitter.model.iterators.construct(emitter,node,Expression('('+original.code+').clone()',original.kind),kind=site.source_kind)
+        before,source=emitter.capture(source);setup+=before
+        from .native_source_lengths import emit_hint,reserve_hint
+        hint=emit_hint(emitter,node,original,'sorted')
+        if hint is not None:
+            saved=emitter.fresh();setup+='let '+saved+'='+hint+';';hint=saved
+        pulled=emitter.model.iterators.pull(emitter,node,source)
         item=emitter.coerce(Expression(current,pulled.kind),element,node)
-        materialize=(setup+f'let mut {values}=Vec::<{emitter.rust_type(element)}>::new();'
+        materialize=(setup+f'let mut {values}=Vec::<{emitter.rust_type(element)}>::new();'+reserve_hint(emitter,node,values,hint)+
             f'loop{{let Some({current})=({pulled.code})else{{break;}};{values}.push({item});}}')
     body=(materialize+
         ( _error(emitter,node,site.error,'none')+';'if site.error else'')+f'let {direction}={emitter.truth(reverse)};'+
