@@ -6,7 +6,7 @@ and the adapter never traverses/evaluates argument ASTs a second time.
 import ast
 from .references import BuiltinIdentity
 
-SUPPORTED=frozenset({"type","exit","quit","classmethod","staticmethod","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bytearray","bool","float","len","abs","id","globals","isinstance",
+SUPPORTED=frozenset({"type","exit","quit","classmethod","staticmethod","property","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bytearray","bool","float","len","abs","id","globals","isinstance",
                      "round","range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
 
 
@@ -15,6 +15,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='property':
+        from .native_properties import analyze_constructor
+        return analyze_constructor(model,plan,node,arguments,keywords)
     if name=='type':
         from .native_type_objects import analyze_type
         return analyze_type(model,plan,node,arguments,keywords,cell)
@@ -207,6 +210,9 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=F
     from .native_classes import Expression
     from .native_unions import project,union_kind
     from .native_builtin_singletons import has_singleton
+    if identity.name=='property':
+        from .native_properties import emit_constructor
+        return emit_constructor(emitter,node,arguments,keywords,wanted)
     if identity.name=='round':
         from .native_class_round import emit as emit_round
         return emit_round(emitter,node,arguments,keywords,wanted)

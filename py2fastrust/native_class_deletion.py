@@ -23,6 +23,8 @@ def analyze(model,plan,target,environment):
     if not isinstance(target,ast.Attribute):return False
     from .native_classes import ClassUnsupported,shape
     receiver=model.expression(plan,target.value,environment).root()
+    from .native_properties import metadata_guard
+    metadata_guard(target,shape(receiver),'deleting')
     if receiver.tag is None and not model.final:return True
     if receiver.tag!='object':
         raise ClassUnsupported(target,"deleting this attribute needs an object attribute-deletion protocol; this typed path only owns concrete source-instance field slots",types=(("receiver",shape(receiver)),),proof="resolved instance attribute-deletion storage")

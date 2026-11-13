@@ -210,6 +210,15 @@ class LinkedModel(Model):
         return super().expression(plan,node,environment)
 
     def attribute_value(self,plan,node,receiver,environment):
+        self.class_namespaces.defer_member(plan,node,receiver)
+        from .native_classes import InstanceType
+        if isinstance(shape(receiver),InstanceType)and node.attr=='__dict__':
+            raise ClassUnsupported(node,'instance __dict__ mapping access and overrides are not implemented; property data descriptors cannot be replaced by a fabricated instance dictionary',proof='real instance dictionary and data-descriptor precedence')
+        if hasattr(self,'properties'):
+            if getattr(shape(receiver),'_native_property',False):
+                raise ClassUnsupported(node,'property descriptor attribute '+repr(node.attr)+' needs its explicit metadata or getter/setter/deleter update object protocol; that property metadata observer is not implemented',proof='property object metadata and update methods')
+            value=self.properties.access(plan,node,receiver,environment)
+            if value is not None:return value
         from .native_source_function_descriptors import analyze as function_descriptor
         value=function_descriptor(self.class_namespaces,plan,node,receiver,environment)
         if value is not None:return value
@@ -233,6 +242,17 @@ class LinkedModel(Model):
         return self.remember(plan,node,result)
 
     def attribute_target(self,plan,node,receiver,value,environment):
+        if getattr(shape(receiver),'_native_property',False):
+            raise ClassUnsupported(node,'assigning property descriptor metadata '+repr(node.attr)+' requires its mutable metadata/update-object protocol; that property metadata mutation is not implemented',proof='mutable property object metadata')
+        self.class_namespaces.defer_member(plan,node,receiver)
+        from .native_classes import InstanceType
+        if isinstance(shape(receiver),InstanceType)and not self.final:
+            owner=self.classes[shape(receiver).name]
+            member=self.class_namespaces.members.get((owner.index,self.resolved_name(plan,node)))
+            if member is not None and(member.descriptor=='pending'or member.descriptor=='property'and not hasattr(member,'property_cell')):
+                from .native_guard_flow import AnalysisPending
+                raise AnalysisPending()
+        if hasattr(self,'properties')and self.properties.access(plan,node,receiver,environment,'fset',value)is not None:return True
         if self.class_namespaces.assign_attribute(plan,node,receiver,value,environment):return True
         if not self.module_linker.module_receiver_kinds(shape(receiver),node.attr):return False
         result=self.cell(plan,node)
@@ -389,6 +409,10 @@ class LinkedEmitter(Emitter):
         return super().show(value,node,quoted)
 
     def expression(self,node):
+        if isinstance(node,ast.Attribute)and hasattr(self.model,'properties')and(self.plan.index,id(node),'fget')in self.model.properties.accesses:
+            before,owner=self.capture(self.expression(node.value))
+            value=self.model.properties.emit_access(self,node,owner)
+            return Expression('{'+before+value.code+'}',value.kind)
         from .native_source_function_descriptors import emit as function_descriptor
         descriptor=function_descriptor(self.model.class_namespaces,self,node)
         if descriptor is not None:return descriptor
@@ -429,6 +453,9 @@ class LinkedEmitter(Emitter):
         return super().expression(node)
 
     def reference(self,target):
+        if isinstance(target,ast.Attribute)and hasattr(self.model,'properties')and any((self.plan.index,id(target),slot)in self.model.properties.accesses for slot in('fget','fset')):
+            before,owner=self.capture(self.expression(target.value))
+            return before,('property',owner)
         if isinstance(target,ast.Attribute):
             from .native_types import alternatives
             kind=self.kind(target.value)
@@ -441,6 +468,7 @@ class LinkedEmitter(Emitter):
         return super().reference(target)
 
     def load_reference(self,reference,node,kind=None):
+        if reference[0]=='property':return self.model.properties.emit_access(self,node,reference[1],wanted=kind)
         if reference[0]=='name':
             value=self.model.class_namespaces.emit_name(self,reference[1],kind)
             if value is not None:return value
@@ -458,6 +486,7 @@ class LinkedEmitter(Emitter):
         return Expression(code,wanted)
 
     def store_reference(self,reference,value,node):
+        if reference[0]=='property':return self.model.properties.emit_access(self,node,reference[1],'fset',value).code+';'
         if reference[0]=='class_namespace':
             from .native_unions import project,union_kind
             _,owner,name=reference
@@ -608,7 +637,8 @@ class LinkedEmitter(Emitter):
             stored=self.coerce(Expression(created+'.clone()',ClassReferenceType(owner.index)),wanted,node)
             from .native_published_metadata import publication
             from .native_source_class_cells import publication as publish_class_cell
-            return result+f"let {created}={value};"+publish_class_cell(self.model,owner,created)+publication(self,owner,created)+f"class_scope.globals.borrow_mut().value_{index}=Some({stored});"+self.model.class_namespaces.named_tuples.emit_retain_definition(self,node,owner,created)
+            property_names=self.model.properties.emit_publication(self,owner)if hasattr(self.model,'properties')else''
+            return result+f"let {created}={value};"+property_names+publish_class_cell(self.model,owner,created)+publication(self,owner,created)+f"class_scope.globals.borrow_mut().value_{index}=Some({stored});"+self.model.class_namespaces.named_tuples.emit_retain_definition(self,node,owner,created)
         return result
 
     def assign_name(self,target,value):

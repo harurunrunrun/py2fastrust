@@ -70,7 +70,25 @@ class ClassNamespaces:
         self.owners[owner.index]=owner
         self.scopes[self.unit.scope_for(owner.node).ordinal]=owner
         self.keys[id(owner.node)]=self.model.class_key(owner)
+        scope=self.unit.scope_for(owner.node).ordinal
+        for binding in self.unit.bindings:
+            if binding.owner==scope and binding.role in {'definition','store','delete'}:self.member(owner,binding.name)
         if parent is not None:self.parents[owner.index]=parent
+
+    def defer_member(self,plan,node,receiver):
+        from .native_classes import InstanceType,shape
+        from .native_types import alternatives
+        if self.model.final:return
+        for kind in alternatives(shape(receiver)):
+            if not isinstance(kind,InstanceType):continue
+            owner=self.model.classes[kind.name]
+            member=self.members.get((owner.index,self.model.resolved_name(plan,node)))
+            if member is None:continue
+            pending=member.descriptor=='pending'or member.descriptor=='property'and not hasattr(member,'property_cell')
+            pending|=member.plan is None and shape(self.field(member,node))is None
+            if pending:
+                from .native_guard_flow import AnalysisPending
+                raise AnalysisPending()
 
     def nested_key(self,owner,node):
         name=self.model.resolved_name(owner.body_plan or self.model.module,node)
@@ -115,7 +133,7 @@ class ClassNamespaces:
         if member.plan is not None and not self.special_name(member.name):
             if member.descriptor!='function':
                 from .native_classes import ClassUnsupported
-                raise ClassUnsupported(node,'replacing a decorated class descriptor with a raw class-body value needs a descriptor-object value carrier',proof='raw decorated descriptor replacement')
+                raise ClassUnsupported(node,'this class-body write replaces a decorated descriptor; versioned property/method descriptor presence and instance lookup updates are not implemented',proof='raw decorated descriptor replacement')
             member.function_slot_writes=True
         self.contribute(member,value,node)
         environment[member.name]=value
@@ -142,7 +160,7 @@ class ClassNamespaces:
                 raise ClassUnsupported(node,f"class-body metadata reference {node.id!r} requires the compiler-initialized class namespace and its metadata lookup protocol; that protocol is not implemented",proof="class compiler metadata initialization and lookup")
         member=self.local_member(plan,node)
         if member is None:return None
-        if member.plan is not None and member.descriptor!="function":
+        if member.plan is not None and member.descriptor not in {"function","property"}:
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,f"reading this descriptor as a bare class-body value needs its raw descriptor-object carrier; class and instance attribute binding are supported, but storing the raw {member.descriptor} descriptor is not implemented",proof="raw class-body descriptor object identity")
         self.field(member,node)
@@ -162,6 +180,7 @@ class ClassNamespaces:
 
     def observe_method(self,member,node):
         member.observed=True
+        if member.descriptor in {'property','pending'}:return
         provider=getattr(self.model,"callable_cells",None)
         if provider is not None:provider.used.add(provider.definition(member.plan))
         if not getattr(member,'source_function_alias',False):
@@ -180,7 +199,7 @@ class ClassNamespaces:
         else:
             from .native_class_descriptors import analyze_definition
             analyze_definition(self,plan,node,member,environment)
-            value=member.function_cell
+            value=member.property_cell if member.descriptor=='property'else member.function_cell
             if member.observed:self.observe_method(member,node)
         environment[name]=value
         environment.definite.add(name)
@@ -277,6 +296,10 @@ class ClassNamespaces:
         if not choices:return False
         for choice in choices:
             member=self.member(self.owners[choice.definition],self.model.resolved_name(plan,node))
+            from .native_properties import PropertyType
+            from .native_types import alternatives
+            if any(isinstance(kind,PropertyType)for kind in alternatives(shape(self.field(member,node))))or any(isinstance(kind,PropertyType)for kind in alternatives(shape(value))):
+                raise ClassUnsupported(node,'replacing a property through a class reference requires mutable descriptor-slot publication and instance lookup invalidation; that property replacement protocol is not implemented',proof='mutable property class-slot lookup')
             self.named_tuples.class_member_guard(member.owner,member.name,node,writing=True)
             self.check_metadata(member,node)
             if member.plan is not None:
@@ -299,6 +322,10 @@ class ClassNamespaces:
         if isinstance(node,ast.Name):
             member=self.local_member(plan,node)
             if member is None:return False
+            from .native_properties import PropertyType
+            from .native_types import alternatives
+            if member.descriptor=='property'or any(isinstance(kind,PropertyType)for kind in alternatives(shape(self.field(member,node)))):
+                raise ClassUnsupported(node,'deleting a property class slot requires invalidating its data-descriptor and instance-dictionary lookup; mutable property presence is not implemented',proof='mutable property descriptor presence')
             from .native_source_display import SLOTS
             if member.name in SLOTS:
                 raise ClassUnsupported(node,'deleting source display slot '+repr(member.name)+' during class publication requires restoring inherited/default slot lookup; that optional display-slot publication protocol is not implemented',proof='deleted source display slot fallback')
@@ -309,10 +336,18 @@ class ClassNamespaces:
             return True
         if not isinstance(node,ast.Attribute):return False
         receiver=self.model.expression(plan,node.value,environment)
+        if getattr(shape(receiver),'_native_property',False):
+            raise ClassUnsupported(node,'deleting property descriptor metadata '+repr(node.attr)+' requires its mutable metadata/update-object protocol; that property metadata deletion is not implemented',proof='mutable property object metadata')
+        self.defer_member(plan,node,receiver)
+        if hasattr(self.model,'properties')and self.model.properties.access(plan,node,receiver,environment,'fdel')is not None:return True
         choices=self.class_choices(shape(receiver))
         if not choices:return False
         for choice in choices:
             member=self.member(self.owners[choice.definition],self.model.resolved_name(plan,node))
+            from .native_properties import PropertyType
+            from .native_types import alternatives
+            if member.descriptor=='property'or any(isinstance(kind,PropertyType)for kind in alternatives(shape(self.field(member,node)))):
+                raise ClassUnsupported(node,'deleting a property class slot requires invalidating its data-descriptor and instance-dictionary lookup; mutable property presence is not implemented',proof='mutable property descriptor presence')
             self.named_tuples.class_member_guard(member.owner,member.name,node,writing=True)
             self.check_metadata(member,node)
             if member.plan is not None:
@@ -323,6 +358,9 @@ class ClassNamespaces:
     def emit_delete(self,emitter,node):
         from .native import _string
         from .native_unions import project,union_kind
+        if isinstance(node,ast.Attribute)and hasattr(self.model,'properties')and(emitter.plan.index,id(node),'fdel')in self.model.properties.accesses:
+            before,owner=emitter.capture(emitter.expression(node.value))
+            return before+self.model.properties.emit_access(emitter,node,owner,'fdel').code+';'
         if isinstance(node,ast.Name):
             member=self.local_member(emitter.plan,node)
             if member is None:return None
@@ -442,6 +480,11 @@ class ClassNamespaces:
         if emitter.plan.class_body is None or not isinstance(node,ast.FunctionDef):return ""
         from .native_classes import Expression,shape
         member=self.member(emitter.plan.class_body,self.model.resolved_name(emitter.plan,node))
+        if member.descriptor=='property':
+            from .native_properties import registry as properties
+            value=Expression(self.model.callable_cells.reference_code(emitter,member.plan),shape(member.function_cell))
+            descriptor=properties(self.model).emit_construct(emitter,node,[value,Expression('()','none'),Expression('()','none'),Expression('()','none')],('decorator_property',))
+            return self.emit_store(emitter,member,descriptor,node)
         if not member.observed:return ""
         value=Expression(self.model.callable_cells.reference_code(emitter,member.plan),shape(member.function_cell))
         return self.emit_store(emitter,member,value,node)

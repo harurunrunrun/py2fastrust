@@ -122,7 +122,7 @@ class StaticmethodTests(unittest.TestCase):
   for name in ('class_instance_saved','zero_arguments','defaults_keywords_variadic','mutable_default_shared'):
    with self.subTest(name=name):self.check(name)
  def test_canonical_identity_and_definition_order(self):
-  for name in ('canonical_aliases','decorator_before_default'):
+  for name in ('canonical_aliases','spelling_does_not_choose_descriptor','decorator_before_default'):
    with self.subTest(name=name):self.check(name)
  def test_source_scopes_and_plain_zero_argument_functions(self):
   for name in ('nested_private_static','plain_zero_argument_class_body','classmethod_still_binds'):
@@ -136,7 +136,7 @@ class StaticmethodTests(unittest.TestCase):
 
 class StaticmethodGuards(unittest.TestCase):
  def test_unproved_decorators_are_explicit(self):
-  for source in (CASES['spelling_does_not_choose_descriptor'],'''def staticmethod(f):return f
+  for source in ('''def staticmethod(f):return f
 class C:
  @staticmethod
  def f(x):return x+1

@@ -180,12 +180,12 @@ CASES = {'nested_constructor': {'main.py': 'class Outer:\n'
  'class_local_list_augment': {'main.py': 'class Box:\n values=[1]\n values += [2,3]\nprint(Box.values)\n'},
  'class_attribute_augment': {'main.py': 'class Box:\n value=1\nBox.value+=2\nprint(Box.value)\n'},
  'class_local_type_changing_augment': {'main.py': 'class Box:\n value=1\n value+=1.5\nprint(Box.value)\n'}}
-UNSUPPORTED = {'method_rebind_guard': 'class Box:\n'
+CASES['source_function_descriptor_rebinding'] = {'main.py': 'class Box:\n'
                         ' def read(self):return 1\n'
                         'def other(self):return 2\n'
                         'Box.read=other\n'
-                        'print(Box().read())\n',
- 'method_delete_guard': 'class Box:\n def read(self):return 1\ndel Box.read\n',
+                        'print(Box().read())\n'}
+UNSUPPORTED = {'method_delete_guard': 'class Box:\n def read(self):return 1\ndel Box.read\n',
  'class_metadata_guard': 'class Box:pass\nmetadata=Box.__dict__\n',
  'finite_class_constructor_union': 'class Outer:\n'
                                    ' class Inner:\n'

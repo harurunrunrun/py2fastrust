@@ -1318,9 +1318,28 @@ constructors, fixed method lookup, tuple results, instance/list aliases, and
 recursive methods. Missing fields use typed optional storage. Compiled Rust
 futures run on an iterative executor; both successful deep calls and exception
 unwinding avoid dependence on the native stack. This separate class proof
-still needs integration with common semantic lowering. Inheritance,
-descriptors, metaclasses, cyclic field layouts and incompatible
+still needs integration with common semantic lowering. Inheritance, general
+user-defined descriptors, metaclasses, cyclic field layouts and incompatible
 field/result types remain explicit implementation gaps.
+
+Canonical `@property` and `property(fget, fset, fdel, doc)` retain owned typed
+descriptors over real compiled callbacks. Constructor aliases, captured defaults,
+closures and defining modules retain their original payloads. Instance reads
+call the getter once; assignments and deletion call the provided setter/deleter
+and ignore their return value. Missing callbacks keep Python's `AttributeError`
+and noncallable callbacks keep their call error. Data-descriptor precedence
+prevents instance fields from bypassing a read-only property. Class reads and
+aliases preserve descriptor identity. Class creation performs the builtin name
+initialization in ordinary class-namespace insertion order, including shared
+descriptors assigned to multiple names or classes.
+
+This adapter requires ordinary exact instance receivers and fixed descriptor
+presence. Repeated `@item.setter`/`@item.deleter` definitions, descriptor metadata
+and update methods, dynamic class replacement/deletion, class assignment-expression
+publication order, inherited/metaclass lookup, custom getter metadata callbacks
+and property-containing ownership cycles retain specific positioned errors.
+Instance dictionary emulation and unsupported finite receiver projection are
+rejected explicitly; they cannot bypass property lookup.
 
 Class data namespaces and nested plain classes use the existing linked class
 reference carrier. Definitions and private names retain their official source

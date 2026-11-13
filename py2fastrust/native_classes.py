@@ -47,6 +47,7 @@ class StreamType:
 
 
 def domain(kind):
+    if getattr(kind,'_native_property',False):return 'property'
     if getattr(kind,'_native_builtin_type',False):return 'builtin_type'
     if getattr(kind,"_native_bound_mapping_method",False):return "function"
     if getattr(kind,'_native_bytearray',False):return 'bytearray'
@@ -258,7 +259,7 @@ class Environment(dict):
 
 
 class Model:
-    BUILTINS = {"type","input", "print", "range", "len", "int", "bool", "str", "float",
+    BUILTINS = {"type","input", "property", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
     DATA = {'int_bool', 'function', 'exception_value', 'range', 'dict', 'object', 'exception_class', 'union', 'globals_dict', 'complex', 'float', 'bool', 'dict_view', 'str', 'tuple_sequence', 'none', 'bytes', 'bytearray', 'array', 'tuple', 'builtin_singleton', 'list', 'int', 'set'}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
@@ -675,6 +676,7 @@ class Model:
         from .native_class_extrema import snapshot as extrema_snapshot
         from .native_typing_metadata import snapshot as metadata_snapshot
         from .native_list_positions import snapshot as position_snapshot
+        from .native_properties import snapshot as property_snapshot
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
                 tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.deques.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),metadata_snapshot(self),
@@ -682,7 +684,7 @@ class Model:
                       for key,state in sorted(self.loop_feedback.items())),
                 self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else(),
                 tuple(tuple(shape(value)for value in record.arguments)for record in self.exceptions.records),position_snapshot(self),
-                tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else(),initialized_module_snapshot(self))
+                tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else(),initialized_module_snapshot(self),property_snapshot(self))
 
     def analyze_body(self,plan,environment):
         if isinstance(plan.node,ast.Lambda):
@@ -762,6 +764,8 @@ class Model:
         from .native_class_allocation_facts import publish
         publish(self)
         self.exceptions.validate()
+        from .native_properties import validate as validate_properties
+        validate_properties(self)
         from .native_class_storage import validate_instance_graph
         validate_instance_graph(self)
         for owner in self.classes.values():
@@ -1298,6 +1302,8 @@ class Model:
         typed=analyze_attribute(self,plan,node,receiver)
         if typed is not None:return typed
         receiver=receiver.root()
+        from .native_properties import metadata_guard
+        metadata_guard(node,shape(receiver))
         from .native_arrays import attribute as array_attribute
         array=array_attribute(self,plan,node,receiver)
         if array is not None:return array
@@ -1342,7 +1348,10 @@ class Model:
 
     def attribute_item(self,plan,node,receiver,environment):return None
 
-    def attribute_target(self,plan,node,receiver,value,environment):return False
+    def attribute_target(self,plan,node,receiver,value,environment):
+        from .native_properties import metadata_guard
+        metadata_guard(node,shape(receiver),'assigning')
+        return False
 
     def subscript_item(self,plan,node,owner,index,environment):
         from .native_bytearray import indexed as bytearray_index
@@ -1589,7 +1598,9 @@ class Model:
                 from .native_bytearray import captured_store as bytearray_store
                 from .native_arrays import captured_store as array_store
                 from .native_list_slice_assignment import captured_store as slice_store
+                from .native_properties import captured_store as property_store
                 if(not self.deques.indexes.captured_store(plan,node.target,value)
+                        and not property_store(self,plan,node.target,value,environment)
                         and not slice_store(self,plan,node.target,value,environment)
                         and not bytearray_store(self,plan,node.target,value,environment)
                         and not array_store(self,plan,node.target,value,environment)
@@ -1740,6 +1751,7 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        if getattr(value,'_native_property',False):return 'Rc<ClassProperty_'+str(value.record.index)+'>'
         if getattr(value,'_native_builtin_type',False):return value.rust
         if getattr(value,"_native_bound_mapping_method",False):return value.rust
         if getattr(value,'_native_bytearray',False):return value.rust
@@ -1887,7 +1899,7 @@ class Emitter:
         if tag in {"dict","set"}:return self.model.mappings.truth(self,value)
         if tag in {"int","bool","int_bool"}:
             return self.numeric.truth(self.scalar(value))
-        if tag in {"function","iterator","cmp_key"}:return "true"
+        if tag in {"function","iterator","cmp_key","property"}:return "true"
         if tag=="globals_dict":return "true"
         if tag in {"str","bytes","tuple_sequence"}:
             return f"!({value.code}).is_empty()"
@@ -2297,6 +2309,9 @@ class Emitter:
             lambda kind,code:self.comparison(operator,Expression(f"({code}).clone()",kind),right,node))
         if union_kind(right.kind):return project(right.kind,right.code,
             lambda kind,code:self.comparison(operator,left,Expression(f"({code}).clone()",kind),node))
+        from .native_properties import comparison as property_comparison
+        descriptor=property_comparison(operator,left,right)
+        if descriptor is not None:return descriptor
         from .native_mapping_method_callables import comparison as mapping_method_comparison
         mapped_method=mapping_method_comparison(self,operator,left,right,node)
         if mapped_method is not None:return mapped_method
@@ -3610,6 +3625,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     if exception_payloads:pieces.append(exception_payloads)
     from .native_cmp_keys import runtime as comparison_key_runtime
     pieces.append(comparison_key_runtime(model,emitters[0]))
+    from .native_properties import runtime as property_runtime
+    pieces.append(property_runtime(model,emitters[0]))
     from .native_starred_calls import runtime as expanded_runtime
     pieces.append(expanded_runtime(model))
     from .native_frame_slices import runtime as slice_runtime

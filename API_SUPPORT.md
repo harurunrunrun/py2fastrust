@@ -879,6 +879,25 @@ Arbitrary decorator replacement, stacked descriptor composition, raw class-body
 method-slot replacement remain positioned conversion errors. Inheritance,
 metaclass and descriptor metadata support is not implied by this subset.
 
+Canonical `@property` and `property(fget, fset, fdel, doc)` retain owned typed
+descriptors over real compiled callbacks. Constructor aliases, captured defaults,
+closures and defining modules retain their original payloads. Instance reads
+call the getter once; assignments and deletion call the provided setter/deleter
+and ignore their return value. Missing callbacks keep Python's `AttributeError`
+and noncallable callbacks keep their call error. Data-descriptor precedence
+prevents instance fields from bypassing a read-only property. Class reads and
+aliases preserve descriptor identity. Class creation performs the builtin name
+initialization in ordinary class-namespace insertion order, including shared
+descriptors assigned to multiple names or classes.
+
+This adapter requires ordinary exact instance receivers and fixed descriptor
+presence. Repeated `@item.setter`/`@item.deleter` definitions, descriptor metadata
+and update methods, dynamic class replacement/deletion, class assignment-expression
+publication order, inherited/metaclass lookup, custom getter metadata callbacks
+and property-containing ownership cycles retain specific positioned errors.
+Instance dictionary emulation and unsupported finite receiver projection are
+rejected explicitly; they cannot bypass property lookup.
+
 Source context managers with ordinary `__enter__` and `__exit__` methods use
 retained type-level method lookup and typed cleanup regions. Normal exits,
 exceptions, `return`, `break` and `continue` run cleanup once; nested managers

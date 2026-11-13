@@ -431,6 +431,10 @@ class LexicalCells:
         from .native_classes import ClassUnsupported,InstanceType,shape
         from .native_types import ListType,TupleType,TupleSequenceType,NullableType,MaybeType,UnionType
         def targets(kind):
+            from .native_module_linking import ClassReferenceType
+            if isinstance(kind,ClassReferenceType)and hasattr(self.model,'properties'):
+                yield('property_class_reference',kind.definition)
+                return
             if getattr(kind,'_native_class_deque',False):yield('deque',kind.index)
             elif getattr(kind,'_native_mapping_view',False):yield('mapping_view',kind.index)
             elif getattr(kind,'_native_class_iterator',False):yield('iterator',kind.index)
@@ -469,6 +473,7 @@ class LexicalCells:
         self.model.deques.add_lifetime_edges(edges,targets)
         from .native_function_instances import lifetime_edges
         lifetime_edges(self,edges,targets)
+        if hasattr(self.model,'properties'):self.model.properties.add_lifetime_edges(edges,targets)
         from .native_class_gc import lexical_projection
         edges=lexical_projection(self.model,edges)
         done=set();visiting=set()

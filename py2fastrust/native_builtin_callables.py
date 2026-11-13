@@ -13,6 +13,9 @@ def binding_error(identity,arguments):
     name=identity.name
     count=len(arguments.positional)
     keywords=arguments.keywords
+    if name=='property':
+        from .native_properties import bind
+        return bind([None]*count,[(item.name,None)for item in keywords],None)[1]
     if name=='type':
         from .native_type_objects import binding_error as type_binding
         return type_binding(count,keywords)
@@ -81,7 +84,7 @@ def analyze(provider,plan,node,identity,arguments,positional,keywords,environmen
     failure=binding_error(identity,arguments)
     if failure:
         from .native_types import EMPTY
-        result=factory(EMPTY if identity.name in {'exit','quit'}else'none')
+        result=factory(EMPTY if identity.name in {'exit','quit','property'}else'none')
     else:
         result=analyze_operation(provider.model,plan,node,identity,positional,keywords,environment,factory=factory,call_arguments=arguments)
         if result is None:

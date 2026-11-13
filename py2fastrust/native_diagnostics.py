@@ -69,6 +69,7 @@ def kind_name(kind, _seen=frozenset(), _depth=0):
         return "unresolved container element"
     if name == "InstanceType":
         return nested(kind.name)
+    if getattr(kind,'_native_property',False):return 'property'
     if name == "ModuleType":return "module"
     if name == "ClassReferenceType":return "type"
     if getattr(kind,'_native_exception_class',False):return 'exception class '+kind.name

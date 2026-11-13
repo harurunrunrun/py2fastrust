@@ -25,7 +25,7 @@ def receiver_kind(registry,owner,node):
     from .native_classes import InstanceType,ClassUnsupported
     if not node.decorator_list:return InstanceType(registry.model.class_key(owner))
     if len(node.decorator_list)!=1:
-        raise ClassUnsupported(node,"stacked class method decorators need composed descriptor construction; only one canonical classmethod or staticmethod decorator is currently supported",proof="ordered class descriptor composition")
+        raise ClassUnsupported(node,"stacked class method decorators need composed descriptor construction; only one canonical classmethod, staticmethod or property decorator is currently supported",proof="ordered class descriptor composition")
     if node.name=="__init__":
         raise ClassUnsupported(node,"decorated __init__ needs the constructor descriptor protocol; ordinary classmethod and staticmethod attribute binding are supported, but constructor receiver replacement is not implemented",proof="decorated constructor receiver and return protocol")
     # Resolve the original decorator at its definition event, before defaults.
@@ -42,10 +42,10 @@ def prepare_definition(registry,caller,node,member,environment):
     value=registry.model.expression(caller,node.decorator_list[0],environment)
     kind=shape(value)
     if kind is None and not registry.model.final:return
-    choices={BuiltinIdentity('classmethod'):'classmethod',BuiltinIdentity('staticmethod'):'staticmethod'}
+    choices={BuiltinIdentity('classmethod'):'classmethod',BuiltinIdentity('staticmethod'):'staticmethod',BuiltinIdentity('property'):'property'}
     descriptor=choices.get(kind.targets[0])if function_kind(kind)and len(kind.targets)==1 else None
     if descriptor is None:
-        raise ClassUnsupported(node.decorator_list[0],"this method decorator is not proved to be the canonical classmethod or staticmethod object; arbitrary decorator calls and replacement descriptors are not implemented",types=(("decorator",kind),),proof="captured canonical class descriptor identity")
+        raise ClassUnsupported(node.decorator_list[0],"this method decorator is not proved to be the canonical classmethod, staticmethod or property object; arbitrary decorator calls and replacement descriptors are not implemented",types=(("decorator",kind),),proof="captured canonical class descriptor identity")
     member.descriptor=descriptor
     if descriptor=='classmethod'and member.plan.parameters:
         from .native_classes import Cell
@@ -54,13 +54,18 @@ def prepare_definition(registry,caller,node,member,environment):
 
 
 def analyze_definition(registry,caller,node,member,environment):
-    if node.decorator_list and member.descriptor not in {'classmethod','staticmethod','pending'}:
+    if member.descriptor=='property':
+        from .native_classes import Cell
+        from .native_properties import registry as properties
+        member.property_cell=properties(registry.model).construct(caller,node,[member.function_cell,Cell('none'),Cell('none'),Cell('none')],('decorator_property',))
+        registry.contribute(member,member.property_cell,node,'property_definition')
+    if node.decorator_list and member.descriptor not in {'classmethod','staticmethod','property','pending'}:
         from .native_classes import ClassUnsupported
         raise ClassUnsupported(node,"this class method decorator needs its definition-time descriptor construction adapter",proof="registered class descriptor construction")
 
 
 def emit_prepare_definition(registry,emitter,node,member):
-    if member.descriptor not in {'classmethod','staticmethod'}:return ""
+    if member.descriptor not in {'classmethod','staticmethod','property'}:return ""
     # Evaluating a canonical decorator can still involve a user call. Its
     # effects and exceptions precede every default expression's evaluation.
     return "let _="+emitter.expression(node.decorator_list[0]).code+";"
@@ -74,6 +79,13 @@ def analyze_member(registry,plan,node,member,receiver,environment):
         from .native_classes import ClassUnsupported
         raise ClassUnsupported(node,'method descriptor identity remains unresolved at its original class definition',proof='resolved definition-time class descriptor')
     if member.descriptor=='staticmethod':return member.function_cell
+    if member.descriptor=='property':
+        if not hasattr(member,'property_cell'):
+            from .native_guard_flow import AnalysisPending
+            if not registry.model.final:raise AnalysisPending()
+            from .native_classes import ClassUnsupported
+            raise ClassUnsupported(node,'property descriptor construction remains unresolved',proof='definition-time property publication')
+        return member.property_cell
     if member.descriptor!="classmethod":return None
     from .native_classes import Cell
     target=ClassMethodTarget(registry.model.callable_cells.definition(member.plan),registry.model.class_key(member.owner),member.owner.index)

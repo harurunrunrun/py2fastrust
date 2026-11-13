@@ -222,6 +222,8 @@ def select_frames(unit,*,integer="i64"):
     if finite_list_writes_require_frames(unit,analysis):reasons+=("finite builtin indexed assignment targets",)
     from .native_finite_attributes import requires_frames as missing_attributes_require_frames
     if missing_attributes_require_frames(unit,analysis):reasons+=("closed builtin lookup and call protocols",)
+    from .native_properties import requires_frames as property_requires_frames
+    if property_requires_frames(analysis):reasons+=("canonical property descriptors",)
     from .native_owned_matrix_places import requires_frames as matrix_requires_frames
     if matrix_requires_frames(unit,analysis):reasons+=("private recursive vector matrix places",)
     if not reasons:references=None
