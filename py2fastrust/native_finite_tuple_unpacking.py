@@ -23,19 +23,20 @@ def analyze(model,plan,target,value,environment,*,bind_target=None):
     if any(isinstance(child,ast.Starred)for child in target.elts):return None
     source=value.root()
     if source.tag!='union'or not union_kind(shape(source)):return None
-    variants={};tuples=False
-    for part in source.args:
+    variants={};rows=[];tuples=False
+    from .native_union_sequences import branches
+    for part in branches(source):
         part=part.root();kind=shape(part)
         if part.tag=='tuple'or getattr(part.tag,'_native_tuple_record',False):
-            variants[kind]=part.args;tuples=True
+            variants[kind]=part.args;rows.append(part.args);tuples=True
         elif part.tag in {'list','tuple_sequence'}:
-            variants[kind]=SequenceMembers(part.args[0],part.tag=='list');tuples=True
+            variants[kind]=SequenceMembers(part.args[0],part.tag=='list');rows.append(variants[kind]);tuples=True
         elif kind is not None and default_noniterable(model,kind):variants[kind]=None
         else:return None
     if not tuples:return None
     fields=[model.cell(plan,target,identity=('finite_unpack_position',i))for i in range(len(target.elts))]
     successful=False
-    for members in variants.values():
+    for members in rows:
         if isinstance(members,SequenceMembers):
             successful=True
             for slot in fields:model.contribute(slot,members.member,target)

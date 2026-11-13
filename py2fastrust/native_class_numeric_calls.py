@@ -58,7 +58,8 @@ def _plan(kinds,nonnegative,integer,node):
                 return union_type('int','float')
             return 'int'
         if set(tags[:2])<=INTEGRAL|{'float'}:
-            raise ClassUnsupported(node,'two-argument floating pow needs binary64/complex result selection, overflow and zero-to-negative-power behavior; that power protocol is not implemented',types=tuple(zip(('base','exp'),kinds[:2])),proof='binary64/complex power result protocol')
+            from .native_float_powers import RESULT
+            return RESULT
         return 'none'
     return 'int'if set(tags)<=INTEGRAL else'none'
 
@@ -71,6 +72,8 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory,ca
     kinds=tuple(shape(value)for value in binding.values)
     if None in kinds and not model.final:return factory()
     if kinds[2]=='none':
+        from .native_float_powers import record_call
+        record_call(model,plan,node,call_arguments)
         custom=model.operators.binary(plan,node,ast.Pow(),binding['base'],binding['exp'],environment,identity=('builtin_pow',identity))
         if custom is not None:
             result=factory()
@@ -78,6 +81,8 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory,ca
             return result
     proof=_exponent_literal(node,call_arguments,model.integer)
     outputs=[_plan(choices,proof,model.integer,node)for choices in product(*(alternatives(kind)for kind in kinds))]
+    from .native_float_powers import kind as power_kind,RESULT
+    outputs=[power_kind(node,model.integer,model=model,plan=plan)if output==RESULT else output for output in outputs]
     result=factory()
     model.contribute(result,model.cell_for_kind(union_type(*outputs)),node)
     return result
@@ -103,7 +108,7 @@ def emit(emitter,node,identity,arguments,keywords,wanted):
                 return Expression(project(value.kind,value.code,lambda kind,code:lower(
                     values[:index]+[Expression(f'({code}).clone()',kind)]+values[index+1:]).code),wanted)
         tags=tuple(domain(value.kind)for value in values)
-        if tags[2]=='none'and(set(tags[:2])<=INTEGRAL or tags[0]=='float'and tags[1]in INTEGRAL):
+        if tags[2]=='none'and set(tags[:2])<=INTEGRAL|{'float'}:
             return emitter.binary(ast.Pow(),values[0],values[1],node,wanted)
         if set(tags)<=INTEGRAL:
             numbers=[emitter.number(value)for value in values]

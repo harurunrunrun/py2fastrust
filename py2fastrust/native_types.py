@@ -188,7 +188,7 @@ def render_type(kind, leaf_override=None):
         from .native_key_types import container_type
         return container_type(kind)
     return {"int":"NativeInt","bool":"bool","int_bool":"NativeScalar","str":"NativeText",
-            "bytes":"Vec<u8>","float":"f64","none":"()","list_int":"Vec<NativeInt>",
+            "bytes":"Vec<u8>","float":"f64","complex":"NativeComplex","none":"()","list_int":"Vec<NativeInt>",
             "matrix_int":"Vec<Vec<NativeInt>>","dict_int":"NativeDict","set_int":"NativeSet",
             "deque_int":"NativeDeque<NativeInt>"}[kind]
 
@@ -219,7 +219,7 @@ def immutable(kind):
             or isinstance(kind,NullableType) and immutable(kind.value)
             or isinstance(kind,TupleType) and all(immutable(field) for field in kind.fields)
             or isinstance(kind,TupleSequenceType) and immutable(kind.element)
-            or kind in {"int","bool","int_bool","str","bytes","float","none"})
+            or kind in {"int","bool","int_bool","str","bytes","float","complex","none"})
 
 
 def reference_cloneable(kind):
@@ -279,7 +279,7 @@ def default_value(kind,zero):
     if isinstance(kind,DequeType):return "NativeDeque::new(None)"
     if getattr(kind,"_key_container",False):return "NativeKeySet::new()" if kind._key_container=="set" else "NativeKeyDict::new()"
     return {"none":"()","int":zero,"bool":"false","int_bool":f"NativeScalar::Int({zero})","str":"NativeText::new()",
-            "bytes":"Vec::<u8>::new()","float":"0.0_f64","list_int":"Vec::new()",
+            "bytes":"Vec::<u8>::new()","float":"0.0_f64","complex":"NativeComplex{real:0.0,imag:0.0}","list_int":"Vec::new()",
             "matrix_int":"Vec::new()","set_int":"NativeSet::new()","dict_int":"NativeDict::new()",
             "deque_int":"NativeDeque::new(None)"}[kind]
 

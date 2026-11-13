@@ -95,6 +95,8 @@ def format_value(emitter,node,value,specification):
         return Expression(project(value.kind,value.code,lambda kind,code:
             format_value(emitter,node,Expression(f'({code}).clone()',kind),specification).code),'str')
     tag=domain(value.kind);spec=specification.code
+    if tag=='complex'and specification.constant!='':
+        raise ClassUnsupported(node,'complex formatting with a nonempty or dynamic specification requires its numeric format protocol; this native complex carrier currently supports str/repr and empty format specifications',types=(('value',value.kind),),proof='complex numeric format specification')
     _display_protocol(emitter,node,value.kind,False,set())
     emitter.model.formatting_required=True
     if tag in {'int','bool','int_bool'}:

@@ -858,8 +858,20 @@ exact. A dynamic result uses a finite integer/float carrier. Passing it to
 `range` checks the actual integer-index type after all call arguments have been
 evaluated, so an integral-valued float still raises `TypeError`. A binary64 base
 with an integral exponent returns binary64, retaining signed zero, NaN,
-infinities, zero-to-negative errors and finite-result overflow errors. Custom
-`__index__` objects, floating exponents, complex results and unfinished
+infinities, zero-to-negative errors and finite-result overflow errors.
+Floating exponents accept builtin int/bool/float bases on the typed native
+path. A negative finite base with a nonintegral exponent produces an immutable
+complex value; other successful cases produce binary64. Literal real-result
+proofs use the selected integer width, so an overflowing integer literal is
+never assumed positive. Unknown signs use a finite real/complex carrier.
+Print, `str`, `repr`, empty formatting and truth testing support both results;
+`int` and `float` reject an actual complex result with the Python type name.
+Both source operands and all explicit call arguments evaluate before arithmetic
+conversion and power errors. Signed zero, NaN, infinities, underflow,
+zero-to-negative errors and finite-result overflow follow the binary64 power
+rules. This implementation uses Rust floating operations and does not embed
+Python source or a Python execution engine. Complex arithmetic, comparisons,
+nonempty complex numeric formatting, custom `__index__` objects and unfinished
 user operand special methods retain positioned `E006` diagnostics.
 
 Definition-time defaults on the typed frame path run once in their original
@@ -1365,8 +1377,9 @@ subnormals and Python division errors. Mixed integral operands are rounded
 once through `Int.ratio(1)` and reject conversion overflow. Both operand
 expressions evaluate before primitive numeric conversion begins. Integral
 true division keeps its existing exact-ratio implementation, while otherwise
-integral programs keep their static selection. Floating power/complex results
-and custom numeric conversion protocols remain separate adapters.
+integral programs keep their static selection. Floating powers use the finite
+real/complex adapter described above; custom numeric conversion protocols remain
+separate adapters.
 
 Canonical `math.sqrt`, `floor`, `ceil` and `trunc` use shared typed numeric
 adapters on ordinary and frame paths, including imported/captured aliases and

@@ -143,7 +143,10 @@ two-argument integral calls accept dynamic and negative exponents. Nonnegative
 exponents return integers; negative exponents return binary64 values, including
 zero-to-negative and integer-to-float overflow errors. Binary64 bases with
 integral exponents return binary64 and preserve overflow and signed-zero behavior.
-Floating exponents and complex power protocols remain unfinished; see
+Floating exponents accept builtin int/bool/float bases and return a finite
+binary64/complex alternative. Print, string/repr conversion, truth testing and
+int/float conversion errors observe the actual result. Complex arithmetic,
+comparison and nonempty numeric formatting remain positioned boundaries; see
 [COMPATIBILITY.md](COMPATIBILITY.md).
 
 Resolved integer calls to `math.gcd`, `lcm`, `isqrt`, `factorial`, `comb`, and

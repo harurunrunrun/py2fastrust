@@ -108,6 +108,8 @@ def select_frames(unit,*,integer="i64"):
     analysis=analyze(unit)
     from .native_callback_analysis import supplement
     analysis=supplement(unit,analysis,integer)
+    from .native_float_powers import requires_frames as float_power_requires_frames
+    floating_power=float_power_requires_frames(unit,analysis)
     identities={}
     for (caller,_),facts in analysis.scopes.items():
         for site,fact in facts.calls.items():
@@ -124,6 +126,7 @@ def select_frames(unit,*,integer="i64"):
     from .native_frame_references import prove
     from .native_lexical_cells import requires_environments
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
+    if floating_power:reasons+=('finite real/complex floating power results',)
     from .native_exit import requires_frames as exit_requires_frames
     if exit_requires_frames(analysis):reasons+=('native process termination unwinding',)
     from .native_sum_binding import requires_frames as sum_requires_frames

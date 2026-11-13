@@ -69,7 +69,7 @@ def domain(kind):
 
 def has_float_payload(kind):
     """Float container equality needs Python object identity, beyond f64 values."""
-    if kind=="float":return True
+    if kind in{"float","complex"}:return True
     if isinstance(kind,(NullableType,MaybeType)):return has_float_payload(kind.value)
     if isinstance(kind,UnionType):return any(has_float_payload(value)for value in kind.alternatives)
     if isinstance(kind,TupleType):return any(has_float_payload(value)for value in kind.fields)
@@ -256,7 +256,7 @@ class Environment(dict):
 class Model:
     BUILTINS = {"input", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
-    DATA = {"exception_class","exception_value","builtin_singleton", "int", "bool", "int_bool", "union", "str", "bytes", "float", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict","dict","set","dict_view"}
+    DATA = {"exception_class","exception_value","builtin_singleton", "int", "bool", "int_bool", "union", "str", "bytes", "float", "complex", "none", "object", "function", "list", "tuple", "tuple_sequence", "range","globals_dict","dict","set","dict_view"}
     INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
@@ -460,6 +460,8 @@ class Model:
         source=self.namespace.detached(source).root()
         if source.tag is None:return destination
         kind=shape(source)
+        from .native_pending_value_shapes import deferred
+        if deferred(kind):return destination
         if immutable(kind):
             allocation=self.member_allocations.get(destination)
             if allocation is not None:variable=Variable(allocation.site,"element")
@@ -979,6 +981,9 @@ class Model:
         return self.expression(plan,node,environment)
 
     def binary(self, plan, node, operator, left, right, *, identity=None, environment=None):
+        if any(isinstance(shape(value),EmptyType)for value in(left,right)):
+            from .native_types import EMPTY
+            return self.cell(plan,node,EMPTY,identity=identity)
         result=self.operators.binary(plan,node,operator,left,right,environment,identity=identity)
         if result is not None:return result
         return self.binary_builtin(plan,node,operator,left,right,identity=identity)
@@ -991,6 +996,8 @@ class Model:
                 raise ClassUnsupported(node)
             return cell()
         from .native_primitive_ops import analyze,classify
+        if 'complex'in{a.tag,b.tag}or isinstance(operator,ast.Pow)and b.tag=='float'and a.tag in{'int','bool','int_bool','float'}:
+            return analyze(self,plan,node,operator,left,right,identity=identity)
         if isinstance(operator,ast.Pow)and a.tag=='float'and b.tag in {'int','bool','int_bool'}:
             return cell('float')
         if isinstance(operator,ast.Pow)and a.tag in {'int','bool','int_bool'}and b.tag in {'int','bool','int_bool'}:
@@ -1227,6 +1234,9 @@ class Model:
                 return analyze_reader(self,plan,node,intrinsic,arguments,keywords)
             if receiver.tag is None and not self.final:
                 return self.cell(plan,node)
+            if receiver.tag=="none"and not self.final:
+                from .native_guard_flow import AnalysisPending
+                raise AnalysisPending()
         raise ClassUnsupported(node)
 
     def attribute_value(self,plan,node,receiver,environment):
@@ -1760,6 +1770,8 @@ class Emitter:
             return f"!({value.code}).is_empty()"
         if tag == "float":
             return f"({value.code})!=0.0"
+        if tag == "complex":
+            return f"({value.code}).is_true()"
         if tag == "list":
             result=self.fresh()
             return f"{{let {result}=!({value.code}).borrow().is_empty();{result}}}"
@@ -1801,6 +1813,7 @@ class Emitter:
             rendered=self.show(Expression(f"(*{item}).clone()",value.kind.element),node,True)
             return f'format!("[{{}}]",({value.code}).borrow().iter().map(|{item}|{rendered}).collect::<Vec<_>>().join(", "))'
         tag = domain(value.kind)
+        if tag=='complex':return f"native_complex_text(&({value.code}))"
         if tag == "str" and representation:
             self.model.string_repr_required = True
         if tag == "tuple":
@@ -2063,11 +2076,16 @@ class Emitter:
         return Expression(self.coerce(raw,wanted,node),wanted,raw.constant)
 
     def binary(self, operator, left, right, node, wanted, *, identity=None):
+        empty=next((value for value in(left,right)if isinstance(value.kind,EmptyType)),None)
+        if empty is not None:return Expression(self.coerce(empty,wanted,node),wanted)
         result=self.model.operators.emit_binary(self,operator,left,right,node,wanted,identity=identity)
         if result is not None:return result
         return self.binary_builtin(operator,left,right,node,wanted)
 
     def binary_builtin(self, operator, left, right, node, wanted):
+        from .native_float_powers import frame as floating_power
+        power=floating_power(self,operator,left,right,node,wanted)
+        if power is not None:return power
         from .native_integral_powers import frame as integral_power
         power=integral_power(self,operator,left,right,node,wanted)
         if power is not None:return power
@@ -2121,6 +2139,8 @@ class Emitter:
         sequence_result=tuple_sequence_comparison(self,operator,left,right,node)
         if sequence_result is not None:return sequence_result
         a,b = domain(left.kind),domain(right.kind)
+        if "complex" in {a,b}:
+            raise ClassUnsupported(node,"complex comparison operators require native numeric comparison support",types=(("left",left.kind),("right",right.kind)),proof="complex comparison observer")
         if isinstance(operator,(ast.Is,ast.IsNot)):
             if a==b=="function":
                 from .native_callable_carriers import comparison
@@ -3294,6 +3314,12 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         value=files("py2fastrust").joinpath("stdlib",license_name).read_text(encoding="utf-8")
         pieces.append("\n".join("// "+line for line in value.splitlines()))
     pieces.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
+    if getattr(model,'float_power_required',False):
+        from .native_float_powers import RUNTIME as FLOAT_POWER_RUNTIME
+        pieces.append(FLOAT_POWER_RUNTIME)
+    if getattr(model,'complex_values_required',False):
+        from .native_complex import RUNTIME as COMPLEX_RUNTIME
+        pieces.append(COMPLEX_RUNTIME)
     if integer=="bigint":
         from .native_bigint import _HELPERS as bigint_helpers
         pieces.extend([bigint_helpers,_named_helpers(_INPUT_HELPERS,{"native_space"}),

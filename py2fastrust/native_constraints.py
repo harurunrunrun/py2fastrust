@@ -641,6 +641,9 @@ class Solver:
                     kind=semantic_kind(self.graph.nodes[term.site])
                     if kind=='int':operation+=':integral'
                     elif kind=='float':operation+=':negative'
+                    else:
+                        from .native_float_powers import real_node
+                        if self.kind(second)=='float'and real_node(self.graph.nodes[term.site]):operation+=':real_float'
                 result=self.compute(operation,(first,second))
         elif op in {"join","conditional"}:
             result=BOTTOM
@@ -789,7 +792,15 @@ class Solver:
         if name in {"int","float","str","bool","bytes"}:return value(name)
         if name in {"bin","oct","hex"}:return value("str")
         if name=="abs" and args:return self.compute("unary:UAdd",(args[0],))
-        if name in {"len","pow","ord","hash","sum"}:
+        if name=='pow':
+            from .native_class_numeric_calls import _bind
+            binding,error=_bind(args,keywords,value('none'))
+            if error:return value('none')
+            modulus=binding['mod']
+            if modulus.alternatives=={'none'}and not modulus.unknown and not modulus.unbound:
+                return self.compute('binary:Pow',(binding['base'],binding['exp']))
+            return value('int')
+        if name in {"len","ord","hash","sum"}:
             if name=="sum":return value(Computed("sum",(self.field_values(args[0],"iteration"),args[1] if len(args)>1 else dict(keywords).get("start",value("int"))))) if args else UNKNOWN
             return value("int")
         if name in {"any","all","isinstance","issubclass"}:return value("bool")
@@ -1056,6 +1067,9 @@ class Solver:
         if first==second=="str" and operator=="Add":return "str"
         if "str" in kinds and operator=="Mult" and (second if first=="str" else first) in numeric-{"float"}:return "str"
         if set(kinds)<=numeric:
+            if operator in{'Pow','Pow:real_float'}and second=='float':
+                from .native_float_powers import RESULT
+                return 'float'if operator=='Pow:real_float'else RESULT
             if "float" in kinds or operator=="Div":return "float"
             if operator=='Pow':return union_type('int','float')
             if operator=='Pow:negative':return 'float'

@@ -25,6 +25,8 @@ class PrimitivePlan:
 def classify(operator,left,right,integer):
     from .native_classes import domain
     a,b=domain(left),domain(right)
+    if 'complex'in{a,b}:
+        return PrimitivePlan(protocol='complex arithmetic dispatch')
     if "list"in {a,b}:
         sealed=NUMERIC|{"str","bytes","tuple","none","function","globals_dict","range","list"}
         if {a,b}<=sealed:
@@ -45,6 +47,9 @@ def classify(operator,left,right,integer):
                    for identity in getattr(value,"builtins",())):
                 return PrimitivePlan(protocol="builtin class union-type protocol")
     if a in NUMERIC and b in NUMERIC:
+        if isinstance(operator,ast.Pow)and b=='float':
+            from .native_float_powers import RESULT
+            return PrimitivePlan(RESULT)
         if isinstance(operator,ast.Pow)and a=='float'and b in INTEGRAL:return PrimitivePlan('float')
         if "float"in {a,b}or isinstance(operator,ast.Div):
             if "float"in {a,b}and isinstance(operator,(ast.LShift,ast.RShift)+BITWISE):return PrimitivePlan(error="binary")
@@ -105,6 +110,9 @@ def analyze(model,plan,node,operator,left,right,*,identity=None):
             if selected.protocol:
                 raise ClassUnsupported(node,"this finite operand combination needs "+selected.protocol+"; that per-alternative native operation is not implemented",types=(("left",a),("right",b)),proof=selected.protocol)
             if selected.kind is not None:kinds.append(selected.kind)
+    if isinstance(operator,ast.Pow)and any('float'in alternatives(shape(value))for value in(right,)):
+        from .native_float_powers import kind as power_kind,RESULT
+        kinds=[power_kind(node,model.integer,model=model,plan=plan)if kind==RESULT else kind for kind in kinds]
     if isinstance(operator,ast.Pow)and"int"in kinds:
         from .native_integral_powers import node_kind
         kinds=[kind for kind in kinds if kind!='int']+list(alternatives(node_kind(node,model.integer)))
@@ -141,6 +149,9 @@ def emit(emitter,operator,left,right,node,wanted):
                 value=Expression("{"+operation+left.code+".clone()}",left.kind)
                 return Expression(emitter.coerce(value,wanted,node),wanted)
         result_kind=selected.kind
+        if isinstance(operator,ast.Pow)and right.kind=='float':
+            from .native_float_powers import kind as power_kind
+            result_kind=power_kind(node,emitter.model.integer,model=emitter.model,plan=emitter.plan)
         if isinstance(operator,ast.Pow)and result_kind=='int':
             from .native_integral_powers import node_kind
             result_kind=node_kind(node,emitter.model.integer)
