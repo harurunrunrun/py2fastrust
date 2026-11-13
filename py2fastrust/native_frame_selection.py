@@ -106,6 +106,9 @@ def select_frames(unit,*,integer="i64"):
     if any(isinstance(node,ast.ClassDef)for node in ast.walk(unit.tree)):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
     analysis=analyze(unit)
+    from .native_abrupt_values import requires_attribute_frames
+    if requires_attribute_frames(unit,analysis):
+        return FrameSelection(True,('uninhabited attribute receiver',),analysis,frozenset(),MappingProxyType({}))
     from .native_bytearray import requires_frames as bytearray_requires_frames
     if bytearray_requires_frames(analysis):
         return FrameSelection(True,('native mutable bytearray storage and protocols',),analysis,frozenset(),MappingProxyType({}))

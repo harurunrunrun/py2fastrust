@@ -7,6 +7,15 @@ import ast
 from .native_types import EMPTY,EmptyType
 
 
+def requires_attribute_frames(unit,analysis):
+    for node in ast.walk(unit.tree):
+        if not isinstance(node,ast.Attribute)or not isinstance(node.ctx,ast.Load):continue
+        ordinal=unit.ordinal(node.value)
+        if any(isinstance(facts.expressions.get(ordinal),EmptyType)
+               for facts in analysis.scopes.values()):return True
+    return False
+
+
 def empty(value):
     from .native_classes import shape
     return isinstance(shape(value),EmptyType)
@@ -74,3 +83,20 @@ def emit_subscript(emitter,node,wanted):
     if count==2:
         more,value=emitter.capture(emitter.expression(node.slice));setup+=more
     return Expression('{'+setup+emitter.coerce(value,wanted,node)+'}',wanted)
+
+
+def attribute_operand(model,plan,node,receiver):
+    sites=getattr(model,'abrupt_attribute_operands',None)
+    if sites is None:sites=model.abrupt_attribute_operands=set()
+    key=plan.index,id(node)
+    sites.discard(key)
+    if not empty(receiver):return None
+    sites.add(key)
+    return bottom(model,plan,node)
+
+
+def emit_attribute(emitter,node,wanted):
+    from .native_classes import Expression
+    if(emitter.plan.index,id(node))not in getattr(emitter.model,'abrupt_attribute_operands',()):return None
+    setup,receiver=emitter.capture(emitter.expression(node.value))
+    return Expression('{'+setup+emitter.coerce(receiver,wanted,node)+'}',wanted)

@@ -1327,6 +1327,9 @@ class Model:
         raise ClassUnsupported(node)
 
     def attribute_value(self,plan,node,receiver,environment):
+        from .native_abrupt_values import attribute_operand
+        abrupt=attribute_operand(self,plan,node,receiver)
+        if abrupt is not None:return abrupt
         from .native_type_objects import analyze_attribute
         typed=analyze_attribute(self,plan,node,receiver)
         if typed is not None:return typed
@@ -1338,9 +1341,6 @@ class Model:
         if array is not None:return array
         if any(getattr(kind,'_native_exception_class',False)or getattr(kind,'_native_exception_value',False)for kind in alternatives(shape(receiver))):
             raise ClassUnsupported(node,'exception attribute '+repr(node.attr)+' needs exception argument, traceback or descriptor metadata; that exception-object attribute protocol is not implemented',types=(('receiver',shape(receiver)),),proof='exception object attribute and metadata protocol')
-        if isinstance(receiver.tag,EmptyType)and not self.final:
-            from .native_guard_flow import AnalysisPending
-            raise AnalysisPending()
         if hasattr(self,'class_namespaces'):
             value=self.class_namespaces.named_tuples.analyze_attribute(plan,node,receiver,environment)
             if value is not None:return value
@@ -2123,6 +2123,9 @@ class Emitter:
         if isinstance(node,(ast.Dict,ast.Set,ast.DictComp,ast.SetComp)):
             return self.model.mappings.emit_expression(self,node)
         if isinstance(node,ast.Attribute):
+            from .native_abrupt_values import emit_attribute
+            abrupt=emit_attribute(self,node,wanted)
+            if abrupt is not None:return abrupt
             from .native_mapping_method_callables import read as read_mapping_method
             method=read_mapping_method(self,node,wanted)
             if method is not None:return method

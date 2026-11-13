@@ -99,6 +99,15 @@ bodies reach a fair fixed point before still-empty list storage is finalized
 with an uninhabited element kind. Range truth compares its immutable endpoints
 and step sign, including ranges whose length cannot fit a machine index.
 
+Attribute loads and calls preserve an original receiver with no normal result:
+lookup and argument expressions are never reached after that receiver fails.
+This is a point fact, cleared on every revisit when producer data becomes live;
+actual `None` and unsupported live receiver protocols retain their own behavior.
+The shared analysis selects typed frames for reached uninhabited attribute
+receivers, and the frame model independently proves that prefix before lowering.
+Generator-produced mutable tuple fields can consequently reach normal list
+operations once their actual element schemas settle, preserving shared aliases.
+
 
 Builtin list slice assignment supports insertion, replacement, removal and
 extended slices through captured original targets. RHS expressions precede

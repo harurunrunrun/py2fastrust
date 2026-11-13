@@ -342,6 +342,9 @@ class CallableCells:
         self.receivers.pop(key,None)
         if isinstance(node.func,ast.Attribute):
             self.receivers[key]=self.model.expression(plan,node.func.value,environment)
+            from .native_abrupt_values import attribute_operand
+            abrupt=attribute_operand(self.model,plan,node.func,self.receivers[key])
+            if abrupt is not None:return self.abrupt_callee(plan,node,abrupt)
         if not self.candidate(plan,node,environment):
             self.sites.pop(key,None)
             return None
