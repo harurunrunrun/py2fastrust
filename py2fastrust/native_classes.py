@@ -729,7 +729,18 @@ class Model:
                 else:
                     raise ClassUnsupported(plan.node)
         self.specializations.enable()
-        if self.specializations.enabled:self.infer_until_stable()
+        if self.specializations.enabled:
+            # Native body instances can create fresh empty allocations after
+            # the original storage pass. Reach a fair fixed point before
+            # finalizing only their still-uninhabited element cells. Empty is
+            # bottom, not an invented integer value or an unresolved source.
+            while True:
+                self.infer_until_stable()
+                pending={value.root().args[0].root()for value in self.records.values()
+                         if value.root().tag=='list'and value.root().args[0].root().tag is None}
+                if not pending:break
+                from .native_types import EMPTY
+                for element in pending:merge(element,Cell(EMPTY),self.tree)
         self.final = True
         self.reached_statements=set()if hasattr(self,'type_guard_cells')or getattr(self,'loop_reachability_used',False)or self.exceptions.raises or getattr(self,'native_abrupt_calls_used',False)or getattr(self,'native_exit_used',False)or getattr(self,'source_generators_used',False)or getattr(self,'native_abrupt_values_used',False)else None
         self.module.visible_definitions = set()
@@ -1828,6 +1839,10 @@ class Emitter:
             return f"({value.code})!=0.0"
         if tag == "complex":
             return f"({value.code}).is_true()"
+        if tag == "range":
+            current=self.fresh()
+            negative=current+'.step.is_negative()'if self.model.integer=='bigint'else current+'.step<0'
+            return '{let '+current+'=&('+value.code+');if '+negative+'{'+current+'.start>'+current+'.stop}else{'+current+'.start<'+current+'.stop}}'
         if tag == "list":
             result=self.fresh()
             return f"{{let {result}=!({value.code}).borrow().is_empty();{result}}}"

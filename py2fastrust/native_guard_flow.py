@@ -10,11 +10,32 @@ class AnalysisPending(Exception):
 
 def requires_frames(unit,analysis):
     for node in ast.walk(unit.tree):
+        observers=([node.test]if isinstance(node,(ast.If,ast.While,ast.IfExp))else
+                   [node.operand]if isinstance(node,ast.UnaryOp)and isinstance(node.op,ast.Not)else
+                   node.values if isinstance(node,ast.BoolOp)else [])
+        if isinstance(node,ast.Call)and len(node.args)==1 and not node.keywords:
+            for facts in analysis.scopes.values():
+                call=facts.calls.get(unit.ordinal(node))
+                if(call is not None and not call.identity.unknown and not call.identity.unbound
+                        and call.identity.alternatives==frozenset({BuiltinIdentity('bool')})):
+                    observers=[node.args[0]];break
+        from .native_constraints import IteratorValue
+        for value in observers:
+            site=unit.ordinal(value)
+            for facts in analysis.scopes.values():
+                if facts.expressions.get(site)=='range':return True
+                current=facts.values.get(site)
+                if(current is not None and not current.unbound and not current.unknown
+                        and any(isinstance(part,IteratorValue)for part in current.alternatives)):
+                    return True
         if not isinstance(node,ast.If):continue
         operand=node.test
         while isinstance(operand,ast.UnaryOp)and isinstance(operand.op,ast.Not):operand=operand.operand
         site=unit.ordinal(operand)
-        if any(facts.expressions.get(site)=='none'for facts in analysis.scopes.values()):return True
+        from .native_types import alternatives
+        if any('none'in alternatives(facts.expressions.get(site))for facts in analysis.scopes.values()):return True
+        if isinstance(operand,ast.Compare)and len(operand.ops)==1 and isinstance(operand.ops[0],(ast.Is,ast.IsNot)):
+            if any(isinstance(value,ast.Constant)and value.value is None for value in(operand.left,operand.comparators[0])):return True
     return False
 
 
@@ -131,6 +152,9 @@ def branches(model,plan,test,environment):
         model.type_guard_branches[key]=(inverted,not inverted)
         selected=Environment(environment)
         return(selected,None)if inverted else(None,selected)
+    from .native_optional_guard_flow import branches as optional_branches
+    optional=optional_branches(model,plan,test,environment)
+    if optional is not None:return optional
     negative=isinstance(test,ast.UnaryOp)and isinstance(test.op,ast.Not)
     call=test.operand if negative else test
     if not isinstance(call,ast.Call)or len(call.args)!=2 or call.keywords:return None

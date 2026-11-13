@@ -50,6 +50,17 @@ results, inherited slots, alternate descriptors and user `__length_hint__`
 remain explicit diagnostics. Source `__reversed__` returns the actual callback
 result once, retaining its identity without an extra iterator-result check.
 
+
+Local `is None` / `is not None` predicates refine the actual official binding
+within each `if` branch. Direct local truth guards exclude `None` only from
+the true branch; empty containers remain possible on the false branch. Normal
+reassignment retires the older point fact, mutable values keep their aliases,
+and captured locals with descendant writers retain conservative storage.
+Missing local bindings remain distinct from actual `None`. Newly specialized
+bodies reach a fair fixed point before still-empty list storage is finalized
+with an uninhabited element kind. Range truth compares its immutable endpoints
+and step sign, including ranges whose length cannot fit a machine index.
+
 Fixed-target unpacking of finite builtin list/tuple alternatives uses an exact
 length check and Rust local snapshots, releasing temporary list leases before
 target stores and retaining shared mutable elements without iterator allocation.
