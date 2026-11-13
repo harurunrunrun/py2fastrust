@@ -508,6 +508,8 @@ class Mappings:
             else:
                 from .native_classes import shape
                 method='try_constructor_copy'if record.flavor=='Counter'else'try_python_copy'
+                from .native_dictionary_copy_places import method as copy_method
+                method=copy_method(method,shape(owner.kind.record.key),shape(owner.kind.record.value),emitter.model.integer)
                 query=copy_query(emitter,shape(owner.kind.record.key))
                 copied=emitter.fresh()
                 call=emitter.at(owner.code+'.borrow().'+method+'('+query+')',node)

@@ -155,7 +155,7 @@ class IntegerDigitLimitMetadataTests(unittest.TestCase):
 
     def test_custom_container_callback_representation_is_not_silently_admitted(self):
         source = CUSTOM_CONTAINER
-        for integer in ('i64', 'i128', 'bigint'):
+        for integer in ('bigint',):
             result = transpile(source, TranspileOptions(integer=integer))
             self.assertFalse(result.success)
             self.assertTrue(any(item.code == 'E006' and 'callback-safe digit-limited container display'

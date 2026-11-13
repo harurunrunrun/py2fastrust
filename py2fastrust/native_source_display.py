@@ -193,6 +193,10 @@ def show(emitter,value,node,representation=False):
         site=sites(model).get((emitter.plan.index,id(node),kind,representation))
         if site is None:
             raise ClassUnsupported(node,'source display '+choice[1]+' has no matching analyzed observer boundary; this consumer has not implemented native source display callback effects',proof='source display callback/effect site')
+        # Finite-union projection borrows its actual variant. Capture a shared
+        # receiver handle before invoking source code that may mutate owners.
+        if not value.owned:
+            value=Expression('('+value.code+').clone()',kind)
         setup,owner=emitter.capture(value);reference=emitter.fresh()
         setup+='let '+reference+'={'+owner.code+'.borrow().class_definition.clone()};'
         context=Expression(reference,ClassReferenceType(site.member.owner.index))

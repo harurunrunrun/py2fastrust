@@ -215,7 +215,9 @@ class DefaultDicts:
         converted=emitter.coerce(value,shape(record.default_factory),node)
         from .native_class_mappings import copy_query
         query=copy_query(emitter,shape(owner.kind.record.key))
-        setup='let '+data+'='+emitter.at(owner.code+'.borrow().try_constructor_copy('+query+')',node)+';'
+        from .native_dictionary_copy_places import method as copy_method
+        method=copy_method('try_constructor_copy',shape(owner.kind.record.key),shape(owner.kind.record.value),emitter.model.integer)
+        setup='let '+data+'='+emitter.at(owner.code+'.borrow().'+method+'('+query+')',node)+';'
         return '{'+setup+'let '+factory+'='+owner.code+'.factory.borrow().clone();Rc::new(ClassDefaultState_'+str(record.index)+'{data:RefCell::new('+data+'),factory:RefCell::new('+converted+')})}'
 
     def show(self,emitter,value,node):

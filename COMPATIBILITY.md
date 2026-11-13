@@ -1018,6 +1018,13 @@ rendering would change Python's exception type or timing. Existing unsupported
 try/except routing is unchanged. No setter is discarded and no Display panic
 stands in for a Python conversion error.
 
+Fixed-width integer displays have at most 39 decimal digits and retain the
+existing source-callback display path under every valid digit limit. Its live
+list observers release element leases before invoking source repr methods;
+borrowed finite-union receiver arms retain their actual shared object handle
+for that invocation. Owned receivers and primitive display operands keep
+their existing ownership path.
+
 Trusted `sys.stdin`/`.buffer` imports and their `read`/`readline` aliases generate
 direct reads through the same buffered input object. Ordinary entry functions
 and function-local imports retain scope analysis. Text readers retain newlines
@@ -3172,6 +3179,8 @@ requirement to read-only contexts. Structural reservations and size arithmetic a
 checked before physical remapping commits; existing payload clone contracts
 and unsupported finalizer/custom-key boundaries are unchanged.
 
-Dense typed dictionary copies reuse a fallibly preallocated standard-library hash table when its live-sized capacity matches a table with no key erasures since its last rebuild. Deletion and pop invalidate that certificate in every entry layout; the dense carrier exposes no mutable `Vec` dereference and unregistered structural operations fail to compile; otherwise copies rebuild from current live entries. Native scalar entry slots use Rust's conditional `Copy` specialization, while owned payloads keep their shallow `Clone` behavior. Structural allocation failures remain checked before copying, and unpositioned copies do not traverse unused cursor metadata.
+Dense typed dictionary copies reuse a fallibly preallocated standard-library hash table when its live-sized capacity matches a table with no key erasures since its last rebuild. Deletion and pop invalidate that certificate in every entry layout; the dense carrier exposes no mutable `Vec` dereference and unregistered structural operations fail to compile; otherwise copies rebuild from current live entries. Proved builtin `Copy` key/value carriers use an explicit bulk slot operation after fallible allocation; owned payloads keep their shallow `Clone` behavior. Structural allocation failures remain checked before copying, and unpositioned copies do not traverse unused cursor metadata.
 
 The bulk path uses standard `HashMap::clone_from` only after this capacity proof; the minimum supported Rust 1.85 hashbrown implementation and the tested toolchain reuse equal-bucket allocations. The public `Clone` API alone does not promise future implementation allocation behavior. Tests check that the copy performs only the fallible structural allocations, with allocation fault injection and zero repeated key hashes. Histories that fail the certificate or live-capacity equality are copied by live entry lookup, including the dense carrier, without scanning historical hash-table capacity.
+
+Dictionary copy paths with proved builtin `Copy` key/value carriers can bulk-copy their initialized entry slots after fallible destination allocation. This proof includes fixed-width integers, bool, float, None and recursively plain tuples or nullable values; BigInt and owned/reference carriers retain shallow `Clone`. The explicit Rust helper is `Copy`-bounded, requires an empty preallocated destination, and initializes its length only after the nonoverlapping copy. It preserves the shared dictionary history/index algorithm and does not rely on the standard library treating generic derived `Clone` as a trivial copy.

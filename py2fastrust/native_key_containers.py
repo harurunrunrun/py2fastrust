@@ -59,6 +59,12 @@ impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
     fn try_constructor_copy<F:FnMut(&K)->C>(&self,canonical:F)->Result<Self,String> where K:Clone,V:Clone,C:Clone{
         let(entries,index)=native_dict_try_copy(&self.entries,&self.index,canonical,true)?;Ok(Self{entries,index})
     }
+    fn try_python_copy_bits<F:FnMut(&K)->C>(&self,canonical:F)->Result<Self,String> where K:Copy,V:Copy,C:Clone{
+        let(entries,index)=native_dict_try_copy_bits(&self.entries,&self.index,canonical,false)?;Ok(Self{entries,index})
+    }
+    fn try_constructor_copy_bits<F:FnMut(&K)->C>(&self,canonical:F)->Result<Self,String> where K:Copy,V:Copy,C:Clone{
+        let(entries,index)=native_dict_try_copy_bits(&self.entries,&self.index,canonical,true)?;Ok(Self{entries,index})
+    }
     fn delete(&mut self,key:&C)->bool {
         match self.index.remove(key){Some(slot)=>{native_dict_remove(&mut self.entries,&mut self.index,slot);true},None=>false}
     }

@@ -1994,7 +1994,7 @@ class Emitter:
         if getattr(value.kind,'_native_mapping_view',False):return self.model.mappings.views.show(self,value,node)
         if isinstance(value.kind,EmptyType):return f"native_empty::<String>({value.code})"
         if union_kind(value.kind):return project(value.kind,value.code,
-            lambda kind,code:self.show(Expression(code,kind),node,representation))
+            lambda kind,code:self.show(Expression(code,kind,owned=False),node,representation))
         if isinstance(value.kind,TupleSequenceType):
             from .native_variadic import show
             return show(self,value,node)

@@ -226,6 +226,8 @@ print(items)
 ''',
 }
 
+CASES.update({'reassigned_class_method_direct': 'class Row:\n def text(self):return "old"\n def replacement(self):return "new"\n __repr__=text\n text=replacement\nrow=Row()\nprint(row.text())\n', 'reassigned_class_method_saved': 'class Row:\n def text(self):return "old"\n def replacement(self):return "new"\n __repr__=text\n text=replacement\nrow=Row()\nsaved=row.text\nprint(saved())\n'})
+
 class SourceDisplayExecutionTests(iterator_tests.IteratorExecutionTests):
  cases=CASES
  inputs={'empty_custom_container_never_calls_repr':'0\n'}
@@ -258,8 +260,7 @@ class SourceDisplayGuards(unittest.TestCase):
   prefix='class Row:\n def text(self):return "old"\n def replacement(self):return "new"\n __repr__=text\n text=replacement\nrow=Row()\n'
   for suffix in ('print(row.text())\n','saved=row.text\nprint(saved())\n'):
    result=transpile(prefix+suffix,TranspileOptions(license='none'))
-   self.assertFalse(result.success)
-   self.assertIn('reassigned during class publication',result.diagnostics[0].message)
+   self.assertTrue(result.success,result.diagnostics)
 
  def test_fixed_tuple_recursive_repr_identity_is_explicit(self):
   for initial in ('(Item(),)','(Item() if int(input()) else None,)'):

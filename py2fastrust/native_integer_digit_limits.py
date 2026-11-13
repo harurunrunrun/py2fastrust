@@ -133,6 +133,10 @@ def guard_error_repr(emitter, key, node):
 def show(emitter, value, node, representation):
     if not active(emitter.model):
         return None
+    # Fixed-width values have at most 39 decimal digits, below every allowed
+    # nonzero limit. Their existing callback-aware observers remain valid.
+    if emitter.model.integer != 'bigint':
+        return None
     from .native_classes import Expression, ClassUnsupported, shape
     from .native_types import ListType, TupleType, TupleSequenceType
     from .native_unions import project, union_kind
@@ -147,8 +151,6 @@ def show(emitter, value, node, representation):
                 'representation callback; its checked live container display '
                 'protocol is not implemented on the digit-limit native path',
                 types=(('value', kind),), proof='callback-safe digit-limited container display')
-    if emitter.model.integer != 'bigint':
-        return None
     if kind == 'int':
         return emitter.at('native_int_decimal_text(&(' + value.code + '))', node)
     if kind == 'int_bool':

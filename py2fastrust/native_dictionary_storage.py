@@ -94,13 +94,23 @@ fn native_dict_insert<T,C:Eq+std::hash::Hash,S:std::hash::BuildHasher+Clone>(ent
     '''+insert_plan+r'''
     entries.insert(value)
 }
-fn native_dict_try_copy<K:Clone,V:Clone,C:Clone+Eq+std::hash::Hash,S:std::hash::BuildHasher+Clone,F:FnMut(&K)->C>(entries:&NativeDictionaryEntries<(K,V)>,index:&std::collections::HashMap<C,usize,S>,mut canonical:F,constructor:bool)->Result<(NativeDictionaryEntries<(K,V)>,std::collections::HashMap<C,usize,S>),String>{
+fn native_dict_copy_slots<T:Copy>(target:&mut Vec<NativeEntrySlot<T>>,source:&[NativeEntrySlot<T>]){
+    assert!(target.is_empty());assert!(target.capacity()>=source.len());
+    unsafe{std::ptr::copy_nonoverlapping(source.as_ptr(),target.as_mut_ptr(),source.len());target.set_len(source.len());}
+}
+fn native_dict_try_copy<K:Clone,V:Clone,C:Clone+Eq+std::hash::Hash,S:std::hash::BuildHasher+Clone,F:FnMut(&K)->C>(entries:&NativeDictionaryEntries<(K,V)>,index:&std::collections::HashMap<C,usize,S>,canonical:F,constructor:bool)->Result<(NativeDictionaryEntries<(K,V)>,std::collections::HashMap<C,usize,S>),String>{
+    native_dict_try_copy_with(entries,index,canonical,constructor,|target,source|target.extend_from_slice(source))
+}
+fn native_dict_try_copy_bits<K:Copy,V:Copy,C:Clone+Eq+std::hash::Hash,S:std::hash::BuildHasher+Clone,F:FnMut(&K)->C>(entries:&NativeDictionaryEntries<(K,V)>,index:&std::collections::HashMap<C,usize,S>,canonical:F,constructor:bool)->Result<(NativeDictionaryEntries<(K,V)>,std::collections::HashMap<C,usize,S>),String>{
+    native_dict_try_copy_with(entries,index,canonical,constructor,native_dict_copy_slots::<(K,V)>)
+}
+fn native_dict_try_copy_with<K:Clone,V:Clone,C:Clone+Eq+std::hash::Hash,S:std::hash::BuildHasher+Clone,F:FnMut(&K)->C,R:FnOnce(&mut Vec<NativeEntrySlot<(K,V)>>,&[NativeEntrySlot<(K,V)>])>(entries:&NativeDictionaryEntries<(K,V)>,index:&std::collections::HashMap<C,usize,S>,mut canonical:F,constructor:bool,rows:R)->Result<(NativeDictionaryEntries<(K,V)>,std::collections::HashMap<C,usize,S>),String>{
     let length=entries.length;let mut result=NativeOrderedEntries::new();let mut copied=std::collections::HashMap::with_hasher(index.hasher().clone());
     if length==0{return Ok((result,copied));}
     result.slots.try_reserve_exact(length).map_err(|_|"MemoryError".to_owned())?;copied.try_reserve(length).map_err(|_|"MemoryError".to_owned())?;
     '''+copy_plan+r'''
     if entries.free==NATIVE_ENTRY_NONE{
-        result.slots.extend_from_slice(&entries.slots);result.head=entries.head;result.tail=entries.tail;
+        rows(&mut result.slots,&entries.slots);result.head=entries.head;result.tail=entries.tail;
         if entries.index_unerased&&copied.capacity()==index.capacity(){copied.clone_from(index);}else{
             for(slot,row)in entries.slots.iter().enumerate(){let pair=row.value.as_ref().expect("live dictionary slot");let query=canonical(&pair.0);let(stored,found)=index.get_key_value(&query).expect("registered dictionary canonical key");debug_assert_eq!(*found,slot);copied.insert(stored.clone(),slot);}
         }
@@ -127,5 +137,11 @@ fn native_dict_apply_plan<T,C:Eq+std::hash::Hash,S:std::hash::BuildHasher+Clone>
 fn native_dict_try_copy<K:Clone,V:Clone,C:Clone+Eq+std::hash::Hash,S:std::hash::BuildHasher+Clone,F:FnMut(&K)->C>(entries:&NativeDictionaryEntries<(K,V)>,index:&std::collections::HashMap<C,usize,S>,mut canonical:F,_constructor:bool)->Result<(NativeDictionaryEntries<(K,V)>,std::collections::HashMap<C,usize,S>),String>{
     let mut result=NativeDictionaryEntries::new();result.try_reserve_exact(entries.len()).map_err(|_|"MemoryError".to_owned())?;let mut copied=std::collections::HashMap::with_hasher(index.hasher().clone());copied.try_reserve(index.len()).map_err(|_|"MemoryError".to_owned())?;
     result.extend_from_slice(entries);if entries.index_unerased&&copied.capacity()==index.capacity(){copied.clone_from(index);}else{for(slot,pair)in entries.iter().enumerate(){let query=canonical(&pair.0);let(stored,found)=index.get_key_value(&query).expect("registered dictionary canonical key");debug_assert_eq!(*found,slot);copied.insert(stored.clone(),slot);}}Ok((result,copied))
+}
+'''
+
+DENSE += r'''
+fn native_dict_try_copy_bits<K:Copy,V:Copy,C:Clone+Eq+std::hash::Hash,S:std::hash::BuildHasher+Clone,F:FnMut(&K)->C>(entries:&NativeDictionaryEntries<(K,V)>,index:&std::collections::HashMap<C,usize,S>,canonical:F,constructor:bool)->Result<(NativeDictionaryEntries<(K,V)>,std::collections::HashMap<C,usize,S>),String>{
+    native_dict_try_copy(entries,index,canonical,constructor)
 }
 '''
