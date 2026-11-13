@@ -203,6 +203,8 @@ def select_frames(unit,*,integer="i64"):
     if none_guard_requires_frames(unit,analysis):reasons+=("concrete None conditional reachability",)
     from .native_heap_selection import requires_frames as heap_selection_requires_frames
     if heap_selection_requires_frames(analysis):reasons+=("bounded native heap selections",)
+    from .native_numeric_keys import requires_frames as numeric_key_frames
+    if numeric_key_frames(unit,analysis):reasons+=('exact numeric hash key protocols',)
     from .native_float_identity import requires_frames as float_identity_frames
     if float_identity_frames(unit,analysis):reasons+=('typed float container identity',)
     from .native_float_constructor import requires_frames as float_requires_frames

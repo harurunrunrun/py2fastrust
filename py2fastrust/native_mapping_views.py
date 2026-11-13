@@ -208,7 +208,10 @@ class Views:
         from .native_classes import shape
         from .native_unions import project,union_kind
         from .native_set_cursors import accepts,construct
-        if accepts(self.model,kind):return construct(code)
+        if accepts(self.model,kind):
+            from .native_numeric_keys import observe_set
+            observe_set(emitter,kind,kind.record.node)
+            return construct(code)
         self.require_positions(kind,kind.record.node)
         if not view_kind(kind):return 'ClassMappingCursor::new('+code+')'
         record=kind.record;record.cursor_emitted=True;source=shape(record.source);choices=alternatives(source)

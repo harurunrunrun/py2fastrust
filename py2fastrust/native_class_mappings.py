@@ -44,7 +44,12 @@ def mapping_kind(kind):return isinstance(kind,MappingType)
 
 
 def key_supported(kind):
-    return (isinstance(kind,EmptyType)or kind in {'int','bool','int_bool','str','bytes','none'}
+    from .native_numeric_keys import numeric,common_key
+    from .native_unions import union_kind
+    if union_kind(kind)and not numeric(kind):
+        common=common_key(kind)
+        return common is not None and key_supported(common)
+    return (numeric(kind)or isinstance(kind,EmptyType)or kind in {'int','bool','int_bool','str','bytes','none'}
         or isinstance(kind,TupleType)and all(key_supported(child)for child in kind.fields)
         or isinstance(kind,TupleSequenceType)and key_supported(kind.element))
 
@@ -58,8 +63,12 @@ def key_pending(kind):
 
 
 def key_compatible(left,right):
+    from .native_numeric_keys import common_key
+    left,right=common_key(left),common_key(right)
+    if left is None or right is None:return False
     if isinstance(left,EmptyType)or isinstance(right,EmptyType):return False
-    if left in {'int','bool','int_bool'}and right in {'int','bool','int_bool'}:return True
+    from .native_numeric_keys import numeric
+    if numeric(left)and numeric(right):return True
     if left==right and left in {'str','bytes','none'}:return True
     if isinstance(left,TupleType)and isinstance(right,TupleType):
         return len(left.fields)==len(right.fields)and all(key_compatible(a,b)for a,b in zip(left.fields,right.fields))
@@ -69,6 +78,9 @@ def key_compatible(left,right):
 
 def canonical_type(kind):
     from .native_key_types import canonical_tuple
+    from .native_numeric_keys import numeric,floating,common_key
+    kind=common_key(kind)
+    if numeric(kind)and floating(kind):return 'NativeNumericKey'
     if isinstance(kind,EmptyType):return 'NativeEmpty'
     if kind in {'int','bool','int_bool'}:return 'NativeInt'
     if kind=='str':return 'NativeText'
@@ -79,19 +91,24 @@ def canonical_type(kind):
     raise KeyError(kind)
 
 
-def canonical(emitter,value):
+def canonical(emitter,value,*,wanted=None):
     from .native_classes import Expression
     from .native_key_types import canonical_tuple
+    from .native_numeric_keys import numeric,floating,common_key,canonical as numeric_canonical
+    from .native_unions import project,union_kind
     kind,code=value.kind,value.code
+    wanted=common_key(kind if wanted is None else wanted)
+    if numeric(wanted)and floating(wanted):return numeric_canonical(emitter,value)
+    if union_kind(kind):return project(kind,code,lambda child,text:canonical(emitter,Expression('('+text+').clone()',child),wanted=wanted))
     if isinstance(kind,EmptyType):return 'match '+code+'{}'
     if kind in {'int','bool','int_bool'}:return emitter.number(Expression('('+code+').clone()',kind))
     if kind in {'str','bytes'}:return '('+code+').clone()'
     if kind=='none':return '()'
-    if isinstance(kind,TupleType):
-        return canonical_tuple(canonical(emitter,Expression(f'({code}).{index}.clone()',child))for index,child in enumerate(kind.fields))
-    if isinstance(kind,TupleSequenceType):
+    if isinstance(kind,TupleType)and isinstance(wanted,TupleType):
+        return canonical_tuple(canonical(emitter,Expression(f'({code}).{index}.clone()',child),wanted=wanted.fields[index])for index,child in enumerate(kind.fields))
+    if isinstance(kind,TupleSequenceType)and isinstance(wanted,TupleSequenceType):
         item=emitter.fresh()
-        return '('+code+').iter().map(|'+item+'|'+canonical(emitter,Expression(item+'.clone()',kind.element))+').collect::<Vec<_>>()'
+        return '('+code+').iter().map(|'+item+'|'+canonical(emitter,Expression(item+'.clone()',kind.element),wanted=wanted.element)+').collect::<Vec<_>>()'
     raise KeyError(kind)
 
 
@@ -105,6 +122,12 @@ def query_canonical(emitter,value,wanted):
     """Hash equivalent immutable tuple layouts using the stored key ABI."""
     from .native_classes import Expression
     from .native_key_types import canonical_tuple
+    from .native_numeric_keys import query as numeric_query,common_key
+    from .native_unions import project,union_kind
+    wanted=common_key(wanted)
+    if union_kind(value.kind):return project(value.kind,value.code,lambda kind,code:query_canonical(emitter,Expression('('+code+').clone()',kind),wanted))
+    converted=numeric_query(emitter,value,wanted)
+    if converted is not None:return converted
     actual=value.kind;result_type=canonical_type(wanted)
     absent='None::<'+result_type+'>'
     if isinstance(actual,EmptyType)or isinstance(wanted,EmptyType):return absent
@@ -220,6 +243,8 @@ class Mappings:
         if not key_supported(kind)and not(not self.model.final and key_pending(kind)):
             raise ClassUnsupported(node,'this dictionary/set key requires a custom or unhashable key protocol that has no native representation yet',types=(('key',kind),),proof='native hash-key protocol')
         self.model.contribute(record.key,value,node)
+        from .native_numeric_keys import record_source
+        record_source(self.model,record,value,node)
 
     def analyze_expression(self,plan,node,environment):
         from .native_classes import Cell
@@ -535,6 +560,8 @@ class Mappings:
         elif name=='pop':
             from .native_unions import project,union_kind
             def branch(kind,text):
+                from .native_numeric_keys import observe_set
+                observe_set(emitter,kind,node)
                 item=emitter.fresh();taken=emitter.at('('+text+').borrow_mut().pop()',node)
                 return '{let '+item+'='+taken+';'+emitter.coerce(Expression(item,shape(kind.record.key)),wanted,node)+'}'
             code=project(owner.kind,owner.code,branch)if union_kind(owner.kind)else branch(owner.kind,owner.code)
@@ -582,6 +609,8 @@ class Mappings:
         if record.flavor=='defaultdict':return self.defaultdicts.show(emitter,value,node)
         if record.flavor=='Counter':return self.counters.show(emitter,value,node)
         if record.category=='set':
+            from .native_numeric_keys import observe_set
+            observe_set(emitter,value.kind,node)
             key,read,text=(emitter.fresh()for _ in range(3))
             shown=emitter.show(Expression(key+'.clone()',shape(record.key)),node,True)
             return '{let '+read+'=('+value.code+').borrow();let '+text+'=if '+read+'.is_empty(){"set()".to_owned()}else{format!("{{{}}}",'+read+'.entries().map(|('+key+',_,_)|'+shown+').collect::<Vec<_>>().join(", "))};'+text+'}'

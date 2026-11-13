@@ -747,9 +747,11 @@ integer keys use the same typed containers. The frame adapter also stores
 shared dictionaries and sets in typed reference-counted handles, including
 mutable dictionary values, class fields, captured arguments and returned
 aliases. Dictionary/set literals, comprehensions and constructors preserve
-source evaluation order. Frame keys may be integer/bool, text, bytes, `None`,
-or compatible immutable tuple shapes; custom hash/equality protocols and
-heterogeneous key representations remain unfinished.
+source evaluation order. Frame keys may be integer/bool/float, text, bytes, `None`,
+or compatible immutable tuple shapes. Finite numeric alternatives and unions of
+compatible tuple layouts share a separate canonical key ABI while retaining the
+original source key objects. Custom hash/equality and incompatible heterogeneous
+key families remain unfinished.
 
 Frame dictionary indexing, assignment, numeric augmented entries, membership,
 `get`, `setdefault`, and shallow `copy` preserve shared payload identity. They
@@ -767,10 +769,14 @@ this does not expose or certify their internal traversal order. Clear empties
 the existing owner, including aliases. Explicit keywords and invalid clear
 arity raise after their argument effects, and positional `*` expansion retains
 Python's sole-star versus multiple-segment evaluation schedule. Stored/unbound
-set mutation method values, custom/floating hash protocols and unsupported
-iterator payload lifetimes retain positioned capability diagnostics.
-Observable set traversal/display and callable sorting keys that expose set tie
-order remain diagnosed. Frame dictionaries provide live `keys`, `items` and `values` views, preserving
+set mutation method values, custom hash protocols and unsupported
+iterator payload lifetimes retain positioned capability diagnostics. Numeric
+set contents operations preserve shared versus distinct NaN key identity.
+Float-bearing set traversal/display/pop requires a proof that every contributing
+key producer excludes NaN: currently original numeric/tuple literals, immediate
+literal-sequence constructors, registered literal mutations and closed copies.
+Unknown aliases and callback producers retain positioned diagnostics. This does
+not invent a seeded order for CPython's object-pointer NaN hashes. Frame dictionaries provide live `keys`, `items` and `values` views, preserving
 captured owner identity, insertion order, current values and mutable payload
 aliases. Dictionary/view cursors check size changes at each pull, release all
 borrows before callbacks, and stay exhausted after completion. Traversal uses
@@ -926,16 +932,30 @@ immutable tuples with alias-preserving mutable elements, retains an existing
 tuple's identity, and shares the empty tuple. Fixed and runtime tuple query
 keys are converted to the stored canonical hash representation in O(key size),
 including nested tuple lengths. This retains hash lookup complexity and avoids
-scanning dictionary entries. Floating/custom key queries remain precise
-conversion diagnostics rather than spurious missing/unhashable-key results.
+scanning dictionary entries. Real numeric key equality is exact beyond binary64's
+integer precision. Equal int/bool/float keys share the rational numeric hash,
+including signed zero and infinities; an overwrite retains the original key.
+The selected integer policy applies to integer values, never to float keys.
+Queries into an existing integral key ABI use checked exact representability;
+an out-of-range or fractional float is absent rather than wrapping. Dictionaries
+retain distinct NaN keys and recognize aliases using the typed float carrier.
+These rules follow [Python numeric hashing](https://docs.python.org/3.14/library/stdtypes.html#hashing-of-numeric-types)
+and the [CPython 3.14.4 hash implementation](https://github.com/python/cpython/blob/v3.14.4/Python/pyhash.c).
+Custom and complex-key protocols remain precise conversion diagnostics.
+
+Immediately consumed typed iterators retain the actual ownership of each projected
+field. Copy payloads stay direct Rust values; borrowed immutable tuples, bytes,
+BigInts and stable shared handles are cloned when an owned item is required.
+Shared mutable payloads retain their aliases. The existing borrowed integer-row
+protocol and owning iterator moves are preserved.
 
 Builtin dictionaries support `del d[key]`, including sequential deletion
 targets, checked missing-key errors and numeric augmented entry updates.
 Receiver lookup and key evaluation run once; augmented assignment fetches the
 old value before its right operand and stores after that operand's effects.
 Deletion/reinsertion preserves Python insertion order and the original key on
-an overwrite. Admitted keys are immutable integer/bool, text and tuple shapes;
-general hash/equality protocols remain unfinished.
+an overwrite. Admitted keys include immutable real numeric, text, bytes, `None` and
+compatible tuple shapes; general object/complex hash protocols remain unfinished.
 
 Numeric augmented entries reuse one existing hash slot when the right operand
 is proved scalar and cannot call Python code or access container storage. The

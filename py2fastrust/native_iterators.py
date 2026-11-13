@@ -155,7 +155,15 @@ class Planner:
                 continue
             code = raw.replace("@", item)
             if not owned and kind != "list_int":
-                code = g.coerce(_Expression(code, kind), kind)
+                from .native_dictionary_copy_places import copy_kind
+                from .native_types import EmptyType, reference_cloneable
+                integer = "i64" if g.bits == 64 else "i128" if g.bits == 128 else "bigint"
+                if copy_kind(kind, integer):
+                    pass
+                elif not isinstance(kind, EmptyType) and reference_cloneable(kind):
+                    code = f"({code}).clone()"
+                else:
+                    code = g.coerce(_Expression(code, kind, owned=False), kind)
             assignments.append(f"let {name} = {code};")
             values.append(_Expression(name, kind, owned=kind != "list_int" or owned))
         prefix = "\n".join(assignments)

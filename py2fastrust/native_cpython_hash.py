@@ -109,3 +109,19 @@ fn native_cp_hash_text(value:&str,secret:NativeCPHashSecret)->i64 {
     native_cp_hash_bytes(&bytes,secret)
 }
 '''
+
+# Binary decomposition implements the numeric rational hash modulo 2**61-1.
+# The NaN object-pointer case is handled separately by the key identity layer.
+FLOAT_HASH = r'''
+fn native_cp_hash_float(value:f64)->i64{
+    debug_assert!(!value.is_nan());
+    if value.is_infinite(){return if value.is_sign_negative(){-314159}else{314159};}
+    let bits=value.to_bits();let exponent=((bits>>52)&2047)as i32;
+    let mantissa=(bits&((1u64<<52)-1))|if exponent==0{0}else{1u64<<52};
+    let power=if exponent==0{-1074}else{exponent-1023-52};
+    let shift=power.rem_euclid(61)as u32;
+    let magnitude=((mantissa.wrapping_shl(shift)&2305843009213693951)|(mantissa>>(61-shift)))as i64;
+    let hash=if value.is_sign_negative(){-magnitude}else{magnitude};
+    if hash==-1{-2}else{hash}
+}
+'''

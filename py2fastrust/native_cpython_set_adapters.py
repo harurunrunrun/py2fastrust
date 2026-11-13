@@ -38,6 +38,8 @@ def _canonical_field(code,size,index):
 
 
 def requires_secret(kind):
+    from .native_numeric_keys import common_key
+    kind=common_key(kind)
     if kind in {'str','bytes'}:return True
     if isinstance(kind,TupleType):return any(requires_secret(child)for child in kind.fields)
     if isinstance(kind,TupleSequenceType):return requires_secret(kind.element)
@@ -51,14 +53,19 @@ The native key guard already excludes callback-bearing hash/equality. Keep
 nominal tuple subclasses outside this certificate even when their payload
 currently resembles an ordinary tuple.
 """
-    if isinstance(kind,EmptyType)or kind in {'int','bool','int_bool','str','bytes','none'}:return True
+    from .native_numeric_keys import numeric
+    if numeric(kind)or isinstance(kind,EmptyType)or kind in {'str','bytes','none'}:return True
     if type(kind)is TupleType:return all(frozenset_disjoint(child)for child in kind.fields)
     if type(kind)is TupleSequenceType:return frozenset_disjoint(kind.element)
     return False
 
 
 def canonical_hash(emitter,kind,code):
+    from .native_numeric_keys import common_key
+    kind=common_key(kind)
     if isinstance(kind,EmptyType):return 'match '+code+'{}'
+    from .native_numeric_keys import numeric,floating
+    if numeric(kind)and floating(kind):return 'native_numeric_key_hash(&('+code+'))'
     if kind in {'int','bool','int_bool'}:return 'native_cp_hash_native(&('+code+'))'
     if kind=='none':return 'native_cp_hash_none()'
     if kind=='str':
@@ -190,7 +197,10 @@ class CPythonSets:
         from .native_cpython_hash_secret import RUNTIME as SECRET
         roots=set()
         def hash_roots(kind):
-            if kind in {'int','bool','int_bool'}:roots.add('native_cp_hash_native')
+            from .native_numeric_keys import numeric,floating,common_key
+            kind=common_key(kind)
+            if numeric(kind)and floating(kind):roots.add('native_numeric_key_hash')
+            elif kind in {'int','bool','int_bool'}:roots.add('native_cp_hash_native')
             elif kind=='none':roots.add('native_cp_hash_none')
             elif kind=='str':roots.add('native_cp_hash_bytes'if self.model.string_mode=='ascii'else'native_cp_hash_text')
             elif kind=='bytes':roots.add('native_cp_hash_bytes')

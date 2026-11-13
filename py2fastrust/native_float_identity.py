@@ -43,6 +43,7 @@ def prepare(model):
         if isinstance(role,tuple)and role[0]=='comparison':
             active|=comparison_demand(shape(values[0]),shape(values[1]),role[1]())
         else:active|=any(container(shape(value))for value in values)
+    active|=any(floating(shape(record.key))for record in model.mappings.records)
     model.native_float_identity_enabled=active
 
 

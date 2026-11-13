@@ -280,17 +280,25 @@ print(any(a+i==0 for i in range(3)),max(a+i for i in range(3)))
             print(sum((i for i in range(0)),True),sum((i for i in range(2)),True))
         ''', modes=("bigint",))
 
+    def test_original_shadowed_and_stored_iterators_execute_against_cpython(self):
+        for source in (
+            'sum=lambda xs:77\nprint(sum(x for x in [1]))',
+            'any=lambda xs:77\nprint(any(x for x in [1]))',
+            'all=lambda xs:77\nprint(all(x for x in [1]))',
+            'g=(x for x in range(3))\nprint(sum(g))',
+            's={1,2}\nprint(sum(1//x for x in s))',
+            'print(max((x for x in [1]),key=lambda x:x))',
+        ):
+            for mode in ("i64", "i128", "bigint"):
+                for release in (False, True):
+                    with self.subTest(source=source, mode=mode, release=release):
+                        self.compare(self.compile(source, mode, release))
+
     def test_unproved_binding_mutation_and_escaped_generators_are_rejected(self):
         for source in (
-            "sum=lambda xs:77\nprint(sum(x for x in [1]))",
-            "any=lambda xs:77\nprint(any(x for x in [1]))",
-            "all=lambda xs:77\nprint(all(x for x in [1]))",
-            "g=(x for x in range(3))\nprint(sum(g))",
             "print(sum(x for x in [1]));print(x)",
             "from collections import deque\nq=deque([1,2])\nprint(sum((x for x in q),q.popleft()))",
-            "s={1,2}\nprint(sum(1//x for x in s))",
             "print(sum(float(x) for x in range(3)))",
-            "print(max((x for x in [1]),key=lambda x:x))",
             "print(sum(x for (x,) in [1]))",
             "print(sum(x for x in zip([1])))",
         ):

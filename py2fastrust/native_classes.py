@@ -3712,6 +3712,9 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     from .native_float_identity import runtime as float_identity_runtime
     identity_float_runtime=float_identity_runtime(model)
     if identity_float_runtime:pieces.append(identity_float_runtime)
+    from .native_numeric_keys import runtime as numeric_key_runtime
+    numeric_keys=numeric_key_runtime(model)
+    if numeric_keys:pieces.append(numeric_keys)
     if model.sequence_calls:
         from .native_typed_lists import HELPERS as sequence_helpers
         pieces.append(sequence_helpers)
