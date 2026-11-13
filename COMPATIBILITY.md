@@ -113,9 +113,17 @@ source, bound-method or builtin-function references retain operand order and
 list aliases. Selecting a callable raises its actual Python assignment error;
 an augmented read error occurs before the RHS. This capability requires a real
 mutable list alternative. Pure callable targets, custom index protocols and
-arbitrary metaclass assignment keep separate proof boundaries. Some method-field
-shadowing and module-member reference contexts still have unresolved native
-storage and produce positioned diagnostics.
+arbitrary metaclass assignment keep separate proof boundaries. General
+function-object display and some module-member reference contexts still require
+additional native protocols.
+
+Indexed method/data demands wait for already reached source initializers and
+callee effects to receive fair analysis. Only a stable verification sweep can
+release a blocked consumer; ancestor dependencies never wait on their own
+completion. The proof tracks actual callable targets, arguments, captured cells,
+class schemas and opaque iterator payload types. Field types come from original
+stores, and absent fields retain their real bound-method fallback. Unknown
+producers retain positioned diagnostics.
 
 Retained ranges support ordinary and extended slicing, including negative
 steps, nested slices and counts larger than `usize` or signed machine indices.
@@ -253,6 +261,12 @@ errors; package from-lists preload children before importer bindings. The
 original AST nodes and official scope owners are retained. Computed/observably
 mutable export sequences, module attribute hooks, undeclared late public exports
 and canonical modules lacking complete export inventories remain diagnostics.
+
+Immediate builtin list `append` supports finite receivers with different list
+element layouts. Every selected list retains its original shared handle and
+allocation schema. Receiver capture precedes argument callbacks and rebinding;
+arguments run once before builtin arity/keyword errors. Saved list method
+objects and mixed list/non-list method families remain explicit boundaries.
 
 Saved builtin mapping methods retain their original receiver and lookup
 identity, including temporary dictionaries passed to `map`. Native adapters
@@ -1974,7 +1988,7 @@ diagnostics.
 
 Direct cycles among plain source-class instances use a native trial-deletion
 collector when every field of the cyclic classes contains builtin scalar values,
-`None`, direct instance handles, fixed tuples recursively containing these values
+`None`, direct instance handles, builtin lists or fixed tuples recursively containing these values
 (including sealed native NamedTuple records), or finite alternatives of those
 kinds. Numeric tuple fields add no object edges. Ordinary
 source functions remain compiled Rust functions. Only eligible cyclic classes
@@ -1983,10 +1997,15 @@ receive no collector or changed scope storage. Collection counts each physical
 field edge, including repeated handles inside tuples, treats external aliases and
 borrowed nodes as roots, traces reachable nodes and clears unreachable optional
 fields without invoking Python callbacks. Geometric collection thresholds avoid
-repeated full scans while a live graph grows. Shared homogeneous tuple carriers,
-mutable containers, callable- and
+repeated full scans while a live graph grows. Typed list adapters discover each
+physical list allocation once before counting edges. Shared lists, repeated
+elements, nested lists and roots retained outside their class owners preserve
+their actual reference counts and aliases. List discovery is omitted when the
+class graph has no list edges. Shared homogeneous tuple carriers, dictionaries,
+sets, deques, callable- and
 closure-mediated cycles, custom finalizers, weak references and resurrection
 remain explicit unsupported protocols; this is not general arena/container GC.
+Explicit `gc` module calls still require their own native module adapter.
 
 
 Shared runtime tuples on typed frames support lexicographic `<`, `<=`, `>` and

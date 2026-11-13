@@ -924,6 +924,9 @@ class Model:
                 if not hasattr(self,'positional_list_reads'):self.positional_list_reads={}
                 self.positional_list_reads[(plan.index,id(node))]=positional
                 return self.remember(plan,node,positional)
+            if owner.tag in {'function','union'}:
+                from .native_pending_source_effects import wait_for_indexed_receiver
+                wait_for_indexed_receiver(self,plan,node,owner)
             from .native_union_sequences import analyze_subscript
             indexed=analyze_subscript(self,plan,node,owner,index)
             if indexed is not None:return indexed
@@ -1242,6 +1245,9 @@ class Model:
                 from .native_class_stdio import analyze as analyze_reader
                 return analyze_reader(self,plan,node,callable_.tag,arguments,keywords)
         if receiver is not None:
+            from .native_finite_list_methods import analyze as finite_list_method
+            finite=finite_list_method(self,plan,node,receiver,arguments,keywords)
+            if finite is not None:return finite
             from .native_retained_generators import analyze_method as retained_method
             retained=retained_method(self,plan,node,receiver,arguments,keywords,environment)
             if retained is not None:return retained
@@ -1474,7 +1480,12 @@ class Model:
             if owner.tag=="union":
                 from .native_finite_list_writes import analyze
                 if analyze(self,plan,node,owner,index,value):return
+                from .native_pending_source_effects import wait_for_indexed_receiver
+                wait_for_indexed_receiver(self,plan,node,owner)
                 raise ClassUnsupported(node,"indexed assignment through finite owner alternatives needs per-alternative target storage and correlated value projection; that write adapter is not implemented",types=(("receiver",shape(owner)),),proof="per-alternative indexed write storage")
+            if owner.tag=='function':
+                from .native_pending_source_effects import wait_for_indexed_receiver
+                wait_for_indexed_receiver(self,plan,node,owner)
             if owner.tag is None and not self.final:
                 return
         raise ClassUnsupported(node)
@@ -2622,6 +2633,9 @@ class Emitter:
         from .native_aot_callables import emit_call
         dispatched=emit_call(self,node)
         if dispatched is not None:return dispatched
+        from .native_finite_list_methods import emit as finite_list_method
+        finite=finite_list_method(self,node)
+        if finite is not None:return finite
         from .native_frame_references import call_target
         callee=call_target(self.model,self.plan,node)
         if callee is not None:return self.call_user(node,callee)

@@ -4,6 +4,7 @@ The complete existing snapshot and fair sweeps cover heap, namespace, alias and
 registry dependencies that are not represented by function call interfaces.
 """
 from collections import deque
+from .native_pending_source_effects import begin_sweep,complete,release_stable,snapshot
 
 
 def interfaces(model):
@@ -27,7 +28,8 @@ def analyze(model, plan):
         try:
             model.block(model.module, model.tree.body, dict(model.global_symbols))
         except AnalysisPending:
-            pass
+            return
+        complete(model,plan)
         return
     environment = {name: value for name, value in model.global_symbols.items()
                    if name not in plan.declared}
@@ -39,6 +41,7 @@ def analyze(model, plan):
         model.analyze_body(plan, environment)
     except AnalysisPending:
         return
+    complete(model,plan)
 
 
 def solve(model):
@@ -89,6 +92,7 @@ def solve(model):
         while True:
             before_verification = checkpoint(model)
             before_interfaces = interfaces(model)
+            begin_sweep(model)
             analyze(model, model.module)
             stats['body_analyses'] += 1
             for plan in model.plans[1:]:
@@ -99,6 +103,10 @@ def solve(model):
             refresh(model)
             stats['verification_sweeps'] += 1
             if checkpoint(model) == before_verification:
+                consumers=release_stable(model)
+                if consumers:
+                    for index in sorted(consumers):enqueue(index)
+                    continue
                 return
             after_interfaces = interfaces(model)
             schedule_changes(before_interfaces, after_interfaces)
@@ -120,4 +128,4 @@ def checkpoint(model):
             tuple((caller, tuple(sorted(targets)))
                   for caller, targets in sorted(model.call_edges.items())),
             tuple((site, tuple(sorted(targets)))
-                  for site, targets in sorted(model.call_edges_by_site.items())))
+                  for site, targets in sorted(model.call_edges_by_site.items())),snapshot(model))

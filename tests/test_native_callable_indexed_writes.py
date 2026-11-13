@@ -204,7 +204,7 @@ class CallableIndexedWriteProofTests(unittest.TestCase):
      self.assertTrue(all(d.code=='E006'and d.line>0 for d in result.diagnostics))
 
  def test_separate_reference_contexts_remain_diagnostics(self):
-  for name in ('module_function_and_list','instance_field_shadows_method_with_missing_branch'):
+  for name in ('module_function_and_list',):
    source=CASES[name]
    for mode in ('i64','i128','bigint'):
     with self.subTest(name=name,mode=mode):
@@ -220,7 +220,7 @@ class CallableIndexedWriteExecutionTests(unittest.TestCase):
  inputs={'index_error_precedes_callable_assignment_error':'1\n','function_owner_error_precedes_bad_key_protocol':'1\n'}
  check=iterator_tests.IteratorExecutionTests.check
  def test_source_bound_and_builtin_callable_arms(self):
-  for name in ('source_function_and_list','bound_method_and_list','builtin_function_and_list','legacy_builtin_type_and_list'):
+  for name in ('source_function_and_list','bound_method_and_list','builtin_function_and_list','legacy_builtin_type_and_list','instance_field_shadows_method_with_missing_branch'):
    with self.subTest(name=name):self.check(name)
  def test_evaluation_order_capture_and_aliases(self):
   for name in ('augmented_read_error_precedes_rhs','captured_augmented_owner_and_old_value','assignment_rhs_changes_selected_owner','index_error_precedes_callable_assignment_error','function_owner_error_precedes_bad_key_protocol','shared_nested_leaf_identity'):

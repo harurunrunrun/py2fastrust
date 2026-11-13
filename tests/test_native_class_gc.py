@@ -201,12 +201,12 @@ CASES = {'self_cycle': {'main.py': 'class Node:\n'
                     'b.link=a\n'
                     'print(a.walk(15),b.walk(12))\n'}}
 
-BOUNDARIES = {'container_mediated_cycle': 'class Node:\n'
+CASES['container_mediated_cycle']={'main.py': 'class Node:\n'
                              ' def __init__(self):self.children=[]\n'
                              'a=Node()\n'
                              'a.children.append(a)\n'
-                             'print(a.children[0] is a)\n',
- 'cycle_with_callable_field': 'class Node:\n'
+                             'print(a.children[0] is a)\n'}
+BOUNDARIES = {'cycle_with_callable_field': 'class Node:\n'
                               ' def __init__(self,n):self.n=n;self.link=None\n'
                               'a=Node(3)\n'
                               'a.link=a\n'

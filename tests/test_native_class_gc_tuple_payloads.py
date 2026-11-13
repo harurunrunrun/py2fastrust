@@ -108,13 +108,12 @@ for _name,_source in CASES.items():
 class TupleGcAdmissionTests(unittest.TestCase):
  def test_recursive_payload_capability_keeps_shared_and_callback_boundaries(self):
   node=InstanceType('Node')
-  for kind in (TupleType(()),TupleType(('int','int')),TupleType((node,TupleType(('bytes',NullableType(node))))),union_type('none',TupleType(('str',node)))):
+  for kind in (TupleType(()),TupleType(('int','int')),TupleType((node,TupleType(('bytes',NullableType(node))))),union_type('none',TupleType(('str',node))),ListType(node),TupleType((ListType(node),))):
    self.assertTrue(supported_field(kind),kind)
-  for kind in (ListType(node),TupleSequenceType(node),TupleType((ListType(node),)),TupleType((TupleSequenceType('int'),)),TupleType((AotFunctionType((1,)),))):
+  for kind in (TupleSequenceType(node),TupleType((TupleSequenceType('int'),)),TupleType((AotFunctionType((1,)),))):
    self.assertFalse(supported_field(kind),kind)
  def test_mutable_callback_and_finalizer_payloads_remain_positioned(self):
   cases=(
-   'class Node:\n def __init__(self):self.payload=([],);self.link=None\na=Node()\na.link=a\nprint(a.link is a)\n',
    'class Node:\n def __init__(self):self.link=None\na=Node()\na.link=a\na.payload=tuple([a,a])\nprint(a.link is a)\n',
    'class Node:\n def __init__(self):self.link=None\na=Node()\na.link=a\na.payload=(lambda:a,)\nprint(a.link is a)\n',
    'class Node:\n def __init__(self):self.payload=(1,2);self.link=self\n def __del__(self):print("destroyed")\na=Node()\n',
