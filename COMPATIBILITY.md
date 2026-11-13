@@ -959,6 +959,13 @@ bodies are revisited; unknown or potentially unbound contexts retain ordinary
 builtin lookup. Argument effects precede body lookup while the original callee
 is captured before its arguments.
 
+Finite list, tuple and range alternatives use their registered native cursor
+layouts in statement loops. An actual `None` alternative raises Python's
+`TypeError` when iteration begins. Pending element cells remain unresolved
+until the original producers reach a fair fixed point; no element type is
+invented. Assertions retain their original truth test, conditional message
+and failure order, and cursor capture preserves later name rebinding.
+
 Typed frames dispatch finite list/scalar alternatives for list repetition and
 concatenation, including nullable counts and Python operand errors. Supported
 list `+=` and `*=` branches mutate the captured list handle; numeric branches
@@ -1221,6 +1228,16 @@ a container join does not widen the value inserted into it. The class scope and
 control-flow planner still needs migration to the shared semantic graph. Proved
 shared mutable handles retain identity through nullable method/function results.
 Identity-sensitive floating-point container comparisons remain outside this proof.
+
+Resolved local list bindings retain directional value summaries separately from
+their mutable allocation cells. Branch and loop joins can select independent
+lists with different element layouts without changing surviving aliases to
+either producer. Actual stored binding types govern assignments and later
+reads, including lists unpacked alongside a captured source function. Solved
+allocation provenance selects this typed frame path before emission when a
+binding can choose different list layouts; uniform primitive list choices keep
+their ordinary backend selection. No list contents are copied to reconcile a
+binding's alternatives.
 
 A resolved call graph selects ordinary Rust functions for small acyclic class
 call paths. Recursive components, their callers and longer chains retain the

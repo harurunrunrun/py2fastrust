@@ -83,7 +83,10 @@ class Iterators:
     def needs_source_cursor(self,kind):
         from .native_class_deque_cursors import needs_cursor
         from .native_source_iteration import has_protocol
-        return any(isinstance(part,EmptyType)or part in {'str','bytes'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in alternatives(kind)) or needs_cursor(self.model,kind)
+        from .native_classes import domain
+        parts=alternatives(kind)
+        sequence_union=len(parts)>1 and any(domain(part)in {'list','tuple','tuple_sequence','range'}for part in parts)
+        return sequence_union or any(isinstance(part,EmptyType)or part in {'str','bytes'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in parts) or needs_cursor(self.model,kind)
 
     def immediate_integer_map(self,plan,node,environment):
         """Retain eager word parsing only for consumers with no saved cursor."""

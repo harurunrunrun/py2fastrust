@@ -220,6 +220,8 @@ def select_frames(unit,*,integer="i64"):
     if positional_requires_frames(unit,analysis):reasons+=("fixed list record positional constraints",)
     from .native_finite_list_writes import requires_frames as finite_list_writes_require_frames
     if finite_list_writes_require_frames(unit,analysis):reasons+=("finite builtin indexed assignment targets",)
+    from .native_list_binding_selection import requires_frames as list_binding_requires_frames
+    if list_binding_requires_frames(unit,analysis):reasons+=("distinct mutable list binding layouts",)
     from .native_finite_attributes import requires_frames as missing_attributes_require_frames
     if missing_attributes_require_frames(unit,analysis):reasons+=("closed builtin lookup and call protocols",)
     from .native_properties import requires_frames as property_requires_frames

@@ -96,7 +96,7 @@ class Namespace:
         kind=shape(value)
         if not complete(kind):return value
         from .native_class_storage import shared_element
-        if not self.is_flow(value)and key not in self.local_schemas and not(reference_cloneable(kind)or isinstance(kind,TupleSequenceType)and shared_element(kind)):return value
+        if not self.is_flow(value)and key not in self.local_schemas and not(reference_cloneable(kind)or isinstance(kind,ListType)or isinstance(kind,TupleSequenceType)and shared_element(kind)):return value
         point=plan.index,id(node)
         result=self.local_values.setdefault(point,Cell())
         self.contribute(result,value,node,force=True)
@@ -138,9 +138,15 @@ class Namespace:
         self.model.replace_environment(before,joined)
 
     def join_values(self,left,right,node,name,role="join"):
-        from .native_classes import Cell
+        from .native_classes import Cell,shape
         if left.root()is right.root():return left
-        if not(self.is_flow(left)or self.is_flow(right)):return None
+        if not(self.is_flow(left)or self.is_flow(right)):
+            # A binding may select independent allocations with different
+            # element layouts. Unifying their mutable cells would change the
+            # layouts of surviving aliases as well as this binding's ABI.
+            a,b=shape(left),shape(right)
+            if not(isinstance(a,ListType)and isinstance(b,ListType)
+                    and complete(a)and complete(b)and a!=b):return None
         result=self.join_cells.setdefault((id(node),name,role),Cell())
         self.contribute(result,left,node,force=True)
         self.contribute(result,right,node,force=True)
