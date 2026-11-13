@@ -1017,6 +1017,14 @@ buffered until an explicit flush or the final flush; callback error reporting
 does not itself flush that text buffer.
 This is a bounded native API slice, not complete interpreter shutdown support.
 
+Direct proved-str `encode()` calls produce UTF-8 bytes in both string modes.
+Default and literal UTF-8 codec aliases support positional/keyword binding,
+argument effects, empty/NUL/non-ASCII text and the builtin binding/type errors.
+Typed string error-policy arguments retain NUL/type validation; valid native
+UTF-8 text does not invoke an error handler, even when its name is unknown.
+Dynamic/non-UTF8 codecs, stored/unbound encoder methods and lone-surrogate
+strings remain positioned boundaries. Encoding retains no Unicode data table.
+
 Canonical `sys.stdout.write(text)` writes to the shared buffered output and
 returns the number of characters written. `sys.stdout.flush()` uses the same
 output flush and exception path as `print(..., flush=True)`. Direct module

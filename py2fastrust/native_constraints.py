@@ -789,6 +789,7 @@ class Solver:
             if name=="split" and kinds&{"str","bytes"}:
                 result=value(self.allocation(term.site,"list",context));self.insert(result,"element",value("bytes" if "bytes" in kinds else "str"));return result
             if name=='decode'and receiver.alternatives=={'bytes'}and not receiver.unknown and not receiver.unbound:return value('str')
+            if name=='encode'and receiver.alternatives=={'str'}and not receiver.unknown and not receiver.unbound:return value('bytes')
             if name in {"strip","lstrip","rstrip","join","upper","lower"} and kinds&{"str","bytes"}:return value("bytes" if "bytes" in kinds else "str")
             if name in {"pop","popleft"} and "deque"in category:return self.field_values(identity.receiver,"iteration")
             if name in {"pop","popleft"} and "deque_int" in kinds:return value("int")

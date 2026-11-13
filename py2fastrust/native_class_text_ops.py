@@ -25,6 +25,8 @@ def bind(arguments,keywords,default):
 
 
 def requires_frames(unit,analysis):
+    from .native_text_encoding import requires_frames as encode_requires_frames
+    if encode_requires_frames(unit,analysis):return True
     from .native_class_text_format import requires_frames as format_requires_frames
     if format_requires_frames(unit,analysis):return True
     from .native_ascii_text_case import requires_frames as case_requires_frames
@@ -57,6 +59,9 @@ def requires_frames(unit,analysis):
 
 
 def analyze(model,plan,node,receiver,arguments,keywords,environment=None):
+    from .native_text_encoding import analyze as analyze_encode
+    encoded=analyze_encode(model,plan,node,receiver,arguments,keywords)
+    if encoded is not None:return encoded
     from .native_class_text_format import analyze as analyze_format
     formatted=analyze_format(model,plan,node,receiver,arguments,keywords,environment)
     if formatted is not None:return formatted
@@ -89,6 +94,9 @@ def analyze(model,plan,node,receiver,arguments,keywords,environment=None):
 
 
 def emit(emitter,node,receiver,arguments,keywords,wanted):
+    from .native_text_encoding import emit as emit_encode
+    encoded=emit_encode(emitter,node,receiver,arguments,keywords,wanted)
+    if encoded is not None:return encoded
     from .native_class_text_format import emit as emit_format
     formatted=emit_format(emitter,node,receiver,arguments,keywords,wanted)
     if formatted is not None:return formatted
