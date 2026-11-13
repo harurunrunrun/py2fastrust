@@ -57,6 +57,12 @@ list/dynamic-tuple display releases borrows around callbacks and guards repr
 recursion. Unsupported publication/descriptor cases, custom mapping/deque repr
 callbacks and recursive tuples lacking stable identity remain diagnostics.
 
+Direct source `__contains__` methods support `in`/`not in`, including builtin
+truth-valued returns, callback effects and chained comparisons. Nonfunction or
+replaced slots, implicit iteration fallback and unconnected instance-result
+truth protocols produce positioned diagnostics. `NotImplemented` results retain
+Python 3.14's truth-conversion `TypeError`.
+
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
 Size checks precede blocking reads. Binary reads retain raw bytes, and default

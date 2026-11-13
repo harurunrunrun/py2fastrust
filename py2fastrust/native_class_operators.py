@@ -13,7 +13,7 @@ BINARY={
  ast.BitAnd:('and','&'),ast.BitOr:('or','|'),ast.BitXor:('xor','^')}
 UNARY={ast.UAdd:('__pos__','+'),ast.USub:('__neg__','-'),ast.Invert:('__invert__','~')}
 UNARY_SLOTS=frozenset(name for name,_ in UNARY.values())
-SUPPORTED_SLOTS=UNARY_SLOTS|{'__iter__','__str__','__repr__'}
+SUPPORTED_SLOTS=UNARY_SLOTS|{'__iter__','__str__','__repr__','__contains__'}
 
 BINARY_SLOTS=frozenset('__'+prefix+name+'__'for name,_ in BINARY.values()for prefix in ('','r','i'))
 COMPARISON={ast.Eq:('__eq__','__eq__','=='),ast.NotEq:('__ne__','__ne__','!='),ast.Lt:('__lt__','__gt__','<'),ast.LtE:('__le__','__ge__','<='),ast.Gt:('__gt__','__lt__','>'),ast.GtE:('__ge__','__le__','>=')}
@@ -257,6 +257,9 @@ class Operators:
         return False
 
     def comparison(self,plan,node,index,operator,left,right,environment):
+        from .native_source_contains import analyze as analyze_contains
+        contained=analyze_contains(self,plan,node,index,operator,left,right,environment)
+        if contained is not None:return contained
         from .native_classes import Cell,shape,ClassUnsupported,InstanceType,merge
         from .native_union_sequences import branches
         from .native_types import alternatives
@@ -295,6 +298,9 @@ class Operators:
         return site.result
 
     def emit_comparison(self,emitter,node,index,operator,left,right):
+        from .native_source_contains import emit as emit_contains
+        contained=emit_contains(self,emitter,node,index,operator,left,right)
+        if contained is not None:return contained
         from .native_classes import Expression,shape,InstanceType,ClassUnsupported
         from .native_unions import project,union_kind
         from .native_aot_callables import emit_values

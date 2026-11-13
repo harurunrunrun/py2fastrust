@@ -74,6 +74,14 @@ callbacks and recursive fixed-tuple/NamedTuple display without stable tuple
 identity remain specific diagnostics. Nonrecursive supported tuple displays
 retain ordinary formatting and source-method return-type errors.
 
+Membership expressions call a directly defined source `__contains__` method
+with the original owner and item. Operand evaluation, callback side effects,
+chained-comparison short circuits and `not in` negation preserve Python order.
+Builtin return values use their normal truth conversion; Python 3.14
+`NotImplemented` truth conversion raises `TypeError`. Unsupported descriptors,
+replaced slots, iterator/sequence membership fallback and instance-valued result
+truth protocols remain specific diagnostics until those adapters are connected.
+
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14
 order: an explicit `!s`/`!r`/`!a` conversion runs before spec expressions, while
