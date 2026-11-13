@@ -297,7 +297,7 @@ class Operators:
         if self.model.final and shape(site.result)is None:merge(site.result,Cell('none'),node)
         return site.result
 
-    def emit_comparison(self,emitter,node,index,operator,left,right):
+    def emit_comparison(self,emitter,node,index,operator,left,right,*,repeat_left_not_implemented_if=None):
         from .native_source_contains import emit as emit_contains
         contained=emit_contains(self,emitter,node,index,operator,left,right)
         if contained is not None:return contained
@@ -311,7 +311,7 @@ class Operators:
         def pair(first,second):
             branch=site.branches[(first.kind,second.kind)]
             if not branch.complete:raise ClassUnsupported(node,"rich-comparison callback result remains unresolved",proof="complete rich-comparison return alternatives")
-            def step(rank):
+            def step(rank,repeated=False):
                 if rank==len(branch.phases):
                     if isinstance(operator,(ast.Eq,ast.NotEq))and(any(isinstance(value.kind,InstanceType)or value.kind==NOT_IMPLEMENTED for value in (first,second))):
                         identity=emitter.comparison_builtin(ast.Is()if isinstance(operator,ast.Eq)else ast.IsNot(),first,second,node)
@@ -327,7 +327,10 @@ class Operators:
                 context=CapturedClassContext(phase.member,Expression(reference,ClassReferenceType(phase.member.owner.index)))
                 outcome=emit_values(emitter,node,phase.site,fn,args,[],shape(phase.site.result),captured_class_context=context);before,outcome=emitter.capture(outcome);setup+=before
                 def select(kind,code):
-                    if kind==NOT_IMPLEMENTED:return step(rank+1)
+                    if kind==NOT_IMPLEMENTED:
+                        if repeat_left_not_implemented_if is not None and rank==0 and not phase.reverse and not repeated:
+                            return 'if '+repeat_left_not_implemented_if+'{'+step(0,True)+'}else{'+step(1,True)+'}'
+                        return step(rank+1,repeated)
                     value=Expression('('+code+').clone()',kind)
                     if phase.negate:value=Expression('!('+emitter.truth(value,node)+')','bool')
                     return emitter.coerce(value,wanted,node)

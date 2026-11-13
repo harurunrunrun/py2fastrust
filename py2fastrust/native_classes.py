@@ -2118,6 +2118,8 @@ class Emitter:
         return self.comparison_builtin(operator,left,right,node)
 
     def comparison_builtin(self, operator, left, right, node):
+        empty=next((value for value in(left,right)if isinstance(value.kind,EmptyType)),None)
+        if empty is not None:return f"native_empty::<bool>({empty.code})"
         if getattr(left.kind,"_native_builtin_singleton",False)and left.kind==right.kind and isinstance(operator,(ast.Is,ast.IsNot,ast.Eq,ast.NotEq)):
             return "false"if isinstance(operator,(ast.IsNot,ast.NotEq))else"true"
         if union_kind(left.kind):return project(left.kind,left.code,

@@ -380,7 +380,10 @@ class Iterators:
         if record.operation=="reverse"and not getattr(shape(record.source),'_native_class_deque',False):
             from .native_class_reverse_iterators import pull as pull_reverse
             return Expression(begin+pull_reverse(emitter,node,shape(record.source),state+'.source',item_kind)+'}',item_kind)
-        if tag=="range":return Expression(begin+state+".source.next()}",item_kind)
+        if tag=="range":
+            current=state+".source.next()"
+            if item_kind!='int':current+='.map(|value|'+emitter.coerce(Expression('value','int'),item_kind,node)+')'
+            return Expression(begin+current+'}',item_kind)
         if getattr(shape(record.source),'_native_class_deque',False):
             from .native_class_deque_cursors import pull
             return Expression(begin+pull(emitter,node,shape(record.source),state+'.source',item_kind)+'}',item_kind)
@@ -402,9 +405,13 @@ class Iterators:
             else:
                 character=emitter.fresh()
                 code=(begin+f"let {character}={state}.source.as_ref().and_then(|value|value.get({state}.index..)).and_then(|value|value.chars().next());"
-                      f"if let Some({character})={character}{{{state}.index+={character}.len_utf8();Some(NativeText::from({character}))}}else{{{state}.source=None;None}}"+"}")
+                      f"if let Some({character})={character}{{{state}.index+={character}.len_utf8();Some("+emitter.coerce(Expression(f"NativeText::from({character})",'str'),item_kind,node)+f")}}else{{{state}.source=None;None}}"+"}")
                 return Expression(code,item_kind)
         else:return Expression("None::<"+emitter.rust_type(item_kind)+">",item_kind)
+        if tag in {"list","tuple_sequence","bytes","str"}:
+            source_kind=shape(record.source)
+            original=(source_kind.element if tag in {"list","tuple_sequence"}else"int"if tag=="bytes"else"str")
+            if original!=item_kind:current+='.'+'map(|value|'+emitter.coerce(Expression('value',original),item_kind,node)+')'
         return Expression(begin+f"let {item}={current};if {item}.is_some(){{{state}.index+=1;}}else{{{state}.source=None;}}{item}"+"}",item_kind)
 
     def _pull_multiple(self,emitter,node,value,active):

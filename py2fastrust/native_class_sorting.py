@@ -13,6 +13,7 @@ class SortSite:
     source_kind:object=None
     error:str|None=None
     comparators:dict=field(default_factory=dict)
+    rich_comparisons:dict=field(default_factory=dict)
 
 
 def requires_frames(unit,analysis):
@@ -75,6 +76,8 @@ def _analyze(model,plan,node,source,key,environment,*,method,error=None):
             site.callback=analyze_values(model.callable_cells,plan,node,ordinary,
                 CallArguments((Argument(node),),()),[element],[],inside,identity=('sorting_key',method))
         model.replace_environment(environment,model.join(environment,inside,node,'sorting_key'))
+    from .native_rich_sorting import analyze as rich_comparison
+    rich_comparison(model,plan,node,site,environment,method=method)
     return site
 
 
@@ -165,6 +168,11 @@ def _sort(emitter,node,values,element,reverse,key,site):
         code+=f'let mut {decorated}=Vec::<({emitter.rust_type(key_kind)},{emitter.rust_type(element)})>::new();'
         code+=emitter.at(f'{decorated}.try_reserve({values}.len()).map_err(|_|"MemoryError: cannot allocate sorting keys".to_owned())',node)+';'
         code+=f'for {item} in {values}.iter(){{{decorated}.push(({value.code},{item}.clone()));}}'
+    if key.kind in site.rich_comparisons:
+        from .native_rich_sorting import emit as rich_comparison
+        code+=rich_comparison(emitter,node,decorated,key_kind,reverse,key,site)
+        if key.kind!='none':code+=f'{values}={decorated}.into_iter().map(|(_,value)|value).collect();'
+        return code
     prefix='.0'if key.kind!='none'else''
     comparison=_ordering(emitter,Expression(f'(*{first}){prefix}',key_kind),Expression(f'(*{second}){prefix}',key_kind),node)
     code+=f'let mut {error}:Option<String>=None;'

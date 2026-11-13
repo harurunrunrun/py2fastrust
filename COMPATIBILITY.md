@@ -1066,8 +1066,9 @@ are borrowed afterward. A callback replacing a class field therefore does not
 change the already selected list. Owned row projections retain conservative
 parent mutation checks. Class sorting supports proved captured callable keys
 through the same compiled-call ABI, including saved bound methods. General
-iterables for `extend`, custom ordering, and identity-sensitive float search
-remain required work.
+iterables for `extend` and identity-sensitive float search remain required work.
+Direct source ordering objects use the fallible rich-comparison sorter described
+below; nested container keys with source ordering callbacks remain a boundary.
 
 `list.insert(index, value)` clips an accepted signed index to the current list
 length, checks structural growth, and reports an index outside the platform's
@@ -1087,8 +1088,15 @@ On typed compiled frames, `sorted` materializes its input before converting
 once per element. `list.sort` exposes the temporary empty receiver during key
 calls, restores its detached storage on errors, and reports mutations after
 key/comparison success. Shared element handles preserve object identity. Stable
-native sorting supports integer/boolean, text/bytes and proved structural keys;
-floating NaN comparison schedules and custom ordering still need lowering.
+native sorting supports integer/boolean, text/bytes and proved structural keys.
+Direct source ordering objects reuse the registered `__lt__`/reflected `__gt__`
+call ABI and fallible stable Powersort kernel. Source class identity is checked
+for every key before selecting CPython's homogeneous comparison schedule,
+including its extra left-method attempt after `NotImplemented`. Heterogeneous
+keys retain generic rich-comparison order. Callback effects run with no list
+borrow held; detached-list visibility, exceptions and modification errors keep
+the existing in-place sort rules. Floating NaN schedules and nested container
+keys that invoke user ordering methods remain positioned boundaries.
 
 Ordinary class lowering currently supports concrete typed instance fields,
 constructors, fixed method lookup, tuple results, instance/list aliases, and
