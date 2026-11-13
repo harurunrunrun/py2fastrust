@@ -241,16 +241,8 @@ class FormattingExtraTests(unittest.TestCase):
             self.assertIn('protocol dispatch',detail)
             self.assertIn('__format__',detail)
 
-    def test_unsupported_source_repr_protocol(self):
-        from py2fastrust import transpile,TranspileOptions
-        from unittest.mock import patch
-        for mode in ('i64','i128','bigint'):
-            with patch('py2fastrust.codegen.generate',side_effect=AssertionError('VM used')):
-                result=transpile(self.cases['unsupported_source_repr_protocol'],TranspileOptions(integer=mode,license='none'))
-            self.assertFalse(result.success)
-            detail=' '.join(str(value)for value in result.diagnostics)
-            self.assertIn('protocol dispatch',detail)
-            self.assertIn('__repr__',detail)
+    def test_source_repr_protocol_matches_cpython(self):
+        self.check('unsupported_source_repr_protocol')
 
 
 class FormattingHelperSelectionTests(unittest.TestCase):

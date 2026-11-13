@@ -1,7 +1,7 @@
 """Admit canonical standard exports to independently scoped native frames."""
 import ast
 
-LINKED_MODULES=frozenset({'itertools','typing','array','random'})
+LINKED_MODULES=frozenset({'itertools','typing','array','random','atexit'})
 LINKED_EXPORTS={'sys':frozenset({'exit','stdout','set_int_max_str_digits','get_int_max_str_digits'}),'collections':frozenset({'Counter','defaultdict'}),'functools':frozenset({'reduce','cmp_to_key'}),'operator':frozenset({'add','sub','mul','and_','or_','xor','lshift','rshift','floordiv','mod','truediv'})}
 FRAME_MODULES=frozenset({'heapq','bisect','math'})
 

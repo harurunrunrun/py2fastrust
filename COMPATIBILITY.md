@@ -275,7 +275,17 @@ byte validation, sharing and Python evaluation order. Slice RHS values are
 materialized before mutation, and bounds use the receiver length after source
 callbacks. Repetition, concatenation, append, bytes/bytearray extend, clear, copy,
 reverse, forward/reverse cursors and builtin display/numeric consumers are
-supported. Immutable bytes repetition uses the same checked size rules.
+supported. Immutable bytes concatenation and repetition retain raw octets,
+including NUL and non-ASCII values, and use checked native lengths/allocation.
+Integral repetition counts follow the selected integer-width policy, then the
+checked native index conversion; negative counts produce empty bytes and
+out-of-range counts raise even for an empty source. Augmented immutable bytes
+assignment rebinds its target without changing earlier content aliases.
+Finite bytes/None and integral/non-integral operands use the same concrete
+operations or ordered Python type errors. Bytes/bytearray concatenation keeps
+the existing mutable-buffer snapshot and result-kind rules. Observing immutable
+bytes identity and finite bytearray buffer-operand dispatch remain positioned
+diagnostics rather than inferred object identities or invented type errors.
 Encoding overloads, custom indices, external buffer exports, slice augmented
 assignment/deletion, generic iterable extend and generator-expression collectors
 remain explicit diagnostics. Source generator-function iterables use the
@@ -284,8 +294,17 @@ existing typed cursor.
 Native real/complex power results support addition and subtraction with builtin
 int/bool/float and complex leaves. Both source operands evaluate before ordered
 numeric conversions, including BigInt conversion errors. Finite real/complex
-alternatives retain their actual runtime result; complex comparison, other
-complex arithmetic and nonempty numeric formatting remain explicit boundaries.
+alternatives retain their actual runtime result. Complex exponentiation accepts
+the existing typed builtin int/bool/float/complex leaves through both `**` and
+canonical saved/keyword `pow` calls. It preserves ordered conversions, zero and
+non-finite cases, checked numeric errors, and original ternary power-slot
+precedence when a modulus is provided. Complex ordering against closed builtin
+operands raises the corresponding runtime `TypeError`, including paths through
+`min`/`max`; no sign or reachability assumption removes a complex alternative.
+Complex literal/constructor creation, complex equality/identity, other complex
+arithmetic and nonempty numeric formatting remain explicit boundaries.
+Mixed real/complex addition and subtraction retain the imaginary zero's sign,
+including the side of a subsequent fractional-power branch cut.
 
 
 Fixed-module star imports bind the original source export values into the actual
@@ -978,6 +997,26 @@ Nullable `next` defaults retain the distinction between exhaustion and a yielded
 methods are still required work. Producer/consumer normalization is being
 unified further; these operations do not establish full Python compatibility.
 
+Canonical `atexit.register`, `_clear` and `_ncallbacks` compile to typed
+normal-termination callbacks. Registration captures the callable and arguments
+once and returns that same callable; shutdown invokes a snapshot in LIFO order
+after normal return, `SystemExit` or an unhandled main exception. Main errors are
+reported first. Callback failures are reported and do not stop later callbacks
+or replace the main exit status. Registration/clearing during shutdown preserves
+the original snapshot; newly registered callbacks are cleared without running.
+Callbacks use live module bindings and retain supported owned arguments,
+defaults, lexical cells and bound receivers. Unknown retained providers, cyclic
+class/closure payloads, custom callable objects, classmethod/custom-receiver
+error representations, `unregister`, `_run_exitfuncs` and registration decorators
+remain positioned diagnostics. Function-address observations outside shutdown
+remain unsupported; unraisable function headers use real snapshot-local identity
+witnesses, preserving alias relationships without extending callable lifetimes.
+The script-file entry boundary flushes canonical stdout before reporting a
+main exception or exit payload, then runs callbacks. New callback output stays
+buffered until an explicit flush or the final flush; callback error reporting
+does not itself flush that text buffer.
+This is a bounded native API slice, not complete interpreter shutdown support.
+
 Canonical `sys.stdout.write(text)` writes to the shared buffered output and
 returns the number of characters written. `sys.stdout.flush()` uses the same
 output flush and exception path as `print(..., flush=True)`. Direct module
@@ -1183,12 +1222,24 @@ plans register their actual reached instance-identity observers before immutable
 instance layout selection, so an implicit tuple comparison cannot lose its
 identity token. Ordinary arithmetic and tuple control remain native Rust.
 
-The primitive path remains unchanged. Floating tuple equality still requires
-either a proved absence of NaN across every producer/write/call or retained
-Python float object identity. A shared NaN and two distinct NaNs compare
-differently inside tuples; raw binary64 values do not prove that identity.
-These cases remain explicit diagnostics, including the unchanged reference
-`k_shortest_walk` driver. Nested mutable/runtime-length source-object containers,
+Actual floating container comparisons and fixed-tuple heap keys select a typed
+binary64 carrier with a checked identity token only for NaN values. Scalar NaN
+equality remains false; tuple/list element equality first honors the identity of
+a shared NaN. Aliases, captured defaults, closures, source fields and typed
+iterator transport retain that token. `float(existing_float)` and unary `+`
+retain the original value; supported arithmetic, unary `-`, `abs` and text/bytes
+conversion create fresh NaN identities. Integer/float comparisons remain exact.
+The unchanged reference `k_shortest_walk` driver is supported. Programs without
+an actual float-container identity demand retain their existing `f64` path.
+
+Cached compiler-folded NaN constants still need source constant-object origin
+tracking. Identity-sensitive programs retain positioned diagnostics for those
+constants, floating math/packed-array producers, floating `sum`, power,
+`round`, `divmod`, `format` and explicit float `is` observations until their
+respective adapters preserve the complete producer/observer contract. Floating
+sorting and bare mixed BigInt/float heap keys retain their existing capability
+boundaries. No source function is replaced with a generic interpreter.
+Nested mutable/runtime-length source-object containers,
 cross-type reflected whole-tuple protocols, NamedTuple/source-object mixtures and `merge`
 remain unfinished. Retained CPython-adapted
 fallible helpers include their targeted attribution and license notice.

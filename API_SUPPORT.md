@@ -29,6 +29,12 @@ minimum and C-int argument range. Parsing and supported fallible BigInt
 formatting use that state; see the remaining observer/default-path boundaries
 in [COMPATIBILITY.md](COMPATIBILITY.md).
 
+Canonical `atexit.register`, `_clear` and `_ncallbacks` have direct typed
+shutdown lowering for proved source/builtin callbacks and owned retained data.
+It preserves LIFO snapshot semantics, late global reads, exit status and
+unraisable callback error continuation. The named lifetime and API boundaries
+are documented in [COMPATIBILITY.md](COMPATIBILITY.md).
+
 Canonical `sys.stdout.write(str)` and `sys.stdout.flush()` support direct calls,
 `from sys import stdout`, saved stream/method references, source parameters,
 closures and registered callable consumers. They share the buffered output,

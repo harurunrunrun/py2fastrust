@@ -68,12 +68,13 @@ def requires_frames(unit,analysis):
     for facts in analysis.scopes.values():
         for site,node in nodes.items():
             if isinstance(node,(ast.BinOp,ast.AugAssign))and isinstance(node.op,ast.Pow):
-                exponent=node.right if isinstance(node,ast.BinOp)else node.value
-                if 'float'in alternatives(facts.expressions.get(unit.ordinal(exponent))):return True
+                base,exponent=(node.left,node.right)if isinstance(node,ast.BinOp)else(node.target,node.value)
+                if ('complex'in alternatives(facts.expressions.get(unit.ordinal(base)))
+                        or set(alternatives(facts.expressions.get(unit.ordinal(exponent))))&{'float','complex'}):return True
         for call in facts.calls.values():
             if BuiltinIdentity('pow')not in call.identity.alternatives:continue
             exponent=call.positional[1]if len(call.positional)>1 else dict(call.keywords).get('exp')
-            if exponent is not None and 'float'in exponent.alternatives:return True
+            if exponent is not None and set(exponent.alternatives)&{'float','complex'}:return True
     return False
 
 

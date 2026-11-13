@@ -1122,10 +1122,12 @@ class Solver:
         if len(kinds)!=2:return None
         first,second=kinds
         operator=operation.removeprefix("binary:")
+        if operator=='Pow'and 'complex'in kinds and set(kinds)<=numeric|{'complex'}:return 'complex'
         if any(getattr(kind,'_native_bytearray',False)for kind in kinds):
             from .native_bytearray import BYTEARRAY
             if operator=='Mult'and (second if first==BYTEARRAY else first)in {'int','bool','int_bool'}:return BYTEARRAY
             if operator=='Add'and set(kinds)<={BYTEARRAY,'bytes'}:return 'bytes'if first=='bytes'else BYTEARRAY
+        if first==second=="bytes"and operator=="Add":return "bytes"
         if "bytes"in kinds and operator=="Mult"and (second if first=="bytes"else first)in {"int","bool","int_bool"}:return "bytes"
         if first==second=="str" and operator=="Add":return "str"
         if "str" in kinds and operator=="Mult" and (second if first=="str" else first) in numeric-{"float"}:return "str"

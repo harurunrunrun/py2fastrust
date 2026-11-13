@@ -89,6 +89,8 @@ BOUNDARIES = {'empty_pack_membership': 'def empty(*xs):return xs\n'
                                'a=tuple([Item()])\n'
                                'print(Item() in a)\n'}
 
+CASES["shared_nan_tuple_identity"]=BOUNDARIES.pop("shared_nan_tuple_identity")
+
 class FrameTupleReviewProtocolTests(unittest.TestCase):
     def test_remaining_bottom_and_callable_proofs_are_positioned(self):
         for name,source in BOUNDARIES.items():

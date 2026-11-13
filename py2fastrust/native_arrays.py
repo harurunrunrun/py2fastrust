@@ -101,6 +101,10 @@ class ArrayAdapter:
         from .native import _string
         if record.error:return error(emitter,node,EMPTY,_string(record.error)+'.to_owned()')
         kind=record.kind
+        from .native_float_identity import enabled as float_identity_enabled
+        if kind.element=='float'and float_identity_enabled(emitter.model):
+            from .native_classes import ClassUnsupported
+            raise ClassUnsupported(node,'floating array reads create fresh Python float objects; the identity-preserving packed-array conversion adapter is not implemented',proof='floating array element identity')
         if len(positional)==1:return Expression(kind.rust+'(Rc::new(RefCell::new(Vec::new())))',kind)
         source=positional[1]
         if source.kind==kind:return Expression(emitter.at('class_array_'+str(ord(kind.code))+'_copy(&'+source.code+')',node),kind)

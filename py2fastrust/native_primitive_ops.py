@@ -26,7 +26,7 @@ def classify(operator,left,right,integer):
     from .native_classes import domain
     a,b=domain(left),domain(right)
     if 'complex'in{a,b}:
-        if a in NUMERIC|{'complex'}and b in NUMERIC|{'complex'}and isinstance(operator,(ast.Add,ast.Sub)):
+        if a in NUMERIC|{'complex'}and b in NUMERIC|{'complex'}and isinstance(operator,(ast.Add,ast.Sub,ast.Pow)):
             return PrimitivePlan('complex')
         if a in {'list','tuple','str','bytes'}and isinstance(operator,ast.Add):return PrimitivePlan(error='concat')
         if {a,b}&{'list','tuple','str','bytes'}and isinstance(operator,ast.Mult):return PrimitivePlan(error='repeat')
@@ -70,10 +70,19 @@ def classify(operator,left,right,integer):
     if isinstance(operator,ast.Mult)and "str"in {a,b}and(a if b=="str"else b)in INTEGRAL:return PrimitivePlan("str")
     if isinstance(operator,ast.Mod)and a in {"str","bytes"}:
         return PrimitivePlan(protocol="string/bytes percent-formatting protocol")
-    if isinstance(operator,ast.Add)and a==b and a in {"bytes","tuple"}:
-        return PrimitivePlan(protocol="bytes/tuple concatenation storage")
-    if isinstance(operator,ast.Mult)and(a in {"bytes","tuple"}and b in INTEGRAL or b in {"bytes","tuple"}and a in INTEGRAL):
-        return PrimitivePlan(protocol="bytes/tuple repetition storage")
+    if isinstance(operator,ast.Add)and a==b=='bytes':return PrimitivePlan('bytes')
+    if isinstance(operator,ast.Mult)and(a=='bytes'and b in INTEGRAL or b=='bytes'and a in INTEGRAL):return PrimitivePlan('bytes')
+    if 'bytearray'in {a,b}and isinstance(operator,(ast.Add,ast.Mult)):
+        return PrimitivePlan(protocol="finite bytearray buffer-operand dispatch")
+    nonbuffer=NUMERIC|{'str','bytes','none','list','tuple','tuple_sequence','function','range','globals_dict',
+        'dict','set','frozenset','deque','dict_view','iterator','generator','module',
+        'builtin_singleton','builtin_type','exception_class','exception_value','cmp_key','property'}
+    if isinstance(operator,ast.Add)and a=='bytes'and b not in nonbuffer:
+        return PrimitivePlan(protocol="bytes concatenation buffer-operand export")
+    if isinstance(operator,ast.Add)and a==b=="tuple":
+        return PrimitivePlan(protocol="tuple concatenation storage")
+    if isinstance(operator,ast.Mult)and(a=="tuple"and b in INTEGRAL or b=="tuple"and a in INTEGRAL):
+        return PrimitivePlan(protocol="tuple repetition storage")
     if isinstance(operator,ast.Add)and a in {"str","bytes","tuple"}:return PrimitivePlan(error="concat")
     if isinstance(operator,ast.Mult)and {a,b}&{"str","bytes","tuple"}:return PrimitivePlan(error="repeat")
     return PrimitivePlan(error="binary")

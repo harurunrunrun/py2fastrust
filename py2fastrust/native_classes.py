@@ -700,6 +700,8 @@ class Model:
                 tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else(),initialized_module_snapshot(self),property_snapshot(self),implicit_identity_snapshot(self))
 
     def analyze_body(self,plan,environment):
+        if getattr(plan,'_native_atexit_callback',False):
+            return self.atexit_callbacks.analyze_body(plan,environment)
         if getattr(plan,'_native_retained_expression',False):
             return self.retained_generators.analyze_body(plan,environment)
         if isinstance(plan.node,ast.Lambda):
@@ -978,6 +980,8 @@ class Model:
                 target=environment if index==0 else Environment(environment)
                 skipped=Environment(environment)
                 right=self.expression(plan,value,target)
+                from .native_float_identity import require as require_float_identity
+                require_float_identity(self,plan,node,('comparison',type(node.ops[index]),index),left,right)
                 compared=self.operators.comparison(plan,node,index,node.ops[index],left,right,target)
                 if compared is None:compared=Cell('bool')
                 self.contribute(result,compared,node)
@@ -1795,6 +1799,8 @@ class Emitter:
         return render_type(kind,self.rust_leaf)
 
     def rust_leaf(self,value,recurse):
+        from .native_float_identity import enabled as float_identity_enabled
+        if value=='float'and float_identity_enabled(self.model):return 'NativeIdentityFloat'
         if getattr(value,'_native_property',False):return 'Rc<ClassProperty_'+str(value.record.index)+'>'
         if getattr(value,'_native_builtin_type',False):return value.rust
         if getattr(value,"_native_bound_mapping_method",False):return value.rust
@@ -1899,7 +1905,8 @@ class Emitter:
         return f"let {name}{annotation}={value.code};",Expression(name,value.kind,value.constant)
 
     def scalar(self, value):
-        return value
+        from .native_float_identity import raw
+        return raw(self,value)
 
     def number(self, value):
         return self.numeric.number(self.scalar(value))
@@ -1948,7 +1955,7 @@ class Emitter:
         if tag in {"str","bytes","tuple_sequence"}:
             return f"!({value.code}).is_empty()"
         if tag == "float":
-            return f"({value.code})!=0.0"
+            return f"({self.scalar(value).code})!=0.0"
         if tag == "complex":
             return f"({value.code}).is_true()"
         if tag == "range":
@@ -2028,6 +2035,9 @@ class Emitter:
         if literal is None:raise ClassUnsupported(node)
         constant=(self.numeric.normalize(value)if literal.kind=="int"else value if literal.kind=="bool"else None)
         code=literal.rust_atom(self.literal,_string)
+        if literal.kind=='float':
+            from .native_float_identity import literal as identity_literal
+            code=identity_literal(self,code,value,node)
         return self.encoded(code,literal.kind,wanted,node,constant)
 
     def captured_defaults(self,callee):
@@ -2276,6 +2286,9 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def unary_builtin(self,operator,value,node,wanted):
+        from .native_float_identity import unary as identity_unary
+        identity=identity_unary(self,operator,value,node,wanted)
+        if identity is not None:return identity
         if value.kind == 'float':
             raw = Expression(("-"if isinstance(operator,ast.USub)else"")+value.code,'float')
         else:
@@ -2301,6 +2314,12 @@ class Emitter:
         return self.binary_builtin(operator,left,right,node,wanted)
 
     def binary_builtin(self, operator, left, right, node, wanted):
+        from .native_float_identity import binary as identity_binary
+        identity=identity_binary(self,operator,left,right,node,wanted)
+        if identity is not None:return identity
+        from .native_complex_powers import frame as complex_power
+        power=complex_power(self,operator,left,right,node,wanted)
+        if power is not None:return power
         from .native_complex import additive as complex_additive
         value=complex_additive(self,operator,left,right,node,wanted)
         if value is not None:return value
@@ -2351,6 +2370,10 @@ class Emitter:
         return self.comparison_builtin(operator,left,right,node)
 
     def comparison_builtin(self, operator, left, right, node):
+        from .native_float_identity import scalar_comparison,container_comparison
+        identity=scalar_comparison(self,operator,left,right,node)
+        if identity is None:identity=container_comparison(self,operator,left,right,node)
+        if identity is not None:return identity
         empty=next((value for value in(left,right)if isinstance(value.kind,EmptyType)),None)
         if empty is not None:return f"native_empty::<bool>({empty.code})"
         if getattr(left.kind,"_native_builtin_singleton",False)and left.kind==right.kind and isinstance(operator,(ast.Is,ast.IsNot,ast.Eq,ast.NotEq)):
@@ -2384,6 +2407,9 @@ class Emitter:
         if bytearray is not None:return bytearray
         a,b = domain(left.kind),domain(right.kind)
         if "complex" in {a,b}:
+            from .native_complex_powers import ordering
+            error=ordering(self,operator,left,right,node)
+            if error is not None:return error
             raise ClassUnsupported(node,"complex comparison operators require native numeric comparison support",types=(("left",left.kind),("right",right.kind)),proof="complex comparison observer")
         if isinstance(operator,(ast.Is,ast.IsNot)):
             if a==b=='array':
@@ -3252,6 +3278,7 @@ class Emitter:
         return "\n".join(data+references)
 
     def generate(self):
+        if getattr(self.plan,'_native_atexit_callback',False):return self.model.atexit_callbacks.generate(self)
         if getattr(self.plan,'_native_retained_expression',False):return ''
         from .native_source_generators import generate as generate_source_generator
         generator=generate_source_generator(self)
@@ -3438,7 +3465,13 @@ def _class_layouts(model,emitter):
         if has_identity:params.insert(0,'class_value_identity:usize')
         if extra_parameter:params.insert(0,extra_parameter)
         signature="class_scope:ClassScope"+(","+",".join(params)if params else"")
-        initialize=",".join(f"field_{i}:"+(initialized_default(model,owner,i)if initialized_field(model,owner,i)else'std::cell::Cell::new('+packed_initial(shape(fields[i].cell))+')'if packed else'std::cell::Cell::new(None)'if copied else'None')for i in range(len(fields))if not constant_selected(model,owner,i))
+        from .native_float_identity import placeholder as float_placeholder
+        def field_initial(i):
+            kind=shape(fields[i].cell)
+            if initialized_field(model,owner,i):return float_placeholder(model,kind,initialized_default(model,owner,i))
+            if packed:return 'std::cell::Cell::new('+float_placeholder(model,kind,packed_initial(kind))+')'
+            return 'std::cell::Cell::new(None)'if copied else'None'
+        initialize=",".join(f"field_{i}:"+field_initial(i)for i in range(len(fields))if not constant_selected(model,owner,i))
         if extra_initialize:initialize=extra_initialize+(","+initialize if initialize else"")
         if has_identity:initialize='class_value_identity'+(','+initialize if initialize else'')
         body=(f"let mut object=ClassData_{owner.index}{{{initialize}}};"if owned_object else
@@ -3507,6 +3540,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         model=factory(tree,filename,integer,trusted_imports,unit=unit,string_mode=string_mode)
         model.frame_selection=frame_selection
         model.run()
+        from .native_float_identity import prepare as prepare_float_identity
+        prepare_float_identity(model)
         from .native_integer_word_maps import prepare as prepare_integer_words
         prepare_integer_words(model)
         from .native_class_calls import classify,synchronous,runtime as call_runtime
@@ -3647,6 +3682,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     if getattr(model,'complex_values_required',False):
         from .native_complex import RUNTIME as COMPLEX_RUNTIME
         pieces.append(COMPLEX_RUNTIME)
+    from .native_complex_powers import runtime as complex_power_runtime
+    pieces.append(complex_power_runtime(model))
     if integer=="bigint":
         from .native_bigint import _HELPERS as bigint_helpers
         pieces.extend([bigint_helpers,_named_helpers(_INPUT_HELPERS,{"native_space"}),
@@ -3662,6 +3699,9 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         pieces.extend([_HELPERS,_named_helpers(_INPUT_HELPERS,{"native_space"}),parsing_helpers(string_mode),_SCALAR_UNION_HELPERS,SCALAR_HELPERS,
                        "fn native_parse_bytes_integer(value:&[u8])->Result<NativeInt,String>{native_fixed_parse_ascii(value).ok_or_else(native_fixed_int_invalid)}",
                        "impl ClassDisplay for f64 {fn class_str(&self)->String{native_float_text(*self)}}"])
+    from .native_float_identity import runtime as float_identity_runtime
+    identity_float_runtime=float_identity_runtime(model)
+    if identity_float_runtime:pieces.append(identity_float_runtime)
     if model.sequence_calls:
         from .native_typed_lists import HELPERS as sequence_helpers
         pieces.append(sequence_helpers)
@@ -3733,6 +3773,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=apply_cached_text(result,string_mode,class_repr=model.string_repr_required)
     from .native_exit import runtime as exit_runtime
     result=exit_runtime(result,model)
+    from .native_atexit import runtime as atexit_runtime
+    result=atexit_runtime(result,model)
     from .native_scope_borrows import apply as borrow_scope_abi
     result=borrow_scope_abi(result)
     from .native_value_parameter_borrows import apply as apply_parameter_borrows

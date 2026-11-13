@@ -112,6 +112,8 @@ class LinkedModel(Model):
         from .native_linked_members import MathAdapter,SysAdapter
         provider.register_member_adapter('math',MathAdapter)
         provider.register_member_adapter('sys',SysAdapter)
+        from .native_atexit import AtexitAdapter
+        provider.register_member_adapter('atexit',AtexitAdapter)
         from .native_random import RandomAdapter
         provider.register_member_adapter('random',RandomAdapter)
         from .native_arrays import ArrayAdapter

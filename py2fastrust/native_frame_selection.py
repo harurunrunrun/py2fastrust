@@ -120,7 +120,7 @@ def select_frames(unit,*,integer="i64"):
         return FrameSelection(True,('native mutable bytearray storage and protocols',),analysis,frozenset(),MappingProxyType({}))
     from .native_bytes_sequences import requires_frames as byte_sequence_frames
     if byte_sequence_frames(unit,analysis):
-        return FrameSelection(True,('native immutable bytes repetition',),analysis,frozenset(),MappingProxyType({}))
+        return FrameSelection(True,('native immutable bytes operations',),analysis,frozenset(),MappingProxyType({}))
     from .native_retained_generators import requires_frames as retained_expressions
     if retained_expressions(unit,analysis):
         return FrameSelection(True,('retained original generator-expression frame',),analysis,frozenset(),MappingProxyType({}))
@@ -200,6 +200,8 @@ def select_frames(unit,*,integer="i64"):
     if none_guard_requires_frames(unit,analysis):reasons+=("concrete None conditional reachability",)
     from .native_heap_selection import requires_frames as heap_selection_requires_frames
     if heap_selection_requires_frames(analysis):reasons+=("bounded native heap selections",)
+    from .native_float_identity import requires_frames as float_identity_frames
+    if float_identity_frames(unit,analysis):reasons+=('typed float container identity',)
     from .native_float_constructor import requires_frames as float_requires_frames
     if float_requires_frames(analysis):reasons+=("captured float argument and signature protocols",)
     from .native_frame_slices import requires_frames as slice_requires_frames

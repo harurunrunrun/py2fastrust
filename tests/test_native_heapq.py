@@ -16,7 +16,6 @@ class HeapProofTests(unittest.TestCase):
     def test_unsupported_public_stream_selection_and_payloads_are_explicit(self):
         sources=["import heapq\nprint(list(heapq.merge([1],[2])))\n",
                  "import heapq\nh=[1,'x']\nheapq.heapify(h)\n",
-                 "import heapq\nh=[(1.0,),(2.0,)]\nheapq.heapify(h)\n",
                  "import heapq\nh=[]\nxs=[1]\nout=heapq.heappushpop(h,xs)\nprint(xs,out)\n"]
         for source in sources:
             for mode in ('i64','i128','bigint'):
@@ -61,6 +60,9 @@ class HeapExecutionTests(unittest.TestCase):
                         actual=subprocess.run([str(binary)],input=data,capture_output=True,text=True,timeout=10,env={**os.environ,'PATH':'/no-python-runtime'})
                         self.assertEqual((actual.stdout,actual.returncode),(expected.stdout,expected.returncode),actual.stderr+expected.stderr)
                         if expected.returncode:self.assertEqual(actual.stderr.splitlines()[-1].split(':')[0],expected.stderr.splitlines()[-1].split(':')[0])
+
+    def test_fixed_tuple_float_payloads_have_native_identity_comparisons(self):
+        self.compare('import heapq\nh=[(1.0,),(2.0,)]\nheapq.heapify(h)\nprint(h)\n')
 
     def test_original_top_selection_sources_execute(self):
         self.compare('from heapq import nlargest\nprint(nlargest(2,[1,2]))\n')

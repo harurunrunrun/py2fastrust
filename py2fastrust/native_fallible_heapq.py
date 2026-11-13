@@ -51,6 +51,9 @@ def _builtin(emitter,operator,left,right,node):
  if union_kind(left.kind):return project(left.kind,left.code,lambda kind,code:_builtin(emitter,operator,Expression('('+code+').clone()',kind),right,node))
  if union_kind(right.kind):return project(right.kind,right.code,lambda kind,code:_builtin(emitter,operator,left,Expression('('+code+').clone()',kind),node))
  a,b=left.kind,right.kind
+ from .native_float_identity import scalar_comparison
+ identity=scalar_comparison(emitter,operator,left,right,node,identity=True)
+ if identity is not None:return identity
  equal=isinstance(operator,ast.Eq)
  if isinstance(a,(TupleType,TupleSequenceType))and isinstance(b,(TupleType,TupleSequenceType))and type(a)is not type(b):
   raise ClassUnsupported(node,'heap tuple keys mixing fixed and homogeneous runtime layouts need a cross-layout lexicographic comparator; that tuple-storage pairing is not implemented',types=(('left',a),('right',b)),proof='cross-layout heap tuple comparator')

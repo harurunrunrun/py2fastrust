@@ -148,6 +148,11 @@ def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted=Non
     if not accepts(identity):
         return None
     owner = getattr(generator, 'model', generator)
+    if hasattr(generator,'model'):
+        from .native_float_identity import enabled,floating
+        if enabled(owner)and(identity.name in REAL_NAMES or any(floating(value.kind)for value in captured_arg_Expressions)):
+            from .native_classes import ClassUnsupported
+            raise ClassUnsupported(node,'math.'+identity.name+' needs its retained float producer/conversion contract; that identity-sensitive adapter is not implemented',proof='canonical math float identity adapter')
     owner.native_math_functions = getattr(owner, 'native_math_functions', set()) | {identity.name}
     if owner is generator:
         generator.has_native_modules = True

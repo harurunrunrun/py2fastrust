@@ -195,6 +195,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
             item = self.iterators.demand(plan,node,source,environment)
         item = item.root()
         if not isinstance(item.tag,EmptyType)and item.tag not in {None,"int","bool","int_bool"}:
+            from .native_types import alternatives
+            if 'float'in alternatives(shape(item)):
+                raise ClassUnsupported(node,'sum of floating values needs its retained float addition and initial-accumulator identity protocol; that typed reducer is not implemented',proof='floating sum addition and result identity')
             raise ClassUnsupported(node)
         start=arguments[1]if len(arguments)==2 else Cell("int")
         if start.root().tag not in {None,"int","bool","int_bool"}:
@@ -213,6 +216,12 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
 
 def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=False,length_hint=None):
     from .native_classes import Expression
+    from .native_float_identity import enabled as float_identity_enabled,floating
+    if float_identity_enabled(emitter.model)and(
+            identity.name in {'pow','divmod','round'}and(any(floating(value.kind)for value in arguments)or floating(wanted))
+            or identity.name=='format'and arguments and floating(arguments[0].kind)):
+        from .native_classes import ClassUnsupported
+        raise ClassUnsupported(node,identity.name+' needs its retained float producer/observer adapter in identity-sensitive containers; that adapter is not implemented',proof='typed float producer and observer contract')
     from .native_unions import project,union_kind
     from .native_builtin_singletons import has_singleton
     if identity.name=='property':
@@ -449,7 +458,7 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
             data=self.fresh();code='{let '+data+'='+arguments[0].code+'.0.borrow().clone();'+self.at('class_parse_bytes(&'+data+')',node)+'}'
         elif arguments[0].kind=='float':
             operation="Int::from_f64"if self.model.integer=="bigint"else"native_float_integer"
-            code=self.at(f"{operation}({arguments[0].code})",node)
+            code=self.at(f"{operation}({self.scalar(arguments[0]).code})",node)
         else:
             name=_type_name(emitter,arguments[0],node)
             return _error(emitter,node,wanted,f'format!("TypeError: int() argument must be a string, a bytes-like object or a real number, not \'{{}}\'",{name})')
@@ -462,13 +471,18 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
     elif name == "float":
         from .native_float_constructor import frame_value
         code="0.0_f64"if not arguments else frame_value(self,arguments[0],node)
+        if not arguments or arguments[0].kind!='float':
+            from .native_float_identity import wrap as wrap_float_identity
+            code=wrap_float_identity(self,code,node)
     elif name == "abs":
         value=arguments[0]
         if domain(value.kind)in{"int","bool","int_bool"}:
             number=self.number(value)
             code=f"({number}).abs()"if self.model.integer=="bigint"else f"({number}).wrapping_abs()"
             raw_kind='int'
-        elif value.kind=="float":code=f"({value.code}).abs()";raw_kind="float"
+        elif value.kind=="float":
+            from .native_float_identity import wrap as wrap_float_identity
+            code=wrap_float_identity(self,f"({self.scalar(value).code}).abs()",node);raw_kind="float"
         else:
             name=_type_name(emitter,value,node)
             return _error(emitter,node,wanted,f'format!("TypeError: bad operand type for abs(): \'{{}}\'",{name})')

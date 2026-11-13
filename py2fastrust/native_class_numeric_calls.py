@@ -9,7 +9,7 @@ from .references import BuiltinIdentity
 
 POW_SIGNATURE=FunctionSignature.declaration(('base','exp','mod'),default_names=('mod',))
 INTEGRAL=frozenset({'int','bool','int_bool'})
-SEALED=frozenset({'int','bool','int_bool','float','str','bytes','none','list','tuple','function','globals_dict','range'})
+SEALED=frozenset({'int','bool','int_bool','float','complex','str','bytes','none','list','tuple','function','globals_dict','range'})
 
 
 def _bind(arguments,keywords,default):
@@ -52,6 +52,7 @@ def _plan(kinds,nonnegative,integer,node):
     if not all(tag in SEALED for tag in tags):
         raise ClassUnsupported(node,'pow with these objects needs Python __pow__/__rpow__ and integer-index dispatch; those user object protocols are not implemented by this native numeric adapter',types=tuple(zip(('base','exp','mod'),kinds)),proof='power operand special-method protocol')
     if tags[2]=='none':
+        if 'complex'in tags[:2]and set(tags[:2])<=INTEGRAL|{'float','complex'}:return 'complex'
         if tags[0]=='float'and tags[1]in INTEGRAL:return 'float'
         if set(tags[:2])<=INTEGRAL:
             if not nonnegative:
@@ -108,6 +109,15 @@ def emit(emitter,node,identity,arguments,keywords,wanted):
                 return Expression(project(value.kind,value.code,lambda kind,code:lower(
                     values[:index]+[Expression(f'({code}).clone()',kind)]+values[index+1:]).code),wanted)
         tags=tuple(domain(value.kind)for value in values)
+        from .native_complex_powers import dispatch,convert
+        selected=dispatch(tags)
+        if selected=='complex':
+            if tags[2]=='none':return emitter.binary(ast.Pow(),values[0],values[1],node,wanted)
+            first,second=emitter.fresh(),emitter.fresh()
+            setup='let '+first+'='+convert(emitter,values[0],node)+';let '+second+'='+convert(emitter,values[1],node)+';'
+            value=_error(emitter,node,wanted,_string('ValueError: complex modulo')+'.to_owned()')
+            return Expression('{'+setup+value.code+'}',wanted)
+        if selected=='float_mod':return _error(emitter,node,wanted,_string('TypeError: pow() 3rd argument not allowed unless all arguments are integers')+'.to_owned()')
         if tags[2]=='none'and set(tags[:2])<=INTEGRAL|{'float'}:
             return emitter.binary(ast.Pow(),values[0],values[1],node,wanted)
         if set(tags)<=INTEGRAL:
@@ -119,8 +129,6 @@ def emit(emitter,node,identity,arguments,keywords,wanted):
                 call='native_fixed_modpow('+','.join(numbers)+')'
                 code=emitter.at(call,node)
             return emitter.encoded(code,'int',wanted,node)
-        if tags[2]!='none'and 'float'in tags:
-            return _error(emitter,node,wanted,_string('TypeError: pow() 3rd argument not allowed unless all arguments are integers')+'.to_owned()')
         from .native_class_builtins import _type_name
         count=2 if tags[2]=='none'else 3
         message=("TypeError: unsupported operand type(s) for ** or pow(): '{}', '{}', '{}'"if count==3 else

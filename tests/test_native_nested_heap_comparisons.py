@@ -354,13 +354,9 @@ class NestedHeapTests(unittest.TestCase):
     def test_less_notimplemented_reverse(self):
         self.check('less_notimplemented_reverse')
 
-    def test_float_identity_and_nan_proof_boundary(self):
-        for name in ('distinct_nan_objects', 'fresh_arithmetic_nan_objects', 'numeric_precision', 'numeric_tie_float_int', 'shared_nan_alias'):
-            for mode in ('i64','i128','bigint'):
-                with self.subTest(name=name,mode=mode):
-                    result=transpile(CASES[name],TranspileOptions(integer=mode,filename='nested_heap_case.py',license='none'))
-                    self.assertFalse(result.success)
-                    self.assertTrue(any(d.code=='E006' and d.line>0 and 'NaN' in d.message and 'identity' in d.message for d in result.diagnostics),result.diagnostics)
+    def test_float_payload_identity_and_exact_numeric_comparisons(self):
+        for name in ('distinct_nan_objects','fresh_arithmetic_nan_objects','numeric_precision','numeric_tie_float_int','shared_nan_alias'):
+            with self.subTest(name=name):self.check(name)
 
     def test_equal_distinct_objects_use_later_field(self):
         self.check('equal_distinct_objects_use_later_field')

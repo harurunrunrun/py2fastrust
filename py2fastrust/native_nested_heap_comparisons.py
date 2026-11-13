@@ -59,8 +59,8 @@ def analyze(model,caller,node,name,heap,environment):
     source=contains(kind,lambda child:isinstance(child,InstanceType))
     if not floating and not source:return absent()
     if floating:
-        if not model.final:return absent()
-        raise ClassUnsupported(node,'nested heap float equality needs a proved absence of NaN or retained Python float identity; raw binary64 storage cannot distinguish a shared NaN from distinct NaN objects',types=(('element',kind),),proof='identity-aware floating tuple element equality')
+        from .native_float_identity import require
+        require(model,caller,node,'heap',heap)
     if not all(isinstance(choice,TupleType)and not getattr(choice,'_native_named_tuple',False)for choice in roots):
         if not model.final:return absent()
         raise ClassUnsupported(node,'source-object tuple heap keys mixed with other root key types need their cross-type reflected tuple comparison protocol',types=(('element',kind),),proof='fixed tuple heap key alternatives')
@@ -69,7 +69,9 @@ def analyze(model,caller,node,name,heap,environment):
         for child in alternatives(value):
             if isinstance(child,TupleType):
                 if getattr(child,'_native_named_tuple',False)or not all(supported(field)for field in child.fields):return False
-            elif not(isinstance(child,InstanceType)or builtin_kind(child)):return False
+            elif not(isinstance(child,InstanceType)or builtin_kind(child)or child=='float'):
+                from .native_float_identity import builtin_container
+                if not builtin_container(child):return False
         return True
     if not supported(kind):
         if not model.final:return absent()

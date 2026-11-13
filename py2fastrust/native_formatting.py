@@ -102,7 +102,7 @@ def format_value(emitter,node,value,specification):
     if tag in {'int','bool','int_bool'}:
         number=emitter.number(value);shown=emitter.show(value,node)
         code=f'if ({spec}).is_empty(){{{shown}}}else{{'+emitter.at(f'native_format_integer(&({number}),&({spec}))',node)+'}'
-    elif tag=='float':code=emitter.at(f'native_format_float({value.code},&({spec}))',node)
+    elif tag=='float':code=emitter.at(f'native_format_float({emitter.scalar(value).code},&({spec}))',node)
     elif tag=='str':code=emitter.at(f'native_format_string(&({value.code}),&({spec}))',node)
     else:
         if tag=='object':

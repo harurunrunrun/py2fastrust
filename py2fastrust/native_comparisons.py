@@ -13,6 +13,10 @@ def real_comparison(g,left,right,operator,node):
     symbols={ast.Eq:'==',ast.NotEq:'!=',ast.Lt:'<',ast.LtE:'<=',ast.Gt:'>',ast.GtE:'>='}
     if (type(operator)not in symbols or 'float'not in {left.kind,right.kind}
             or left.kind not in _INTEGERS|{'float'}or right.kind not in _INTEGERS|{'float'}):return None
+    frame=getattr(g,'emitter',None)
+    if frame is not None:
+        from .native_float_identity import raw
+        left,right=raw(frame,left),raw(frame,right)
     if left.kind==right.kind=='float':return '('+left.code+')'+symbols[type(operator)]+'('+right.code+')'
     integer=g.number(right if left.kind=='float'else left)
     floating=left.code if left.kind=='float'else right.code

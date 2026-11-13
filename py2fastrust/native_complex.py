@@ -11,10 +11,15 @@ def additive(emitter,operator,left,right,node,wanted):
     emitter.model.complex_values_required=True
     def convert(value):
         if value.kind=='complex':return value
-        return Expression('NativeComplex{real:'+frame_value(emitter,value,node)+',imag:0.0}','complex')
+        code=emitter.scalar(value).code if value.kind=='float'else frame_value(emitter,value,node)
+        return Expression(code,'float')
     before,first=emitter.capture(convert(left));more,second=emitter.capture(convert(right))
     symbol='+'if isinstance(operator,ast.Add)else'-'
-    value=Expression('NativeComplex{real:'+first.code+'.real'+symbol+second.code+'.real,imag:'+first.code+'.imag'+symbol+second.code+'.imag}','complex')
+    real=lambda value:value.code+'.real'if value.kind=='complex'else value.code
+    if first.kind==second.kind=='complex':imag=first.code+'.imag'+symbol+second.code+'.imag'
+    elif first.kind=='complex':imag=first.code+'.imag'
+    else:imag=('-'if isinstance(operator,ast.Sub)else'')+second.code+'.imag'
+    value=Expression('NativeComplex{real:'+real(first)+symbol+real(second)+',imag:'+imag+'}','complex')
     return Expression('{'+before+more+emitter.coerce(value,wanted,node)+'}',wanted)
 
 RUNTIME=r'''
