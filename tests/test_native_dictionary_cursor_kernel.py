@@ -34,7 +34,7 @@ def products():
                 key=rng.choice(list(mapping))if mapping else 1;new=1000+case*100+step;mapping.pop(key,None);mapping[new]=new;operands=[key,new];statement=f'owner.borrow_mut().delete(&{key});owner.borrow_mut().set({new},{new},{new}).unwrap();'
             elif action in {'copy','constructor'}:
                 mapping=mapping.copy()if action=='copy'else dict(mapping)
-                statement=('{let mut copied=owner.borrow().clone();copied.entries.prepare_python_copy().unwrap();owner=Rc::new(RefCell::new(copied));}'if action=='copy'else'{let result=Rc::new(RefCell::new(NativeKeyDict::<i64,i64,i64>::new()));{let read=owner.borrow();result.borrow_mut().entries.prepare_mapping_seed(&read.entries).unwrap();for(key,value)in read.entries.iter(){result.borrow_mut().set(*key,*key,*value).unwrap();}}owner=result;}')
+                statement=('{let copied={owner.borrow().try_python_copy(|key|*key).unwrap()};owner=Rc::new(RefCell::new(copied));}'if action=='copy'else'{let result=Rc::new(RefCell::new(NativeKeyDict::<i64,i64,i64>::new()));{let read=owner.borrow();result.borrow_mut().prepare_mapping_seed(&read.entries).unwrap();for(key,value)in read.entries.iter(){result.borrow_mut().set(*key,*key,*value).unwrap();}}owner=result;}')
             elif action=='pop':
                 if mapping:mapping.popitem();statement='{let mut read=owner.borrow_mut();let read=&mut *read;native_dict_popitem(&mut read.entries,&mut read.index,|key|*key).unwrap();}'
             else:

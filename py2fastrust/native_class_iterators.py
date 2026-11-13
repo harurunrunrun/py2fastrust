@@ -4,6 +4,7 @@ Families are metadata over original source nodes. Runtime values contain only
 concrete Rust payloads and cursor state; no Python operations are interpreted.
 """
 import ast
+from contextlib import contextmanager
 from dataclasses import dataclass,field
 
 from .call_semantics import Argument,CallArguments
@@ -55,6 +56,23 @@ class IteratorRecord:
 
 
 def iterator_kind(kind):return isinstance(kind,IteratorType)
+
+
+@contextmanager
+def demand_context(emitter,node):
+    if node is None:
+        yield
+        return
+    absent=object();previous=getattr(emitter,'iterator_demand_node',absent)
+    emitter.iterator_demand_node=node
+    try:yield
+    finally:
+        if previous is absent:del emitter.iterator_demand_node
+        else:emitter.iterator_demand_node=previous
+
+
+def demand_key(emitter,node):
+    return emitter.plan.index,id(getattr(emitter,'iterator_demand_node',node))
 
 
 def default_noniterable(model,kind):
@@ -382,11 +400,11 @@ class Iterators:
         fields.append("strict:"+emitter.truth(strict,node))
         return Expression("{"+"".join(before)+f"Rc::new(RefCell::new(ClassIteratorState_{record.index}{{"+",".join(fields)+"}))}",wanted)
 
-    def pull(self,emitter,node,value,active=(),*,stop=None,clear_stop_if=None):
+    def pull(self,emitter,node,value,active=(),*,stop=None,clear_stop_if=None,demand_node=None):
         from .native_classes import Expression
         from .native_iterator_stop_policy import context,boundary
         handle=emitter.fresh()
-        with context(emitter)as(marker,owner):
+        with context(emitter)as(marker,owner),demand_context(emitter,demand_node):
             pulled=self._pull(emitter,node,Expression(handle,value.kind),active)
         pulled=Expression("{let "+handle+"=&("+value.code+");"+pulled.code+"}",pulled.kind)
         if stop is None:stop='clear'if owner else'propagate'
@@ -511,7 +529,7 @@ class Iterators:
             fields=[item.code for item in items]
             result=emitter.encoded("("+",".join(fields)+(","if len(fields)==1 else"")+")",raw,shape(record.element),node)
         else:
-            site=record.demands.get((emitter.plan.index,id(node)))
+            site=record.demands.get(demand_key(emitter,node))
             if site is None:raise ClassUnsupported(node,"the deferred map callback has no matching typed demand proof",proof="deferred callable demand site")
             result=emit_values(emitter,node,site,Expression(callback,shape(record.callback)),items,[],shape(record.element))
         if record.operation=="map":code+=self._callback_result(emitter,result).code+"}}"
@@ -570,7 +588,7 @@ class Iterators:
         from .native_aot_callables import emit_values
         def branch(kind,code):
             if kind=="none":return 'Some('+emitter.truth(item,node)+')'
-            site=record.demands.get((emitter.plan.index,id(node)))
+            site=record.demands.get(demand_key(emitter,node))
             if site is None:raise ClassUnsupported(node,"the deferred predicate has no matching typed demand proof",proof="deferred callable demand site")
             result=emit_values(emitter,node,site,Expression("("+code+").clone()",kind),[Expression(item.code+".clone()",item.kind)],[],shape(site.result))
             temporary=emitter.fresh()

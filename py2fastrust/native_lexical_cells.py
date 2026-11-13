@@ -504,6 +504,7 @@ class LexicalCells:
         from .native_function_instances import lifetime_edges
         lifetime_edges(self,edges,targets)
         if hasattr(self.model,'properties'):self.model.properties.add_lifetime_edges(edges,targets)
+        raw_edges=edges
         from .native_class_gc import lexical_projection
         edges=lexical_projection(self.model,edges)
         done=set();visiting=set()
@@ -516,3 +517,5 @@ class LexicalCells:
             for target in edges.get(node,()):visit(target)
             visiting.remove(node);done.add(node)
         for node in edges:visit(node)
+        from .native_source_generator_cursor_ownership import capture
+        capture(self.model,raw_edges)

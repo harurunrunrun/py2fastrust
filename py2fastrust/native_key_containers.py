@@ -28,7 +28,7 @@ impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
     fn new()->Self {Self {entries:NativeDictionaryEntries::new(),index:std::collections::HashMap::with_hasher(NativeKeyBuildHasher::default())}}
     fn len(&self)->usize {self.entries.len()}
     fn is_empty(&self)->bool {self.entries.is_empty()}
-    fn clear(&mut self){self.entries.clear();self.index.clear();}
+    fn clear(&mut self){self.entries=NativeDictionaryEntries::new();self.index=std::collections::HashMap::with_hasher(self.index.hasher().clone());}
     fn contains(&self,key:&C)->bool {self.index.contains_key(key)}
     fn get(&self,key:&C)->Option<&V> {self.index.get(key).map(|&index|&self.entries[index].1)}
     fn get_mut(&mut self,key:&C)->Option<&mut V> {
@@ -38,14 +38,26 @@ impl<K,V,C:Eq+std::hash::Hash> NativeKeyDict<K,V,C> {
     fn set(&mut self,key:K,canonical:C,value:V)->Result<(),String> {
         if let Some(&index)=self.index.get(&canonical){self.entries[index].1=value;return Ok(());}
         self.index.try_reserve(1).map_err(|_|"MemoryError".to_string())?;
-        let slot=native_dict_insert(&mut self.entries,(key,value))?;
+        let slot=native_dict_insert(&mut self.entries,&mut self.index,(key,value))?;
         self.index.insert(canonical,slot);Ok(())
     }
     fn set_default(&mut self,key:K,canonical:C,value:V)->Result<V,String> where V:Clone {
         if let Some(&index)=self.index.get(&canonical){return Ok(self.entries[index].1.clone());}
         self.index.try_reserve(1).map_err(|_|"MemoryError".to_string())?;
-        let slot=native_dict_insert(&mut self.entries,(key,value))?;
+        let slot=native_dict_insert(&mut self.entries,&mut self.index,(key,value))?;
         self.index.insert(canonical,slot);Ok(self.entries[slot].1.clone())
+    }
+    fn presize_literal(&mut self,count:usize)->Result<(),String>{let plan=native_dict_literal_plan(&self.entries,count)?;native_dict_apply_plan(&mut self.entries,&mut self.index,plan,0)}
+    fn prepare_mapping_info(&mut self,source:(usize,usize,usize,usize))->Result<(),String>{let plan=native_dict_mapping_plan(&self.entries,source)?;native_dict_apply_plan(&mut self.entries,&mut self.index,plan,0)}
+    fn prepare_mapping_seed<T>(&mut self,source:&NativeDictionaryEntries<T>)->Result<(),String>{self.prepare_mapping_info(native_dict_seed(source))}
+    fn prepare_keywords(&mut self,count:usize)->Result<(),String>{let plan=native_dict_keyword_plan(&self.entries,count)?;native_dict_apply_plan(&mut self.entries,&mut self.index,plan,0)}
+    fn prepare_python_copy(&mut self)->Result<(),String>{let plan=native_dict_copy_plan(&self.entries,false)?;native_dict_apply_plan(&mut self.entries,&mut self.index,plan,0)}
+    fn prepare_constructor_copy(&mut self)->Result<(),String>{let plan=native_dict_copy_plan(&self.entries,true)?;native_dict_apply_plan(&mut self.entries,&mut self.index,plan,0)}
+    fn try_python_copy<F:FnMut(&K)->C>(&self,canonical:F)->Result<Self,String> where K:Clone,V:Clone,C:Clone{
+        let(entries,index)=native_dict_try_copy(&self.entries,&self.index,canonical,false)?;Ok(Self{entries,index})
+    }
+    fn try_constructor_copy<F:FnMut(&K)->C>(&self,canonical:F)->Result<Self,String> where K:Clone,V:Clone,C:Clone{
+        let(entries,index)=native_dict_try_copy(&self.entries,&self.index,canonical,true)?;Ok(Self{entries,index})
     }
     fn delete(&mut self,key:&C)->bool {
         match self.index.remove(key){Some(slot)=>{native_dict_remove(&mut self.entries,&mut self.index,slot);true},None=>false}
@@ -163,6 +175,9 @@ def _construct(generator,keys,values,node,*,kind=None):
 
 
 def try_expression(generator,node,environment):
+    from .native_dict_materialization import comprehension
+    materialized=comprehension(generator,node,environment)
+    if materialized is not None:return materialized
     from .native_mapping_mutations import popitem
     removed=popitem(generator,node,environment)
     if removed is not None:return removed
@@ -196,9 +211,17 @@ def try_expression(generator,node,environment):
         method=node.func.attr
         if method in {"copy","get","setdefault"}:
             value=generator.expression(node.func.value,environment)
+            if value.kind=='dict_int' and method=='copy' and not node.args and not node.keywords:
+                generator.has_dicts=True
+                return _Expression(generator.at('('+value.code+').try_python_copy()',node),value.kind,length=value.length,nonempty=value.nonempty)
             if not isinstance(value.kind,(SetType,DictType)):return None
             if node.keywords:raise _Unsupported
             if method=="copy" and not node.args:
+                if isinstance(value.kind,DictType):
+                    key=generator.temporary()
+                    query=canonical(generator,_Expression('(*'+key+').clone()',value.kind.key,owned=True))
+                    code=generator.at('('+value.code+').try_python_copy(|'+key+'|'+query+')',node)
+                    return _Expression(code,value.kind,length=value.length,nonempty=value.nonempty)
                 return _Expression(f"({value.code}).clone()",value.kind,length=value.length,nonempty=value.nonempty)
             if not isinstance(value.kind,DictType) or method!="get" or not 1<=len(node.args)<=2:raise _Unsupported
             key=generator.expression(node.args[0],environment);default=generator.expression(node.args[1],environment) if len(node.args)==2 else _Expression("()","none")

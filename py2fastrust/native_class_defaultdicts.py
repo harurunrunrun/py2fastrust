@@ -134,7 +134,7 @@ class DefaultDicts:
             if len(arguments)>1:code+=self._emit_initial(emitter,node,Expression(owner,wanted),arguments[1],self.sites[(emitter.plan.index,id(node))])
             from .native import _string
             if keywords and self.mappings.views.positions_enabled():
-                code+=emitter.at(owner+'.mapping().borrow_mut().entries.prepare_keywords('+str(len(keywords))+')',node)+';'
+                code+=emitter.at(owner+'.mapping().borrow_mut().prepare_keywords('+str(len(keywords))+')',node)+';'
             for key,value in keywords:code+=self.mappings._set(emitter,node,Expression(owner,wanted),Expression('NativeText::from('+_string(key)+')','str'),value)
             return '{'+code+owner+'}'
         code=project(supplied.kind,supplied.code,build)if union_kind(supplied.kind)else build(supplied.kind,supplied.code)
@@ -154,7 +154,7 @@ class DefaultDicts:
             pulled=emitter.at(cursor+'.next(|key,value|(key.clone(),value.clone()))',node)
             seed=''
             if self.mappings.views.positions_enabled():
-                seed=emitter.at(owner.code+'.mapping().borrow_mut().entries.prepare_mapping_seed(&'+source.code+'.borrow().entries)',node)+';'
+                seed=emitter.at(owner.code+'.mapping().borrow_mut().prepare_mapping_seed(&'+source.code+'.borrow().entries)',node)+';'
             return '{'+seed+'let mut '+cursor+'=ClassMappingCursor::new('+source.code+');loop{let Some('+pair+')=('+pulled+')else{break;};'+self.mappings._set(emitter,node,owner,Expression(pair+'.0',shape(old.key)),Expression(pair+'.1',shape(old.value)))+'}}'
         if union_kind(source.kind):return project(source.kind,source.code,lambda kind,text:'{'+self._emit_initial(emitter,node,owner,Expression('('+text+').clone()',kind),site)+'}')+';'
         from .native_class_iterators import iterator_kind
@@ -211,9 +211,9 @@ class DefaultDicts:
         data,factory=(emitter.fresh()for _ in range(2))
         value=Expression(factory,shape(owner.kind.record.default_factory))
         converted=emitter.coerce(value,shape(record.default_factory),node)
-        setup='let '+data+'='+owner.code+'.borrow().clone();'
-        if self.mappings.views.positions_enabled():
-            setup='let mut '+data+'='+owner.code+'.borrow().clone();'+emitter.at(data+'.entries.prepare_constructor_copy()',node)+';'
+        from .native_class_mappings import copy_query
+        query=copy_query(emitter,shape(owner.kind.record.key))
+        setup='let '+data+'='+emitter.at(owner.code+'.borrow().try_constructor_copy('+query+')',node)+';'
         return '{'+setup+'let '+factory+'='+owner.code+'.factory.borrow().clone();Rc::new(ClassDefaultState_'+str(record.index)+'{data:RefCell::new('+data+'),factory:RefCell::new('+converted+')})}'
 
     def show(self,emitter,value,node):

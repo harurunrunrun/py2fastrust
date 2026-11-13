@@ -97,6 +97,16 @@ def analyze_return(model,plan,node,value):
         raise ClassUnsupported(node,'a source generator return value requires retaining StopIteration.value; only return or return None is implemented',proof='source generator exhaustion value')
 
 
+def owned_sources(model,plan):
+    """Actual original sources plus canonical __iter__ result handles."""
+    loops=[node for node in own_nodes(plan.node)if isinstance(node,ast.For)]
+    values=[model.records.get((plan.index,id(node.iter)))for node in loops]
+    sites=getattr(model.iterators,'source_protocol_sites',{})
+    keys={(plan.index,id(node))for node in loops}
+    values.extend(site.callback.result for key,site in sites.items()if key[:2]in keys)
+    return tuple(value for value in values if value is not None)
+
+
 class Adapter:
     def owned(self,record):
         from .native_classes import shape
@@ -104,11 +114,10 @@ class Adapter:
         # A suspended for-loop retains its evaluated iterable even when that
         # value has no Python local name (for example a global builtin cursor).
         # Its lifetime edges must participate before frame emission/validation.
-        sources=[record.generator_model.records.get((plan.index,id(node.iter)))
-                 for node in own_nodes(plan.node)if isinstance(node,ast.For)]
+        sources=owned_sources(record.generator_model,plan)
         return tuple(dict.fromkeys(shape(value)for value in (record.element,*plan.arguments.values(),
             *(value for values in plan.locals.values()for value in values),
-            *(value for value in sources if value is not None))))
+            *sources)))
 
     def demand(self,registry,plan,node,record,environment,active):
         model=registry.model;callee=record.generator_plan
@@ -210,7 +219,7 @@ class GeneratorBuilder(Builder):
             created=self.emitter.model.iterators.construct(self.emitter,source_node,source,kind=kind)
             self.emit('frame.'+cursor+'=Some('+created.code+');')
             head,body,otherwise,after=self.new(),self.new(),self.new(),self.new();self.end(('jump',head));self.current=head
-            pulled=self.emitter.model.iterators.pull(self.emitter,node.iter,Expression('frame.'+cursor+'.as_ref().unwrap().clone()',kind))
+            pulled=self.emitter.model.iterators.pull(self.emitter,node.iter,Expression('frame.'+cursor+'.as_ref().unwrap().clone()',kind),demand_node=node)
             item=self.emitter.fresh()
             self.emit('let '+item+'='+pulled.code+';')
             self.end(('for',item,self.emitter.assign(node.target,Expression('value',pulled.kind)),body,otherwise))
@@ -285,10 +294,9 @@ def _loop_local_schema(model,plan,name,values):
         if model.lexical.field_for(target)is not None:return None
         source=model.records.get((plan.index,id(loop.iter)))
         if source is None or not complete(shape(source)):return None
-        # Opaque iterator/protocol carriers can hide unresolved captures.
-        # This certificate covers concrete builtin source layouts only.
+        from .native_source_generator_cursor_ownership import cursor as owned_cursor
         if any(domain(part)not in {'list','tuple','tuple_sequence','range','str','bytes','none','int','bool','int_bool','float'}
-               for part in alternatives(shape(source))):return None
+               and not owned_cursor(model,plan,part)for part in alternatives(shape(source))):return None
         current=model.records.get((plan.index,id(target)))
         if current is None:return None
         kind=shape(current)
@@ -319,7 +327,8 @@ def generate(emitter):
         if isinstance(kind,NullableType):return closed(kind.value)
         if isinstance(kind,UnionType):return all(closed(part)for part in kind.alternatives)
         if isinstance(kind,InstanceType):return not model.gc_classes
-        return False
+        from .native_source_generator_cursor_ownership import cursor as owned_cursor
+        return owned_cursor(model,plan,kind)
     from .native_primitive_parameter_places import borrowed_parameter
     from .native_scalar_constructor_data import receiver_type
     from .native_scalar_data_parameters import parameter_type
@@ -329,14 +338,19 @@ def generate(emitter):
                 or parameter_type(model,plan,name)is not None):
             raise ClassUnsupported(plan.node,'source generator parameter '+repr(name)+' uses a borrowed native receiver; suspending that borrowed receiver requires an owned frame capture that is not implemented',proof='owned source generator receiver capture')
     retained=[shape(record.element),*(shape(value)for value in plan.arguments.values())]
+    direct=list(retained)
+    direct.extend(shape(value)for value in owned_sources(model,plan))
     from .native_source_generator_environments import retained_kinds
     retained.extend(retained_kinds(model,plan))
     for name,values in plan.locals.items():
         stored=_loop_local_schema(model,plan,name,values)
-        retained.extend([stored]if stored is not None else(shape(value)for value in values))
+        local=[stored]if stored is not None else[shape(value)for value in values]
+        retained.extend(local);direct.extend(local)
     for kind in retained:
         if not closed(kind):
             raise ClassUnsupported(plan.node,'this source generator retains a callable, iterator or object whose suspended lifetime/ownership is not implemented; the current frame supports builtin values and owned shared instance handles',types=(('retained value',kind),),proof='owned source generator frame payload')
+    from .native_source_generator_cursor_ownership import frame as owned_cursor_frame
+    owned_cursor_frame(model,plan,retained,direct=direct)
     # All frame places remain owned across Rust calls and suspension. Never
     # retain temporary native borrows or an optimizer's stack-local Vec place.
     emitter.primitive_parameters={};emitter.readonly_owned_parameters={}

@@ -3,7 +3,7 @@ import ast
 from dataclasses import dataclass
 from .native_types import alternatives,EMPTY
 
-METHODS=frozenset({'__getitem__','get','setdefault','popitem'})
+METHODS=frozenset({'__getitem__','get','setdefault','popitem','update','pop'})
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,8 @@ def callable_kind(kind):
 
 def supported(kind,name):
     from .native_class_mappings import mapping_kind
-    return name in METHODS and mapping_kind(kind)and kind.record.category=='dict'
+    return(name in METHODS and mapping_kind(kind)and kind.record.category=='dict'
+           and(name!='update'or kind.record.flavor in {'dict','defaultdict'}))
 
 
 def requires_frames(unit,analysis):
@@ -65,11 +66,17 @@ def acquire(model,plan,node,receiver):
     if node.attr=='popitem':
         from .native_mapping_popitem import require_origin
         require_origin(model,node,kinds)
+    if node.attr=='pop':
+        from .native_mapping_pop import require_origin
+        require_origin(model,node,kinds)
+    if node.attr=='update':
+        from .native_mapping_update import require_origin
+        require_origin(model,node,kinds)
     registry=getattr(model,'mapping_method_types',None)
     if registry is None:
         registry=model.mapping_method_types=set()
         from .native_callback_effects import register
-        register(model,lambda plan,node:any(kind.name=='setdefault'or kind.receiver.record.flavor=='defaultdict'for kind in getattr(model,'mapping_method_calls',{}).get((plan.index,id(node)),())))
+        register(model,lambda plan,node:any(kind.name in {'setdefault','update','pop'}or kind.receiver.record.flavor=='defaultdict'for kind in getattr(model,'mapping_method_calls',{}).get((plan.index,id(node)),())))
     result=model.cell(plan,node)
     for kind in kinds:
         method=MappingMethod(kind,node.attr);registry.add(method)
@@ -96,6 +103,12 @@ def binding_error(kind,count,keywords):
     if name=='popitem':
         from .native_mapping_popitem import binding_error as popitem_error
         return popitem_error(count,keywords)
+    if name=='pop':
+        from .native_mapping_pop import binding_error as pop_error
+        return pop_error(count,keywords)
+    if name=='update':
+        from .native_mapping_update import binding_error as update_error
+        return update_error(count)
     owner='Counter'if record.flavor=='Counter'else'defaultdict'if record.flavor=='defaultdict'else'dict'
     if keywords:return f'TypeError: {owner}.{name}() takes no keyword arguments'
     if name=='__getitem__':return None if count==1 else f'TypeError: {owner}.__getitem__() takes exactly one argument ({count} given)'
@@ -106,6 +119,12 @@ def binding_error(kind,count,keywords):
 
 def analyze_call(model,plan,node,kind,positional,keywords,environment,*,identity=None):
     from .native_classes import Cell
+    if kind.name=='pop':
+        from .native_mapping_pop import analyze_values
+        return analyze_values(model,plan,node,Cell(kind.receiver),positional,keywords,identity=('captured_pop',identity,kind))
+    if kind.name=='update':
+        from .native_mapping_update import analyze_values
+        return analyze_values(model,plan,node,Cell(kind.receiver),positional,keywords,environment,identity=('captured_update',identity,kind))
     error=binding_error(kind,len(positional),keywords)
     result=model.cell(plan,node,identity=('mapping_method_call',identity,kind))
     if error:
@@ -134,6 +153,12 @@ def emit_call(emitter,node,kind,record,callee,positional,keywords,wanted):
     from .native import _string
     if record.error:return _error(emitter,node,wanted,_string(record.error)+'.to_owned()')
     owner=Expression('('+callee+').receiver.clone()',kind.receiver)
+    if kind.name=='pop':
+        from .native_mapping_pop import emit_values
+        return emit_values(emitter,node,record,owner,positional,keywords,wanted)
+    if kind.name=='update':
+        from .native_mapping_update import emit_values
+        return emit_values(emitter,node,record,owner,positional,keywords,wanted)
     if kind.name=='popitem':
         from .native_mapping_popitem import remove
         return remove(emitter,node,owner,wanted)

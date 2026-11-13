@@ -95,6 +95,12 @@ def canonical(emitter,value):
     raise KeyError(kind)
 
 
+def copy_query(emitter,kind):
+    from .native_classes import Expression
+    key=emitter.fresh()
+    return '|'+key+'|'+canonical(emitter,Expression('(*'+key+').clone()',kind))
+
+
 def query_canonical(emitter,value,wanted):
     """Hash equivalent immutable tuple layouts using the stored key ABI."""
     from .native_classes import Expression
@@ -295,6 +301,9 @@ class Mappings:
 
     def analyze_method(self,plan,node,receiver,arguments,keywords,environment):
         from .native_classes import shape,Cell,ClassUnsupported
+        # A point receiver can change adapters on a later analysis visit.
+        getattr(self.model,'mapping_update_calls',{}).pop((plan.index,id(node),None),None)
+        getattr(self.model,'mapping_pop_calls',{}).pop((plan.index,id(node),None),None)
         mutated=self.set_methods.analyze(plan,node,receiver,arguments,keywords,environment)
         if mutated is not None:return mutated
         counted=self.counters.analyze_method(plan,node,receiver,arguments,keywords,environment)
@@ -303,6 +312,12 @@ class Mappings:
         if view is not None:
             self.methods[(plan.index,id(node))]=(receiver,node.func.attr)
             return view
+        from .native_mapping_update import analyze as analyze_update
+        updated=analyze_update(self.model,plan,node,receiver,arguments,keywords,environment)
+        if updated is not None:return updated
+        from .native_mapping_pop import analyze as analyze_pop
+        popped_key=analyze_pop(self.model,plan,node,receiver,arguments,keywords)
+        if popped_key is not None:return popped_key
         from .native_mapping_popitem import analyze as analyze_popitem
         popped=analyze_popitem(self.model,plan,node,receiver,arguments,keywords)
         if popped is not None:return popped
@@ -361,7 +376,7 @@ class Mappings:
             count=literal_presize(record.node)
             if count<=5:return result
             owner=emitter.fresh()
-            result='{let '+owner+'='+result+';'+emitter.at(owner+'.borrow_mut().entries.presize_literal('+str(count)+')',record.node)+';'+owner+'}'
+            result='{let '+owner+'='+result+';'+emitter.at(owner+'.borrow_mut().presize_literal('+str(count)+')',record.node)+';'+owner+'}'
         return result
 
     def _set(self,emitter,node,owner,key,value):
@@ -413,7 +428,7 @@ class Mappings:
                     stable,key,value,read=(emitter.fresh()for _ in range(4));old=kind.record
                     body=f'{{let {stable}=({text}).clone();let {read}={stable}.borrow();for ({key},{value})in {read}.entries.iter(){{'
                     if name=='dict'and self.views.positions_enabled():
-                        body=f'{{let {stable}=({text}).clone();let {read}={stable}.borrow();'+emitter.at(owner+'.borrow_mut().entries.prepare_mapping_seed(&'+read+'.entries)',node)+f';for ({key},{value})in {read}.entries.iter(){{'
+                        body=f'{{let {stable}=({text}).clone();let {read}={stable}.borrow();'+emitter.at(owner+'.borrow_mut().prepare_mapping_seed(&'+read+'.entries)',node)+f';for ({key},{value})in {read}.entries.iter(){{'
                     return body+self._set(emitter,node,Expression(owner,wanted),Expression(key+'.clone()',shape(old.key)),Expression(value+'.clone()',shape(old.value))if name=='dict'else Expression('()','none'))+'}}'
                 code+=(project(source.kind,source.code,copy)if union_kind(source.kind)else copy(source.kind,source.code))+';'
             else:
@@ -425,7 +440,7 @@ class Mappings:
                 code+=self._set(emitter,node,Expression(owner,wanted),key,value)+'}'
         from .native import _string
         if name=='dict'and keywords and self.views.positions_enabled():
-            code+=emitter.at(owner+'.borrow_mut().entries.prepare_keywords('+str(len(keywords))+')',node)+';'
+            code+=emitter.at(owner+'.borrow_mut().prepare_keywords('+str(len(keywords))+')',node)+';'
         for key,value in keywords.items():code+=self._set(emitter,node,Expression(owner,wanted),Expression('NativeText::from('+_string(key)+')','str'),value)
         return Expression('{'+code+owner+'}',wanted)
 
@@ -462,6 +477,12 @@ class Mappings:
         return self._set(emitter,node,owner,key,value)
 
     def emit_method(self,emitter,node):
+        from .native_mapping_pop import emit as emit_pop
+        popped_key=emit_pop(emitter,node)
+        if popped_key is not None:return popped_key
+        from .native_mapping_update import emit as emit_update
+        updated=emit_update(emitter,node)
+        if updated is not None:return updated
         from .native_mapping_popitem import emit as emit_popitem
         popped=emit_popitem(emitter,node)
         if popped is not None:return popped
@@ -483,12 +504,12 @@ class Mappings:
                 copied=emitter.fresh();code='{let '+copied+'='+self._new(emitter,record)+';'+self.cpython_sets.merge(emitter,node,Expression(copied,wanted),owner)+copied+'}'
             elif record.flavor=='defaultdict':code=self.defaultdicts.emit_copy(emitter,node,owner,wanted)
             else:
+                from .native_classes import shape
+                method='try_constructor_copy'if record.flavor=='Counter'else'try_python_copy'
+                query=copy_query(emitter,shape(owner.kind.record.key))
                 copied=emitter.fresh()
-                if record.category=='dict'and record.flavor=='dict'and self.views.positions_enabled():
-                    code='{let mut '+copied+'=('+owner.code+'.borrow()).clone();'+emitter.at(copied+'.entries.prepare_python_copy()',node)+';Rc::new(RefCell::new('+copied+'))}'
-                elif record.category=='dict'and record.flavor=='Counter'and self.views.positions_enabled():
-                    code='{let mut '+copied+'=('+owner.code+'.borrow()).clone();'+emitter.at(copied+'.entries.prepare_constructor_copy()',node)+';Rc::new(RefCell::new('+copied+'))}'
-                else:code='{let '+copied+'=('+owner.code+'.borrow()).clone();Rc::new(RefCell::new('+copied+'))}'
+                call=emitter.at(owner.code+'.borrow().'+method+'('+query+')',node)
+                code='{let '+copied+'='+call+';Rc::new(RefCell::new('+copied+'))}'
         elif name=='add':code='{'+self.emit_store(emitter,node,owner,arguments[0],Expression('()','none'))+'()}'
         elif name=='clear':
             from .native_unions import project

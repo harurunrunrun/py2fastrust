@@ -222,15 +222,8 @@ class FiniteCursorProviders(unittest.TestCase):
     run_case=FiniteCursorTransport.run_case
     cases=PROVIDERS
 
-    def test_source_generator_iterator_parameter_boundary(self):
-        from py2fastrust import transpile,TranspileOptions
-        source=PROVIDERS['source_generator_for']
-        for mode in ('i64','i128','bigint'):
-            converted=transpile(source,TranspileOptions(integer=mode,filename='generator_cursor_boundary.py',license='none'))
-            self.assertFalse(converted.success)
-            self.assertEqual(converted.diagnostics[0].code,'E006')
-            self.assertEqual(converted.diagnostics[0].line,3)
-            self.assertIn('owned source generator frame payload',converted.diagnostics[0].message)
+    def test_source_generator_iterator_parameter_retains_original_cursor(self):
+        self.run_case('source_generator_for')
 
 
 for _name in PROVIDERS:

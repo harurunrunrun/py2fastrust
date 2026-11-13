@@ -26,12 +26,9 @@ class DictPopitemLoweringTests(unittest.TestCase):
                 self.assertFalse(result.success)
                 self.assertTrue(any(d.code=='E006'and d.line==6 and 'origin' in d.message for d in result.diagnostics),result.diagnostics)
 
-    def test_unrelated_mapping_methods_keep_named_diagnostics(self):
+    def test_previously_unsupported_update_source_executes_unchanged(self):
         source='class Owner:\n def __init__(self):self.value={1:2}\nowner=Owner()\nowner.value.update(((3,4),))\n'
-        for integer in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=integer))
-            self.assertFalse(result.success)
-            self.assertTrue(any(d.code=='E006'and 'update' in d.message and d.line==4 for d in result.diagnostics),result.diagnostics)
+        support.AnnotationAndAssertionExecutionTests.compare(self,source,('',))
 
 
 def _case(values):

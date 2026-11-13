@@ -88,7 +88,7 @@ def operation_plan(operator,left,right,integer,node):
 
 
 def analyze(model,plan,node,operator,left,right,*,identity=None):
-    from .native_classes import ClassUnsupported,shape,Cell,merge
+    from .native_classes import ClassUnsupported,shape,Cell
     from .native_union_sequences import branches
     kinds=[]
     sequences=[]
@@ -98,7 +98,9 @@ def analyze(model,plan,node,operator,left,right,*,identity=None):
         for b in branches(right):
             child=None
             if a.tag==b.tag=="list"and isinstance(operator,ast.Add):
-                merge(a.args[0],b.args[0],node,allow_unresolved=not model.final)
+                from .native_list_element_flows import concatenate
+                concatenate(model,plan,node,a.args[0],b.args[0],identity=identity,
+                    allow_unresolved=not model.final)
                 child=a.args[0]
             elif isinstance(operator,ast.Mult)and(a.tag=="list"and b.tag in INTEGRAL or b.tag=="list"and a.tag in INTEGRAL):
                 source=a if a.tag=="list"else b

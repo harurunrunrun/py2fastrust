@@ -310,9 +310,9 @@ class CallableCells:
             from .native_mapping_method_callables import supported
             from .native_classes import shape
             if all(supported(kind,function.attr)for kind in alternatives(shape(owner))):
-                # Immediate popitem has its own captured-owner operation; only
+                # Immediate mutations have their own captured-owner operation; only
                 # stored method values need an allocated bound callable.
-                return function.attr!='popitem'
+                return function.attr not in {'popitem','update','pop'}
             if self.bound_methods.finite_candidate(plan,function,owner):return True
             from .native_finite_attributes import missing_builtin
             if missing_builtin(shape(owner),function.attr):return True

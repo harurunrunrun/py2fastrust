@@ -88,6 +88,9 @@ def proved(kind,model=None,seen=frozenset()):
                     if source=='none'or mapping_kind(source)and source.record is record:continue
                     if not proved(source,model,seen):return False
             elif not source_proof(site.source,site.source_type,True):return False
+    if model is not None:
+        from .native_mapping_update import origins_valid
+        if not origins_valid(model,record,seen):return False
     return True
 
 

@@ -127,6 +127,14 @@ specific diagnostics. Finite builtin list index alternatives preserve
 runtime type errors; fused augmented stores require an integral index, and an
 uninhabited target read stops before RHS evaluation.
 
+Typed-frame list concatenation and builtin-list `+=` retain their actual
+element producers in the shared storage constraints. A later concatenation
+can widen the physical element carrier used by an earlier cursor without
+losing that producer during subsequent append analysis. Fixed tuples and
+runtime-length tuples remain distinct payloads; nested mutable elements keep
+their existing shared handles. This does not change iterator evaluation order
+or add support for custom `__iadd__` protocols.
+
 Indexed stores through finite alternatives of a mutable builtin list and
 source, bound-method or builtin-function references retain operand order and
 list aliases. Selecting a callable raises its actual Python assignment error;
@@ -1453,6 +1461,16 @@ retained. Targets belong to the appended scopes, while free reads, walrus writes
 class namespaces and nested lambda/generator scopes retain their lexical owners.
 This metadata does not itself implement an otherwise unsupported language feature.
 
+Ordinary direct-AOT dictionary comprehensions also consume these original AST
+plans. Proved immutable key/value layouts use insertion-ordered typed storage;
+integer-only fixed-width dictionaries retain `NativeDict` and native integer
+operations. Nested clauses, tuple targets and filters preserve evaluation order,
+isolated iteration bindings and key-before-value evaluation. Direct integer
+dictionary `copy()` delegates to the checked physical-copy helper and creates
+independent dictionary storage. Mutable values retain the existing shared-frame
+capability requirements; enclosing-scope walrus writes and captured dictionary
+methods remain separate explicit boundaries on the ordinary path.
+
 Exact builtin list methods share typed signatures and operation lowering across
 owned vectors and shared class-scope handles: `append`, `insert`, `remove`, `extend`,
 `clear`, `reverse`, `copy`, `sort`, `index`, `count`, and `pop`. Receiver names,
@@ -1503,7 +1521,7 @@ copy thresholds, keyword preallocation and literal allocation history. Canonical
 no-argument dict.clear resets that history without replacing the aliased owner.
 Custom mapping-key protocols, unproved dynamic or cyclic origins, chunked dict
 literal allocations, and reverse dictionary providers retain precise diagnostics.
-Existing unsupported mutation APIs such as dict.update and fromkeys are
+Existing unsupported mutation APIs such as dict.fromkeys are
 separate boundaries; a cursor capability does not implement those APIs. Sources
 with no dictionary cursor keep the previous ordered-store helper and generated
 list-to-list extension code.
@@ -3048,8 +3066,78 @@ callbacks sequentially. Iterator ownership, captured source values and length
 hints follow every actual provider alternative. Builtin consumers and admitted
 source `__iter__` methods retain the same cursor identity and partial state.
 Retained generator expressions also keep the selected outer cursor handle.
-Source-generator function parameters still have their existing owned-suspension
-boundary for iterator values, including a single cursor; this increment does
-not broaden that separate lifetime capability.
+Source generators can retain existing core builtin cursor handles when their
+actual raw ownership graph and complete owned payload facets prove that the
+frame remains acyclic. Parameters/defaults capture the original handles once;
+body execution stays deferred and shared cursors keep their live partial state.
+The proof covers all finite alternatives, actual lexical cells and canonical
+`__iter__` returned handles used by suspended loops. Unknown provider/callable
+captures, collected-instance roots, borrowed receivers and unproved cycles
+remain positioned ownership boundaries. This initial facet supports the core
+builtin cursors and canonical integer-word snapshots; it does not claim complete
+suspended callable/provider coverage or add weak references/root dropping.
 Unresolved, unregistered or additional user iterator protocols remain positioned
 conversion boundaries; this does not add a universal iterator object or VM.
+
+Canonical dict.update supports typed dict/defaultdict receivers, including stored
+builtin bound methods, zero/one positional source and named keyword entries.
+Actual builtin mapping sources preserve the dedicated merge/preallocation policy;
+self-update is a no-op before keyword processing. Pair iterables use their actual
+outer cursor without an outer length-hint callback, and mutate incrementally.
+Exact tuple/list rows use builtin storage; dynamic homogeneous tuples and proved
+builtin iterator rows are checked after full row materialization. Wrong row lengths
+retain the original pair index, and builtin unhashable keys raise the dictionary
+key error after earlier writes. Receiver identity precedes all argument effects;
+arity errors occur after explicit argument evaluation. Mapping borrows do not
+cross source iteration, hint callbacks or mutable-value observations. Original key
+representatives and shared value handles remain intact. Counter.update keeps its
+existing additive operation and is not treated as inherited dict.update.
+
+Custom mapping keys/attribute protocols remain explicit E006. Noniterable and
+custom inner rows whose TypeError needs Python 3.14 exception notes retain a
+specific conversion-protocol diagnostic; this increment does not implement notes.
+Mixed mapping/pair source protocols, stored Counter.update and keyword mapping
+expansion retain their separate boundaries. The separate dict.fromkeys API
+is not implemented by this update capability.
+
+Canonical dict.pop accepts one query key and an optional positional default on
+typed dict, Counter and defaultdict owners. Stored builtin method references
+retain the existing receiver/lookup identity rules. The original receiver and
+all supplied key/default/keyword expressions are captured before binding, hashing
+or removal. The live empty-owner check precedes hashing, so even an unhashable
+query takes the missing/default branch when storage is empty. Missing keys raise
+KeyError unless an explicit default was supplied;
+Counter/defaultdict pop does not use __missing__ or a missing-key factory.
+Builtin compatible numeric/tuple queries, original value identity, default alias
+identity and admitted unhashable-key errors are retained. A single closed owner
+borrow removes the canonical index and moves the actual stored value through the
+existing deletion helper, including logical position tombstones. The borrow ends
+before the result is observed. Immediate framed calls allocate no bound-method
+wrapper. Unproved constructor origins and custom/floating hash protocols remain
+positioned diagnostics. This capability does not add arbitrary mapping subclasses
+or keyword/default mapping expansion.
+
+## Dictionary physical storage and copies
+
+Positioned dictionaries compact their physical payload slots and hash index at
+actual Python logical resize events. Cursor positions still refer to the Python
+entry log, including retained holes and the distinct `dict.copy` and constructor
+copy policies. Ordinary dictionaries without observable cursors also reclaim
+vacant physical slots on insertion once vacancies reach the live population;
+this is an amortized storage density rule, independent of source names or input
+sizes. Clearing a dictionary releases its slot arena and index capacity.
+
+Dictionary copies allocate the destination directly from live rows. They retain
+the actual original key and canonical-key representatives, clone the source
+hasher, and preserve shared mutable payload handles. Sparse physical sources do
+not first clone their historical slot arenas or hash-table capacity. The typed
+canonical query used to locate the retained canonical key is compiled from the
+registered builtin key layout; no source hash/equality callback is introduced.
+Copying keeps an immutable source borrow, without adding a mutable borrow
+requirement to read-only contexts. Structural reservations and size arithmetic are
+checked before physical remapping commits; existing payload clone contracts
+and unsupported finalizer/custom-key boundaries are unchanged.
+
+Dense typed dictionary copies reuse a fallibly preallocated standard-library hash table when its live-sized capacity matches a table with no key erasures since its last rebuild. Deletion and pop invalidate that certificate in every entry layout; the dense carrier exposes no mutable `Vec` dereference and unregistered structural operations fail to compile; otherwise copies rebuild from current live entries. Native scalar entry slots use Rust's conditional `Copy` specialization, while owned payloads keep their shallow `Clone` behavior. Structural allocation failures remain checked before copying, and unpositioned copies do not traverse unused cursor metadata.
+
+The bulk path uses standard `HashMap::clone_from` only after this capacity proof; the minimum supported Rust 1.85 hashbrown implementation and the tested toolchain reuse equal-bucket allocations. The public `Clone` API alone does not promise future implementation allocation behavior. Tests check that the copy performs only the fallible structural allocations, with allocation fault injection and zero repeated key hashes. Histories that fail the certificate or live-capacity equality are copied by live entry lookup, including the dense carrier, without scanning historical hash-table capacity.

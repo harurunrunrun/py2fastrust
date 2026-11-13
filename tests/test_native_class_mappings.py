@@ -31,13 +31,10 @@ class MappingSelectionTests(unittest.TestCase):
             self.assertGreater(diagnostic.line,0)
             self.assertRegex(diagnostic.message,'cycl|recursive')
 
-    def test_observable_set_traversal_keeps_a_specific_diagnostic(self):
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_original_numeric_set_traversal_contract_matches_cpython(self):
         for body in ["print({1,2})", "print(sorted({1,2},key=lambda value:0))"]:
-            result=transpile('class Marker:pass\n'+body+'\n')
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
-            self.assertIn('set',result.diagnostics[0].message)
-            self.assertRegex(result.diagnostics[0].message,'order|traversal')
+            MappingExecutionTests.compare(self,'class Marker:pass\n'+body+'\n')
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')

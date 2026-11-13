@@ -348,11 +348,15 @@ impl NativeDict {
     fn set(&mut self, key: NativeInt, value: NativeInt) -> Result<(), String> {
         if let Some(&index)=self.index.get(&key){self.entries[index].1=value;return Ok(());}
         self.index.try_reserve(1).map_err(|_|"MemoryError: cannot allocate dictionary index".to_owned())?;
-        let index=native_dict_insert(&mut self.entries,(key,value))?;
+        let index=native_dict_insert(&mut self.entries,&mut self.index,(key,value))?;
         self.index.insert(key,index);Ok(())
     }
     fn delete(&mut self,key:NativeInt)->bool {
         match self.index.remove(&key){Some(slot)=>{native_dict_remove(&mut self.entries,&mut self.index,slot);true},None=>false}
+    }
+    fn try_python_copy(&self)->Result<Self,String> {
+        let(entries,index)=native_dict_try_copy(&self.entries,&self.index,|key|*key,false)?;
+        Ok(Self{entries,index})
     }
 }
 '''

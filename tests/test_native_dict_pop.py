@@ -1,0 +1,36 @@
+"""Typed dict.pop preserves receiver, query/default order and moved values."""
+import unittest
+import test_native_annotations_assertions as support
+from py2fastrust import TranspileOptions,transpile
+
+CASES = {'present_missing_default': ('mapping={1:10,2:20}\nprint(mapping.pop(1),mapping)\nprint(mapping.pop(9,77),mapping)\nprint(mapping.pop(2,None),mapping)\n', ('',)), 'missing_key_error': ("class Owner:\n def __init__(self):self.mapping={1:10}\nowner=Owner()\nprint('before')\nowner.mapping.pop('missing')\n", ('',)), 'empty_key_error': ("mapping={}\nprint('before')\nmapping.pop(7)\n", ('',)), 'mutable_value_and_default_aliases': ('mapping={1:[10]}\nshared=mapping[1]\ndefault=[20]\nvalue=mapping.pop(1,default)\nvalue.append(7)\nmissing=mapping.pop(2,default)\nmissing.append(8)\nprint(value,shared,value is shared,missing,default,missing is default,mapping)\n', ('',)), 'key_default_order': ("mapping={1:10}\ndef key():\n print('key',mapping)\n return 1\ndef default():\n print('default',mapping)\n mapping[2]=20\n return 9\nprint(mapping.pop(key(),default()),mapping)\n", ('',)), 'receiver_rebind_in_default': ("mapping={1:10}\noriginal=mapping\ndef receiver():\n print('receiver')\n return mapping\ndef fallback():\n global mapping\n print('fallback')\n mapping={1:99}\n return 7\nprint(receiver().pop(1,fallback()))\nprint(original,mapping)\n", ('',)), 'bound_receiver_aliases': ('mapping={1:10,2:20}\nmethod=mapping.pop\nalias=method\nfresh=mapping.pop\nprint(method is alias,method is fresh,method==fresh)\nmapping={9:90}\nprint(alias(1),fresh(3,7),method(2),mapping)\n', ('',)), 'bound_arity_effects': ('mapping={1:10}\nmethod=mapping.pop\ndef effect(value):\n print(value,mapping)\n return value\nmethod(effect(1),effect(2),effect(3))\n', ('',)), 'no_arguments': ('mapping={1:10}\nmapping.pop()\n', ('',)), 'keyword_arguments': ('mapping={1:10}\ndef effect(value):\n print(value,mapping)\n return value\nmapping.pop(effect(1),default=effect(2))\n', ('',)), 'default_keyword_only': ("mapping={1:10}\ndef effect():\n print('keyword',mapping)\n return 1\nmapping.pop(key=effect())\n", ('',)), 'default_exception_precedes_hash': ("mapping={1:10}\ndef fallback():\n print('fallback')\n return 1//0\nmapping.pop([1],fallback())\n", ('',)), 'unhashable_key_with_default': ("mapping={1:10}\ndef fallback():\n print('default',mapping)\n return 7\nmapping.pop([1],fallback())\n", ('',)), 'finite_query_keys': ("mapping={1:10,2:20}\nfor key in (1,'x',2):\n print(mapping.pop(key,None),mapping)\n", ('',)), 'bool_query_original_value': ('class Owner:\n def __init__(self):self.mapping={True:[10],False:[20]}\nowner=Owner()\nprint(owner.mapping.pop(1),owner.mapping.pop(0),owner.mapping)\n', ('',)), 'counter_no_missing': ("from collections import Counter\nmapping=Counter({1:3})\nmethod=mapping.pop\nprint(method(1),method(2,99),len(mapping))\nprint('missing')\nmethod(2)\n", ('',)), 'defaultdict_no_factory': ("from collections import defaultdict\ndef factory():\n print('factory')\n return []\nmapping=defaultdict(factory,{1:[3]})\nmethod=mapping.pop\nprint(method(1),method(2,None),len(mapping))\nprint('missing')\nmethod(2)\n", ('',)), 'counter_keyword_error': ('from collections import Counter\nmapping=Counter({1:2})\nmapping.pop(1,default=3)\n', ('',)), 'defaultdict_arity_error': ('from collections import defaultdict\nmapping=defaultdict(int,{1:2})\nmapping.pop(1,2,3)\n', ('',)), 'cursor_pop_then_reinsert': ('mapping={1:10,2:20,3:30}\nstream=iter(mapping.items())\nprint(next(stream))\nprint(mapping.pop(2))\nmapping[4]=40\nprint(list(stream))\n', ('',)), 'null_default_return': ('class Owner:\n def __init__(self):self.mapping={1:10}\nowner=Owner()\nprint(owner.mapping.pop(1,None),owner.mapping.pop(7,None))\n', ('',)), 'custom_same_name': ('class Source:\n def pop(self,key=7,default=None):return key,default\nsource=Source()\nprint(source.pop(key=3,default=9))\n', ('',)), 'peer_mapping_update_then_reinsert_yielded': ('source = {1:10, 2:20, 3:30, 4:40, 5:50}\nmapping = {}\nmapping.update(source)\ncursor = iter(mapping.values())\nprint(next(cursor))\nold = mapping.pop(1)\nmapping[1] = old + 1\nprint(list(cursor))\n', ('',)), 'peer_partial_key_budget_is_exhausted': ("mapping = {1:10, 2:20, 3:30}\ncursor = iter(mapping.keys())\nprint(next(cursor))\nprint(next(cursor))\nmapping.pop(1)\nmapping[4] = 40\nprint(next(cursor))\nprint('before extra key')\nprint(next(cursor))\n", ('',)), 'peer_copy_compacts_existing_holes': ('source = {key:key*10 for key in range(10)}\nfor key in (0,1,2,3,4,5):\n    del source[key]\nmapping = source.copy()\ncursor = iter(mapping.items())\nprint(next(cursor))\nmapping.pop(7)\nmapping[11] = 110\nprint(list(cursor))\n', ('',)), 'tuple_numeric_query': ("mapping={(1,'a'):[7],(2,'b'):[8]}\nprint(mapping.pop((True,'a')),mapping.pop((9,'z'),None),mapping)\n", ('',)), 'finite_tuple_query_error': ("mapping={(1,2):9}\nfor key in ((1,2),('x',2),([3],4)):\n print(mapping.pop(key,'gone'))\n", ('',)), 'owner_as_default': ('mapping={1:2}\nprint(mapping.pop(9,mapping) is mapping)\nprint(mapping.pop(1,mapping))\nprint(mapping)\n', ('',)), 'default_clears_queried_key': ("mapping={1:[9]}\ndef fallback():\n print('clear')\n mapping.clear()\n return [7]\nrow=mapping.pop(1,fallback())\nrow.append(8)\nprint(row,mapping)\n", ('',)), 'empty_unhashable_default': ('mapping={}\nprint(mapping.pop([],7))\n', ('',)), 'emptied_unhashable_default': ('mapping={1:10}\nprint(mapping.pop(1))\nprint(mapping.pop([],7))\n', ('',)), 'empty_unhashable_missing': ('mapping={}\nprint("before")\nmapping.pop([])\n', ('',))}
+BOUNDARIES = {'custom_keys_origin_boundary': ('class Source:\n def keys(self):return (1,2,3)\n def __getitem__(self,key):return key*10\n def __iter__(self):return iter(((9,90),))\nmapping=dict(Source())\nprint(mapping.pop(3))\n', 'origin'), 'unknown_custom_hash_boundary': ('class Key:\n def __hash__(self):return 1\nmapping={1:2}\nprint(mapping.pop(Key(),9))\n', 'hash'), 'empty_unknown_hash': ('class Key:\n def __hash__(self):\n  print("hash")\n  return 1\nmapping={}\nprint(mapping.pop(Key(),7))\n', 'hash')}
+
+class DictPopExecutionTests(unittest.TestCase):
+    pass
+
+class DictPopBoundaryTests(unittest.TestCase):
+    def test_remaining_origins_and_hash_protocols_are_specific(self):
+        for name,(source,reason)in BOUNDARIES.items():
+            for integer in ('i64','i128','bigint'):
+                with self.subTest(name=name,integer=integer):
+                    result=transpile(source,TranspileOptions(integer=integer))
+                    self.assertFalse(result.success)
+                    self.assertTrue(any(d.code=='E006'and d.line>0 and reason in d.message for d in result.diagnostics),result.diagnostics)
+
+    def test_direct_framed_pop_has_no_bound_method_wrapper(self):
+        source=CASES['bool_query_original_value'][0]
+        for integer in ('i64','i128','bigint'):
+            result=transpile(source,TranspileOptions(integer=integer))
+            self.assertTrue(result.success,result.diagnostics)
+            self.assertNotIn('struct NativeMappingMethod_',result.rust_source)
+
+
+def _case(values):
+    def test(self):support.AnnotationAndAssertionExecutionTests.compare(self,*values)
+    return test
+
+for _name,_values in CASES.items():
+    setattr(DictPopExecutionTests,'test_'+_name,_case(_values))
+
+if __name__=='__main__':unittest.main()

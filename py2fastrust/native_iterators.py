@@ -408,7 +408,7 @@ class Planner:
                     g.iterating_lists.extend(stream.owners)
                     filters = [g.condition(test, inside) for test in clause.ifs]
                     clauses.append((stream, filters))
-                elements = node.elt.elts if isinstance(node.elt, ast.Tuple) else [node.elt]
+                elements = plan.elements if isinstance(node,ast.DictComp) else node.elt.elts if isinstance(node.elt, ast.Tuple) else [node.elt]
                 values = [g.expression(element, inside) for element in elements]
             finally:
                 # Preserve guards installed by enclosing iterator plans.
@@ -434,8 +434,9 @@ class Planner:
                 for test in reversed(filters):
                     body = f"if {g.truth(test)} {{\n{body}\n}}"
                 emit=region.emit if index==0 else stream.emit
-                body = (emit(stream,body,TraceContext(producer_scope,trace_id),node.elt.lineno,continue_label if index==len(clauses)-1 else None)
-                        if index==0 else emit(body,TraceContext(producer_scope,trace_id),node.elt.lineno,continue_label if index==len(clauses)-1 else None))
+                element_line=node.key.lineno if isinstance(node,ast.DictComp) else node.elt.lineno
+                body = (emit(stream,body,TraceContext(producer_scope,trace_id),element_line,continue_label if index==len(clauses)-1 else None)
+                        if index==0 else emit(body,TraceContext(producer_scope,trace_id),element_line,continue_label if index==len(clauses)-1 else None))
                 if index:
                     body = stream.construct() + "\n" + body
             # Only producer operations use this context. A consumer callback
@@ -454,7 +455,7 @@ class Planner:
                     break
                 length *= stream.length
         return Stream(first.construct(), "", output, frozenset(owners), emit, True,
-                      isinstance(node.elt, ast.Tuple), length=length)
+                      isinstance(node,ast.DictComp) or isinstance(node.elt, ast.Tuple), length=length)
 
     def map_stream(self, plan, environment):
         node=plan.node

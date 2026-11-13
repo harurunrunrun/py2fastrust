@@ -1084,7 +1084,8 @@ class Model:
                 and classify(operator,shape(a),shape(b),self.integer).error is not None):
             return analyze(self,plan,node,operator,left,right,identity=identity)
         if isinstance(operator, ast.Add) and a.tag == b.tag == "list":
-            merge(a.args[0], b.args[0], node)
+            from .native_list_element_flows import concatenate
+            concatenate(self,plan,node,a.args[0],b.args[0],identity=identity)
             return cell("list", (a.args[0],))
         if isinstance(operator, ast.Mult) and (a.tag == "list" or b.tag == "list"):
             values, count = (a,b) if a.tag == "list" else (b,a)
