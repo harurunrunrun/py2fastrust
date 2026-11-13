@@ -26,6 +26,8 @@ def analyze(model,plan,node,identity,positional,keywords,environment,*,factory):
     if error:return ToolCall(factory('none'),error=error)
     registry=model.iterators
     record=registry._record(plan,node,'itertools_accumulate')
+    from .native_iterator_hints import ABSENT
+    record.hint_protocol=ABSENT
     record.adapter=AccumulateState;record.tool='accumulate'
     if record.callback is None:record.callback=Cell()
     if not hasattr(record,'initial'):record.initial=Cell()

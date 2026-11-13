@@ -68,6 +68,8 @@ def attach(model,plan):
     spec=plan.source_generator
     if spec.record is not None:return
     record=model.iterators._record(plan,plan.node,'source_generator')
+    from .native_iterator_hints import ABSENT
+    record.hint_protocol=ABSENT
     record.adapter=ADAPTER;record.generator_plan=plan;record.generator_model=model
     record.element=Cell(EMPTY)
     spec.record=record

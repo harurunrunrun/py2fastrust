@@ -230,6 +230,10 @@ class ExpandedCalls:
                         repr(member.module + "." + member.name) + " need that member's runtime-arity projection",
                         proof="native member expanded-call adapter")
             elif kind is not None:
+                from .native_class_stdout import CALLABLES
+                if kind in CALLABLES:
+                    self._contribute(site.result, Cell('int'if kind=='write_text'else'none'), node)
+                    continue
                 from .native_classes import domain
                 if domain(kind) not in {"int", "bool", "int_bool", "float", "str", "bytes", "none", "list", "tuple", "tuple_sequence", "object"}:
                     raise ClassUnsupported(node, "this expanded callee needs its constructor or callable-object adapter",
@@ -380,6 +384,9 @@ class ExpandedCalls:
         if union_kind(callee.kind):
             return project(callee.kind, callee.code, lambda kind, code:
                 self._dispatch(emitter, node, site, Expression(code, kind), vector, element, keywords, wanted))
+        from .native_class_stdout import CALLABLES,emit_expanded
+        if callee.kind in CALLABLES:
+            return emit_expanded(emitter,node,callee.kind,vector,element,keywords,wanted)
         if function_kind(callee.kind):
             provider = self.model.callable_cells
             from .native_callable_carriers import dispatch,bind_payload

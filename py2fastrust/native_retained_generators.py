@@ -104,6 +104,8 @@ class Registry:
             frame=ExpressionFrame(node,len(self.model.plans),owner=parent.owner,parameters=['.0'],declared={symbol.name for symbol in metadata.symbols if symbol.has('local')or symbol.has('parameter')},reachable=False,source_unit=parent.source_unit,module_name=parent.module_name)
             frame._native_retained_expression=True
             iterator=self.model.iterators._record(parent,node,'retained_generator_expression')
+            from .native_iterator_hints import ABSENT
+            iterator.hint_protocol=ABSENT
             iterator.element=Cell(EMPTY);iterator.adapter=ADAPTER
             record=Expression(iterator,parent,frame,node,scope)
             iterator.expression=record;frame.retained_expression=record

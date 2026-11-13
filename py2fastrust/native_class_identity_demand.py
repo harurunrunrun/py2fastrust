@@ -34,12 +34,64 @@ def nested(kind,seen=frozenset()):
     for child in children(kind):yield from nested(child,seen)
 
 
+def observe_implicit(model,plan,node,identity,kinds,reason):
+    """Replace one proved original semantic site's instance identity demand."""
+    from .native_classes import InstanceType,ClassUnsupported
+    if model.unit is None:
+        # The global certificate already retains every token without the
+        # official source graph. Do not invent source ordinals for that model.
+        return
+    ordinal=model.unit.ordinal(node)
+    owners=set()
+    for kind in kinds:
+        if not isinstance(kind,InstanceType)or kind.name not in model.classes:
+            raise ClassUnsupported(node,'an implicit identity observer lacks a registered source instance kind',proof='canonical implicit instance identity observation')
+        owners.add(model.classes[kind.name].index)
+    if not hasattr(model,'implicit_class_identity_observers'):model.implicit_class_identity_observers={}
+    sites=model.implicit_class_identity_observers;key=(plan.index,ordinal,identity)
+    if owners:sites[key]=(plan,node,frozenset(owners),reason)
+    else:sites.pop(key,None)
+
+
+def _reached_observation(model,plan,node):
+    reached=getattr(model,'reached_statements',None)
+    if not model.final or reached is None:return True
+    if(not isinstance(plan.node,(ast.Module,ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef))
+            or getattr(plan,'source_generator',None)is not None
+            or getattr(plan,'_native_retained_expression',False)):
+        return True  # These frames have their own suspension/expression filters.
+    parents=getattr(getattr(model,'value_classes',None),'parents',None)
+    if parents is None:
+        parents=getattr(model,'identity_observation_parents',None)
+        if parents is None:
+            parents={id(child):parent for parent in model.iter_nodes()for child in ast.iter_child_nodes(parent)}
+            model.identity_observation_parents=parents
+    statement=node
+    while statement is not None and not isinstance(statement,ast.stmt):statement=parents.get(id(statement))
+    if statement is None:return True
+    owner=parents.get(id(statement))
+    while owner is not None and owner is not plan.node:
+        if isinstance(owner,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef,ast.Lambda,ast.GeneratorExp)):
+            return True  # No proof that another execution scope's filter applies.
+        owner=parents.get(id(owner))
+    if owner is None:return True
+    return (plan.index,id(statement))in reached
+
+
+def snapshot(model):
+    entries=[]
+    for (caller,ordinal,identity),(plan,node,owners,reason)in getattr(model,'implicit_class_identity_observers',{}).items():
+        if plan.reachable and _reached_observation(model,plan,node):entries.append((caller,ordinal,repr(identity),tuple(sorted(owners)),reason))
+    return tuple(sorted(entries))
+
+
 class Registry:
     def __init__(self,model):
         self.model=model
         self.values=getattr(model,'value_classes',None)
         self.elided=set()
         self.reasons={}
+        self.implicit_observers=snapshot(model)
         self.closed_source=None
         candidates=set(getattr(self.values,'selected',()))
         if not candidates:return
@@ -126,6 +178,8 @@ class Registry:
         from .native_classes import InstanceType
         from .native_types import ListType,TupleType,TupleSequenceType
         from .native_bound_methods import BoundMethodTarget,BoundMethods
+        for _,_,_,owners,reason in self.implicit_observers:
+            if owner.index in owners:raise Unproved(reason)
         # The callable runtime can emit receiver equality independently of an
         # explicit source comparison. Retaining its payload retains IDs too.
         for target in self.model.callable_cells.bound_methods.used:
@@ -190,7 +244,11 @@ def prepare(model):model.class_identity_demand=Registry(model)
 
 
 def elided(model,owner):
-    return owner.index in getattr(getattr(model,'class_identity_demand',None),'elided',())
+    registry=getattr(model,'class_identity_demand',None)
+    if registry is not None and registry.implicit_observers!=snapshot(model):
+        from .native_classes import ClassUnsupported
+        raise ClassUnsupported(owner.node,'implicit source-instance identity observations changed after the immutable layout certificate was finalized',proof='stable implicit instance identity observation facts')
+    return owner.index in getattr(registry,'elided',())
 
 
 def token(model,owner):

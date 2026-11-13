@@ -964,6 +964,18 @@ Nullable `next` defaults retain the distinction between exhaustion and a yielded
 methods are still required work. Producer/consumer normalization is being
 unified further; these operations do not establish full Python compatibility.
 
+Canonical `sys.stdout.write(text)` writes to the shared buffered output and
+returns the number of characters written. `sys.stdout.flush()` uses the same
+output flush and exception path as `print(..., flush=True)`. Direct module
+references, `from sys import stdout`, stream/method aliases, source-function
+parameters, closures and registered callable consumers retain their original
+canonical identity. Explicit and supported expanded arguments execute before
+binding/type errors; writing a non-string never calls its `__str__`. Character
+counts follow the configured ASCII or Unicode string mode. Replacing standard
+streams, binary output buffers and additional stream attributes/protocols remain
+positioned unsupported cases. Rebinding an imported module reference retains
+its existing separate namespace-ownership boundary.
+
 Trusted `sys.stdin`/`.buffer` imports and their `read`/`readline` aliases generate
 direct reads through the same buffered input object. Ordinary entry functions
 and function-local imports retain scope analysis. Text readers retain newlines
@@ -1108,8 +1120,28 @@ the receiver before later arguments run. Source-defined ordering and supported
 builtin tuple/list keys use a typed fallible comparator path. Comparison and
 truth callbacks run without active list borrows; C-accelerator comparison order,
 current-slot reloads, partial updates, errors and heapify traversal are retained.
-The primitive path remains unchanged. Floating tuple identity, nested source
-objects in sequence keys and `merge` remain unfinished. Retained CPython-adapted
+Fixed tuple keys may contain source instances and finite `None`/instance
+alternatives, including nested fixed tuples. Element equality first honors
+source instance identity, then runs the current source `__eq__` and its truth
+protocol; only a differing field invokes `<`. Equal fields continue in Python
+order. Reflected methods, `NotImplemented`, callback errors, same-length heap
+replacement and earlier-field short circuits retain their effects. Comparison
+phases validate the current canonical class slot before use; deleted,
+unregistered or nonfunction slots retain positioned capability diagnostics.
+An unvisited reflected slot is not loaded after an earlier method completes.
+Comparison
+plans register their actual reached instance-identity observers before immutable
+instance layout selection, so an implicit tuple comparison cannot lose its
+identity token. Ordinary arithmetic and tuple control remain native Rust.
+
+The primitive path remains unchanged. Floating tuple equality still requires
+either a proved absence of NaN across every producer/write/call or retained
+Python float object identity. A shared NaN and two distinct NaNs compare
+differently inside tuples; raw binary64 values do not prove that identity.
+These cases remain explicit diagnostics, including the unchanged reference
+`k_shortest_walk` driver. Nested mutable/runtime-length source-object containers,
+cross-type reflected whole-tuple protocols, NamedTuple/source-object mixtures and `merge`
+remain unfinished. Retained CPython-adapted
 fallible helpers include their targeted attribution and license notice.
 
 `heapq.nlargest` and `nsmallest` use the shared typed iterable and callback
@@ -1422,14 +1454,44 @@ class namespaces and nested lambda/generator scopes retain their lexical owners.
 This metadata does not itself implement an otherwise unsupported language feature.
 
 Exact builtin list methods share typed signatures and operation lowering across
-owned vectors and shared class-scope handles: `append`, `insert`, `remove`, list-to-list `extend`,
+owned vectors and shared class-scope handles: `append`, `insert`, `remove`, `extend`,
 `clear`, `reverse`, `copy`, `sort`, `index`, `count`, and `pop`. Receiver names,
 fields, and checked row indices are captured before explicit arguments; contents
 are borrowed afterward. A callback replacing a class field therefore does not
 change the already selected list. Owned row projections retain conservative
 parent mutation checks. Class sorting supports proved captured callable keys
 through the same compiled-call ABI, including saved bound methods. General
-iterables for `extend` and identity-sensitive float search remain required work.
+identity-sensitive float search remains required work.
+
+Canonical `list.extend` also consumes native ranges, fixed and homogeneous
+tuples, text/bytes, map/filter/zip/enumerate cursors, retained generator
+expressions, source generators and supported source `__iter__` results.
+It acquires the iterator before consulting the original iterable's length,
+retains original receiver identity across argument and protocol callbacks,
+and appends incrementally without borrowing destination storage across a
+callback. An iterator failure retains earlier appended values. Self-extension
+of an actual list retains its snapshot path; an existing list iterator remains
+live. Existing list-to-list generated code is unchanged.
+
+Callback-free builtin range/tuple/text/bytes sources use direct Rust loops.
+Nonescaping fresh function-local lists can retain owned `Vec` storage for these
+extensions. Checked range lengths and hint reservations preserve overflow and
+allocation errors; custom source `__len__` calls retain their effects and
+TypeError suppression. Iterator constructors publish an explicit absent-slot or
+implemented remaining-state hint certificate. Canonical accumulate, chain,
+islice, pairwise, product and choice iterators use their actual absent hint;
+repeat, range, live builtin sequence and deque cursors use checked current
+state. Reverse text cursors count remaining Unicode codepoints in Unicode mode.
+A missing provider certificate stays unknown. Custom `__length_hint__` methods,
+dictionary-cursor remaining-position hints, stored `extend` method references,
+and existing general exception-handler/suspended-raise gaps are diagnosed.
+New nonlist extensions require the analyzed compilation unit to contain no
+dictionary-backed cursor or dictionary for-loop family. Source callbacks can
+access global cursors outside their owned fields, and reusable dictionary slots
+do not yet preserve insertion positions after same-size key replacement. This
+temporary conservative boundary also applies when an unrelated dictionary
+cursor is present. Ordinary dictionary lookups and existing list-to-list
+extensions retain their own paths. The underlying cursor repair remains open.
 Direct source ordering objects use the fallible rich-comparison sorter described
 below; nested container keys with source ordering callbacks remain a boundary.
 

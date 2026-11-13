@@ -46,6 +46,8 @@ def analyze(model,plan,node,identity,metadata,positional,keywords,environment,*,
     if error:return ToolCall(factory('none'),error=error)
     if shape(bound['r'])is None and not model.final:return ToolCall(factory())
     registry=model.iterators;record=registry._record(plan,node,'itertools_'+identity.name)
+    from .native_iterator_hints import ABSENT
+    record.hint_protocol=ABSENT
     record.adapter=ChoiceState;record.tool=identity.name
     if not hasattr(record,'pool_element'):record.pool_element=Cell()
     rank_kinds=alternatives(shape(bound['r']))

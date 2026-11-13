@@ -196,7 +196,9 @@ def prepare(emitter):
                           and isinstance(method,ast.Call)and method.func is parent and not method.keywords
                           and(plan.index,id(method))in model.sequence_calls
                           and(parent.attr=='append'and len(method.args)==1
-                              or parent.attr=='pop'and len(method.args)<=1))
+                              or parent.attr=='pop'and len(method.args)<=1
+                              or parent.attr=='extend'and len(method.args)==1
+                              and _direct_extend(emitter,method)))
                 iteration=loop_source(emitter,node,parents)
                 if iteration is not None:iterates=True
                 if not direct and not length and not mutation and iteration is None and not unpack_consumer(node,parent):valid=False;break
@@ -208,6 +210,11 @@ def prepare(emitter):
         if valid and writes and(not iterates or writes==1):
             result[name]=Local(name,kind,(scope,bindings[0][0].name),tuple(allocations),frozenset(exports))
     return result
+
+
+def _direct_extend(emitter,node):
+    from .native_list_extend import direct_source
+    return direct_source(emitter.kind(node.args[0]))
 
 
 def selected(emitter,node):

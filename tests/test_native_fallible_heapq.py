@@ -306,6 +306,11 @@ print([item.value for item in items[:12]])
 '''
 CASES['heapify_accelerator_small_schedule']=LARGE.replace('SIZE','2500')
 CASES['heapify_accelerator_cache_schedule']=LARGE.replace('SIZE','2501')
+CASES['former_nested_source_boundary']='''import heapq
+class Item:
+ def __lt__(self,other):return True
+heapq.heapify([(0,Item()),(0,Item())])
+'''
 
 
 class FallibleHeapExecutionTests(iterator_tests.IteratorExecutionTests):
@@ -320,11 +325,11 @@ for _name in tuple(vars(iterator_tests.IteratorExecutionTests)):
 
 
 class FallibleHeapGuards(unittest.TestCase):
- def test_unsupported_nested_source_and_float_identity_are_explicit(self):
+ def test_unsupported_live_nested_source_and_float_identity_are_explicit(self):
   sources=['''import heapq
 class Item:
  def __lt__(self,other):return True
-heapq.heapify([(0,Item()),(0,Item())])
+heapq.heapify([([Item()],),([Item()],)])
 ''',"import heapq\nheapq.heapify([(0,float('nan')),(0,float('nan'))])\n"]
   for source in sources:
    result=transpile(source,TranspileOptions(license='none'))

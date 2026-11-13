@@ -66,11 +66,11 @@ def sequence_method(kind,name):
 
 
 def bind_error(method,count,keywords):
-    if method is None or method.name not in {"insert","remove"}:return method
+    if method is None or method.name not in {"insert","remove","extend"}:return method
     expected=2 if method.name=="insert"else 1
     error=(f"TypeError: list.{method.name}() takes no keyword arguments"if keywords else
            f"TypeError: insert expected 2 arguments, got {count}"if method.name=="insert"and count!=expected else
-           f"TypeError: list.remove() takes exactly one argument ({count} given)"if count!=expected else None)
+           f"TypeError: list.{method.name}() takes exactly one argument ({count} given)"if count!=expected else None)
     return replace(method,error=error,mutates=False)if error else method
 
 

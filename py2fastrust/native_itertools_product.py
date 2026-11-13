@@ -13,6 +13,8 @@ def analyze(model,plan,node,identity,positional,keywords,environment,*,factory):
     if fixed_repeat is not None and fixed_repeat<0:
         return ToolCall(factory('none'),error='ValueError: repeat argument cannot be negative')
     registry=model.iterators;record=registry._record(plan,node,'itertools_product')
+    from .native_iterator_hints import ABSENT
+    record.hint_protocol=ABSENT
     record.adapter=ProductState;record.tool='product'
     if not hasattr(record,'pool_element'):record.pool_element=Cell()
     record.input_values=tuple(positional)

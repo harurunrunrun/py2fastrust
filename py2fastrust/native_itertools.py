@@ -65,6 +65,8 @@ class ItertoolsAdapter:
         if error:return ToolCall(factory("none"),error=error)
         registry=model.iterators
         record=registry._record(plan,node,'itertools_'+identity.name)
+        from .native_iterator_hints import ABSENT,REPEAT
+        record.hint_protocol={'repeat':REPEAT,'chain':ABSENT,'islice':ABSENT,'pairwise':ABSENT}.get(identity.name)
         record.adapter=ItertoolsState
         record.tool=identity.name
         record.input_values=tuple(values if record.tool=='chain'else values[:1])

@@ -256,7 +256,7 @@ class Operators:
                 if any(self._has_comparison(field)or self._nested_comparison(field)for field in child.fields):return True
         return False
 
-    def comparison(self,plan,node,index,operator,left,right,environment):
+    def comparison(self,plan,node,index,operator,left,right,environment,*,canonical_slots=False):
         from .native_source_contains import analyze as analyze_contains
         contained=analyze_contains(self,plan,node,index,operator,left,right,environment)
         if contained is not None:return contained
@@ -269,7 +269,14 @@ class Operators:
         if self._nested_comparison(a)or self._nested_comparison(b):
             raise ClassUnsupported(node,"this container comparison can invoke user special-method callbacks (__eq__, __ne__, __lt__, __le__, __gt__, __ge__); fallible live-element iteration and identity shortcuts are not implemented by the current container comparator",proof="implicit container rich-comparison callback demand")
         if type(operator)not in COMPARISON:return None
-        if not(self._has_comparison(a)or self._has_comparison(b)):return None
+        if not(self._has_comparison(a)or self._has_comparison(b)
+               or canonical_slots and any(isinstance(kind,InstanceType)for kind in(*alternatives(a),*alternatives(b)))):return None
+        def lookup(kind,slot):
+            if not canonical_slots:return self._slot(kind,slot,node)
+            from .native_source_lengths import member
+            selected=member(self.model,kind,(slot,),node)
+            if selected is not None:self.model.class_namespaces.observe_method(selected,node)
+            return selected
         key=plan.index,id(node),index
         site=self.comparison_sites.setdefault(key,BinarySite(self.model.cell(plan,node,identity=('rich_comparison',index)),operator));site.branches={}
         slots=COMPARISON[type(operator)]
@@ -278,8 +285,8 @@ class Operators:
                 a,b=shape(first),shape(second);branch=Branch(first,second);site.branches[(a,b)]=branch
                 stopped=False
                 for rank,(kind,slot,reverse)in enumerate(((a,slots[0],False),(b,slots[1],True))):
-                    member=self._slot(kind,slot,node);negate=False
-                    if member is None and isinstance(operator,ast.NotEq):member=self._slot(kind,'__eq__',node);negate=member is not None
+                    member=lookup(kind,slot);negate=False
+                    if member is None and isinstance(operator,ast.NotEq):member=lookup(kind,'__eq__');negate=member is not None
                     if member is None:continue
                     args=[second,first]if reverse else[first,second]
                     metadata=CallArguments((Argument(node),Argument(node)),())

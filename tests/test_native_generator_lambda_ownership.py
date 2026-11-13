@@ -21,13 +21,13 @@ class GeneratorLambdaOwnership(unittest.TestCase):
     cases=CASES
     check=iterator_tests.IteratorExecutionTests.check
     def test_method_parent_retention(self):self.check('method_parent_retention')
-    def test_extend_keeps_separate_generator_consumer_boundary(self):
+    def test_extend_rejects_a_real_lexical_environment_cycle(self):
         for mode in ('i64','i128','bigint'):
             result=transpile(CASES['real_environment_cycle'],TranspileOptions(integer=mode,license='none'))
             self.assertFalse(result.success)
             self.assertTrue(any(d.code=='E006'and d.line==3
-                                and 'list.extend'in d.message
-                                and 'ordered iterable consumption and element conversion'in d.message
+                                and 'generator expression'in d.message
+                                and 'cycle-safe lexical environment ownership'in d.message
                                 for d in result.diagnostics),result.diagnostics)
     def test_direct_collector_cycle_remains_named(self):
         source='def make():\n values=list(lambda:values for unused in range(2))\n return values\nprint(len(make()))\n'

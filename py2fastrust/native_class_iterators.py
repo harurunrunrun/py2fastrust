@@ -48,6 +48,7 @@ class IteratorRecord:
     input_types:tuple=()
     demands:dict=field(default_factory=dict)
     emitted:bool=False
+    hint_protocol:object=None
 
     @property
     def kind(self):return IteratorType(self.index,self)
@@ -129,6 +130,8 @@ class Iterators:
             if protocol is not None:return protocol
         if iterator_kind(kind)and operation=="source":return kind
         record=self._record(plan,node,operation,identity)
+        from .native_iterator_hints import SourceHint
+        record.hint_protocol=SourceHint(reverse=operation=='reverse')
         self._contribute(record.source,value,node)
         root=record.source.root()
         from .native_classes import Cell
@@ -175,6 +178,8 @@ class Iterators:
     def filter(self,plan,node,callback,source,environment=None):
         from .native_classes import Cell
         record=self._record(plan,node,"filter")
+        from .native_iterator_hints import ABSENT
+        record.hint_protocol=ABSENT
         self._contribute(record.callback,callback,node)
         record.input_type=self.source(plan,node,source,environment=environment)
         self._contribute(record.element,record.input_type.record.element,node)
@@ -183,6 +188,8 @@ class Iterators:
     def map(self,plan,node,callback,sources,environment=None):
         from .native_classes import Cell
         record=self._record(plan,node,"map")
+        from .native_iterator_hints import ABSENT
+        record.hint_protocol=ABSENT
         self._contribute(record.callback,callback,node)
         record.input_types=tuple(self.source(plan,node,source,("map",index),environment=environment)
                                 for index,source in enumerate(sources))
@@ -194,6 +201,8 @@ class Iterators:
     def zip(self,plan,node,sources,environment=None):
         from .native_classes import Cell
         record=self._record(plan,node,"zip")
+        from .native_iterator_hints import ABSENT
+        record.hint_protocol=ABSENT
         record.input_types=tuple(self.source(plan,node,source,("zip",index),environment=environment)
                                 for index,source in enumerate(sources))
         if not sources:self._contribute(record.element,Cell(EMPTY),node)

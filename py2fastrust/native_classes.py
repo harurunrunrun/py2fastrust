@@ -262,7 +262,7 @@ class Model:
     BUILTINS = {"type","input", "property", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
     DATA = {'int_bool', 'function', 'exception_value', 'range', 'dict', 'object', 'exception_class', 'union', 'globals_dict', 'complex', 'float', 'bool', 'dict_view', 'str', 'tuple_sequence', 'none', 'bytes', 'bytearray', 'array', 'tuple', 'builtin_singleton', 'list', 'int', 'set'}
-    INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes"}
+    INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes", "stdout", "write_text", "flush_text"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
         self.tree, self.filename, self.integer = tree, filename, integer
@@ -689,6 +689,7 @@ class Model:
         from .native_typing_metadata import snapshot as metadata_snapshot
         from .native_list_positions import snapshot as position_snapshot
         from .native_properties import snapshot as property_snapshot
+        from .native_class_identity_demand import snapshot as implicit_identity_snapshot
         return (tuple((plan.reachable, None if plan.visible_definitions is None else tuple(sorted(plan.visible_definitions)), None if plan.global_names is None else tuple(sorted(plan.global_names)), shape(plan.result), tuple((name, shape(cell)) for name, cell in plan.arguments.items())) for plan in self.plans),
                 tuple((owner.node.name, tuple((name, shape(value.cell), value.written) for name, value in owner.fields.items())) for owner in self.classes.values()),
                 tuple(sorted((key, shape(value)) for key, value in self.records.items())),self.namespace.snapshot(),self.lexical.snapshot(),self.iterators.snapshot(),self.mappings.snapshot(),self.deques.snapshot(),self.expanded_calls.snapshot(),self.generators.snapshot(),extrema_snapshot(self),metadata_snapshot(self),
@@ -696,7 +697,7 @@ class Model:
                       for key,state in sorted(self.loop_feedback.items())),
                 self.class_namespaces.named_tuples.snapshot()if hasattr(self,'class_namespaces')else(),
                 tuple(tuple(shape(value)for value in record.arguments)for record in self.exceptions.records),position_snapshot(self),
-                tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else(),initialized_module_snapshot(self),property_snapshot(self))
+                tuple((key,member.descriptor)for key,member in sorted(self.class_namespaces.members.items()))if hasattr(self,'class_namespaces')else(),initialized_module_snapshot(self),property_snapshot(self),implicit_identity_snapshot(self))
 
     def analyze_body(self,plan,environment):
         if getattr(plan,'_native_retained_expression',False):
@@ -1239,7 +1240,7 @@ class Model:
         if isinstance(function,ast.Name):
             callable_ = environment.get(self.resolved_name(plan,function))
             if callable_ is None:callable_=self.lexical.read(plan,function,environment)
-            if callable_ is not None and callable_.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
+            if callable_ is not None and callable_.root().tag in {"reader_text","reader_bytes","read_text","read_bytes","write_text","flush_text"}:
                 callable_=callable_.root()
                 self.remember(plan,function,callable_)
                 from .native_class_stdio import analyze as analyze_reader
@@ -1300,7 +1301,9 @@ class Model:
                     if method.name=="append":self.contribute(item,bound["value"],node)
                     elif method.name=="insert"and bound["index"].root().tag in {None,"int","bool","int_bool","union"}:
                         self.contribute(item,bound["value"],node)
-                    elif method.name=="extend":self.contribute(item,self.item(bound["iterable"],node),node)
+                    elif method.name=="extend":
+                        from .native_list_extend import analyze as analyze_extend
+                        analyze_extend(self,plan,node,receiver,bound["iterable"],environment)
                     elif method.name=="sort"and bound["key"].root().tag not in {None,"none"}:
                         raise ClassUnsupported(node,"the class-aware sequence path only captures None for list.sort key; retaining and invoking a user key callable once per element is not implemented",types=(("key",bound["key"]),),proof="key callable capture and ordered once-per-element evaluation")
                     if method.result=="copy":return self.cell(plan,node,"list",(item,))
@@ -1368,16 +1371,20 @@ class Model:
             owner = self.classes[receiver.args[0]]
             name = self.resolved_name(plan,node)
             return self.remember(plan, node, self.field(owner, name, node))
-        intrinsic = {("sys","stdin"):"stdin", ("stdin","buffer"):"stdin_buffer",
+        intrinsic = {("sys","stdin"):"stdin", ("sys","stdout"):"stdout", ("stdout","write"):"write_text", ("stdout","flush"):"flush_text", ("stdin","buffer"):"stdin_buffer",
                      ("stdin","readline"):"reader_text", ("stdin","read"):"read_text",
                      ("stdin_buffer","readline"):"reader_bytes", ("stdin_buffer","read"):"read_bytes"}.get((receiver.tag,node.attr))
         if intrinsic:
             return self.cell(plan, node, intrinsic)
+        from .native_class_stdout import guard_attribute
+        guard_attribute(shape(receiver),node)
         raise ClassUnsupported(node)
 
     def attribute_item(self,plan,node,receiver,environment):return None
 
     def attribute_target(self,plan,node,receiver,value,environment):
+        from .native_class_stdout import guard_attribute
+        guard_attribute(shape(receiver),node,writing=True)
         from .native_properties import metadata_guard
         metadata_guard(node,shape(receiver),'assigning')
         return False
@@ -2597,7 +2604,11 @@ class Emitter:
             bound[name]=value
         if method.name=="sort"and "key"in bound and bound["key"].kind!="none":
             raise ClassUnsupported(node,"the class-aware sequence path only captures None for list.sort key; retaining and invoking a user key callable once per element is not implemented",types=(("key",bound["key"].kind),),proof="key callable capture and ordered once-per-element evaluation")
-        result=lower(adapter,storage,method,bound,node,{},sort_key=None)
+        result=None
+        if method.name=="extend"and not method.error:
+            from .native_list_extend import emit as emit_extend
+            result=emit_extend(self,node,storage,bound['iterable'])
+        if result is None:result=lower(adapter,storage,method,bound,node,{},sort_key=None)
         temporary=self.fresh()
         from .native_source_state import append_export
         exported=append_export(self,node,method,bound)
@@ -2686,17 +2697,17 @@ class Emitter:
             keywords[keyword.arg] = value
         name = function.id if isinstance(function,ast.Name) else None
         alias_kind = self.model.records.get((self.plan.index,id(function)))
-        if alias_kind is not None and alias_kind.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
+        if alias_kind is not None and alias_kind.root().tag in {"reader_text","reader_bytes","read_text","read_bytes","write_text","flush_text"}:
             name = alias_kind.root().tag
-        from .native_class_stdio import READERS,member as reader_member,emit as emit_reader
-        reader=name if name in READERS else reader_member(domain(receiver.kind),function.attr)if receiver is not None else None
+        from .native_class_stdio import CALLABLES,member as reader_member,emit as emit_reader
+        reader=name if name in CALLABLES else reader_member(domain(receiver.kind),function.attr)if receiver is not None else None
         if reader is not None:
             result=emit_reader(self,node,reader,arguments,list(keywords.items()),wanted)
             return Expression("{"+"\n".join(setup)+result.code+"}",wanted)
         code = None
         raw_kind=shape(self.model.constructors[(self.plan.index,id(node))])if(self.plan.index,id(node))in self.model.constructors else wanted
         from .native_class_builtins import SUPPORTED,emit as emit_builtin
-        if name in SUPPORTED or name in {"reader_text","reader_bytes","read_text","read_bytes"}:
+        if name in SUPPORTED or name in {"reader_text","reader_bytes","read_text","read_bytes","write_text","flush_text"}:
             result=emit_builtin(self,node,BuiltinIdentity(name),arguments,keywords,wanted,raw_kind)
             return Expression("{"+"\n".join(setup)+"let class_value="+result.code+";class_value}",wanted,result.constant)
         elif receiver is not None:
@@ -3266,7 +3277,10 @@ class Emitter:
             captured=self.model.lexical.environments.get(self.model.lexical.scope(self.plan))
             if captured is not None and name in captured.fields:continue
             stored=self.model.namespace.local_kind(self.plan,name)or kind
-            initial.append(f"{self.slot(name,stored)}=Some({self.coerce(Expression(argument,kind),stored,self.plan.node)});")
+            if self.model.namespace.local_kind(self.plan,name)is None and domain(kind)in self.model.INTRINSICS:
+                initial.append(f"{self.reference_slot(name,kind)}=true;")
+            else:
+                initial.append(f"{self.slot(name,stored)}=Some({self.coerce(Expression(argument,kind),stored,self.plan.node)});")
         from .native_scalar_data_results import result_type as data_result_type
         result=data_result_type(self)or self.rust_type(shape(self.plan.result))
         if "none"in alternatives(shape(self.plan.result)):
@@ -3681,6 +3695,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(integer_place_runtime(model))
     from .native_source_lengths import runtime as source_length_runtime
     pieces.append(source_length_runtime(model))
+    from .native_list_extend import runtime as list_extend_runtime
+    pieces.append(list_extend_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)

@@ -266,6 +266,8 @@ def source_cursor(registry,plan,node,value,identity,operation):
  from .native_classes import shape
  if shape(value)!=BYTEARRAY:return None
  record=registry._record(plan,node,'bytearray_reverse'if operation=='reverse'else'bytearray_source',identity);record.adapter=BytearrayCursor
+ from .native_iterator_hints import IndexedOwnerHint
+ record.hint_protocol=IndexedOwnerHint(reverse=operation=='reverse')
  registry._contribute(record.source,value,node);registry._contribute(record.element,registry.model.cell_for_kind('int'),node)
  return record.kind
 

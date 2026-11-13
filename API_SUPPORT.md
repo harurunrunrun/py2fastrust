@@ -21,6 +21,13 @@ Linked module references also adapt `sys.setrecursionlimit` and
 `sys.getrecursionlimit`, including saved references. Replacing the standard
 stream objects requires an unimplemented stream-object protocol and is rejected.
 
+Canonical `sys.stdout.write(str)` and `sys.stdout.flush()` support direct calls,
+`from sys import stdout`, saved stream/method references, source parameters,
+closures and registered callable consumers. They share the buffered output,
+preserve argument/binding/type-error order and return character counts or None.
+Counts use the selected ASCII/Unicode string mode. Binary output, replacement
+streams and additional stream protocols remain explicit native boundaries.
+
 Immediate integer-map consumers of canonical zero-argument text/binary
 `readline()` reuse the buffered line through parsing and preserve raw-byte,
 newline, EOF and error order. Proved reader aliases share this path. Stored

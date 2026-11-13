@@ -33,6 +33,8 @@ def analyze(model,plan,node,arguments,keywords,environment,*,factory):
     if error:return factory('none')
     source,start=values;registry=model.iterators
     record=registry._record(plan,node,'enumerate')
+    from .native_iterator_hints import ABSENT
+    record.hint_protocol=ABSENT
     registry._contribute(record.source,source,node)
     record.input_type=registry.source(plan,node,source,('enumerate',0),environment=environment)
     if not hasattr(record,'index_start'):record.index_start=Cell()

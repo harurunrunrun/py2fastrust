@@ -283,7 +283,7 @@ class CallableCells:
             if name in self.model.classes and self.model.module_owner(self.owner(plan,function)):return False
             current=environment.get(name)
             if current is None:current=self.model.lexical.read(plan,function,environment)
-            if current is not None and current.root().tag in {"reader_text","reader_bytes","read_text","read_bytes"}:
+            if current is not None and current.root().tag in {"reader_text","reader_bytes","read_text","read_bytes","write_text","flush_text"}:
                 # These captured standard-stream methods already have a
                 # canonical intrinsic call adapter and typed read result.
                 return False
@@ -459,8 +459,8 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
             record=analyze_constructor(self,plan,node,branch,arguments,positional,keywords,environment)
             site.builtin_classes[branch]=record
             if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
-        from .native_class_stdio import READERS,analyze as analyze_reader
-        if branch in READERS:
+        from .native_class_stdio import CALLABLES,analyze as analyze_reader
+        if branch in CALLABLES:
             value=analyze_reader(self.model,plan,node,branch,positional,keywords,
                                 factory=lambda tag:self.model.cell(plan,node,tag,identity=('stdin',branch)))
             if not self.model.namespace.contribute(result,value,node,force=True):self.model.contribute(result,value,node)
@@ -649,8 +649,8 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
     def branch(kind,code):
         if union_kind(kind):
             return project(kind,code,lambda child,value:branch(child,f"({value}).clone()"))
-        from .native_class_stdio import READERS,emit as emit_reader
-        if kind in READERS:
+        from .native_class_stdio import CALLABLES,emit as emit_reader
+        if kind in CALLABLES:
             return emit_reader(emitter,node,kind,positional,keywords,wanted).code
         from .native_type_objects import BuiltinClass,emit_constructor
         if isinstance(kind,BuiltinClass):return emit_constructor(emitter,node,kind,site.builtin_classes[kind],positional,keywords,wanted).code

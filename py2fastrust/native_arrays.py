@@ -289,6 +289,8 @@ def source_cursor(registry,plan,node,value,identity,operation):
     kind=shape(value)
     if not array_kind(kind):return None
     record=registry._record(plan,node,'array_reverse'if operation=='reverse'else'array_source',identity)
+    from .native_iterator_hints import ABSENT,IndexedOwnerHint
+    record.hint_protocol=IndexedOwnerHint(reverse=True)if operation=='reverse'else ABSENT
     record.adapter=ArrayCursor
     registry._contribute(record.source,value,node)
     registry._contribute(record.element,registry.model.cell_for_kind(element_kind(kind)),node)

@@ -4,18 +4,21 @@ Reader tags originate from proved stdin attributes, never a source spelling.
 The callable and arguments have already been evaluated by each caller.
 """
 
+from .native_class_stdout import CALLABLES as OUTPUT_CALLABLES
+
 READERS = {
     'reader_text': (False, True),
     'reader_bytes': (True, True),
     'read_text': (False, False),
     'read_bytes': (True, False),
 }
+CALLABLES = frozenset(READERS) | OUTPUT_CALLABLES
 
 
 def _imports(model, node):
     import ast
     if (isinstance(node, ast.ImportFrom) and node.module == 'sys' and not node.level
-            and 'sys' in model.trusted_imports and all(alias.name == 'stdin' for alias in node.names)):
+            and 'sys' in model.trusted_imports and all(alias.name in {'stdin', 'stdout'} for alias in node.names)):
         return node.names
     return None
 
@@ -26,7 +29,7 @@ def import_statement(model, plan, node, environment):
         return False
     from .native_classes import Cell
     for alias in aliases:
-        model.bind_name(plan, alias, Cell('stdin'), environment)
+        model.bind_name(plan, alias, Cell(alias.name), environment)
     model.namespace.import_event(plan, node, environment)
     return True
 
@@ -37,11 +40,15 @@ def emit_import(emitter, node):
         return None
     from .native_classes import Expression
     from .native_globals_view import store
-    return ''.join(emitter.assign_name(alias, Expression('()', 'stdin')) + store(emitter, alias)
+    return ''.join(emitter.assign_name(alias, Expression('()', alias.name)) + store(emitter, alias)
                    for alias in aliases)
 
 
 def member(receiver, name):
+    from .native_class_stdout import member as output_member
+    output = output_member(receiver, name)
+    if output is not None:
+        return output
     if receiver not in {'stdin', 'stdin_buffer'} or name not in {'read', 'readline'}:
         return None
     return ('reader_' if name == 'readline' else 'read_') + ('bytes' if receiver == 'stdin_buffer' else 'text')
@@ -55,6 +62,9 @@ def _binding(node, reader, arguments, keywords):
 
 
 def analyze(model, plan, node, reader, arguments, keywords, *, factory=None):
+    if reader in OUTPUT_CALLABLES:
+        from .native_class_stdout import analyze as analyze_output
+        return analyze_output(model, plan, node, reader, arguments, keywords, factory=factory)
     if reader not in READERS:
         return None
     from .native_classes import ClassUnsupported, domain, shape
@@ -70,6 +80,9 @@ def analyze(model, plan, node, reader, arguments, keywords, *, factory=None):
 
 
 def emit(emitter, node, reader, arguments, keywords, wanted):
+    if reader in OUTPUT_CALLABLES:
+        from .native_class_stdout import emit as emit_output
+        return emit_output(emitter, node, reader, arguments, keywords, wanted)
     if reader not in READERS:
         return None
     from .native_classes import Expression, domain

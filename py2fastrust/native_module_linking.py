@@ -350,7 +350,7 @@ class ModuleLinker:
         if name in UNIMPLEMENTED_IMPORT_METADATA or name=='__dict__':
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,f"module metadata attribute {name!r} needs its Python import-spec/namespace object representation; that protocol is not implemented on the linked native path")
-        if module.native_adapter and module.name=="sys"and name=="stdin":return Cell("stdin")
+        if module.native_adapter and module.name=="sys"and name in {"stdin","stdout"}:return Cell(name)
         key=self.unit.global_name(module.name,name)
         if module.native_adapter:
             self.seed_native_member(self.model.callable_cells,module,name)

@@ -27,6 +27,9 @@ def analyze(model,plan,node,name,heap,environment):
  from .native_heapq import orderable
  kind=shape(heap.args[0])
  if kind is None or orderable(kind):return None
+ from .native_nested_heap_comparisons import analyze as nested_compare
+ nested=nested_compare(model,plan,node,name,heap,environment)
+ if nested is not None:return nested
  index=('heap_less',name,shape(heap));truth=('heap_truth',name,shape(heap))
  inside=Environment(environment)
  if all(isinstance(part,InstanceType)or builtin_kind(part)for part in alternatives(kind)):
@@ -90,7 +93,10 @@ def emit(emitter,node,name,heap,arguments,wanted,comparison):
  a,b=Expression(first,heap.kind.element),Expression(second,heap.kind.element)
  if maximum:a,b=b,a
  setup=''
- if comparison.rich:
+ if getattr(comparison,'_native_nested_heap_comparison',False):
+  from .native_nested_heap_comparisons import emit as nested_compare
+  less=nested_compare(emitter,node,comparison,a,b)
+ elif comparison.rich:
   value=emitter.model.operators.emit_comparison(emitter,node,comparison.index,ast.Lt(),a,b)
   setup,value=emitter.capture(value)
   less=emitter.truth(value,node,identity=comparison.truth)
