@@ -15,6 +15,8 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
     self=model
     cell=(lambda tag=None,args=():model.cell(plan,node,tag,args))if factory is None else factory
     name = identity.name
+    if name=='slice':
+        raise ClassUnsupported(node,'constructing a Python slice object is not implemented; the canonical slice type currently supports native isinstance guards only',proof='native Python slice object carrier')
     if name=='round':
         from .native_class_round import analyze as analyze_round
         return analyze_round(model,plan,node,arguments,keywords,factory=cell)

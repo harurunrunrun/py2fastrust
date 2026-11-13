@@ -63,6 +63,14 @@ replaced slots, implicit iteration fallback and unconnected instance-result
 truth protocols produce positioned diagnostics. `NotImplemented` results retain
 Python 3.14's truth-conversion `TypeError`.
 
+
+Ordinary source `__getitem__` and `__setitem__` methods support indexed reads,
+stores and augmented assignments through direct typed callbacks. Receivers and
+keys are evaluated once; augmented assignment captures the original getter
+value before the right operand, then stores through the original receiver and
+key. Shared returned rows retain alias identity. Unsupported descriptors,
+replaced slots, custom slice keys and deletion retain positioned diagnostics.
+
 Typed source frames support captured canonical stdin readers at deferred
 callable sites, optional positional sizes and `from sys import stdin` aliases.
 Size checks precede blocking reads. Binary reads retain raw bytes, and default

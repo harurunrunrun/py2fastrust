@@ -223,7 +223,8 @@ class LinkedModel(Model):
 
     def subscript_item(self,plan,node,owner,index,environment):
         from .native_linked_namespaces import analyze_item
-        return analyze_item(self,plan,node,owner,index,environment)
+        result=analyze_item(self,plan,node,owner,index,environment)
+        return result if result is not None else super().subscript_item(plan,node,owner,index,environment)
 
     def target(self,plan,node,value,environment):
         if isinstance(node,ast.Attribute):

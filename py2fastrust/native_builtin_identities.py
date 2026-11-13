@@ -16,7 +16,7 @@ FUNCTIONS = frozenset(name for name, value in vars(builtins).items()
 
 def names():
     from .native_class_builtins import SUPPORTED
-    return FUNCTIONS | SUPPORTED
+    return FUNCTIONS | SUPPORTED | {'slice'}
 
 
 @lru_cache(None)

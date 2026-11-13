@@ -3,7 +3,17 @@ import ast
 from dataclasses import dataclass
 
 
-NAMES=frozenset({'ValueError','TypeError','RuntimeError','StopIteration'})
+PARENTS={'BaseException':None,'Exception':'BaseException','LookupError':'Exception',
+         'IndexError':'LookupError','ValueError':'Exception','TypeError':'Exception',
+         'RuntimeError':'Exception','StopIteration':'Exception'}
+NAMES=frozenset(PARENTS)
+
+
+def exception_subclass(name,parent):
+    while name is not None:
+        if name==parent:return True
+        name=PARENTS.get(name)
+    return False
 
 
 @dataclass(frozen=True)

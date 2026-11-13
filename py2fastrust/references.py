@@ -18,7 +18,7 @@ CORE_BUILTINS=frozenset({
     "pow","print","property","range","repr","reversed","round","set","setattr",
     "slice","sorted","staticmethod","str","sum","super","tuple","type","vars","zip",
     "__import__","__build_class__","BaseException","Exception","StopIteration","ValueError",
-    "TypeError","RuntimeError","IndexError","KeyError","AttributeError","NameError",
+    "TypeError","RuntimeError","LookupError","IndexError","KeyError","AttributeError","NameError",
     "UnboundLocalError","OverflowError","ZeroDivisionError","AssertionError","MemoryError",
     "NotImplementedError","RecursionError","EOFError","ImportError","ModuleNotFoundError","OSError",
 })

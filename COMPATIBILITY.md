@@ -82,6 +82,17 @@ Builtin return values use their normal truth conversion; Python 3.14
 replaced slots, iterator/sequence membership fallback and instance-valued result
 truth protocols remain specific diagnostics until those adapters are connected.
 
+
+Source indexed reads, stores and augmented assignments call ordinary original
+`__getitem__`/`__setitem__` functions with native typed values. A store ignores
+the setter return only after the callback runs. Augmented assignment captures
+the receiver, key and getter value before evaluating the right operand, then
+performs the operation and setter in order. Rebinding a receiver/key name during
+the right operand does not redirect the store. Returned lists preserve sharing;
+`IndexError` retains its `LookupError`/`Exception` hierarchy. Same-class slot
+aliases retain their original function identity. Unsupported descriptors,
+replacements, slice-key protocols and indexed deletion remain diagnostics.
+
 F-strings lower their original `JoinedStr` and `FormattedValue` nodes to native
 string construction. Fields, conversions, and dynamic specs run in Python 3.14
 order: an explicit `!s`/`!r`/`!a` conversion runs before spec expressions, while

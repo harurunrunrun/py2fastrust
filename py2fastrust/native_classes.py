@@ -852,6 +852,8 @@ class Model:
                 from .native_frame_slices import analyze
                 return analyze(self,plan,node,environment)
             owner = self.expression(plan, node.value, environment).root()
+            from .native_source_items import source_owner,check_key
+            if source_owner(self,owner)is not None:check_key(node)
             index = self.expression(plan, node.slice, environment).root()
             captured=self.subscript_item(plan,node,owner,index,environment)
             if captured is not None:return captured
@@ -1269,7 +1271,9 @@ class Model:
 
     def attribute_target(self,plan,node,receiver,value,environment):return False
 
-    def subscript_item(self,plan,node,owner,index,environment):return None
+    def subscript_item(self,plan,node,owner,index,environment):
+        from .native_source_items import analyze
+        return analyze(self,plan,node,owner,index,environment)
 
     def item(self, value, node):
         value = value.root()
@@ -1328,9 +1332,13 @@ class Model:
                 return
             if owner.tag is None and not self.final:
                 return
-        if isinstance(node,ast.Subscript) and not isinstance(node.slice,ast.Slice):
+        if isinstance(node,ast.Subscript):
             owner = self.expression(plan,node.value,environment).root()
+            from .native_source_items import source_owner,check_key
+            if source_owner(self,owner)is not None:check_key(node)
             index=self.expression(plan,node.slice,environment)
+            from .native_source_items import analyze as source_item_store
+            if source_item_store(self,plan,node,owner,index,environment,value)is not None:return
             if self.deques.indexes.analyze_store(plan,node,owner,index,value):return
             if self.mappings.analyze_store(plan,node,owner,index,value,environment):return
             if owner.tag == "list":
@@ -1467,7 +1475,9 @@ class Model:
                 self.augmented[(plan.index,id(node))] = left
                 right = self.expression(plan,node.value,environment)
                 value = self.binary(plan,node,node.op,left,right,environment=environment)
-                if not self.deques.indexes.captured_store(plan,node.target,value):
+                from .native_source_items import captured_store as source_item_store
+                if(not self.deques.indexes.captured_store(plan,node.target,value)
+                        and not source_item_store(self,plan,node.target,value,environment)):
                     self.target(plan,node.target,value,environment)
             elif isinstance(node,ast.Delete):
                 from .native_annotations import metadata_target
@@ -1949,6 +1959,9 @@ class Emitter:
                 return emit(self,node,wanted)
             setup,owner = self.capture(self.expression(node.value))
             index_setup,index = self.capture(self.expression(node.slice))
+            from .native_source_items import emit as source_item
+            indexed=source_item(self,node,owner,index,wanted)
+            if indexed is not None:return Expression('{'+setup+index_setup+indexed.code+'}',wanted)
             if getattr(owner.kind,"_native_class_mapping",False)or union_kind(owner.kind)and any(getattr(part,"_native_class_mapping",False)for part in alternatives(owner.kind)):
                 value=self.model.mappings.emit_get(self,node,owner,index,wanted)
                 return Expression('{'+setup+index_setup+value.code+'}',wanted)
@@ -2529,6 +2542,8 @@ class Emitter:
         if isinstance(target,ast.Subscript):
             setup,owner=self.capture(self.expression(target.value))
             more,index=self.capture(self.expression(target.slice))
+            if isinstance(owner.kind,InstanceType):
+                return setup+more,('source_item',owner,index,self.kind(target))
             if all(getattr(kind,"_native_class_mapping",False)for kind in alternatives(owner.kind)):
                 return setup+more,("mapping",owner,index,self.kind(target))
             if all(domain(kind)=="deque"for kind in alternatives(owner.kind)):
@@ -2558,6 +2573,9 @@ class Emitter:
         return clearing+f"{self.slot(name,kind)}=Some({self.coerce(value,kind,target)});"
 
     def load_reference(self, reference, node, kind=None):
+        if reference[0]=='source_item':
+            from .native_source_items import emit
+            return emit(self,node,reference[1],reference[2],kind or reference[3])
         if reference[0]in{'owned_object_field','owned_object_index'}:
             from .native_owned_object_places import load
             return load(self,reference,node,kind)
@@ -2617,6 +2635,9 @@ class Emitter:
         return project_element(self,raw,owner.kind.element,requested or kind,node)
 
     def store_reference(self, reference, value, node):
+        if reference[0]=='source_item':
+            from .native_source_items import emit
+            return emit(self,node,reference[1],reference[2],value=value).code+';'
         if reference[0]in{'owned_object_field','owned_object_index'}:
             from .native_owned_object_places import store
             return store(self,reference,value,node)

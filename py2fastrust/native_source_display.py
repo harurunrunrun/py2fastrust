@@ -1,19 +1,26 @@
-"""Typed calls to original source display slots and their plain function aliases."""
+"""Typed display calls and canonical plain source special-method aliases."""
 from dataclasses import dataclass
 
 from .call_semantics import Argument,CallArguments
 
 
 SLOTS=frozenset({'__str__','__repr__'})
+ALIAS_SLOTS=SLOTS|{'__getitem__','__setitem__','__len__','__reversed__','__contains__'}
+
+
+def alias_slot(name):
+    from .native_class_operators import SUPPORTED_SLOTS
+    return name in ALIAS_SLOTS and name in SUPPORTED_SLOTS
 
 
 def guard_direct_method(model,owner,name,node):
     namespace=getattr(model,'class_namespaces',None)
     member=None if namespace is None else namespace.members.get((owner.index,name))
-    if member is None or member.plan is None or getattr(member,'source_function_alias',False):return
+    if member is None or member.plan is None:return
     if getattr(member,'source_binding_deleted',False):
         from .native_classes import ClassUnsupported
         raise ClassUnsupported(node,'source instance method '+repr(name)+' is deleted during class publication; dynamic instance descriptor lookup for that missing binding is not implemented',proof='deleted instance method binding')
+    if getattr(member,'source_function_alias',False):return
     writes=model.namespace.incoming.get(member.key,{})
     if any(role!='method_definition'for role,ordinal in writes):
         from .native_classes import ClassUnsupported
@@ -37,7 +44,7 @@ def plan_aliases(model,owner):
                     and isinstance(statement.value,ast.Name)):
                 target=model.unit.name_for(statement.targets[0]);source=model.unit.name_for(statement.value)
                 member=namespace.member(owner,target)
-                if target in SLOTS and member.plan is None and source in available:
+                if alias_slot(target) and member.plan is None and source in available:
                     origin=available[source]
                     member.plan=origin.plan;member.function_cell=origin.function_cell
                     member.descriptor='function';member.source_function_alias=True
@@ -62,19 +69,19 @@ def method_read(registry,plan,node,environment):
 def bind_alias(registry,plan,node,value):
     from .native_classes import shape,ClassUnsupported
     member=registry.local_member(plan,node)
-    if member is None or member.name not in SLOTS:return False
+    if member is None or not alias_slot(member.name):return False
     kind=shape(value);definitions=getattr(kind,'definitions',())
     if(len(definitions)!=1 or getattr(kind,'builtins',())or getattr(kind,'members',())or getattr(kind,'methods',())):
-        raise ClassUnsupported(node,'source display slot assignment requires one retained plain source function; arbitrary descriptor/nonfunction display slot values are not implemented',proof='source display slot function alias identity')
+        raise ClassUnsupported(node,'source '+member.name+' slot assignment requires one retained plain source function; arbitrary descriptor/nonfunction slot values are not implemented',proof='source '+member.name+' slot function alias identity')
     target=registry.model.callable_cells.plans[definitions[0]]
     import ast
     if isinstance(target.node,ast.Lambda):
-        raise ClassUnsupported(node,'source display slot alias refers to a lambda; retaining that lambda as a class descriptor is not implemented, and it cannot be substituted with an earlier function binding',proof='actual display alias RHS callable identity')
+        raise ClassUnsupported(node,'source '+member.name+' slot alias refers to a lambda; retaining that lambda as a class descriptor is not implemented, and it cannot be substituted with an earlier function binding',proof='actual '+member.name+' alias RHS callable identity')
     originals=[candidate for candidate in registry.members.values()if candidate.owner is member.owner and candidate.plan is target and candidate.descriptor=='function']
     if target.owner is not member.owner or not originals:
-        raise ClassUnsupported(node,'source display function aliases must retain an existing ordinary function from this class namespace; cross-class/descriptor aliases are not implemented',proof='same-class display function alias')
+        raise ClassUnsupported(node,'source '+member.name+' function aliases must retain an existing ordinary function from this class namespace; cross-class/descriptor aliases are not implemented',proof='same-class '+member.name+' function alias')
     if member.plan is not None and not getattr(member,'source_function_alias',False):
-        raise ClassUnsupported(node,'replacing an earlier display function definition during class publication requires a versioned slot publication plan; this slice admits new plain function aliases',proof='source display alias publication order')
+        raise ClassUnsupported(node,'replacing an earlier '+member.name+' function definition during class publication requires a versioned slot publication plan; this slice admits new plain function aliases',proof='source '+member.name+' alias publication order')
     member.plan=target;member.function_cell=value;member.descriptor='function';member.source_function_alias=True
     member.owner.methods[member.name]=target
     return True

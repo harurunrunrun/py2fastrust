@@ -47,7 +47,7 @@ def runtime(source,model):
     origin=( 'error.function.0,error.line,error.function.1'if hasattr(model,'module_linker')else'"'+model.filename.replace('\\','\\\\').replace('"','\\"')+'",error.line,error.function')
     helpers=r'''
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-enum ClassExceptionKind{ValueError,TypeError,RuntimeError,StopIteration}
+enum ClassExceptionKind{BaseException,Exception,LookupError,IndexError,ValueError,TypeError,RuntimeError,StopIteration}
 trait ClassExceptionPayload:std::fmt::Debug{
  fn class_kind(&self)->ClassExceptionKind;
  fn class_name(&self)->&'static str;

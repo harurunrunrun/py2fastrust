@@ -4,7 +4,7 @@ from .references import BuiltinIdentity
 
 
 TYPE_NAMES = frozenset({'classmethod', 'int', 'bool', 'float', 'str', 'bytes', 'list', 'range',
-                        'tuple', 'dict', 'set', 'map', 'zip', 'filter', 'enumerate', 'reversed'})
+                        'slice', 'tuple', 'dict', 'set', 'map', 'zip', 'filter', 'enumerate', 'reversed'})
 
 
 def requires_frames(analysis):
@@ -56,10 +56,11 @@ def emit(emitter, node, arguments):
                     'for ' + member + ' in ' + owner + '.as_slice().iter().cloned(){'
                     'if ' + branch + '{matched=true;break;}}break matched;}}')
         if getattr(classes.kind,'_native_exception_class',False):
+            from .native_exception_values import exception_subclass
             def exception_match(candidate):
                 if union_kind(candidate.kind):
                     return project(candidate.kind,candidate.code,lambda kind,code:exception_match(Expression(code,kind)))
-                return str(getattr(candidate.kind,'_native_exception_value',False)and candidate.kind.record.owner==classes.kind).lower()
+                return str(getattr(candidate.kind,'_native_exception_value',False)and exception_subclass(candidate.kind.record.owner.name,classes.kind.name)).lower()
             return exception_match(value)
         from .native_module_linking import ClassReferenceType
         if isinstance(classes.kind,ClassReferenceType):

@@ -55,6 +55,8 @@ def analyze(model,plan,node,environment):
     from .native_classes import Cell,ClassUnsupported,domain,shape,tuple_cell
     from .native_union_sequences import branches
     owner=model.expression(plan,node.value,environment)
+    from .native_source_items import source_owner,check_key
+    if source_owner(model,owner)is not None:check_key(node)
     for bound in (node.slice.lower,node.slice.upper,node.slice.step):
         if bound is None:continue
         value=model.expression(plan,bound,environment)
