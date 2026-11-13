@@ -555,8 +555,8 @@ class Model:
         for name, value in defaults:
             literal = value.operand if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)) else value
             plan.defaults[name] = value
-            constant=(isinstance(literal,ast.Constant)and type(literal.value)in {int,bool,float,str,type(None)}
-                      and (not isinstance(value,ast.UnaryOp)or type(literal.value)in {int,bool,float}))
+            constant=(isinstance(literal,ast.Constant)and type(literal.value)in {int,bool,float,complex,str,type(None)}
+                      and (not isinstance(value,ast.UnaryOp)or type(literal.value)in {int,bool,float,complex}))
             if not constant:
                 plan.default_cells[name]=Cell()
                 self.namespace.defaults[(plan.index,name)]=plan.default_cells[name]
@@ -836,6 +836,7 @@ class Model:
             literal=Literal.from_ast(node)
             if literal is None:
                 raise ClassUnsupported(node)
+            if literal.kind=='complex':self.complex_values_required=True
             return self.cell(plan, node, literal.kind)
         if isinstance(node, ast.Name):
             exception=self.exceptions.name(plan,node,environment)
@@ -965,6 +966,9 @@ class Model:
             value = self.expression(plan, node.operand, environment)
             custom=self.operators.unary(plan,node,node.op,value,environment)
             if custom is not None:return custom
+            from .native_complex_literals import analyze_unary as complex_unary
+            primitive=complex_unary(self,plan,node,node.op,value)
+            if primitive is not None:return primitive
             value=value.root()
             if value.tag in {"int","bool","int_bool","float"}:
                 if value.tag == "float" and not isinstance(node.op,(ast.UAdd,ast.USub)):
@@ -2038,6 +2042,7 @@ class Emitter:
         if literal.kind=='float':
             from .native_float_identity import literal as identity_literal
             code=identity_literal(self,code,value,node)
+        if literal.kind=='complex':self.model.complex_values_required=True
         return self.encoded(code,literal.kind,wanted,node,constant)
 
     def captured_defaults(self,callee):
@@ -2286,6 +2291,9 @@ class Emitter:
         raise ClassUnsupported(node)
 
     def unary_builtin(self,operator,value,node,wanted):
+        from .native_complex_literals import unary as complex_unary
+        primitive=complex_unary(self,operator,value,node,wanted)
+        if primitive is not None:return primitive
         from .native_float_identity import unary as identity_unary
         identity=identity_unary(self,operator,value,node,wanted)
         if identity is not None:return identity
@@ -3684,6 +3692,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         pieces.append(COMPLEX_RUNTIME)
     from .native_complex_powers import runtime as complex_power_runtime
     pieces.append(complex_power_runtime(model))
+    from .native_complex_literals import runtime as complex_literal_runtime
+    pieces.append(complex_literal_runtime(model))
     if integer=="bigint":
         from .native_bigint import _HELPERS as bigint_helpers
         pieces.extend([bigint_helpers,_named_helpers(_INPUT_HELPERS,{"native_space"}),

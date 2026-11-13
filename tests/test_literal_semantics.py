@@ -30,10 +30,10 @@ class LiteralSemanticsTests(unittest.TestCase):
                 else:self.assertEqual(normalized,value)
 
     def test_literal_domain_keeps_bool_none_and_bytes_distinct(self):
-        for value,kind in [(None,"none"),(True,"bool"),(1,"int"),(1.0,"float"),("猫","str"),(b"\xff","bytes")]:
+        for value,kind in [(None,"none"),(True,"bool"),(1,"int"),(1.0,"float"),(1j,"complex"),("猫","str"),(b"\xff","bytes")]:
             literal=Literal.from_ast(ast.Constant(value=value))
             self.assertEqual((literal.kind,literal.value),(kind,value))
-        for value in (1j,Ellipsis,"\ud800"):
+        for value in (Ellipsis,"\ud800"):
             self.assertIsNone(Literal.from_ast(ast.Constant(value=value)))
 
     def test_scalar_bigint_and_class_atoms_use_the_shared_lowerer(self):

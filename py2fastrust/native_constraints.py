@@ -833,7 +833,7 @@ class Solver:
             return value(BYTEARRAY)
         if name in {"int","float","str","bool","bytes"}:return value(name)
         if name in {"bin","oct","hex"}:return value("str")
-        if name=="abs" and args:return self.compute("unary:UAdd",(args[0],))
+        if name=="abs" and args:return self.compute("abs",(args[0],))
         if name=='pow':
             from .native_class_numeric_calls import _bind
             binding,error=_bind(args,keywords,value('none'))
@@ -1118,7 +1118,10 @@ class Solver:
         if operation=="sum" and kinds[0]==EMPTY:return kinds[1]
         if EMPTY in kinds:return EMPTY
         numeric={"int","bool","int_bool","float"}
-        if operation.startswith("unary:"):return "float" if kinds[0]=="float" else "int" if kinds[0] in numeric else None
+        if operation=='abs':return 'float'if kinds[0]in {'float','complex'}else 'int'if kinds[0]in numeric else None
+        if operation.startswith("unary:"):
+            if kinds[0]=='complex'and operation in {'unary:UAdd','unary:USub'}:return 'complex'
+            return "float" if kinds[0]=="float" else "int" if kinds[0] in numeric else None
         if operation=="sum":return "float" if "float" in kinds else "int" if set(kinds)<=numeric else None
         if len(kinds)!=2:return None
         first,second=kinds

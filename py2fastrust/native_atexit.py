@@ -189,7 +189,7 @@ class Registry:
                 for cell in source.default_cells.values():value(shape(cell))
             enter(('function',ordinal),contents)
         def value(kind):
-            if isinstance(kind,EmptyType)or kind in {'int','bool','int_bool','none','float','str','bytes','range'}:return
+            if isinstance(kind,EmptyType)or kind in {'int','bool','int_bool','none','float','complex','str','bytes','range'}:return
             if isinstance(kind,(ListType,TupleSequenceType)):value(kind.element);return
             if isinstance(kind,TupleType):
                 for child in kind.fields:value(child)

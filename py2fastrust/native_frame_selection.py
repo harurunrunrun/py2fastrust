@@ -52,8 +52,8 @@ def _cyclic_nodes(edges):
 def _definition_literal(expression):
     """Total immutable literals need no runtime definition-time capture slot."""
     literal=expression.operand if isinstance(expression,ast.UnaryOp)and isinstance(expression.op,(ast.UAdd,ast.USub))else expression
-    return (isinstance(literal,ast.Constant)and type(literal.value)in {int,bool,float,str,type(None)}
-            and (not isinstance(expression,ast.UnaryOp)or type(literal.value)in {int,bool,float}))
+    return (isinstance(literal,ast.Constant)and type(literal.value)in {int,bool,float,complex,str,type(None)}
+            and (not isinstance(expression,ast.UnaryOp)or type(literal.value)in {int,bool,float,complex}))
 
 
 def _semantic_requirements(unit,analysis,targets):
@@ -106,6 +106,9 @@ def select_frames(unit,*,integer="i64"):
     if any(isinstance(node,ast.ClassDef)for node in ast.walk(unit.tree)):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
     analysis=analyze(unit)
+    from .native_complex_literals import requires_frames as complex_literal_frames
+    if complex_literal_frames(unit,analysis):
+        return FrameSelection(True,('official complex literal values',),analysis,frozenset(),MappingProxyType({}))
     from .native_list_extend import requires_frames as extend_requires_frames
     if extend_requires_frames(unit,analysis):
         return FrameSelection(True,('canonical list extension iterable protocols',),analysis,frozenset(),MappingProxyType({}))

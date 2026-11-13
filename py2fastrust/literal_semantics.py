@@ -58,7 +58,7 @@ class Literal:
 
     @classmethod
     def from_value(cls,value):
-        kind={int:"int",bool:"bool",float:"float",str:"str",bytes:"bytes",type(None):"none"}.get(type(value))
+        kind={int:"int",bool:"bool",float:"float",complex:"complex",str:"str",bytes:"bytes",type(None):"none"}.get(type(value))
         if kind is None:return None
         if kind=="str" and any(0xD800<=ord(character)<=0xDFFF for character in value):return None
         return cls(kind,value)
@@ -67,6 +67,7 @@ class Literal:
         if self.kind=="int":return integer_literal(self.value)
         if self.kind=="bool":return str(self.value).lower()
         if self.kind=="float":return float_literal(self.value)
+        if self.kind=="complex":return 'NativeComplex{real:'+float_literal(self.value.real)+',imag:'+float_literal(self.value.imag)+'}'
         if self.kind=="str":return "{static NATIVE_LITERAL:NativeTextLiteral=NativeTextLiteral::new("+quote(self.value)+");NativeText::literal(&NATIVE_LITERAL)}"
         if self.kind=="bytes":return "vec!["+",".join(f"{byte}_u8"for byte in self.value)+"]"
         if self.kind=="none":return "()"

@@ -114,7 +114,7 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         if name=="abs":
             from .native_classes import shape
             from .native_types import alternatives
-            if "float"in alternatives(shape(arguments[0])):
+            if set(alternatives(shape(arguments[0])))&{'float','complex'}:
                 kinds=[Cell("float")]
                 if any(value in {"int","bool","int_bool"}for value in alternatives(shape(arguments[0]))):kinds.append(Cell("int"))
                 return cell(kinds[0].tag)if len(kinds)==1 else cell("union",tuple(kinds))
@@ -476,6 +476,9 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
             code=wrap_float_identity(self,code,node)
     elif name == "abs":
         value=arguments[0]
+        from .native_complex_literals import absolute as complex_absolute
+        complex_value=complex_absolute(self,value,node,wanted)
+        if complex_value is not None:return complex_value
         if domain(value.kind)in{"int","bool","int_bool"}:
             number=self.number(value)
             code=f"({number}).abs()"if self.model.integer=="bigint"else f"({number}).wrapping_abs()"

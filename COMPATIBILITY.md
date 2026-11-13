@@ -301,8 +301,15 @@ non-finite cases, checked numeric errors, and original ternary power-slot
 precedence when a modulus is provided. Complex ordering against closed builtin
 operands raises the corresponding runtime `TypeError`, including paths through
 `min`/`max`; no sign or reachability assumption removes a complex alternative.
-Complex literal/constructor creation, complex equality/identity, other complex
-arithmetic and nonempty numeric formatting remain explicit boundaries.
+Official AST complex literals retain their raw binary64 components, including
+signed zero, subnormal values and overflowing imaginary tokens. Imaginary
+tokens are floating values and do not undergo the selected integer wrapping.
+Unary `+`/`-`, truth/display, existing arithmetic and `abs` accept these concrete
+leaves. Complex `abs` returns a real norm, preserves infinity/NaN rules and
+raises on finite-input norm overflow. Demanded float identity wraps that actual
+real result; the embedded complex components remain raw binary64 values.
+Complex constructor calls, equality/identity, other complex arithmetic and
+nonempty numeric formatting remain explicit boundaries.
 Mixed real/complex addition and subtraction retain the imaginary zero's sign,
 including the side of a subsequent fractional-power branch cut.
 
@@ -1005,7 +1012,8 @@ reported first. Callback failures are reported and do not stop later callbacks
 or replace the main exit status. Registration/clearing during shutdown preserves
 the original snapshot; newly registered callbacks are cleared without running.
 Callbacks use live module bindings and retain supported owned arguments,
-defaults, lexical cells and bound receivers. Unknown retained providers, cyclic
+defaults, lexical cells and bound receivers. The immutable NativeComplex leaf
+is retained by value and has no callbacks or outgoing GC edges. Unknown retained providers, cyclic
 class/closure payloads, custom callable objects, classmethod/custom-receiver
 error representations, `unregister`, `_run_exitfuncs` and registration decorators
 remain positioned diagnostics. Function-address observations outside shutdown

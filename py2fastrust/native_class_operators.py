@@ -205,10 +205,10 @@ class Operators:
                 self.model.contribute(site.result,callback.result,node)
                 branch.complete=shape(callback.result)is not None
             elif isinstance(kind,InstanceType)or kind==NOT_IMPLEMENTED:branch.fallback='error';branch.complete=True
-            elif kind in {'int','bool','int_bool','float'}:
-                if kind=='float'and isinstance(operator,ast.Invert):branch.fallback='error'
+            elif kind in {'int','bool','int_bool','float','complex'}:
+                if kind in {'float','complex'}and isinstance(operator,ast.Invert):branch.fallback='error'
                 else:
-                    branch.fallback=Cell('float'if kind=='float'else'int');self.model.contribute(site.result,branch.fallback,node)
+                    branch.fallback=Cell(kind if kind in {'float','complex'}else'int');self.model.contribute(site.result,branch.fallback,node)
                 branch.complete=True
             else:branch.fallback='error';branch.complete=True
         if self.model.final and shape(site.result)is None:merge(site.result,Cell('none'),node)

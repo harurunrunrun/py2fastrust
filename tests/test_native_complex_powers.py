@@ -102,6 +102,10 @@ CASES['mixed_additive_then_power'] = ('z=(-1.0)**0.5\nzero=z-z\nreal=zero+1.0\nn
 CASES['power_zero_then_mixed'] = ('z=(-1.0)**0.5\nvalue=z**0\nnegative=0.0-value\nprint(negative,negative+0.0,0.0+negative,negative-0.0,0.0-negative)\nprint(negative**0.5)\n', ('',))
 
 
+# The original unsupported literal input is now an executable contract.
+CASES['original_complex_literal_input'] = (BOUNDARIES.pop('complex_literal_boundary'), ('',))
+
+
 class ComplexPowerExecutionTests(unittest.TestCase):
     compare = digits.IntegerDigitLimitExecutionTests.compare
 

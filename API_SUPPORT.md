@@ -215,8 +215,13 @@ class-object address observers retain positioned diagnostics.
 Native real/complex power results support addition and subtraction with builtin
 int/bool/float and complex leaves. Both source operands evaluate before ordered
 numeric conversions, including BigInt conversion errors. Finite real/complex
-alternatives retain their actual runtime result; complex comparison, other
-complex arithmetic and nonempty numeric formatting remain explicit boundaries.
+alternatives retain their actual runtime result. Typed complex powers and
+ternary `pow` errors preserve actual builtin dispatch order. Official complex
+literals, unary signs and `abs` retain binary64 component semantics, including
+signed zeros, infinities and finite norm overflow. Closed complex values can be
+retained in supported `atexit` arguments/defaults/lexical cells without GC
+edges. Constructor calls, equality/identity, other complex arithmetic and
+nonempty numeric formatting remain explicit boundaries.
 
 
 Fixed-module star imports bind the original source export values into the actual
