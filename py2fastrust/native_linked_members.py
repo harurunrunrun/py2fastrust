@@ -9,12 +9,16 @@ class MemberCall:
 
 
 class MathAdapter:
-    from .native_math_calls import NAMES
+    from .native_math_exports import FUNCTION_NAMES as NAMES
 
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
-        from .native_math_calls import analyze
-        return MemberCall(analyze(model,plan,node,identity,positional,keywords,environment))
+        from .native_math_calls import analyze, NAMES as implemented
+        if identity.name not in implemented:
+            from .native_classes import ClassUnsupported
+            raise ClassUnsupported(node,'math.'+identity.name+' is a canonical exported function, but its native operation and argument protocol are not implemented',
+                                   proof='native implementation of math.'+identity.name)
+        return MemberCall(analyze(model,plan,node,identity,positional,keywords,environment,factory=factory))
 
     @staticmethod
     def emit(emitter,node,identity,record,positional,keywords):

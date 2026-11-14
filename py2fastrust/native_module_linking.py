@@ -469,6 +469,8 @@ class ModuleLinker:
         """Populate a reachable trusted export with the common callable carrier."""
         from .native_sys_argv import seed as seed_argv
         if seed_argv(self,module,name):return
+        from .native_math_exports import seed as seed_math_constant
+        if seed_math_constant(self,module,name):return
         from .native_typing_aliases import seed_alias
         if seed_alias(self,module,name):return
         from .native_module_calls import BuiltinRef
@@ -498,6 +500,7 @@ class ModuleLinker:
         if module.filename is not None or module.origin=='namespace':names.update({'__file__','__cached__'})
         from .native_sys_argv import matches as argv_data
         if argv_data(self.model,module,'argv'):names.add('argv')
+        names.update(row.name for row in getattr(self.model,'math_constant_data',{}).values()if row.module.number==module.number)
         if module.package:names.add('__path__')
         return {self.unit.global_name(module.name,name)for name in names}
 

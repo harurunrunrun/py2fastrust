@@ -53,7 +53,7 @@ def _index_kind(kind):
             or list_type(kind) or isinstance(kind, (TupleType, TupleSequenceType)))
 
 
-def analyze(model, plan, node, identity, captured_arg_cells, kw_pairs, environment):
+def analyze(model, plan, node, identity, captured_arg_cells, kw_pairs, environment, *, factory=None):
     if not accepts(identity):
         return None
     from .native_classes import shape, ClassUnsupported
@@ -72,7 +72,7 @@ def analyze(model, plan, node, identity, captured_arg_cells, kw_pairs, environme
                                        types=((f'argument {index + 1}', kind),),
                                        proof='canonical integer-index protocol')
     model.native_math_functions = getattr(model, 'native_math_functions', set()) | {identity.name}
-    return model.cell(plan,node,result_kind(identity))
+    return factory(result_kind(identity)) if factory is not None else model.cell(plan,node,result_kind(identity))
 
 
 def _bits(generator):

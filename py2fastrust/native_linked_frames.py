@@ -744,7 +744,8 @@ def render_linked_runtime(model,source):
               f'let globals=class_module_globals({module.number});'
               f'class_scope.modules.borrow_mut()[{module.number}]=Some(globals.clone());')
         if plan is None:
-            result='Ok(())'
+            from .native_math_exports import initializer as math_initializer
+            result=math_initializer(model,emitter,module)or'Ok(())'
         else:
             result=f'class_function_{plan.index}(class_scope.with_module(globals.clone()))'+(''if sync else'.await')
         parent,_,child=module.name.rpartition('.')

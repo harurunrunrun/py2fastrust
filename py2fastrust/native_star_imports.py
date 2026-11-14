@@ -40,8 +40,13 @@ class Catalog:
             self.exports[unit.name]=self.explicit_exports(unit)
         for module in program.modules:
             if module.name not in self.exports:
-                self.writes[module.name]=()
-                self.exports[module.name]=Exports((),error=('canonical module '+repr(module.name)+' needs its complete public export inventory for import *; that inventory is not implemented')if module.origin!='namespace'else None)
+                from .native_math_exports import canonical, PUBLIC_NAMES
+                if canonical(module):
+                    self.writes[module.name]=PUBLIC_NAMES
+                    self.exports[module.name]=Exports(PUBLIC_NAMES)
+                else:
+                    self.writes[module.name]=()
+                    self.exports[module.name]=Exports((),error=('canonical module '+repr(module.name)+' needs its complete public export inventory for import *; that inventory is not implemented')if module.origin!='namespace'else None)
         candidates={name:list(names)for name,names in self.writes.items()}
         # Imported submodules become actual parent attributes only on success;
         # their optional native fields preserve that runtime presence below.
@@ -115,6 +120,8 @@ def analyze(model,plan,node,environment):
     from .native_classes import Cell
     catalog=model.unit.star_imports;catalog.validate(node)
     table=catalog.table(node);linker=model.module_linker;star=catalog.stars[id(node)];requested=linker.modules[star.module]
+    from .native_math_exports import guard_observation
+    guard_observation(model,node,requested)
     for i in range(1,len(star.module.split('.'))+1):
         target=linker.modules['.'.join(star.module.split('.')[:i])]
         if target.initializer is not None:model.activate_frame(plan,node,target.initializer,environment)

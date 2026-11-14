@@ -233,6 +233,15 @@ original AST nodes and official scope owners are retained. Computed/observably
 mutable export sequences, module attribute hooks, undeclared late public exports
 and canonical modules lacking complete export inventories remain diagnostics.
 
+Canonical `from math import *` binds the complete 62-name Python 3.14.4 public
+inventory, including 57 actual callable references and the five binary64
+constants. Saved aliases, overwrites and cached NaN identity are preserved.
+Only reached implemented operations demand numerical kernels. Unsupported
+calls name the actual `math` member; the full inventory is not a claim that
+all 57 functions have native implementations. Namespace observers, dynamic
+export changes and existing identity-aware numeric producer boundaries retain
+positioned diagnostics.
+
 Saved builtin mapping methods retain their original receiver and lookup
 identity, including temporary dictionaries passed to `map`. Native adapters
 cover dictionary-family `__getitem__`, `get` and `setdefault`, with original

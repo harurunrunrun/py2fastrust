@@ -323,6 +323,19 @@ original AST nodes and official scope owners are retained. Computed/observably
 mutable export sequences, module attribute hooks, undeclared late public exports
 and canonical modules lacking complete export inventories remain diagnostics.
 
+Canonical `from math import *` publishes all 62 Python 3.14.4 public names:
+57 actual builtin callable identities and `pi`, `e`, `tau`, `inf`, `nan`.
+Imports preserve source overwrites, saved aliases, repeated imports and module
+member replacement. Constants are initialized once in the cached module;
+identity-aware NaN allocation is checked in its fallible import lifecycle.
+Unused exports do not demand numerical operation kernels. Callable inventory
+does not imply every operation is implemented: an unsupported invocation names
+the actual API, such as `math.sin` or `math.pow`, in its positioned diagnostic.
+Complete namespace observers and dynamic export changes remain diagnostics.
+Existing identity-aware float producer boundaries also apply; for example,
+combining a source re-export's `math.sqrt` with NaN identity observation still
+requires an unimplemented numeric producer adapter.
+
 Immediate builtin list `append` supports finite receivers with different list
 element layouts. Every selected list retains its original shared handle and
 allocation schema. Receiver capture precedes argument callbacks and rebinding;
@@ -3365,3 +3378,24 @@ an infinite stream. Custom numeric slots and complex count state retain
 positioned diagnostics; no universal numeric object or VM fallback is added.
 The cursor display renders its current numeric state as `count(value[, step])`,
 including nested container display and alias reads after partial consumption.
+
+
+Canonical `itertools.starmap` uses the shared typed source cursor and captured
+callable ABI. Exact builtin/named tuple rows pass their actual fields to the
+compiled callback. Runtime-length builtin list and immutable tuple-sequence
+rows use the common expanded-call signature binder, including defaults,
+variadic arguments and original arity errors. No row length is guessed from
+source spelling or test inputs. The row is acquired and expanded before
+callback binding; source/callback effects and partially consumed aliases keep
+their original order. Mutable argument handles retain sharing, and callback
+invocations hold no source or row storage borrow. Empty sources never invoke
+or validate an otherwise unused callback. Original source functions, lambdas,
+registered bound methods and admitted fixed-signature builtin/member callbacks
+keep their existing typed call capabilities. The shared runtime-arity builtin
+limits and additional custom row conversion protocols remain positioned
+diagnostics. No execution backend or universal argument-value interpreter is
+introduced.
+Captured math callbacks keep their own result cells at the actual pull demand,
+so stored `map` and class-frame collectors do not alias their result container
+with the callback's numeric/bool result. Immediate math operations retain their
+existing cell factory when no callback factory is supplied.
