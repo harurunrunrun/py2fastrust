@@ -8,7 +8,7 @@ This is argument binding, without a Python value or instruction interpreter.
 import ast
 from dataclasses import dataclass, field
 
-from .call_semantics import CallBindingError, normalize_call
+from .call_semantics import Argument, CallArguments, CallBindingError, normalize_call
 from .native_types import EMPTY, EmptyType, TupleType, TupleSequenceType, alternatives
 from .references import BuiltinIdentity
 
@@ -197,6 +197,13 @@ class ExpandedCalls:
         site.segments = segments
         site.keywords = [(argument.name, self.model.expression(plan, argument.expression, environment))
                          for argument in arguments.keywords]
+        self._analyze_site(plan,node,site,environment)
+        return self.model.remember(plan, node, site.result)
+
+    def _analyze_site(self,plan,node,site,environment):
+        from .native_classes import Cell,ClassUnsupported,shape
+        from .native_aot_callables import function_kind
+        segments=site.segments
         kinds = alternatives(shape(site.callee)) if shape(site.callee) is not None else ()
         for kind in kinds:
             if function_kind(kind):
@@ -222,7 +229,7 @@ class ExpandedCalls:
                             " need its runtime-arity typed operand adapter; this expansion adapter currently supports print and compiled source functions",
                             proof="builtin expanded-call signature and operand projection")
                     from .native_builtin_callables import binding_error
-                    site.builtin_errors[identity] = binding_error(identity, arguments)
+                    site.builtin_errors[identity] = binding_error(identity, site.arguments)
                     self._contribute(site.result, Cell("none"), node)
                 if kind.members:
                     member = kind.members[0]
@@ -241,7 +248,27 @@ class ExpandedCalls:
                 self._contribute(site.result, Cell("none"), node)
         if self.model.final and site.result.root().tag is None:
             self._contribute(site.result, Cell("none"), node)
-        return self.model.remember(plan, node, site.result)
+
+    def analyze_captured_row(self,plan,node,callee,row,environment,*,identity):
+        """Bind one existing row value without manufacturing source syntax."""
+        from .native_classes import Cell,tuple_cell
+        key=plan.index,id(node),'captured_row_'+identity
+        if key not in self.sites:
+            arguments=CallArguments((Argument(node,spread=True),),())
+            self.sites[key]=ExpandedSite(node,arguments,Cell(),Cell(),
+                self.model.cell(plan,node,identity=('captured_row',identity)))
+        site=self.sites[key]
+        self._contribute(site.callee,callee,node)
+        part=Segment(node,True,row)
+        part.iterator=self.model.iterators.source(plan,node,row,('captured_row',identity),environment=environment)
+        part.element=self.model.iterators.demand(plan,node,Cell(part.iterator),environment)
+        part.minimum,part.maximum=_range_for(row)
+        part.viable=_iterable_possible(row)
+        if tuple_cell(row):part.fields=row.root().args
+        self._contribute(site.element,part.element,node)
+        site.segments=[part];site.keywords=[]
+        self._analyze_site(plan,node,site,environment)
+        return site
 
     def _analyze_target(self, caller, node, target, segments, keywords, environment, *, implicit=0, owner=None, method=None):
         from .native_classes import Cell
@@ -408,6 +435,15 @@ class ExpandedCalls:
         from .native_class_builtins import _type_name
         name = _type_name(emitter, callee, node)
         return self._error(emitter, node, wanted, f'format!("TypeError: \'{{}}\' object is not callable",{name})')
+
+    def emit_captured_row(self,emitter,node,site,callee,row,wanted):
+        """Expand a captured row before the existing runtime arity projection."""
+        from .native_classes import Expression,shape
+        vector=emitter.fresh();element=shape(site.element)
+        setup=f'let mut {vector}:Vec<{emitter.rust_type(element)}>=Vec::new();'
+        setup+=self._materialize(emitter,node,site,site.segments[0],row,callee,vector,element)
+        code=self._dispatch(emitter,node,site,callee,vector,element,[],wanted)
+        return Expression('{'+setup+code+'}',wanted)
 
     @staticmethod
     def _error(emitter, node, wanted, message):
