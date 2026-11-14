@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from .native_types import EMPTY,EmptyType
 
 
-NAMES=frozenset({'repeat','chain','islice','pairwise','accumulate','product','combinations','permutations','combinations_with_replacement'})
+NAMES=frozenset({'repeat','chain','islice','pairwise','accumulate','product','combinations','permutations','combinations_with_replacement','count'})
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,9 @@ class ItertoolsAdapter:
     @staticmethod
     def analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,*,factory):
         from .native_classes import Cell,shape
+        if identity.name=='count':
+            from .native_itertools_count import analyze
+            return analyze(model,plan,node,positional,keywords,environment,factory=factory)
         if identity.name in {'combinations','permutations','combinations_with_replacement'}:
             from .native_itertools_choices import analyze
             return analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,factory=factory)
@@ -93,6 +96,9 @@ class ItertoolsAdapter:
         from .native import _string
         if call.error is not None:
             return Expression(emitter.at(f'Err::<{emitter.rust_type(shape(call.result))},String>({_string(call.error)}.into())',node),shape(call.result))
+        if identity.name=='count':
+            from .native_itertools_count import emit
+            return emit(emitter,node,call,positional,keywords)
         if identity.name in {'combinations','permutations','combinations_with_replacement'}:
             from .native_itertools_choices import emit
             return emit(emitter,node,identity,call,positional,keywords)

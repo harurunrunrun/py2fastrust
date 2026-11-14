@@ -699,7 +699,7 @@ uses the selected i64, i128 or BigInt policy.
 | API | Status |
 |---|---|
 | `stdin`, `stdout`, `stderr` | Mutable standard streams; text/binary-buffer I/O, `fileno`, `isatty`, text `encoding`/`errors` |
-| `argv` | Arguments passed to the executable |
+| `argv` | Lazy shared typed list of actual OS arguments, including invocation argv0; valid Unicode in either string mode, with an explicit surrogateescape representation boundary |
 | `exit` | Raises `SystemExit` |
 | `setrecursionlimit`, `getrecursionlimit` | Set and retrieve the recursion limit |
 | `set_int_max_str_digits`, `get_int_max_str_digits` | Direct typed-frame digit-limit state; bounded conversion/display support described above |
@@ -797,6 +797,12 @@ They preserve signed zero, infinities, NaN, operand order, and comparison-chain
 short-circuiting. BigInt comparisons inspect existing limbs and float bits without
 converting the integer to binary64 or allocating an intermediate integer.
 Identity-sensitive floating container comparisons remain separate requirements.
+
+Canonical `math.isnan`, `isinf` and `isfinite` have direct native boolean
+adapters for builtin integers, booleans and floats, including closed unions.
+They check BigInt conversion overflow and observe identity-aware float values
+without creating new float objects. Custom numeric conversion methods remain
+explicit diagnostics.
 
 Canonical `math.sqrt`, `floor`, `ceil` and `trunc` have direct numeric adapters
 for int/bool/float values and captured aliases. Integer rounding retains exact

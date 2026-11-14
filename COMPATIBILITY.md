@@ -1065,6 +1065,38 @@ streams, binary output buffers and additional stream attributes/protocols remain
 positioned unsupported cases. Rebinding an imported module reference retains
 its existing separate namespace-ownership boundary.
 
+Canonical `sys.argv` is a shared typed list in the actual builtin module
+namespace. Its initial value is materialized on the first value access; importing
+`sys`, calling unrelated APIs, or taking a branch that does not read `argv` never
+inspects OS arguments. A successful source assignment replaces the module slot
+before cancelling pending initialization. Saved references and `from sys import
+argv` aliases retain the original list; in-place changes preserve shared element
+and list identity. The binding may later hold a different native type.
+
+The standalone launch contract uses the actual OS argument vector, including
+its original `argv[0]`, empty arguments and invocation spelling. It does not replace
+`argv[0]` with the compile-time source filename or a normalized executable path.
+`__file__` keeps the existing source-filename metadata contract. A reusable typed
+`OsString` provider supplies initial pure text data without retaining a scope or
+control object; it does not depend on a custom C entry point.
+
+Valid Unicode OS arguments are retained as ordinary text in both modes; ASCII
+mode keeps its existing text-operation assumptions. Unix surrogateescape strings
+and non-Unicode OS payloads need a wider string representation and remain an
+explicit boundary at the first initial-value read, with the original bytes in
+hexadecimal and no lossy conversion or panic. Overwriting `argv` before reading it
+does not decode the unused initial payload. Native module attribute deletion and
+unimplemented namespace observers remain positioned conversion diagnostics.
+
+Closed source-prefix facts can refine a read to the actual initial allocation or
+a completed dominating store. Runtime reads still load the current module slot,
+and every real writer remains in its ABI. Opaque callbacks, reflection, suspended
+finalization and ambiguous cross-function/module paths keep the summary union;
+operations requiring a narrower receiver may remain unsupported on those paths.
+The closed print-prefix proof depends on the existing rejection of source-defined
+standard-output replacement and method overrides; custom output sinks need their
+own effect capability before that proof can be extended.
+
 Canonical `sys.set_int_max_str_digits` and `sys.get_int_max_str_digits` share
 real native state across captured references and compiled functions. On this
 API-selected path the initial limit is 4300, zero disables it, and nonzero
@@ -2048,6 +2080,18 @@ true division keeps its existing exact-ratio implementation, while otherwise
 integral programs keep their static selection. Floating powers use the finite
 real/complex adapter described above; custom numeric conversion protocols remain
 separate adapters.
+
+Canonical `math.isnan`, `isinf` and `isfinite` return native booleans for
+captured builtin numeric arguments, including closed numeric unions and
+identity-aware floating values. Integer arguments undergo checked conversion
+to binary64; a BigInt too large for that conversion raises `OverflowError`.
+The predicates preserve positional binding errors, argument effects and
+captured callable identities. Closed builtin nonnumbers raise `TypeError`;
+custom `__float__` or `__index__` conversion protocols retain positioned
+diagnostics. Scalar paths whose raw mutable container representation lacks
+its real-number rejection adapter also retain a positioned diagnostic.
+These observers do not establish any compiler finite/non-NaN
+property for later operations.
 
 Canonical `math.sqrt`, `floor`, `ceil` and `trunc` use shared typed numeric
 adapters on ordinary and frame paths, including imported/captured aliases and
@@ -3305,3 +3349,19 @@ Dense typed dictionary copies reuse a fallibly preallocated standard-library has
 The bulk path uses standard `HashMap::clone_from` only after this capacity proof; the minimum supported Rust 1.85 hashbrown implementation and the tested toolchain reuse equal-bucket allocations. The public `Clone` API alone does not promise future implementation allocation behavior. Tests check that the copy performs only the fallible structural allocations, with allocation fault injection and zero repeated key hashes. Histories that fail the certificate or live-capacity equality are copied by live entry lookup, including the dense carrier, without scanning historical hash-table capacity.
 
 Dictionary copy paths with proved builtin `Copy` key/value carriers can bulk-copy their initialized entry slots after fallible destination allocation. This proof includes fixed-width integers, bool, float, None and recursively plain tuples or nullable values; BigInt and owned/reference carriers retain shallow `Clone`. The explicit Rust helper is `Copy`-bounded, requires an empty preallocated destination, and initializes its length only after the nonoverlapping copy. It preserves the shared dictionary history/index algorithm and does not rely on the standard library treating generic derived `Clone` as a trivial copy.
+
+
+Canonical `itertools.count` has a concrete lazy numeric cursor for builtin
+integer, boolean and binary64 start/step values, including finite alternatives.
+Aliases, saved constructors, shared partial consumption, keyword binding and
+argument effects retain their Python ordering. Boolean starts follow the
+canonical integral unit-step normalization; otherwise the first yielded value
+retains its original builtin type before ordinary numeric addition. Each pull
+computes and stores the following value before returning the current one, so
+numeric conversion failures retain their original pull timing. Fixed-width
+steps use the selected wrapping integer contract. The cursor composes with
+`next`, `islice`, `zip`, `map`, `filter` and ordinary loops without collecting
+an infinite stream. Custom numeric slots and complex count state retain
+positioned diagnostics; no universal numeric object or VM fallback is added.
+The cursor display renders its current numeric state as `count(value[, step])`,
+including nested container display and alias reads after partial consumption.
