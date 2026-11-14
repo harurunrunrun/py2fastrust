@@ -512,6 +512,9 @@ class LinkedEmitter(Emitter):
             if mark:
                 # The captured receiver can differ from this frame's module.
                 mark=mark.replace('class_scope.globals',code)
+            from .native_sys_argv import store as store_argv
+            stored=store_argv(self,module,name,code,value,wanted,index,node,mark)
+            if stored is not None:return stored
             return '{'+f'{code}.borrow_mut().value_{index}=Some({self.coerce(value,wanted,node)});'+mark+'}'
         code=project(owner.kind,owner.code,branch)if union_kind(owner.kind)else branch(owner.kind,owner.code)
         return code+';'
@@ -532,7 +535,9 @@ class LinkedEmitter(Emitter):
         index=self.model.namespace.index(key)
         wanted=dict(self.model.namespace.fields())[key]
         value=self.fresh()
-        result=(f"{{let {value}={owner.code}.borrow().value_{index}.clone();"
+        from .native_sys_argv import before_read as read_argv
+        initial=read_argv(self,module,name,owner.code,node)
+        result=(f"{{{initial}let {value}={owner.code}.borrow().value_{index}.clone();"
                 f"{value}.ok_or_else(||class_module_export_error(&{owner.code},{_string(name)},{_string(repr(name))},{str(importing).lower()}))}}")
         loaded=self.at(result,node)
         point=self.model.module_linker.export_points.get((self.plan.index,id(node),kind.number,name))
@@ -667,6 +672,9 @@ def render_linked_runtime(model,source):
     assert source.count('struct ClassGlobals{')==1
     from .native_source_class_cells import layout as class_cell_layout
     cell_fields,cell_initial=class_cell_layout(model)
+    from .native_sys_argv import layout as argv_layout
+    argv_fields,argv_initial=argv_layout(model)
+    cell_fields+=argv_fields;cell_initial+=argv_initial
     source=source.replace('struct ClassGlobals{',"struct ClassGlobals{class_module_id:usize,class_module_status:u8,class_pending_children:Vec<&'static str>,"+cell_fields,1)
     old='globals:Rc::new(RefCell::new(ClassGlobals{'+initialized+'}))'
     assert source.count(old)==1
@@ -771,6 +779,9 @@ def render_linked_runtime(model,source):
     support.append(heap_runtime(model))
     from .native_frame_bisect import runtime as bisect_runtime
     support.append(bisect_runtime(model))
+    from .native_sys_argv import runtime as argv_runtime
+    arguments_runtime=argv_runtime(model,emitter)
+    if arguments_runtime:support.append(arguments_runtime)
     return source+'\n'+'\n'.join(support)
 
 

@@ -366,6 +366,15 @@ class ModuleLinker:
             raise ClassUnsupported(node,f"the canonical builtin module {module.name!r} needs a typed adapter for member {name!r}; that member's native value/call protocol is not implemented")
         if activate:self.model.namespace.active.add(key)
         value=self.model.namespace.refresh(key,node)
+        from .native_sys_argv import matches as argv_data
+        if activate and context is not None and argv_data(self.model,module,name):
+            from .native_sys_argv import point as argv_point
+            point=argv_point(self,module,name,context[0],node)
+            site=(context[0].index,id(node),module.number,name)
+            if point is not None:
+                self.export_points[site]=point
+                return point
+            self.export_points.pop(site,None)
         if activate and module.native_adapter and module.name=='builtins'and context is not None:
             from .native_builtin_namespace_points import replacement
             point=replacement(self.model,context[0],node,module,name)
@@ -408,6 +417,8 @@ class ModuleLinker:
         if module.native_adapter and module.name=='sys'and name in {'stdin','stdout','stderr'}:
             direction='read'if name=='stdin'else'write/flush'
             raise ClassUnsupported(node,f'replacing sys.{name} requires a stored stream-object identity and {direction} dispatch; the canonical standard-stream adapter does not implement replacement streams',proof='replaceable standard stream identity')
+        from .native_sys_argv import seed as seed_argv
+        seed_argv(self,module,name)
         key=self.unit.global_name(module.name,name)
         namespace=self.model.namespace
         namespace.incoming.setdefault(key,{})[("module_attribute_write",self.unit.ordinal(node))]=value
@@ -456,6 +467,8 @@ class ModuleLinker:
 
     def seed_native_member(self,provider,module,name):
         """Populate a reachable trusted export with the common callable carrier."""
+        from .native_sys_argv import seed as seed_argv
+        if seed_argv(self,module,name):return
         from .native_typing_aliases import seed_alias
         if seed_alias(self,module,name):return
         from .native_module_calls import BuiltinRef
@@ -483,6 +496,8 @@ class ModuleLinker:
     def namespace_initial_names(self,module):
         names={'__name__','__doc__','__package__','__loader__','__spec__','__builtins__'}
         if module.filename is not None or module.origin=='namespace':names.update({'__file__','__cached__'})
+        from .native_sys_argv import matches as argv_data
+        if argv_data(self.model,module,'argv'):names.add('argv')
         if module.package:names.add('__path__')
         return {self.unit.global_name(module.name,name)for name in names}
 
