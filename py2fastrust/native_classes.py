@@ -2488,7 +2488,7 @@ class Emitter:
             code = f"{right.code}.borrow().iter().any(|class_item|{test})"
             return f"!({code})"if isinstance(operator,ast.NotIn)else code
         if a==b=="str"and isinstance(operator,(ast.In,ast.NotIn)):
-            code=f"{right.code}.contains(&{left.code})"
+            code=f"({right.code}).contains(({left.code}).as_str())"
             return f"!({code})"if isinstance(operator,ast.NotIn)else code
         numeric={"int","bool","int_bool"}
         symbols={ast.Eq:"==",ast.NotEq:"!=",ast.Lt:"<",ast.LtE:"<=",ast.Gt:">",ast.GtE:">="}
