@@ -100,6 +100,9 @@ def folded_nan(node):
 def binary(emitter,operator,left,right,node,wanted):
     if not enabled(emitter.model):return None
     if left.kind not in NUMERIC or right.kind not in NUMERIC:return None
+    if isinstance(operator,ast.Pow)and right.kind in {'int','bool','int_bool'}:
+        from .native_integral_powers import frame
+        return frame(emitter,operator,left,right,node,wanted)
     if 'float'not in {left.kind,right.kind}and not isinstance(operator,ast.Div):
         if isinstance(operator,ast.Pow)and floating(wanted):
             from .native_classes import ClassUnsupported

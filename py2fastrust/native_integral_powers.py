@@ -75,6 +75,19 @@ def plain(generator,operator,left,right,node):
     return _Expression('{'+setup+code+'}',kind,owned=True)
 
 
+
+def retained_call_supported(arguments,keywords):
+    from .native_classes import Expression
+    from .native_class_numeric_calls import _bind
+    from .native_types import alternatives
+    binding,error=_bind(arguments,tuple(keywords.items())if hasattr(keywords,'items')else keywords,Expression('()','none'))
+    if error:return False
+    base=set(alternatives(binding['base'].kind))
+    exponent=set(alternatives(binding['exp'].kind))
+    modulus=set(alternatives(binding['mod'].kind))
+    return bool(base)and bool(exponent)and base<=INTEGRAL|{'float'}and exponent<=INTEGRAL and modulus=={'none'}
+
+
 def frame(emitter,operator,left,right,node,wanted):
     if not isinstance(operator,ast.Pow)or left.kind not in INTEGRAL|{'float'}or right.kind not in INTEGRAL:return None
     from .native_classes import Expression
@@ -82,10 +95,13 @@ def frame(emitter,operator,left,right,node,wanted):
         ('int'if right.constant>=0 else'float')if right.constant is not None else node_kind(node,emitter.model.integer))
     if kind=='int'and right.constant is not None:return None
     first,second=emitter.fresh(),emitter.fresh()
-    setup=f'let {first}={left.code if left.kind=="float"else emitter.number(left)};let {second}={emitter.number(right)};'
+    from .native_float_identity import raw,wrap
+    setup=f'let {first}={raw(emitter,left).code if left.kind=="float"else emitter.number(left)};let {second}={emitter.number(right)};'
     bits={'i64':64,'i128':128,'bigint':0}[emitter.model.integer]
     def at(code):return emitter.at(code,node)
-    def encode(code,source):return emitter.encoded(code,source,wanted,node).code
+    def encode(code,source):
+        if source=='float':code=wrap(emitter,code,node)
+        return emitter.encoded(code,source,wanted,node).code
     def floating(code):
         if bits:return f'({code})as f64'
         return at(f'({code}).ratio(&Int::exact_small(1)).map_err(|_|"OverflowError: int too large to convert to float".to_owned())')

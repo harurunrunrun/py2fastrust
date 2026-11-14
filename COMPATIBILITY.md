@@ -1268,9 +1268,19 @@ conversion create fresh NaN identities. Integer/float comparisons remain exact.
 The unchanged reference `k_shortest_walk` driver is supported. Programs without
 an actual float-container identity demand retain their existing `f64` path.
 
+Integer-exponent `**` and canonical `pow(..., mod=None)` retain their original
+sign-selected integer/float result ABI in identity-sensitive programs. A float
+result receives a fresh NaN identity; a float input is unwrapped only for the
+actual arithmetic. This covers integral/boolean and float bases, dynamic signs,
+callable aliases/keywords and augmented targets. Checked BigInt conversion and
+argument/effect order remain unchanged. Nonnegative integer literals retain
+the direct integer path. This producer support does not prove any containing
+set history non-NaN; finite modulus unions and floating-exponent identity
+transport still require their separate native adapters.
+
 Cached compiler-folded NaN constants still need source constant-object origin
 tracking. Identity-sensitive programs retain positioned diagnostics for those
-constants, floating math/packed-array producers, floating `sum`, power,
+constants, floating math/packed-array producers, floating `sum`, floating-exponent power,
 `round`, `divmod`, `format` and explicit float `is` observations until their
 respective adapters preserve the complete producer/observer contract. Bare
 mixed BigInt/float heap keys retain their existing capability boundaries.

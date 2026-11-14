@@ -104,16 +104,8 @@ class NativeCapturedPowTests(unittest.TestCase):
 
 
 class CapturedPowDiagnosticTests(unittest.TestCase):
-    def test_floating_exponent_keeps_a_positioned_protocol_boundary(self):
-        from py2fastrust import transpile,TranspileOptions
-        # These remain required unfinished protocols, not supported conversions.
-        sources=['from builtins import pow as power\nprint(power(-2.0,0.5))\n']
-        for source in sources:
-            for integer in ('i64','i128','bigint'):
-                result=transpile(source,TranspileOptions(integer=integer,filename='pow_protocol.py'))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,'E006')
-                self.assertEqual(result.diagnostics[0].filename,'pow_protocol.py')
-                self.assertGreater(result.diagnostics[0].line,0)
-                self.assertIn('power',result.diagnostics[0].message)
+    exercise=runtime_support.NativeLinkedModuleTests.exercise
 
+    def test_original_floating_exponent_alias_executes_against_cpython(self):
+        source='from builtins import pow as power\nprint(power(-2.0,0.5))\n'
+        self.exercise({'main.py':source})

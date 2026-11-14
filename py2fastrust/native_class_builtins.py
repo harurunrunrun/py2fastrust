@@ -220,8 +220,13 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=F
     if float_identity_enabled(emitter.model)and(
             identity.name in {'pow','divmod','round'}and(any(floating(value.kind)for value in arguments)or floating(wanted))
             or identity.name=='format'and arguments and floating(arguments[0].kind)):
-        from .native_classes import ClassUnsupported
-        raise ClassUnsupported(node,identity.name+' needs its retained float producer/observer adapter in identity-sensitive containers; that adapter is not implemented',proof='typed float producer and observer contract')
+        power_allowed=False
+        if identity.name=='pow':
+            from .native_integral_powers import retained_call_supported
+            power_allowed=retained_call_supported(arguments,keywords)
+        if not power_allowed:
+            from .native_classes import ClassUnsupported
+            raise ClassUnsupported(node,identity.name+' needs its retained float producer/observer adapter in identity-sensitive containers; that adapter is not implemented',proof='typed float producer and observer contract')
     from .native_unions import project,union_kind
     from .native_builtin_singletons import has_singleton
     if identity.name=='property':

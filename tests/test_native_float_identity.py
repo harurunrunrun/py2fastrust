@@ -319,6 +319,10 @@ CASES.update({'format_observer': ('import heapq\n'
 
 CASES['original_list_float_sort_boundary']=("import heapq\nshared=float('nan')\nqueue=[(shared,2),(shared,1)]\nheapq.heapify(queue)\nprint(sorted([shared,shared]))\n",('',))
 
+CASES['original_integral_power_boundary']=("import heapq\nvalue=float('nan')\nqueue=[(value,2),(value,1)]\nheapq.heapify(queue)\nprint(2**-1)\n",('',))
+
+CASES['original_float_power_boundary']=("import heapq\nvalue=float('nan')\nqueue=[(value,2),(value,1)]\nheapq.heapify(queue)\nprint(2.0**2)\n",('',))
+
 BOUNDARIES={'constant_nan_origin': ('import heapq\n'
                          'def get():return 1e400-1e400\n'
                          'q=[(get(),2),(get(),1)]\n'
@@ -343,18 +347,6 @@ BOUNDARIES={'constant_nan_origin': ('import heapq\n'
                               'heapq.heapify(queue)\n'
                               'print(sum([],value))\n',
                               'sum'),
- 'integral_power_boundary': ('import heapq\n'
-                             "value=float('nan')\n"
-                             'queue=[(value,2),(value,1)]\n'
-                             'heapq.heapify(queue)\n'
-                             'print(2**-1)\n',
-                             'power'),
- 'float_power_boundary': ('import heapq\n'
-                          "value=float('nan')\n"
-                          'queue=[(value,2),(value,1)]\n'
-                          'heapq.heapify(queue)\n'
-                          'print(2.0**2)\n',
-                          'power'),
  'round_boundary': ('import heapq\n'
                     "value=float('nan')\n"
                     'queue=[(value,2),(value,1)]\n'
@@ -449,6 +441,12 @@ class FloatIdentityExecutionTests(unittest.TestCase):
 
     def test_original_list_float_sort_boundary(self):
         self.check('original_list_float_sort_boundary')
+
+    def test_original_integral_power_boundary(self):
+        self.check('original_integral_power_boundary')
+
+    def test_original_float_power_boundary(self):
+        self.check('original_float_power_boundary')
 
     def test_checked_nan_ids_leave_ordinary_values_unallocated(self):
         source='trait ClassDisplay{fn class_str(&self)->String;}\nfn native_float_text(value:f64)->String{value.to_string()}\n'+RUNTIME+r"""
