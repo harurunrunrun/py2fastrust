@@ -22,7 +22,7 @@ class BuiltinRef:
 MODULES = {name: ModuleRef(name) for name in ("math", "bisect", "heapq")}
 MEMBERS = {
     "math": {name: BuiltinRef("math",name) for name in
-             ("gcd","lcm","isqrt","factorial","comb","perm","sqrt","floor","ceil","trunc","log","log2","log10")},
+             ("gcd","lcm","isqrt","factorial","comb","perm","sqrt","floor","ceil","trunc","log","log2","log10","isnan","isinf","isfinite")},
     "bisect": {name: BuiltinRef("bisect",name) for name in
                ("bisect","bisect_left","bisect_right","insort","insort_left","insort_right")},
 }
@@ -158,7 +158,12 @@ def try_expression(g,node,environment):
         lines=[];positional=[];keywords={}
         for argument in arguments.evaluation_order:
             value=g.expression(argument.expression,environment)
-            name=g.temporary();lines.append(f"let {name}={value.code};")
+            code=value.code
+            from .native_math_calls import PREDICATE_NAMES
+            from .native_unions import union_kind
+            if function.name in PREDICATE_NAMES and not value.owned and union_kind(value.kind):
+                code=g.coerce(value,value.kind)
+            name=g.temporary();lines.append(f"let {name}={code};")
             captured=_Expression(name,value.kind,value.constant)
             if argument.name is None:positional.append(captured)
             else:keywords[argument.name]=captured

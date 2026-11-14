@@ -8,14 +8,16 @@ INTEGER_NAMES=frozenset({'gcd','lcm','isqrt','factorial','comb','perm'})
 LOG_NAMES=frozenset({'log','log2','log10'})
 FLOAT_NAMES=frozenset({'sqrt'})|LOG_NAMES
 REAL_NAMES=frozenset({'sqrt','floor','ceil','trunc'})|LOG_NAMES
-NAMES=INTEGER_NAMES|REAL_NAMES
+PREDICATE_NAMES=frozenset({'isnan','isinf','isfinite'})
+NAMES=INTEGER_NAMES|REAL_NAMES|PREDICATE_NAMES
 
-def result_kind(identity):return 'float'if identity.name in FLOAT_NAMES else'int'
+def result_kind(identity):return 'bool'if identity.name in PREDICATE_NAMES else'float'if identity.name in FLOAT_NAMES else'int'
 
 def requires_frames(analysis,integer):
     if integer!='bigint':return False
     for scope in analysis.scopes.values():
         for fact in scope.calls.values():
+            if any(accepts(identity)and identity.name in PREDICATE_NAMES for identity in fact.identity.alternatives):return True
             if not any(accepts(identity)and identity.name in REAL_NAMES for identity in fact.identity.alternatives):continue
             if any(accepts(identity)and identity.name in FLOAT_NAMES for identity in fact.identity.alternatives):return True
             if any(value.unknown or value.unbound or 'float'in value.alternatives for value in fact.positional):return True
@@ -31,7 +33,7 @@ def binding_error(name, arguments, keywords):
     if keywords:
         return f'TypeError: math.{name}() takes no keyword arguments'
     count = len(arguments)
-    if name in ({'isqrt','factorial'}|REAL_NAMES)-{'log'} and count != 1:
+    if name in ({'isqrt','factorial'}|REAL_NAMES|PREDICATE_NAMES)-{'log'} and count != 1:
         return f'TypeError: math.{name}() takes exactly one argument ({count} given)'
     if name=='log':
         if count<1:return f'TypeError: log expected at least 1 argument, got {count}'
@@ -60,7 +62,7 @@ def analyze(model, plan, node, identity, captured_arg_cells, kw_pairs, environme
             kind = shape(value)
             if kind is None and not model.final:
                 continue
-            if identity.name in REAL_NAMES:
+            if identity.name in REAL_NAMES|PREDICATE_NAMES:
                 if not all(_real_kind(choice)for choice in alternatives(kind)):
                     protocols={'sqrt':'__float__/__index__','floor':'__floor__/__float__/__index__','ceil':'__ceil__/__float__/__index__','trunc':'__trunc__'}.get(identity.name,'__float__/__index__')
                     raise ClassUnsupported(node,'math.'+identity.name+' needs its user '+protocols+' conversion protocol; the native adapter accepts captured builtin numbers and reports errors for closed builtin nonnumbers',types=((f'argument {index+1}',kind),),proof='canonical math real-number protocol')
@@ -143,6 +145,17 @@ def _log_argument(generator,value,node,operation):
     return generator.at('native_math_logarithm('+number+','+str(operation)+')',node)
 
 
+def _predicate_argument(generator,value,node,name):
+    if union_kind(value.kind):
+        return project(value.kind,value.code,lambda kind,code:_predicate_argument(generator,_Expression('('+code+').clone()',kind),node,name))
+    if not _real_kind(value.kind):
+        raise _Unsupported('math.'+name+' needs a native real-number conversion adapter for this captured argument representation; that adapter is not implemented',node=node,types=(('argument',value.kind),),proof='canonical math real-number protocol')
+    if hasattr(generator,'model')and value.kind=='float':
+        from .native_float_identity import raw
+        value=raw(generator,value)
+    return _real(generator,value,node,'sqrt')
+
+
 def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted=None):
     """Do not evaluate a callee or source argument: the caller captured them."""
     if not accepts(identity):
@@ -150,7 +163,7 @@ def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted=Non
     owner = getattr(generator, 'model', generator)
     if hasattr(generator,'model'):
         from .native_float_identity import enabled,floating
-        if enabled(owner)and(identity.name in REAL_NAMES or any(floating(value.kind)for value in captured_arg_Expressions)):
+        if enabled(owner)and identity.name not in PREDICATE_NAMES and(identity.name in REAL_NAMES or any(floating(value.kind)for value in captured_arg_Expressions)):
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,'math.'+identity.name+' needs its retained float producer/conversion contract; that identity-sensitive adapter is not implemented',proof='canonical math float identity adapter')
     owner.native_math_functions = getattr(owner, 'native_math_functions', set()) | {identity.name}
@@ -161,8 +174,12 @@ def emit(generator, node, identity, captured_arg_Expressions, kw_map, wanted=Non
     if identity.name in REAL_NAMES and not hasattr(generator,'model'):generator.has_extended_scalars=True
     error = binding_error(identity.name, captured_arg_Expressions, kw_map)
     if error is not None:
-        result='f64'if raw_kind=='float'else'NativeInt'
+        result='bool'if raw_kind=='bool'else'f64'if raw_kind=='float'else'NativeInt'
         code=generator.at(f'Err::<{result},String>({_string(error)}.into())',node)
+    elif identity.name in PREDICATE_NAMES:
+        value=_predicate_argument(generator,captured_arg_Expressions[0],node,identity.name)
+        method={'isnan':'is_nan','isinf':'is_infinite','isfinite':'is_finite'}[identity.name]
+        code='('+value+').'+method+'()'
     elif identity.name in LOG_NAMES:
         operation={'log':0,'log2':1,'log10':2}[identity.name]
         code=_log_argument(generator,captured_arg_Expressions[0],node,operation)
