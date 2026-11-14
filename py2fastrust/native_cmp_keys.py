@@ -83,7 +83,7 @@ def _negative(emitter,node,value):
     if union_kind(value.kind):
         return project(value.kind,value.code,lambda kind,code:_negative(emitter,node,Expression(code,kind)))
     if isinstance(value.kind,EmptyType):return 'native_empty::<bool>('+value.code+')'
-    if domain(value.kind)=='float':return '('+value.code+')<0.0'
+    if domain(value.kind)=='float':return '('+emitter.scalar(value).code+')<0.0'
     if domain(value.kind)in {'int','bool','int_bool'}:
         return '('+emitter.number(value)+')<'+emitter.numeric.literal(0)
     if domain(value.kind)=='object'and '__lt__'in emitter.model.classes[value.kind.name].methods:

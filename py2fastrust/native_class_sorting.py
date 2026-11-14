@@ -80,6 +80,8 @@ def _analyze(model,plan,node,source,key,environment,*,method,error=None):
         model.replace_environment(environment,model.join(environment,inside,node,'sorting_key'))
     from .native_rich_sorting import analyze as rich_comparison
     rich_comparison(model,plan,node,site,environment,method=method)
+    from .native_float_sorting import analyze as floating_sort
+    floating_sort(model,plan,node,site,method=method)
     return site
 
 
@@ -175,6 +177,12 @@ def _sort(emitter,node,values,element,reverse,key,site):
         code+=rich_comparison(emitter,node,decorated,key_kind,reverse,key,site)
         if key.kind!='none':code+=f'{values}={decorated}.into_iter().map(|(_,value)|value).collect();'
         return code
+    from .native_float_sorting import emit as floating_sort
+    floating=floating_sort(emitter,node,decorated,key_kind,reverse,decorated=key.kind!='none')
+    if floating is not None:
+        code+=floating
+        if key.kind!='none':code+=f'{values}={decorated}.into_iter().map(|(_,value)|value).collect();'
+        return code
     prefix='.0'if key.kind!='none'else''
     comparison=_ordering(emitter,Expression(f'(*{first}){prefix}',key_kind),Expression(f'(*{second}){prefix}',key_kind),node)
     code+=f'let mut {error}:Option<String>=None;'
@@ -204,6 +212,8 @@ def emit_builtin(emitter,node,arguments,keywords,wanted):
         consumed=emitter.model.generators.consume(emitter,node,'sorted',arguments[0],[],{},'none',append_item=append)
         materialize=f'let mut {values}=Vec::<{emitter.rust_type(element)}>::new();'+consumed.code+';'
     elif all(mapping_kind(kind)for kind in alternatives(arguments[0].kind)):
+        from .native_float_sorting import guard_source
+        guard_source(emitter,node,arguments[0])
         materialize=f'let mut {values}='+emitter.model.mappings.sorted_values(emitter,node,arguments[0],element)+';'
     elif domain(arguments[0].kind)=='list'and arguments[0].kind.element==element:
         materialize=f'let mut {values}={arguments[0].code}.borrow().clone();'

@@ -1059,9 +1059,12 @@ class Model:
             return self.cell(plan,node,EMPTY,identity=identity)
         result=self.operators.binary(plan,node,operator,left,right,environment,identity=identity)
         if result is not None:return result
-        return self.binary_builtin(plan,node,operator,left,right,identity=identity)
+        return self.binary_builtin(plan,node,operator,left,right,identity=identity,environment=environment)
 
-    def binary_builtin(self, plan, node, operator, left, right, *, identity=None):
+    def binary_builtin(self, plan, node, operator, left, right, *, identity=None, environment=None):
+        from .native_list_inplace_iterables import analyze as list_inplace
+        inplace=list_inplace(self,plan,node,operator,left,right,environment,identity)
+        if inplace is not None:return inplace
         from .native_bytes_sequences import analyze as bytes_sequence
         byte_sequence=bytes_sequence(self,plan,node,operator,left,right,identity)
         if byte_sequence is not None:return byte_sequence
@@ -2319,12 +2322,15 @@ class Emitter:
         if empty is not None:return Expression(self.coerce(empty,wanted,node),wanted)
         result=self.model.operators.emit_binary(self,operator,left,right,node,wanted,identity=identity)
         if result is not None:return result
-        return self.binary_builtin(operator,left,right,node,wanted)
+        return self.binary_builtin(operator,left,right,node,wanted,identity=identity)
 
-    def binary_builtin(self, operator, left, right, node, wanted):
+    def binary_builtin(self, operator, left, right, node, wanted, *, identity=None):
+        from .native_list_inplace_iterables import emit as list_inplace
+        inplace=list_inplace(self,operator,left,right,node,wanted,identity)
+        if inplace is not None:return inplace
         from .native_float_identity import binary as identity_binary
-        identity=identity_binary(self,operator,left,right,node,wanted)
-        if identity is not None:return identity
+        float_identity=identity_binary(self,operator,left,right,node,wanted)
+        if float_identity is not None:return float_identity
         from .native_complex_powers import frame as complex_power
         power=complex_power(self,operator,left,right,node,wanted)
         if power is not None:return power
@@ -3135,9 +3141,10 @@ class Emitter:
             wanted=target_kind(self,reference,node.target)
             if wanted is None:wanted=self.kind(node.target)
             from .native_bytearray import emit_binary as bytearray_binary
-            bytearray=bytearray_binary(self,node.op,old,right,node,wanted,inplace=True)
+            builtin_list_add=domain(old.kind)=="list"and isinstance(node.op,ast.Add)
+            bytearray=None if builtin_list_add else bytearray_binary(self,node.op,old,right,node,wanted,inplace=True)
             from .native_arrays import emit_binary as array_binary
-            array=array_binary(self,node.op,old,right,node,wanted,inplace=True)
+            array=None if builtin_list_add else array_binary(self,node.op,old,right,node,wanted,inplace=True)
             if bytearray is not None:
                 operation='';result=bytearray
             elif array is not None:
@@ -3715,7 +3722,7 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     from .native_numeric_keys import runtime as numeric_key_runtime
     numeric_keys=numeric_key_runtime(model)
     if numeric_keys:pieces.append(numeric_keys)
-    if model.sequence_calls:
+    if model.sequence_calls or getattr(model,'list_extend_runtime',False):
         from .native_typed_lists import HELPERS as sequence_helpers
         pieces.append(sequence_helpers)
     from .native_class_globals import runtime as global_runtime

@@ -317,6 +317,8 @@ CASES.update({'format_observer': ('import heapq\n'
                            "print(f'{value:{specification()}}')\n",
                            ('',))})
 
+CASES['original_list_float_sort_boundary']=("import heapq\nshared=float('nan')\nqueue=[(shared,2),(shared,1)]\nheapq.heapify(queue)\nprint(sorted([shared,shared]))\n",('',))
+
 BOUNDARIES={'constant_nan_origin': ('import heapq\n'
                          'def get():return 1e400-1e400\n'
                          'q=[(get(),2),(get(),1)]\n'
@@ -371,12 +373,6 @@ BOUNDARIES={'constant_nan_origin': ('import heapq\n'
                            'heapq.heapify(queue)\n'
                            'print(divmod(value,2.0))\n',
                            'divmod'),
- 'list_float_sort_boundary': ('import heapq\n'
-                              "shared=float('nan')\n"
-                              'queue=[(shared,2),(shared,1)]\n'
-                              'heapq.heapify(queue)\n'
-                              'print(sorted([shared,shared]))\n',
-                              'NaN'),
  'unproved_math_producer': ('import heapq\n'
                             'import math\n'
                             "value=math.sqrt(float('nan'))\n"
@@ -450,6 +446,9 @@ class FloatIdentityExecutionTests(unittest.TestCase):
     def check(self,name):
         source,inputs=CASES[name]
         execution.HeapExecutionTests.compare(self,source,inputs)
+
+    def test_original_list_float_sort_boundary(self):
+        self.check('original_list_float_sort_boundary')
 
     def test_checked_nan_ids_leave_ordinary_values_unallocated(self):
         source='trait ClassDisplay{fn class_str(&self)->String;}\nfn native_float_text(value:f64)->String{value.to_string()}\n'+RUNTIME+r"""

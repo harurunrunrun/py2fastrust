@@ -1222,9 +1222,9 @@ are shared with the original containers. Indexed reads dispatch list, fixed or
 runtime tuple, text and bytes alternatives, preserving runtime index/type errors
 and evaluation order. Sealed incompatible ordering alternatives produce Python
 `TypeError` paths. These operations do not narrow globals or captured locals
-across calls. Indexed writes through alternative owner layouts, list `+=` from
-non-list iterables, user index/subscription special methods and remaining
-container protocols still require their native adapters.
+across calls. Indexed writes through alternative owner layouts, unresolved
+finite receiver alternatives, user index/subscription special methods and
+remaining container protocols still require their native adapters.
 
 Immutable range values can cross typed function returns, locals, closures and
 object fields, including finite list/range alternatives. Their existing range
@@ -1272,9 +1272,19 @@ Cached compiler-folded NaN constants still need source constant-object origin
 tracking. Identity-sensitive programs retain positioned diagnostics for those
 constants, floating math/packed-array producers, floating `sum`, power,
 `round`, `divmod`, `format` and explicit float `is` observations until their
-respective adapters preserve the complete producer/observer contract. Floating
-sorting and bare mixed BigInt/float heap keys retain their existing capability
-boundaries. No source function is replaced with a generic interpreter.
+respective adapters preserve the complete producer/observer contract. Bare
+mixed BigInt/float heap keys retain their existing capability boundaries.
+No source function is replaced with a generic interpreter.
+
+`sorted` and `list.sort` support registered real numeric and builtin list/tuple
+keys with Python's strict less-than semantics, including NaN and exact mixed
+integer/float comparisons. They use the existing CPython 3.14.4 stable index-sort
+schedule; shared NaN objects inside tuples/lists retain identity-sensitive element
+equality. Scalar-only float sorts keep unboxed `f64` values. Keys run once per
+item, reverse ties remain stable, and callbacks retain temporary-empty list
+visibility and original exceptions. A source set needs a proved non-NaN history
+before sorting can observe its traversal; sorting is not an order-erasure proof
+for NaNs. Nominal/custom floating-key protocols remain positioned diagnostics.
 Nested mutable/runtime-length source-object containers,
 cross-type reflected whole-tuple protocols, NamedTuple/source-object mixtures and `merge`
 remain unfinished. Retained CPython-adapted
@@ -1619,6 +1629,20 @@ callback. An iterator failure retains earlier appended values. Self-extension
 of an actual list retains its snapshot path; an existing list iterator remains
 live. Existing list-to-list generated code is unchanged.
 
+Builtin-list `+=` uses the same ordered iterable extension protocol for ranges,
+tuples, text/bytes, bytearray, registered cursors, generator expressions, source
+generators and supported source iterables. It retains the list object and its
+shared mutable elements. The original target owner/index and old list are
+captured before the right operand; the original target store occurs after
+extension, including any setter/index failure after partial mutation. Source
+numeric special methods retain their original priority: a right operand's
+`__radd__` may finish the operation, and `NotImplemented` continues to builtin
+sequence extension. No destination borrow crosses an iterator or hint callback.
+Finite iterable alternatives retain each actual list branch's snapshot path;
+list-to-list generated code and proved owned-vector method paths are unchanged.
+Unsupported finite receiver combinations, custom hints and source iterator
+return protocols retain positioned diagnostics.
+
 Callback-free builtin range/tuple/text/bytes sources use direct Rust loops.
 Nonescaping fresh function-local lists can retain owned `Vec` storage for these
 extensions. Checked range lengths and hint reservations preserve overflow and
@@ -1687,7 +1711,7 @@ On typed compiled frames, `sorted` materializes its input before converting
 once per element. `list.sort` exposes the temporary empty receiver during key
 calls, restores its detached storage on errors, and reports mutations after
 key/comparison success. Shared element handles preserve object identity. Stable
-native sorting supports integer/boolean, text/bytes and proved structural keys.
+native sorting supports real numeric, text/bytes and proved structural keys.
 Direct source ordering objects reuse the registered `__lt__`/reflected `__gt__`
 call ABI and fallible stable Powersort kernel. Source class identity is checked
 for every key before selecting CPython's homogeneous comparison schedule,

@@ -109,6 +109,9 @@ def select_frames(unit,*,integer="i64"):
     from .native_complex_literals import requires_frames as complex_literal_frames
     if complex_literal_frames(unit,analysis):
         return FrameSelection(True,('official complex literal values',),analysis,frozenset(),MappingProxyType({}))
+    from .native_list_inplace_iterables import requires_frames as inplace_list_frames
+    if inplace_list_frames(unit,analysis):
+        return FrameSelection(True,('builtin list in-place iterable concatenation',),analysis,frozenset(),MappingProxyType({}))
     from .native_list_extend import requires_frames as extend_requires_frames
     if extend_requires_frames(unit,analysis):
         return FrameSelection(True,('canonical list extension iterable protocols',),analysis,frozenset(),MappingProxyType({}))
@@ -215,6 +218,8 @@ def select_frames(unit,*,integer="i64"):
     if loop_else_requires_frames(unit,analysis,integer=integer):reasons+=("loop exhaustion and else control flow",)
     from .native_class_extrema import requires_frames as extrema_requires_frames
     if extrema_requires_frames(unit,analysis):reasons+=('captured extrema keys and defaults',)
+    from .native_float_sorting import requires_frames as float_sort_frames
+    if float_sort_frames(unit,analysis):reasons+=('typed Python floating stable sorting',)
     from .native_class_sorting import requires_frames as sorting_requires_frames
     if sorting_requires_frames(unit,analysis):reasons+=('direct sorted generator collection',)
     from .native_class_round import requires_frames as round_requires_frames

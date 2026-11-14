@@ -25,26 +25,26 @@ def requires_frames(unit, analysis):
     return False
 
 
-def analyze(model, plan, node, receiver, source, environment):
+def analyze(model, plan, node, receiver, source, environment, *, identity=None, consumer='list.extend'):
     from .native_classes import Cell, shape, InstanceType, ClassUnsupported
     from .native_types import alternatives, list_type
     from .native_source_lengths import analyze_hint, member
     if not hasattr(model, 'list_extend_sites'):
         model.list_extend_sites = {}
-    key = plan.index, id(node)
+    key = (plan.index, id(node)) if identity is None else (plan.index, id(node), identity)
     model.list_extend_sites.pop(key, None)
     if list_type(shape(source)):
         model.contribute(receiver.root().args[0], model.item(source, node), node)
         return
-    cursor = model.iterators.source(plan, node, source, identity='list_extend',
+    cursor = model.iterators.source(plan, node, source, identity='list_extend' if identity is None else ('list_extend', identity),
                                     environment=environment)
     # The original iterable supplies the hint, after its iterator is acquired.
     # A present custom hint must never be silently treated as a missing slot.
     for kind in alternatives(shape(source)):
         if isinstance(kind, InstanceType) and member(model, kind, ('__length_hint__',), node) is not None:
-            raise ClassUnsupported(node, 'list.extend needs the original iterable __length_hint__ callback and its fallback/error protocol; this custom hint adapter is not implemented',
+            raise ClassUnsupported(node, consumer + ' needs the original iterable __length_hint__ callback and its fallback/error protocol; this custom hint adapter is not implemented',
                                    types=(('iterable', kind),), proof='ordered original-iterable length hint')
-    analyze_hint(model, plan, node, source, environment, 'list.extend')
+    analyze_hint(model, plan, node, source, environment, consumer)
     item = model.iterators.demand(plan, node, Cell(cursor), environment)
     if model.final:
         guard_dictionary_cursors(model,node)
@@ -57,7 +57,7 @@ def guard_dictionary_cursors(model,node):
     guard(model,node)
 
 
-def emit(emitter, node, storage, source):
+def emit(emitter, node, storage, source, *, identity=None, consumer='list.extend'):
     from .native_classes import Expression, domain
     from .native_types import list_type
     if list_type(source.kind):
@@ -89,7 +89,7 @@ def emit(emitter, node, storage, source):
         return Expression('{' + body + '()}', 'none')
     if tag in {'range', 'tuple_sequence', 'bytes', 'str'}:
         current, destination = emitter.fresh(), emitter.fresh()
-        hint = hint_value(emitter, node, source)
+        hint = hint_value(emitter, node, source, consumer=consumer)
         if tag == 'range':
             sequence = source.code + '.iter()'
             value = Expression(current, 'int')
@@ -108,10 +108,11 @@ def emit(emitter, node, storage, source):
         body += ('for ' + current + ' in ' + sequence + '{'
                  + emitter.at('native_typed_push(' + destination + ',' + converted + ')', node) + ';}')
         return Expression('{' + body + '()}', 'none')
-    cursor = model.list_extend_sites[emitter.plan.index, id(node)]
+    key = (emitter.plan.index, id(node)) if identity is None else (emitter.plan.index, id(node), identity)
+    cursor = model.list_extend_sites[key]
     before, iterator = emitter.capture(model.iterators.construct(emitter, node,
         Expression('(' + source.code + ').clone()', source.kind), kind=cursor))
-    hint = hint_value(emitter, node, source)
+    hint = hint_value(emitter, node, source, consumer=consumer)
     body = before + reserve(hint)
     pulled = model.iterators.pull(emitter, node, iterator)
     current = emitter.fresh()
@@ -120,17 +121,17 @@ def emit(emitter, node, storage, source):
     return Expression('{' + body + '()}', 'none')
 
 
-def hint_value(emitter, node, value):
+def hint_value(emitter, node, value, *, consumer='list.extend'):
     from .native_classes import Expression, InstanceType, domain, shape, ClassUnsupported
     from .native_unions import union_kind, project
     from .native_class_iterators import iterator_kind
     if union_kind(value.kind):
         return project(value.kind, value.code,
-                       lambda kind, code: hint_value(emitter, node, Expression(code, kind)))
+                       lambda kind, code: hint_value(emitter, node, Expression(code, kind), consumer=consumer))
     tag = domain(value.kind)
     if isinstance(value.kind, InstanceType):
         from .native_source_lengths import emit_hint
-        return emit_hint(emitter, node, value, 'list.extend')
+        return emit_hint(emitter, node, value, consumer)
     if tag == 'range':
         emitter.model.list_extend_range = True
         return emitter.at('class_list_extend_range_length(&' + value.code + '.start,&' + value.code + '.stop,&' + value.code + '.step)', node)

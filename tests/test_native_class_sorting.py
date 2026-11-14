@@ -179,14 +179,8 @@ for _name,_source in CASES.items():
 
 
 class RequiredSortingProtocolTests(unittest.TestCase):
-    def test_nan_ordering_keeps_a_specific_unfinished_protocol_diagnostic(self):
-        # This is an unfinished required protocol, not a positive conversion.
-        from py2fastrust import transpile,TranspileOptions
+    exercise=support.NativeLinkedModuleTests.exercise
+
+    def test_original_required_float_ordering_executes_against_cpython(self):
         source='class Marker:pass\nprint(sorted([1.0,2.0]))\n'
-        for mode in ('i64','i128'):
-            result=transpile(source,TranspileOptions(integer=mode,filename='sorting_protocol.py'))
-            self.assertFalse(result.success)
-            diagnostic=result.diagnostics[0]
-            self.assertEqual((diagnostic.code,diagnostic.filename),('E006','sorting_protocol.py'))
-            self.assertGreater(diagnostic.line,0)
-            self.assertIn('NaN',diagnostic.message)
+        self.exercise({'main.py':source})

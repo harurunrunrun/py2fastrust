@@ -120,10 +120,12 @@ class Operators:
                     if NOT_IMPLEMENTED not in alternatives(returned):
                         branch.complete=True;stopped=True;break
                 if not stopped:
-                    if isinstance(a,InstanceType)or isinstance(b,InstanceType)or a==NOT_IMPLEMENTED or b==NOT_IMPLEMENTED:
+                    from .native_list_inplace_iterables import applies as list_inplace
+                    builtin_list = list_inplace(node, operator, a)
+                    if not builtin_list and (isinstance(a,InstanceType)or isinstance(b,InstanceType)or a==NOT_IMPLEMENTED or b==NOT_IMPLEMENTED):
                         branch.fallback='error'
                     else:
-                        branch.fallback=self.model.binary_builtin(plan,node,operator,first,second,identity=('numeric_builtin',identity,a,b))
+                        branch.fallback=self.model.binary_builtin(plan,node,operator,first,second,identity=('numeric_builtin',identity,a,b),environment=environment)
                         self._include(site.result,branch.fallback,node)
                     branch.complete=True
         if self.model.final and shape(site.result)is None:
@@ -149,7 +151,7 @@ class Operators:
                 if index==len(branch.phases):
                     if branch.fallback=='error':return self._error(emitter,operator,first,second,node,wanted)
                     if branch.fallback is None:raise ClassUnsupported(node,"numeric dispatch has no proved terminal result or fallback",proof="complete numeric dispatch chain")
-                    return emitter.binary_builtin(operator,first,second,node,wanted).code
+                    return emitter.binary_builtin(operator,first,second,node,wanted,identity=('numeric_builtin',identity,first.kind,second.kind)).code
                 phase=branch.phases[index]
                 manager=second if phase.reverse else first
                 owner=phase.member.owner

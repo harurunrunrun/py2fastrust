@@ -13,7 +13,7 @@ from py2fastrust import transpile,TranspileOptions
 
 class NativeTupleSequenceBoundaryTests(unittest.TestCase):
     def test_unproved_sort_protocols_are_explicit(self):
-        sources=["rows=[tuple([1.0]),tuple([2.0])]\nrows.sort()\n", "rows=[tuple([1,'a']),tuple([2,'b'])]\nrows.sort()\n"]
+        sources=["rows=[tuple([1,'a']),tuple([2,'b'])]\nrows.sort()\n"]
         for source in sources:
             for mode in ('i64','i128','bigint'):
                 with self.subTest(source=source,mode=mode):
@@ -21,6 +21,10 @@ class NativeTupleSequenceBoundaryTests(unittest.TestCase):
                     self.assertFalse(result.success)
                     self.assertEqual(result.diagnostics[0].code,'E006')
                     self.assertGreater(result.diagnostics[0].line,0)
+
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_original_runtime_float_tuple_sort_executes_against_cpython(self):
+        NativeTupleSequenceTests().compare('rows=[tuple([1.0]),tuple([2.0])]\nrows.sort()\n')
 
     @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
     def test_dict_display_preserves_tuple_sequence_key(self):
