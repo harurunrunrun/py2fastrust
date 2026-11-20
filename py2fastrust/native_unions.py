@@ -109,8 +109,9 @@ def representation(g,value,leaf,quoted=False):
 
 def compare(g,node,values):
     from .native import _Expression,_Unsupported
-    from .native_comparisons import ORDERING,ordering
-    if not any(union_kind(value.kind) or value.kind=="none" for value in values):return None
+    from .native_comparisons import ORDERING,ordering,boolean_identity
+    boolean_chain=any(boolean_identity(values[index],values[index+1],operator)is not None for index,operator in enumerate(node.ops))
+    if not boolean_chain and not any(union_kind(value.kind) or value.kind=="none" for value in values):return None
     if any(type(op) not in {ast.Is,ast.IsNot,ast.Eq,ast.NotEq,ast.In,ast.NotIn}|ORDERING.keys() for op in node.ops):raise _Unsupported
     def ordered(kind):
         # List comparisons borrow captured contents only at the comparison, so
@@ -140,6 +141,8 @@ def compare(g,node,values):
                     return list_ordering(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)
                 return ordering(g,_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator,node)
             elif isinstance(operator,(ast.Is,ast.IsNot)):
+                boolean=boolean_identity(_Expression(x,a,owned=False),_Expression(y,b,owned=False),operator)
+                if boolean is not None:return boolean
                 if isinstance(a,SharedListType) or isinstance(b,SharedListType):
                     result=f"std::rc::Rc::ptr_eq(&({x}),&({y}))" if a==b else "false"
                     return f"!({result})" if isinstance(operator,ast.IsNot) else result
@@ -165,8 +168,10 @@ def compare(g,node,values):
         left=_Expression(f"(*{names[index]})",values[index].kind,owned=False)
         right=_Expression(f"(*{names[index+1]})",values[index+1].kind,owned=False)
         check=pair(left,right,node.ops[index])
-        tail=f"{{let {names[index+1]}=&({values[index+1].code});({check})&&({tail})}}"
-    return _Expression(f"{{let {names[0]}=&({values[0].code});{tail}}}","bool")
+        captured=g.coerce(values[index+1],values[index+1].kind)if boolean_chain else values[index+1].code
+        tail=f"{{let {names[index+1]}=&({captured});({check})&&({tail})}}"
+    captured=g.coerce(values[0],values[0].kind)if boolean_chain else values[0].code
+    return _Expression(f"{{let {names[0]}=&({captured});{tail}}}","bool")
 
 
 def render_types(kinds):

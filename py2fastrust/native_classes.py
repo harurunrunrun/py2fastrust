@@ -2422,6 +2422,9 @@ class Emitter:
         bytearray=bytearray_comparison(self,operator,left,right,node)
         if bytearray is not None:return bytearray
         a,b = domain(left.kind),domain(right.kind)
+        from .native_comparisons import boolean_identity
+        boolean=boolean_identity(left,right,operator)
+        if boolean is not None:return boolean
         if "complex" in {a,b}:
             from .native_complex_powers import ordering
             error=ordering(self,operator,left,right,node)

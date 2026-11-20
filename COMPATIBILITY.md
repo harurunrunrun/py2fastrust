@@ -1,5 +1,13 @@
 # Compatibility
 
+Exact boolean singleton `is` / `is not` comparisons retain native bool
+values and the bool/int tag of finite numeric alternatives. `True` and `1`
+remain distinct objects even when they compare equal. Ordinary native chains
+capture each operand once and preserve short-circuit evaluation, including
+mixed equality/ordering operators. The framed path uses the same singleton
+proof. General integer-object identity, including two alternatives that may
+both hold integers, remains a positioned diagnostic.
+
 The language target remains Python 3.14. The public CLI and API now require
 direct typed Rust generation. If that implementation is missing, they return a
 source-positioned `E006` diagnostic and no Rust file. They never select the

@@ -8,6 +8,18 @@ ORDERING = {ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
 _INTEGERS = {"int", "bool", "int_bool"}
 
 
+def boolean_identity(left,right,operator):
+    """Observe exact bool singletons over already captured native values."""
+    if not isinstance(operator,(ast.Is,ast.IsNot)):return None
+    if left.kind==right.kind=='bool':code=f'{left.code}=={right.code}'
+    elif {left.kind,right.kind}=={'bool','int_bool'}:
+        scalar,boolean=(left,right)if left.kind=='int_bool'else(right,left)
+        code=f'matches!(&{scalar.code},NativeScalar::Bool(value)if *value=={boolean.code})'
+    elif {left.kind,right.kind}=={'bool','int'}:code='false'
+    else:return None
+    return f'!({code})'if isinstance(operator,ast.IsNot)else code
+
+
 def real_comparison(g,left,right,operator,node):
     """Compare captured builtin real values without rounding their integers."""
     symbols={ast.Eq:'==',ast.NotEq:'!=',ast.Lt:'<',ast.LtE:'<=',ast.Gt:'>',ast.GtE:'>='}

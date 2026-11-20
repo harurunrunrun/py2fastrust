@@ -1,5 +1,13 @@
 # Standard-library API support
 
+Exact boolean singleton `is` / `is not` comparisons retain native bool
+values and the bool/int tag of finite numeric alternatives. `True` and `1`
+remain distinct objects even when they compare equal. Ordinary native chains
+capture each operand once and preserve short-circuit evaluation, including
+mixed equality/ordering operators. The framed path uses the same singleton
+proof. General integer-object identity, including two alternatives that may
+both hold integers, remains a positioned diagnostic.
+
 This is the inventory of API implementations retained in the internal runtime.
 It is not the current public direct-Rust support list. The CLI and `transpile()`
 never select that runtime after direct lowering fails. A listed API without
