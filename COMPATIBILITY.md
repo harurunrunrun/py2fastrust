@@ -40,6 +40,9 @@ of file, through the same buffer as `input()`.
 `sys.stdin.readlines()` and `sys.stdin.buffer.readlines()` collect those
 remaining lines into a list; a size hint is a positioned diagnostic.
 
+Programs that read `math.pi`, `math.e`, `math.tau`, `math.inf` or `math.nan`
+(as module attributes or imported names) use the framed module constants.
+
 Item assignment to a tuple, string, bytes, number, `None` or function raises
 CPython's `TypeError` after the value, receiver and index are evaluated.
 

@@ -71,3 +71,18 @@ def guard_observation(model, node, module):
             'globals() observes the complete namespace published by math import *; '
             'the complete builtin-function value and namespace-order observer protocol is not implemented',
             proof='complete canonical math star namespace observation')
+
+
+def requires_frames(unit):
+    """Route reads of math constants, which only the framed module data provides."""
+    import ast
+    aliases = set()
+    for node in ast.walk(unit.tree):
+        if isinstance(node, ast.Import):
+            aliases.update(alias.asname or alias.name for alias in node.names if alias.name == 'math')
+        elif isinstance(node, ast.ImportFrom) and node.module == 'math' and not node.level:
+            if any(alias.name in CONSTANT_BITS for alias in node.names):
+                return True
+    return any(isinstance(node, ast.Attribute) and node.attr in CONSTANT_BITS
+               and isinstance(node.value, ast.Name) and node.value.id in aliases
+               for node in ast.walk(unit.tree))
