@@ -33,6 +33,7 @@ def requires_frames(unit,analysis):
             if any(isinstance(kind,SetType)for kind in alternatives(facts.expressions.get(ordinal))):return True
         return False
     for node in ast.walk(unit.tree):
+        if _method_call(node)and actual(unit.ordinal(node.func.value)):return True
         operator=node.op if isinstance(node,(ast.BinOp,ast.AugAssign))else None
         if isinstance(operator,OPERATORS):
             left=node.left if isinstance(node,ast.BinOp)else node.target
@@ -41,11 +42,16 @@ def requires_frames(unit,analysis):
     return False
 
 
-def analyze(model,plan,node,operator,left,right,identity):
-    if not isinstance(node,(ast.BinOp,ast.AugAssign))or not isinstance(operator,OPERATORS):return None
+def _form(node,form):
+    return form or('binary'if isinstance(node,ast.BinOp)else'inplace'if isinstance(node,ast.AugAssign)else None)
+
+
+def analyze(model,plan,node,operator,left,right,identity,*,form=None):
+    form=_form(node,form)
+    if form is None or not isinstance(operator,OPERATORS):return None
     first,second=_set_kinds(left),_set_kinds(right)
     if first is None or second is None:return None
-    if isinstance(node,ast.AugAssign):
+    if form=='inplace':
         # In-place operators keep the target object; |=, &= and ^= may store
         # keys taken from the right operand's table.
         if not isinstance(operator,ast.Sub):
@@ -58,11 +64,12 @@ def analyze(model,plan,node,operator,left,right,identity):
     return model.cell(plan,node,record.kind,identity=identity)
 
 
-def emit(emitter,operator,left,right,node,wanted):
+def emit(emitter,operator,left,right,node,wanted,*,form=None):
     from .native_classes import Expression,shape
     from .native_class_mappings import mapping_kind
-    if isinstance(node,ast.AugAssign)and isinstance(operator,OPERATORS):return _emit_inplace(emitter,operator,left,right,node)
-    if not(isinstance(node,ast.BinOp)and isinstance(operator,OPERATORS)):return None
+    form=_form(node,form)
+    if form=='inplace'and isinstance(operator,OPERATORS):return _emit_inplace(emitter,operator,left,right,node)
+    if not(form=='binary'and isinstance(operator,OPERATORS)):return None
     if not(_admitted(emitter,left.kind)and _admitted(emitter,right.kind)):return None
     record=emitter.model.mappings.sites.get((emitter.plan.index,id(node),'set','set'))
     if record is None:return None
@@ -231,3 +238,62 @@ def comparison(emitter,operator,left,right,node):
     else:code=f'{size(B)}<{size(A)}&&{subset(B,A)}'
     code=f'{{let {a}=({left.code}).clone();let {b}=({right.code}).clone();{code}}}'
     return '!('+code+')'if isinstance(operator,ast.NotEq)else code
+
+
+METHODS={'union':ast.BitOr(),'intersection':ast.BitAnd(),'difference':ast.Sub(),'symmetric_difference':ast.BitXor()}
+INPLACE_METHODS={'intersection_update':ast.BitAnd(),'difference_update':ast.Sub(),'symmetric_difference_update':ast.BitXor()}
+PREDICATES={'issubset':ast.LtE(),'issuperset':ast.GtE(),'isdisjoint':None}
+
+
+def _method_call(node):
+    return(isinstance(node,ast.Call)and isinstance(node.func,ast.Attribute)and len(node.args)==1 and not node.keywords
+           and not isinstance(node.args[0],ast.Starred)and node.func.attr in METHODS.keys()|INPLACE_METHODS.keys()|PREDICATES.keys())
+
+
+def analyze_method(model,plan,node,receiver,arguments,keywords,environment):
+    """Named set methods with one set argument share the operator algorithms."""
+    if not _method_call(node)or len(arguments)!=1 or keywords:return None
+    name=node.func.attr;other=arguments[0]
+    if _set_kinds(receiver)is None or _set_kinds(other)is None:return None
+    model.mappings.set_method_algebra[(plan.index,id(node))]=name
+    if name in METHODS:return analyze(model,plan,node,METHODS[name],receiver,other,None,form='binary')
+    if name in INPLACE_METHODS:
+        analyze(model,plan,node,INPLACE_METHODS[name],receiver,other,None,form='inplace')
+        return model.cell(plan,node,'none')
+    return model.cell(plan,node,'bool')
+
+
+def emit_method(emitter,node):
+    from .native_classes import Expression
+    if not _method_call(node)or emitter.model.mappings.set_method_algebra.get((emitter.plan.index,id(node)))is None:return None
+    name=node.func.attr
+    before,receiver=emitter.capture(emitter.expression(node.func.value))
+    more,other=emitter.capture(emitter.expression(node.args[0]))
+    wanted=emitter.kind(node)
+    if name in METHODS:result=emit(emitter,METHODS[name],receiver,other,node,wanted,form='binary')
+    elif name in INPLACE_METHODS:
+        changed=_emit_inplace(emitter,INPLACE_METHODS[name],receiver,other,node)
+        result=None if changed is None else Expression('{'+changed.code+';()}','none')
+    elif name=='isdisjoint':result=_disjoint(emitter,receiver,other,node)
+    else:
+        code=comparison(emitter,PREDICATES[name],receiver,other,node)
+        result=None if code is None else Expression(code,'bool')
+    if result is None:return None
+    return Expression('{'+before+more+result.code+'}',result.kind)
+
+
+def _disjoint(emitter,left,right,node):
+    """set_isdisjoint: iterate the smaller table and look keys up in the other."""
+    from .native_classes import Expression,shape
+    from .native_unions import union_kind
+    if union_kind(left.kind)or union_kind(right.kind):return None
+    sets=emitter.model.mappings.cpython_sets
+    a,b=emitter.fresh(),emitter.fresh()
+    A,B=Expression(a,left.kind),Expression(b,right.kind)
+    def scan(small,large):
+        loan,key=emitter.fresh(),emitter.fresh()
+        test=sets.query(emitter,node,large,Expression(key+'.clone()',shape(small.kind.record.key)))
+        return '{let '+loan+'='+small.code+'.borrow();let found=!'+loan+'.entries().any(|('+key+',_,_)|'+test+');found}'
+    code=('{let '+a+'=('+left.code+').clone();let '+b+'=('+right.code+').clone();if '+b+'.borrow().len()>'+a+'.borrow().len(){'
+          +scan(A,B)+'}else{'+scan(B,A)+'}}')
+    return Expression(code,'bool')

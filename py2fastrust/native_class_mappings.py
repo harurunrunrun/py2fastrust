@@ -179,7 +179,7 @@ def query_type_name(emitter,value,node):
 
 class Mappings:
     def __init__(self,model):
-        self.model=model;self.records=[];self.sites={};self.methods={};self.augmented={}
+        self.model=model;self.records=[];self.sites={};self.methods={};self.augmented={};self.set_method_algebra={}
         from .native_mapping_views import Views
         self.views=Views(self)
         from .native_class_counters import Counters
@@ -331,6 +331,9 @@ class Mappings:
         getattr(self.model,'mapping_pop_calls',{}).pop((plan.index,id(node),None),None)
         mutated=self.set_methods.analyze(plan,node,receiver,arguments,keywords,environment)
         if mutated is not None:return mutated
+        from .native_set_algebra import analyze_method as set_algebra_method
+        algebra=set_algebra_method(self.model,plan,node,receiver,arguments,keywords,environment)
+        if algebra is not None:return algebra
         counted=self.counters.analyze_method(plan,node,receiver,arguments,keywords,environment)
         if counted is not None:return counted
         view=self.views.analyze(plan,node,receiver,arguments,keywords)
@@ -504,6 +507,9 @@ class Mappings:
         return self._set(emitter,node,owner,key,value)
 
     def emit_method(self,emitter,node):
+        from .native_set_algebra import emit_method as set_algebra_method
+        algebra=set_algebra_method(emitter,node)
+        if algebra is not None:return algebra
         from .native_mapping_pop import emit as emit_pop
         popped_key=emit_pop(emitter,node)
         if popped_key is not None:return popped_key
