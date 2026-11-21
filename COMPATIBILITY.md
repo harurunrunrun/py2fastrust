@@ -1,5 +1,9 @@
 # Compatibility
 
+`zip(*iterables)` with a runtime number of arguments takes `iter()` of each
+argument when called and yields variable-length tuples until one iterator is
+exhausted; expanded calls may also be comprehension sources.
+
 `itertools.groupby` without a key function follows CPython's groupby/grouper
 state: advancing the outer iterator skips the rest of the current group and an
 older grouper yields nothing. A key function remains a positioned diagnostic.

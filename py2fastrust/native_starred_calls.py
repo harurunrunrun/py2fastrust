@@ -224,6 +224,11 @@ class ExpandedCalls:
                         self._contribute(site.result, target.result, node)
                 for identity in kind.builtins:
                     provider.builtin_used.add(identity)
+                    if identity.name == "zip" and not site.keywords:
+                        from .native_zip_expanded import analyze as analyze_zip
+                        site.zip_record = analyze_zip(self.model, plan, node, site, environment)
+                        self._contribute(site.result, Cell(site.zip_record.kind), node)
+                        continue
                     if identity.name != "print":
                         raise ClassUnsupported(node, "expanded arguments to builtin " + repr(identity.name) +
                             " need its runtime-arity typed operand adapter; this expansion adapter currently supports print and compiled source functions",
@@ -429,6 +434,9 @@ class ExpandedCalls:
                         from .native_callable_field_demand import demand
                         context=self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')if hasattr(self.model,'module_linker')and demand(self.model,identity).module else''
                     return '{'+bind_payload(provider,identity,payload)+context+code+'}'
+                if getattr(identity,'name',None)=='zip':
+                    from .native_zip_expanded import emit as emit_zip
+                    return emitter.coerce(Expression(emit_zip(emitter,node,site.zip_record,vector,element),site.zip_record.kind),wanted,node)
                 if site.builtin_errors.get(identity):return self._error(emitter,node,wanted,_string(site.builtin_errors[identity])+'.to_owned()')
                 return self._print(emitter,node,vector,element,dict(keywords),wanted)
             return dispatch(emitter,callee.kind,callee.code,invoke)

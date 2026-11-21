@@ -57,6 +57,9 @@ def _normalizer(model, plan, environment):
         return model.builtin_identity(plan,node,environment)
     class FrameNormalizer(Normalizer):
         def _producer(self,node):
+            if isinstance(node,ast.Call)and any(isinstance(item,ast.Starred)for item in node.args):
+                # Expanded calls are ordinary values lowered by the expanded-call adapter.
+                return ProducerPlan(ProducerKind.VALUE,node)
             if isinstance(node,ast.Call):
                 invocation=self.invocation(node)
                 if invocation.identity in {BuiltinIdentity("iter"),BuiltinIdentity("filter"),BuiltinIdentity("map"),BuiltinIdentity("zip"),BuiltinIdentity("enumerate")}:
