@@ -203,6 +203,9 @@ def select_frames(unit,*,integer="i64"):
                                                for op,right in zip(node.ops,node.comparators))
            for node in ast.walk(unit.tree)for facts in analysis.scopes.values()):
         reasons+=('deque membership',)
+    # a[0]=a[1]=v stores one value into several item/attribute targets in order.
+    if any(isinstance(node,ast.Assign)and len(node.targets)>1 and any(not isinstance(target,ast.Name)for target in node.targets)
+           for node in ast.walk(unit.tree)):reasons+=('chained item or attribute assignment',)
     from .native_tuple_methods import requires_frames as tuple_method_frames
     if tuple_method_frames(unit,analysis):reasons+=('tuple count/index',)
     from .native_dict_fromkeys import requires_frames as fromkeys_frames

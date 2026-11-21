@@ -61,6 +61,9 @@ iteration. Because CPython gives it a separate buffer, it is admitted only as a
 single `open(0)` evaluated once in a program that does not also use `input()`
 or `sys.stdin`; other `open()` calls remain positioned diagnostics.
 
+Chained assignments with item or attribute targets, such as `p[0] = p[1] = False`,
+evaluate the value once and assign it to each target from left to right.
+
 `tuple.count(x)` and one-argument `tuple.index(x)` compare items in order with `==`.
 
 `x in deque` and `x not in deque` compare items in order with builtin equality.
