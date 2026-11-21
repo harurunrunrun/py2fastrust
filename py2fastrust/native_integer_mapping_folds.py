@@ -69,8 +69,11 @@ def emit(emitter, node, source, accumulator, wanted):
             added = emitter.numeric.binary(ast.Add(),
                 emitter.scalar(Expression(accumulator + '.clone()', wanted)), emitter.scalar(item), node)
             action = accumulator + '=' + emitter.coerce(added, wanted, node) + ';'
-        return ('{let ' + owner + '=' + text + ';let ' + read + '=' + owner + '.borrow();'
-                + 'for (' + key + ',' + value + ') in ' + read + '.entries.iter(){' + action + '}}')
+        # Set tables expose (key, canonical, hash) entries in table order;
+        # integer addition makes the fold independent of traversal order.
+        entries = ('for (' + key + ',_,_) in ' + read + '.entries(){' if mapping_kind(kind) and kind.record.category == 'set'
+                   else 'for (' + key + ',' + value + ') in ' + read + '.entries.iter(){')
+        return ('{let ' + owner + '=' + text + ';let ' + read + '=' + owner + '.borrow();' + entries + action + '}}')
 
     def branch(kind, text):
         if mapping_kind(kind):
