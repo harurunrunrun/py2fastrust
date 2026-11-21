@@ -101,6 +101,24 @@ class Cell:
         return self
 
 
+TUPLE_NESTING_LIMIT=10
+
+
+def _nesting_exceeds(cell,limit):
+    """Whether container cells nest deeper than limit (cycles count as deep)."""
+    stack=[(cell.root(),0)];seen=set()
+    while stack:
+        current,depth=stack.pop()
+        if depth>limit:return True
+        if id(current)in seen:continue
+        seen.add(id(current))
+        for child in current.args:
+            if isinstance(child,Cell):
+                child=child.root()
+                stack.append((child,depth+(0 if current.tag=='union'else 1)))
+    return False
+
+
 def shape(cell):
     cell = cell.root()
     if getattr(cell.tag,'_native_tuple_record',False):return cell.tag.kind(tuple(shape(value)for value in cell.args))
@@ -437,6 +455,8 @@ class Model:
                 self.constructors.setdefault(key,Cell(tag,tuple(args),list_origins=origins))
                 values=tuple(args)
             merge(result, Cell(tag,values,list_origins=origins), node,allow_unresolved=not self.final)
+            if tag=='tuple'and _nesting_exceeds(result,TUPLE_NESTING_LIMIT):
+                raise ClassUnsupported(node,'this tuple contains values that recursively nest the same tuple construction through calls or loops; an unbounded recursive tuple type has no finite native representation',proof='finite tuple nesting depth')
         if identity is None:self.records[key] = result
         if tag == "list":
             site=self.unit.ordinal(node) if self.unit is not None else id(node)
