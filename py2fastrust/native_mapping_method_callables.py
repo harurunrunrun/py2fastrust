@@ -42,6 +42,11 @@ def supported(kind,name):
            and(name!='update'or kind.record.flavor in {'dict','defaultdict'}))
 
 
+def _literal_default(node):
+    if isinstance(node,ast.UnaryOp)and isinstance(node.op,(ast.USub,ast.UAdd)):node=node.operand
+    return isinstance(node,ast.Constant)and node.value is not None and type(node.value)in {int,str,float,bool}
+
+
 def requires_frames(unit,analysis):
     from .native_constraints import Allocation
     from .native_key_types import DictType
@@ -51,6 +56,9 @@ def requires_frames(unit,analysis):
         parent=parents.get(id(node))
         if (node.attr=='popitem'and isinstance(parent,ast.Call)and parent.func is node
                 and not parent.args and not parent.keywords):continue
+        # d.get(k, <non-None literal>) has a direct ordinary lowering (the counting idiom).
+        if (node.attr=='get'and isinstance(parent,ast.Call)and parent.func is node and len(parent.args)==2 and not parent.keywords
+                and _literal_default(parent.args[1])):continue
         ordinal=unit.ordinal(node.value)
         for facts in analysis.scopes.values():
             value=facts.values.get(ordinal)
