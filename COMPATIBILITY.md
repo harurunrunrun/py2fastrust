@@ -64,7 +64,9 @@ operations such as `int`, indexing, `input` at end of file and recursion
 limits. `return`, `break` and `continue` leave protected regions after
 `finally` runs; an error raised by a handler or `finally` keeps the handled
 error as its context. Exit requests are not caught by `except Exception`.
-Binding `except ... as name`, user-defined exception classes, catch-all
+`except ... as name` binds the caught error's `str()` text when the name is
+used only inside its handler, as a `print()` argument, `str(name)` or a plain
+f-string field. Other uses of the caught object, user-defined exception classes, catch-all
 handlers in programs that call `exit()`, `except*`, suspension inside `try`
 and control transfer out of `finally` remain positioned diagnostics.
 

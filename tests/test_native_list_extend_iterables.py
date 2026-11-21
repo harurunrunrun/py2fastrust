@@ -142,11 +142,10 @@ print(values)
 
 # These original CP-first witnesses retain pre-existing suspended raise / try
 # boundaries. Uncaught variants below independently verify failure semantics.
+# Handlers that print str() of the caught error are native; the generator
+# raise inside a suspended frame remains a positioned boundary.
 BOUNDARY_NAMES = frozenset({
     'generator_failure_retains_partial_extension',
-    'negative_length_prevents_pulls',
-    'noniterable_error_after_argument_effect',
-    'callback_failure_stops_before_append',
 })
 
 SUPPLEMENTAL = {

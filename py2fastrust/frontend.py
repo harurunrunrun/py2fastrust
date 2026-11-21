@@ -333,6 +333,9 @@ def _source_metadata(tree, scopes, *, future_annotations=False):
             names[id(node)] = private_name(raw,private_owner[0])
         elif isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):
             names[id(node)] = private_name(node.name,private_owner[0])
+        elif isinstance(node,(ast.ExceptHandler,ast.MatchAs,ast.MatchStar))and node.name:
+            # Same spelling as the store binding; linked units already use it.
+            names[id(node)] = private_name(node.name,private_owner[0])
         if syntax_only:
             # Stringized/local annotations retain their original AST and source
             # locations, but create no executable bindings, comprehensions or

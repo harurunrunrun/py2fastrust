@@ -69,8 +69,7 @@ def analyze(model,plan,node,environment):
         if isinstance(child,(ast.Yield,ast.YieldFrom,ast.Await)):
             raise ClassUnsupported(child,'a suspension inside a try statement needs a resumable protected region; that generator/coroutine frame layout is not implemented',proof='resumable exception-handler region')
     for handler in node.handlers:
-        if handler.name is not None:
-            raise ClassUnsupported(handler,'binding the caught exception object needs native exception values for every raised builtin error; that binding is not implemented',operation='exception handler name binding',proof='caught exception object')
+        if handler.name is not None:_text_only_binding(model,handler)
     for statement in node.finalbody:
         for child in ast.walk(statement):
             if isinstance(child,(ast.Return,ast.Break,ast.Continue)):
@@ -91,7 +90,9 @@ def analyze(model,plan,node,environment):
         names=_handler_names(model,plan,handler,exceptional)
         if names is None and getattr(model,'native_exit_used',False):
             raise ClassUnsupported(handler,'this catch-all handler would also catch SystemExit raised by exit(); native termination exception objects are not implemented',proof='native SystemExit matching')
-        finished=model.block(plan,handler.body,Environment(exceptional))
+        entry=Environment(exceptional)
+        if handler.name is not None:model.bind_name(plan,handler,model.cell(plan,handler,'str'),entry)
+        finished=model.block(plan,handler.body,entry)
         handlers.append(Handler(handler,names))
         outcome=model.join(outcome,finished,node,'exception_handler_exit')
     if node.finalbody:
@@ -116,11 +117,19 @@ def _region(emitter,code,result_type):
     return f'(async{{{body}}}).await'
 
 
-def _protected(emitter,statements,result_type):
+def _protected(emitter,statements,result_type,bind=None):
     boundaries=getattr(emitter,'context_flow_boundaries',None)
     if boundaries is None:boundaries=emitter.context_flow_boundaries=[]
     boundaries.append(len(emitter.loops))
-    try:code=emitter.statements(statements)
+    try:
+        code=''
+        if bind is not None:
+            # str(error): the message after "Name: ", or empty without arguments.
+            from .native_classes import Expression
+            handler,error=bind
+            text=('NativeText::from(match '+error+'.message.find(": "){Some(index)=>'+error+'.message[index+2..].to_owned(),None=>String::new()})')
+            code=emitter.assign_name(handler,Expression(text,'str'))
+        code+=emitter.statements(statements)
     finally:boundaries.pop()
     return _region(emitter,code,result_type)
 
@@ -144,7 +153,8 @@ def emit(emitter,node):
             if node.orelse else'Ok(ClassWithFlow::Normal)')
     branches=[]
     for handler in handlers:
-        region=_protected(emitter,handler.node.body,result_type)
+        region=_protected(emitter,handler.node.body,result_type,
+                          bind=None if handler.node.name is None else(handler.node,previous))
         branches.append(f'if {_match(error,handler.names)}{{let {previous}={error};match {region}{{Err(mut {raised})=>{{{attach}(&mut {raised},{previous});Err({raised})}},{value}=>{value}}}}}')
     dispatch='else '.join(branches+[f'{{Err({error})}}'])if branches else f'Err({error})'
     lines.append(f'let {outcome}:{flow}=match {outcome}{{Ok(ClassWithFlow::Normal)=>{orelse},Ok({value})=>Ok({value}),Err({error})=>{dispatch}}};')
@@ -162,3 +172,37 @@ def emit(emitter,node):
 def runtime(model):
     if not getattr(model,'native_exception_handlers_used',False)or model.context_managers.used:return ''
     return 'enum ClassWithFlow<T>{Normal,Return(T),Break,Continue}\n'
+
+
+def _text_only_binding(model,handler):
+    """Admit `except E as name` when only str(name) is observable.
+
+    Every use of the name is inside this handler body as a positional print()
+    argument, str(name) or a plain f-string field, and nothing else in the
+    module reads, writes or deletes it, so the implicit unbinding at the
+    handler end and the exception object's identity are unobservable.
+    """
+    from .native_classes import ClassUnsupported
+    unit=model.unit
+    try:key=unit.name_for(handler)
+    except KeyError:key=None
+    reason=None
+    inside={id(child)for statement in handler.body for child in ast.walk(statement)}
+    parents={}
+    for parent in ast.walk(model.tree):
+        for child in ast.iter_child_nodes(parent):parents[id(child)]=parent
+    for item in ast.walk(model.tree):
+        if not isinstance(item,ast.Name)or key is None:continue
+        try:resolved=unit.name_for(item)
+        except KeyError:continue
+        if resolved!=key:continue
+        parent=parents.get(id(item))
+        if id(item)not in inside or not isinstance(item.ctx,ast.Load):reason='the name is used outside its handler';break
+        printed=(isinstance(parent,ast.Call)and isinstance(parent.func,ast.Name)and parent.func.id=='print'and item in parent.args)
+        converted=(isinstance(parent,ast.Call)and isinstance(parent.func,ast.Name)and parent.func.id=='str'and parent.args==[item]and not parent.keywords)
+        formatted=isinstance(parent,ast.FormattedValue)and parent.conversion in(-1,115)and parent.format_spec is None
+        if not(printed or converted or formatted):reason='the caught object is used beyond its str() text';break
+    if key is None:reason='the handler name has no resolved binding'
+    if reason is not None:
+        raise ClassUnsupported(handler,'binding the caught exception object needs native exception values; only print(), str() and f-string text of the name is implemented and '+reason,
+                               operation='exception handler name binding',proof='caught exception object')
