@@ -14,11 +14,14 @@ class OperatorCall:
 
 
 class OperatorAdapter:
-    NAMES=frozenset(OPERATIONS)
+    NAMES=frozenset(OPERATIONS)|{'itemgetter'}
     TYPES=frozenset()
 
     @staticmethod
     def analyze(model,plan,node,identity,metadata,positional,keywords,environment,*,factory):
+        if identity.name=='itemgetter':
+            from .native_itemgetter import create
+            return OperatorCall(*create(model,plan,node,positional,keywords,factory))
         error=None
         if keywords:error=f'TypeError: _operator.{identity.name}() takes no keyword arguments'
         elif len(positional)!=2:error=f'TypeError: {identity.name} expected 2 arguments, got {len(positional)}'
@@ -31,4 +34,7 @@ class OperatorAdapter:
         from .native_classes import Expression,shape
         wanted=shape(record.result)
         if record.error is not None:return Expression(emitter.at('Err::<'+emitter.rust_type(wanted)+',String>('+_string(record.error)+'.to_owned())',node),wanted)
+        if identity.name=='itemgetter':
+            from .native_itemgetter import emit_create
+            return emit_create(emitter,node,record)
         return emitter.binary(OPERATIONS[identity.name](),*positional,node,wanted,identity=('operator',identity))

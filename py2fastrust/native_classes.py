@@ -50,6 +50,7 @@ def domain(kind):
     if getattr(kind,'_native_property',False):return 'property'
     if getattr(kind,'_native_builtin_type',False):return 'builtin_type'
     if getattr(kind,"_native_bound_mapping_method",False):return "function"
+    if getattr(kind,'_native_item_getter',False):return 'function'
     if getattr(kind,'_native_bytearray',False):return 'bytearray'
     if getattr(kind,'_native_array',False):return 'array'
     if getattr(kind,'_native_exception_class',False):return 'exception_class'
@@ -1878,6 +1879,7 @@ class Emitter:
         if getattr(value,'_native_property',False):return 'Rc<ClassProperty_'+str(value.record.index)+'>'
         if getattr(value,'_native_builtin_type',False):return value.rust
         if getattr(value,"_native_bound_mapping_method",False):return value.rust
+        if getattr(value,'_native_item_getter',False):return value.rust
         if getattr(value,'_native_bytearray',False):return value.rust
         if getattr(value,"_native_array",False):return value.rust
         if getattr(value,'_native_exception_class',False):return 'ClassExceptionClass'+value.name
@@ -2059,6 +2061,9 @@ class Emitter:
         if getattr(value.kind,'_native_builtin_type',False):
             from .native_type_objects import show
             return show(value.kind)
+        if getattr(value.kind,'_native_item_getter',False):
+            from .native_itemgetter import show as show_item_getter
+            return show_item_getter(value.kind)
         if getattr(value.kind,"_native_bound_mapping_method",False):
             raise ClassUnsupported(node,"displaying a captured builtin mapping method requires its receiver address representation; that method display observer is not implemented",types=(("value",value.kind),),proof="builtin mapping method display identity")
         from .native_source_display import show as source_show
@@ -3819,6 +3824,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
     from .native_random_runtime import runtime as random_runtime
     pieces.append(random_runtime(model))
+    from .native_itemgetter import runtime as item_getter_runtime
+    pieces.append(item_getter_runtime(model))
     from .native_time_module import runtime as time_runtime
     pieces.append(time_runtime(model))
     from .native_bytes_sequences import runtime as bytes_sequence_runtime

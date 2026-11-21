@@ -72,6 +72,7 @@ class CallSite:
     exception_constructors:dict=field(default_factory=dict)
     mapping_methods:dict=field(default_factory=dict)
     builtin_classes:dict=field(default_factory=dict)
+    item_getters:dict=field(default_factory=dict)
 
 
 def function_kind(kind):return isinstance(kind,AotFunctionType)
@@ -472,6 +473,11 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
             record=analyze_constructor(self,plan,node,branch,arguments,positional,keywords,environment,identity=identity)
             site.constructors[branch.definition]=record
             if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
+        from .native_itemgetter import is_item_getter,analyze_call as analyze_item_getter
+        if is_item_getter(branch):
+            record=analyze_item_getter(self.model,plan,node,branch,positional,keywords)
+            site.item_getters[branch]=record
+            if not self.model.namespace.contribute(result,record.result,node,force=True):self.model.contribute(result,record.result,node)
         from .native_mapping_method_callables import is_method,analyze_call
         if is_method(branch):
             record=analyze_call(self.model,plan,node,branch,positional,keywords,environment,identity=identity)
@@ -694,6 +700,8 @@ def emit_values(emitter,node,site,callee,positional,keywords,wanted,*,source_cal
         if isinstance(kind,BuiltinClass):return emit_constructor(emitter,node,kind,site.builtin_classes[kind],positional,keywords,wanted).code
         from .native_mapping_method_callables import is_method,emit_call
         if is_method(kind):return emit_call(emitter,node,kind,site.mapping_methods[kind],code,positional,keywords,wanted).code
+        from .native_itemgetter import is_item_getter,emit_call as emit_item_getter
+        if is_item_getter(kind):return emit_item_getter(emitter,node,kind,site.item_getters[kind],positional,keywords,wanted).code
         if getattr(kind,'_native_exception_class',False):
             record=site.exception_constructors[kind]
             return emitter.model.exceptions.emit_construct(emitter,node,record,positional,keywords,wanted).code
