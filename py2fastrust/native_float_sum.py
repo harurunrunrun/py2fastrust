@@ -64,6 +64,9 @@ def emit(emitter, node, start, kind, wanted, member, accumulator):
 
     action = (project(kind, member, branch) if union_kind(kind) else branch(kind, member)) + ';'
     total = '(if ' + lo + '!=0.0&&' + lo + '.is_finite(){' + hi + '+' + lo + '}else{' + hi + '})'
+    # Identity-tracking float programs carry NativeIdentityFloat values; the sum is a fresh float.
+    from .native_float_identity import wrap
+    total = wrap(emitter, total, node)
     if start.kind == 'float':
         finish = accumulator + '=' + emitter.coerce(Expression(total, 'float'), wanted, node) + ';'
     else:
