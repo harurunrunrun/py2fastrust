@@ -25,7 +25,8 @@ class HeapProofTests(unittest.TestCase):
                     self.assertEqual(result.diagnostics[0].code,'E006')
                     self.assertGreater(result.diagnostics[0].line,0)
 
-    def test_unimplemented_assignment_expression_remains_an_explicit_boundary(self):
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_assignment_expression_rebinds_after_receiver_capture(self):
         source='''import heapq
 heap=[3]
 original=heap
@@ -34,10 +35,8 @@ print(original,heap)
 print(heapq.heappushpop(original,(heap:=[2,8])[0]))
 print(original,heap)
 '''
-        for mode in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
+        from test_native_exception_handlers import compare
+        compare(self,source,'')
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class HeapExecutionTests(unittest.TestCase):
