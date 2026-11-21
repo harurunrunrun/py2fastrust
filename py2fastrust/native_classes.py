@@ -3272,6 +3272,9 @@ class Emitter:
             from .native_class_augassign import emit
             fused=emit(self,node,setup,reference,old_kind)
             if fused is not None:return fused
+            from .native_text_append import emit as text_append
+            fused=text_append(self,node,setup,reference,old_kind)
+            if fused is not None:return fused
             before,old=self.capture(self.load_reference(reference,node.target,old_kind))
             if isinstance(old.kind,EmptyType):return setup+before+'match '+old.code+'{}'
             more,right=self.capture(self.expression(node.value))
@@ -3824,6 +3827,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
     from .native_random_runtime import runtime as random_runtime
     pieces.append(random_runtime(model))
+    from .native_text_append import runtime as text_append_runtime
+    pieces.append(text_append_runtime(model))
     from .native_itemgetter import runtime as item_getter_runtime
     pieces.append(item_getter_runtime(model))
     from .native_time_module import runtime as time_runtime

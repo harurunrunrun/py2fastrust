@@ -10,7 +10,9 @@ enum NativeTextRepr {
 }
 
 struct NativeTextLiteral {text:&'static str}
-struct NativeTextData {text:Box<str>}
+// A String keeps its spare capacity, so a unique text that is appended to
+// (str += in a loop) grows amortized instead of being reallocated each time.
+struct NativeTextData {text:String}
 impl NativeTextLiteral {
     const fn new(text:&'static str)->Self {Self{text}}
 }
@@ -27,7 +29,7 @@ impl NativeText {
         match &self.repr {
             // Constructors only copy complete, valid Rust strings.
             NativeTextRepr::Inline{bytes,length}=>std::str::from_utf8(&bytes[..*length as usize]).unwrap(),
-            NativeTextRepr::Shared(data)=>&data.text,
+            NativeTextRepr::Shared(data)=>data.text.as_str(),
             NativeTextRepr::Static(value)=>value.text,
         }
     }
@@ -39,7 +41,7 @@ impl NativeText {
         match self.repr {
             NativeTextRepr::Inline{bytes,length}=>String::from_utf8(bytes[..length as usize].to_vec()).unwrap(),
             NativeTextRepr::Shared(data)=>match std::rc::Rc::try_unwrap(data){
-                Ok(data)=>data.text.into_string(),Err(data)=>data.text.to_string(),
+                Ok(data)=>data.text,Err(data)=>data.text.clone(),
             },
             NativeTextRepr::Static(value)=>value.text.to_string(),
         }
@@ -50,12 +52,12 @@ impl Default for NativeText {
 }
 impl From<String> for NativeText {
     fn from(text:String)->Self {
-        Self::inline(&text).unwrap_or_else(||Self{repr:NativeTextRepr::Shared(std::rc::Rc::new(NativeTextData{text:text.into_boxed_str()}))})
+        Self::inline(&text).unwrap_or_else(||Self{repr:NativeTextRepr::Shared(std::rc::Rc::new(NativeTextData{text}))})
     }
 }
 impl From<&str> for NativeText {
     fn from(text:&str)->Self {
-        Self::inline(text).unwrap_or_else(||Self{repr:NativeTextRepr::Shared(std::rc::Rc::new(NativeTextData{text:Box::<str>::from(text)}))})
+        Self::inline(text).unwrap_or_else(||Self{repr:NativeTextRepr::Shared(std::rc::Rc::new(NativeTextData{text:String::from(text)}))})
     }
 }
 impl From<&String> for NativeText {
