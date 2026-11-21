@@ -165,7 +165,7 @@ def _model_proof(model):
             raise Unproved('a saved recursion-limit member adapter is retained')
     sealed = {'int', 'bool', 'int_bool', 'float', 'str', 'bytes', 'list', 'tuple', 'tuple_sequence',
               'deque', 'dict', 'set', 'defaultdict', 'Counter', 'OrderedDict', 'dict_view',
-              'range', 'stdin', 'stdin_buffer', 'sys', 'iterator', 'cmp_key'}
+              'range', 'stdin', 'stdin_buffer', 'stdin_file', 'sys', 'iterator', 'cmp_key'}
     for (index, node_id), cell in model.records.items():
         node = nodes.get(node_id)
         if index not in plans or not isinstance(node, ast.Call):

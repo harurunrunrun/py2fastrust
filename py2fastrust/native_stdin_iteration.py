@@ -5,7 +5,7 @@ empty string or bytes at end of file. The cursor reads through the same native
 input buffer as input() and readline(), so interleaved reads keep their order.
 """
 
-TAGS = {'stdin': 'str', 'stdin_buffer': 'bytes'}
+TAGS = {'stdin': 'str', 'stdin_buffer': 'bytes', 'stdin_file': 'str'}
 
 
 def source_cursor(registry, plan, node, value, identity, operation):
@@ -57,7 +57,9 @@ class StdinCursor:
         record = value.kind.record
         wanted = shape(record.element)
         binary = domain(shape(record.source)) == 'stdin_buffer'
-        read = emitter.at('class_read_bytes(&class_scope,true)' if binary else 'class_read_text(&class_scope,true,false)', node)
+        source_tag = domain(shape(record.source))
+        read = emitter.at('class_read_bytes(&class_scope,true)' if binary else 'class_file0_readline(&class_scope)' if source_tag == 'stdin_file'
+                          else 'class_read_text(&class_scope,true,false)', node)
         line = emitter.fresh()
         item = Expression(line if binary else 'NativeText::from(' + line + ')', 'bytes' if binary else 'str')
         converted = emitter.coerce(item, wanted, node)

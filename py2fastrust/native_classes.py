@@ -280,7 +280,7 @@ class Model:
     BUILTINS = {"type","input", "property", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
     DATA = {'int_bool', 'function', 'exception_value', 'range', 'dict', 'object', 'exception_class', 'union', 'globals_dict', 'complex', 'float', 'bool', 'dict_view', 'str', 'tuple_sequence', 'none', 'bytes', 'bytearray', 'array', 'tuple', 'builtin_singleton', 'list', 'int', 'set'}
-    INTRINSICS = {"sys", "stdin", "stdin_buffer", "reader_text", "reader_bytes", "read_text", "read_bytes", "stdout", "write_text", "flush_text"}
+    INTRINSICS = {"sys", "stdin", "stdin_buffer", "stdin_file", "reader_text", "reader_bytes", "read_text", "read_bytes", "stdout", "write_text", "flush_text"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
         self.tree, self.filename, self.integer = tree, filename, integer
@@ -1317,6 +1317,9 @@ class Model:
             from .native_class_text_predicates import analyze as analyze_predicate
             predicate=analyze_predicate(self,plan,node,receiver,arguments,keywords)
             if predicate is not None:return predicate
+            from .native_open_stdin import analyze_method as analyze_file0
+            file0=analyze_file0(self,plan,node,receiver,arguments,keywords)
+            if file0 is not None:return file0
             from .native_class_splits import analyze as analyze_split
             split=analyze_split(self,plan,node,receiver,arguments,keywords)
             if split is not None:return split
@@ -2858,6 +2861,9 @@ class Emitter:
             from .native_class_text_predicates import emit as emit_predicate
             predicate=emit_predicate(self,node,receiver,arguments,keywords,wanted)
             if predicate is not None:return Expression("{"+"\n".join(setup)+predicate.code+"}",wanted)
+            from .native_open_stdin import emit_method as emit_file0
+            file0=emit_file0(self,node,receiver,wanted)
+            if file0 is not None:return Expression("{"+"\n".join(setup)+file0.code+"}",wanted)
             from .native_class_splits import emit as emit_split
             split=emit_split(self,node,receiver,arguments,keywords,wanted)
             if split is not None:return Expression("{"+"\n".join(setup)+split.code+"}",wanted)
@@ -3889,6 +3895,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(list_deletion_runtime(model))
     from .native_text_partition import runtime as partition_runtime
     pieces.append(partition_runtime(model))
+    from .native_open_stdin import runtime as file0_runtime
+    pieces.append(file0_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)

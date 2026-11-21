@@ -108,7 +108,7 @@ class Iterators:
         if members(self,kind):return True
         sequence_union=len(parts)>1 and any(domain(part)in {'list','tuple','tuple_sequence','range'}for part in parts)
         error_source=for_loop and any(default_noniterable(self.model,part)for part in parts)
-        return sequence_union or error_source or any(isinstance(part,EmptyType)or part in {'str','bytes','stdin','stdin_buffer'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in parts) or needs_cursor(self.model,kind)
+        return sequence_union or error_source or any(isinstance(part,EmptyType)or part in {'str','bytes','stdin','stdin_buffer','stdin_file'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in parts) or needs_cursor(self.model,kind)
 
     def immediate_integer_map(self,plan,node,environment):
         """Retain eager word parsing only for consumers with no saved cursor."""

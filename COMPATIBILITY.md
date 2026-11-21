@@ -55,6 +55,12 @@ rules in the default profile and remain positioned diagnostics in Unicode mode.
 pull order: an exhausted iterator is never pulled again and yields `fillvalue`.
 Starred argument lists remain positioned diagnostics.
 
+`open(0)` is a text file over standard input with universal newlines (`\r\n`
+and `\r` read as `\n`), supporting `read()`, `readline()`, `readlines()` and line
+iteration. Because CPython gives it a separate buffer, it is admitted only as a
+single `open(0)` evaluated once in a program that does not also use `input()`
+or `sys.stdin`; other `open()` calls remain positioned diagnostics.
+
 `str.splitlines([keepends])` uses CPython's line boundaries (including `\r\n`,
 `\v`, `\f`, `\x1c`-`\x1e`, `\x85`, `\u2028`, `\u2029`); `partition` and
 `rpartition` return three strings and reject an empty separator.

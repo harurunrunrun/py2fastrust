@@ -187,6 +187,8 @@ def select_frames(unit,*,integer="i64"):
     if exit_requires_frames(analysis):reasons+=('native process termination unwinding',)
     from .native_sum_binding import requires_frames as sum_requires_frames
     if sum_requires_frames(analysis):reasons+=('canonical sum binding errors',)
+    from .native_open_stdin import requires_frames as open_stdin_frames
+    if open_stdin_frames(unit):reasons+=('open(0) standard-input file',)
     from .native_list_deletion import requires_frames as list_deletion_frames
     if list_deletion_frames(unit,analysis):reasons+=('list item and slice deletion',)
     from .native_math_exports import requires_frames as math_constant_frames

@@ -7,7 +7,7 @@ import ast
 from .references import BuiltinIdentity
 
 SUPPORTED=frozenset({"type","exit","quit","classmethod","staticmethod","property","ord","chr","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bytearray","bool","float","len","abs","id","globals","isinstance",
-                     "round","range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
+                     "round","range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set","open"})
 
 
 def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=None,call_arguments=None):
@@ -29,6 +29,9 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
         return analyze_bytes(model,plan,node,arguments,keywords,cell)
     if name=='slice':
         raise ClassUnsupported(node,'constructing a Python slice object is not implemented; the canonical slice type currently supports native isinstance guards only',proof='native Python slice object carrier')
+    if name=='open':
+        from .native_open_stdin import analyze_call
+        return analyze_call(model,node,cell)
     if name=='round':
         from .native_class_round import analyze as analyze_round
         return analyze_round(model,plan,node,arguments,keywords,factory=cell)
@@ -253,6 +256,8 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=F
     if identity.name=='property':
         from .native_properties import emit_constructor
         return emit_constructor(emitter,node,arguments,keywords,wanted)
+    if identity.name=='open':
+        return Expression(emitter.coerce(Expression('()','stdin_file'),wanted,node),wanted)
     if identity.name=='round':
         from .native_class_round import emit as emit_round
         return emit_round(emitter,node,arguments,keywords,wanted)
