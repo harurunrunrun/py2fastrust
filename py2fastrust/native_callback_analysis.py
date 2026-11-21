@@ -58,20 +58,27 @@ class CallbackGraph(SemanticGraph):
 
 
 class CallbackSolver(Solver):
-    def expression(self,term,state,globals,locals,context):
-        if term.operation!='callback_lambda':return super().expression(term,state,globals,locals,context)
+    def _expression(self,term,state,globals,locals,context):
+        # The base solver evaluates every subterm through _expression requests.
+        from .native_constraint_calls import Request
+        if term.operation!='callback_lambda':return (yield Request(super()._expression,(term,state,globals,locals,context)))
         definition=self.graph.functions[term.data]
-        defaults=tuple((name,self.expression(child,state,globals,locals,context))for name,child in definition.defaults)
-        result=value(FunctionValue(definition.site,defaults));self.records[(context,term.site)]=result
+        defaults=[]
+        for name,child in definition.defaults:
+            defaults.append((name,(yield Request(self._expression,(child,state,globals,locals,context)))))
+        result=value(FunctionValue(definition.site,tuple(defaults)));self.records[(context,term.site)]=result
         return result
 
-    def call(self,identity,args,keywords,term,state,globals,locals,context):
+    def _call(self,identity,args,keywords,term,state,globals,locals,context):
+        # Every call request reaches _call; analyze each original callback body
+        # with the iterable's element facts before the builtin result.
+        from .native_constraint_calls import Request
         if identity==BuiltinIdentity('filter')and len(args)==2:
             item=self.field_values(args[1],'iteration')
             for callback in args[0].alternatives:
                 if isinstance(callback,FunctionValue)and callback.definition in self.graph.callback_definitions:
-                    super().call(callback,(item,),(),term,state,globals,locals,context)
-        return super().call(identity,args,keywords,term,state,globals,locals,context)
+                    yield Request(super()._call,(callback,(item,),(),term,state,globals,locals,context))
+        return (yield Request(super()._call,(identity,args,keywords,term,state,globals,locals,context)))
 
 
 def supplement(unit,analysis,integer):
