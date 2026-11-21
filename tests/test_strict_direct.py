@@ -18,9 +18,10 @@ SOURCE_CASES = (
             "values=[1]\nalias=values\nalias.append(2)\nprint(values)\n",
             "def recurse(n):return recurse(n-1) if n else 0\nprint(recurse(3))\n",
             "try:\n print(1//0)\nexcept ZeroDivisionError:\n print(7)\n",
-            "print(eval('1+2'))\n",
             "def sequence():yield 1\nprint(list(sequence()))\n",
+            "print(eval('1+2'))\n",
         )
+SUPPORTED_CASES = 5
 
 
 class StrictDirectTests(unittest.TestCase):
@@ -39,7 +40,7 @@ class StrictDirectTests(unittest.TestCase):
                         with self.subTest(integer=integer, optimize=optimize, source=source):
                             result = transpile(source, TranspileOptions(integer=integer, optimize=optimize,
                                                                        filename="fresh_solution.py"))
-                            if index < 3:
+                            if index < SUPPORTED_CASES:
                                 self.assert_direct(result)
                                 continue
                             self.assertFalse(result.success)
