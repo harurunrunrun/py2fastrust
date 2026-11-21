@@ -110,7 +110,8 @@ class IntegerMappingFoldProofTests(unittest.TestCase):
             models.append(model)
         for filename in ('first.py', 'second.py'):
             with patch.object(native_typed_continuations, 'prepare', capture):
-                result = transpile(SOURCES['function_local_containers'],
+                # A class keeps this program on the framed path whose fold registry is inspected.
+                result = transpile('class FrameMarker:\n pass\n' + SOURCES['function_local_containers'],
                                    TranspileOptions(filename=filename, license='none'))
             self.assertTrue(result.success, result.diagnostics)
         first, second = models[0], models[-1]
