@@ -1092,6 +1092,9 @@ class Model:
         from .native_set_algebra import analyze as set_algebra
         algebra=set_algebra(self,plan,node,operator,left,right,identity)
         if algebra is not None:return algebra
+        from .native_counter_algebra import analyze as counter_algebra
+        counted=counter_algebra(self,plan,node,operator,left,right,identity)
+        if counted is not None:return counted
         from .native_percent_format import analyze as percent_format
         formatted=percent_format(self,plan,node,operator,left,right,identity)
         if formatted is not None:return formatted
@@ -2379,6 +2382,9 @@ class Emitter:
         from .native_set_algebra import emit as set_algebra
         algebra=set_algebra(self,operator,left,right,node,wanted)
         if algebra is not None:return algebra
+        from .native_counter_algebra import emit as counter_algebra
+        counted=counter_algebra(self,operator,left,right,node,wanted)
+        if counted is not None:return counted
         from .native_percent_format import emit as percent_format
         formatted=percent_format(self,operator,left,right,node,wanted)
         if formatted is not None:return formatted

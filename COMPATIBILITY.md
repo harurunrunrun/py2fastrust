@@ -923,8 +923,9 @@ key equivalence retains the original key, including during updates.
 uses O(m log(min(n,m)+1)) counting/selection work and O(min(n,m)) auxiliary storage;
 a nonpositive limit avoids traversal. Unbounded selection and Counter display
 sort by count. `total` adds in the selected integer mode. Live keys/items/values
-views use the same checked dictionary cursors. Counter `elements`, arithmetic
-and set-like comparison, arbitrary count objects, subclassing/custom protocol
+views use the same checked dictionary cursors. Binary `+ - | &` between
+Counters build a new Counter in CPython's item order, keeping positive counts.
+Counter `elements`, in-place and unary arithmetic, set-like comparison, arbitrary count objects, subclassing/custom protocol
 methods remain unfinished. Nonescaping generator-expression sources have direct
 loop sinks for Counter construction, `update` and `subtract`.
 
