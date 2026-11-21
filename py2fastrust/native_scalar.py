@@ -334,6 +334,11 @@ class ScalarGenerator(_Generator):
             value = self.read_expression(node.args[0], environment)
             if value.kind == "str":
                 return value
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+            from .native_slices import text_view
+            viewed = text_view(self, node, environment)
+            if viewed is not None:
+                return viewed
         if (self.string_mode == "ascii" and isinstance(node, ast.Subscript)
                 and not isinstance(node.slice, ast.Slice)):
             from .native_regions import owner_view,char_projection

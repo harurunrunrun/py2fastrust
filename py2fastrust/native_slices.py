@@ -6,6 +6,12 @@ from .native import _Expression, _Unsupported, _text_expression
 
 SLICE_HELPERS = r'''
 struct NativeSlice { cursor:i128, step:i128, remaining:usize }
+fn native_text_range(text:&str,indices:NativeSlice)->&str {
+    // Unit-step ASCII slices select one contiguous byte range of the source.
+    if indices.remaining==0 {return "";}
+    let start=usize::try_from(indices.cursor).expect("validated slice index");
+    &text[start..start+indices.remaining]
+}
 impl Iterator for NativeSlice {
     type Item=usize;
     fn next(&mut self)->Option<usize> {
@@ -58,6 +64,48 @@ fn native_text_slice(text:&str,indices:NativeSlice,ascii:bool)->String {
     result
 }
 '''
+
+
+def _bound(generator, expression, environment, lines):
+    if expression is None or isinstance(expression, ast.Constant) and expression.value is None:
+        return "None", None
+    value = generator.expression(expression, environment)
+    number = generator.number(value)
+    name = generator.temporary()
+    lines.append(f"let {name}={number};")
+    if generator.bits:
+        normalized = f"({name}) as i128"
+    else:
+        normalized = (f"{name}.to_i128().unwrap_or_else(||if {name}.is_negative()"
+                      "{i128::MIN}else{i128::MAX})")
+    return f"Some({normalized})", value
+
+
+def text_view(generator, node, environment):
+    """Borrow an ASCII unit-step str slice from text that outlives the read.
+
+    Python builds a new str; a reader that only compares or inspects it can use
+    the same characters in place. The owner and the bounds are evaluated in
+    source order, and slice_indices clamps exactly as for the copied slice.
+    """
+    if generator.string_mode != "ascii" or not isinstance(node, ast.Subscript) or not isinstance(node.slice, ast.Slice):
+        return None
+    step = node.slice.step
+    if not (step is None or isinstance(step, ast.Constant) and step.value is None):
+        return None
+    from .native_regions import owner_view
+    view = owner_view(generator, node)
+    owner = _Expression(view, "str", owned=False, stable_borrow=True) if view else generator.read_expression(node.value, environment)
+    if owner.kind != "str" or not owner.stable_borrow:
+        return None
+    generator.has_slices = True
+    text = generator.temporary()
+    lines = [generator.read_binding(text, owner)]
+    lower, _ = _bound(generator, node.slice.lower, environment, lines)
+    upper, _ = _bound(generator, node.slice.upper, environment, lines)
+    plan = generator.temporary()
+    lines.append(f"let {plan}=" + generator.at(f"native_slice_indices({text}.len(),{lower},{upper},None)", node) + ";")
+    return _Expression("{ " + " ".join(lines) + f" native_text_range({text},{plan}) }}", "str", owned=False, stable_borrow=True)
 
 
 def try_slice(generator, node, environment):

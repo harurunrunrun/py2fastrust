@@ -125,6 +125,13 @@ fn native_string_extend(left:&mut NativeText,right:&str)->Result<(),String> {
 }
 ''',
 'native_text_slice':r'''fn native_text_slice(text:&NativeText,indices:NativeSlice,_ascii:bool)->Result<NativeText,String> {
+    if indices.remaining==0 {return Ok(NativeText::default());}
+    if indices.step==1 {
+        // A unit-step slice is one contiguous byte range of the source text.
+        let first=usize::try_from(indices.cursor).expect("validated slice index");
+        let (start,stop)=if NATIVE_TEXT_UNICODE{(text.byte_offset(first)?.unwrap(),text.byte_offset(first+indices.remaining)?.unwrap())}else{(first,first+indices.remaining)};
+        return native_text_from_range(&text.as_str()[start..stop]);
+    }
     let mut result=String::new();
     result.try_reserve(indices.len()).map_err(|_|"MemoryError: string is too large".to_string())?;
     if !NATIVE_TEXT_UNICODE {
@@ -135,6 +142,13 @@ fn native_string_extend(left:&mut NativeText,right:&str)->Result<(),String> {
             result.push_str(&text.as_str()[start..stop]);
         }
     }
+    Ok(NativeText::from(result))
+}
+fn native_text_from_range(part:&str)->Result<NativeText,String> {
+    if part.len()<=4 {return Ok(NativeText::from(part));}
+    let mut result=String::new();
+    result.try_reserve_exact(part.len()).map_err(|_|"MemoryError: string is too large".to_string())?;
+    result.push_str(part);
     Ok(NativeText::from(result))
 }
 ''',
@@ -172,9 +186,21 @@ fn class_string_get(value:&NativeText,index:&NativeInt)->Result<NativeText,Strin
 }
 ''',
 'native_text_slice':r'''fn native_text_slice(text:&NativeText,indices:NativeSlice,_ascii:bool)->Result<NativeText,String> {
+    if indices.remaining==0 {return Ok(NativeText::default());}
+    if indices.step==1 {
+        let start=usize::try_from(indices.cursor).expect("validated slice index");
+        return native_text_from_range(&text.as_str()[start..start+indices.remaining]);
+    }
     let mut result=String::new();
     result.try_reserve(indices.len()).map_err(|_|"MemoryError: string is too large".to_string())?;
     for index in indices{result.push(text.as_bytes()[index]as char);}
+    Ok(NativeText::from(result))
+}
+fn native_text_from_range(part:&str)->Result<NativeText,String> {
+    if part.len()<=4 {return Ok(NativeText::from(part));}
+    let mut result=String::new();
+    result.try_reserve_exact(part.len()).map_err(|_|"MemoryError: string is too large".to_string())?;
+    result.push_str(part);
     Ok(NativeText::from(result))
 }
 ''',
