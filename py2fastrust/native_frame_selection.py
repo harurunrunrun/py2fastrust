@@ -107,6 +107,9 @@ def select_frames(unit,*,integer="i64"):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
     if any(isinstance(node,(ast.Try,getattr(ast,'TryStar',ast.Try)))for node in ast.walk(unit.tree)):
         return FrameSelection(True,('exception handler regions',),None,frozenset(),MappingProxyType({}))
+    from .native_stdin_iteration import requires_frames as stdin_frames
+    if stdin_frames(unit):
+        return FrameSelection(True,('standard input line iteration',),None,frozenset(),MappingProxyType({}))
     if any(isinstance(node,ast.FunctionDef)and node.decorator_list for node in ast.walk(unit.tree)):
         return FrameSelection(True,('decorated function wrappers',),None,frozenset(),MappingProxyType({}))
     analysis=analyze(unit)

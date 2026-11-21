@@ -1,5 +1,9 @@
 # Compatibility
 
+`for` loops and comprehensions over `sys.stdin` or `sys.stdin.buffer` yield
+successive `readline()` results, text or bytes with their newlines, until end
+of file, through the same buffer as `input()`.
+
 `chr()` converts integer code points, reporting CPython 3.14's `ValueError`
 for every value outside `range(0x110000)`; a lone surrogate code point is a
 runtime `NotImplementedError` because native text cannot hold it.

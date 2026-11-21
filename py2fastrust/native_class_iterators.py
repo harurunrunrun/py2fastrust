@@ -108,7 +108,7 @@ class Iterators:
         if members(self,kind):return True
         sequence_union=len(parts)>1 and any(domain(part)in {'list','tuple','tuple_sequence','range'}for part in parts)
         error_source=for_loop and any(default_noniterable(self.model,part)for part in parts)
-        return sequence_union or error_source or any(isinstance(part,EmptyType)or part in {'str','bytes'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in parts) or needs_cursor(self.model,kind)
+        return sequence_union or error_source or any(isinstance(part,EmptyType)or part in {'str','bytes','stdin','stdin_buffer'}or getattr(part,'_native_bytearray',False)or getattr(part,'_native_array',False)or has_protocol(self.model,part)for part in parts) or needs_cursor(self.model,kind)
 
     def immediate_integer_map(self,plan,node,environment):
         """Retain eager word parsing only for consumers with no saved cursor."""
@@ -144,6 +144,9 @@ class Iterators:
         from .native_arrays import source_cursor
         array=source_cursor(self,plan,node,value,identity,operation)
         if array is not None:return array
+        from .native_stdin_iteration import source_cursor as stdin_cursor
+        lines=stdin_cursor(self,plan,node,value,identity,operation)
+        if lines is not None:return lines
         if operation=='source':
             from .native_source_iteration import analyze
             protocol=analyze(self,plan,node,value,environment)
@@ -342,6 +345,9 @@ class Iterators:
         from .native_arrays import construct_cursor
         array=construct_cursor(self,emitter,node,source,kind)
         if array is not None:return array
+        from .native_stdin_iteration import construct_cursor as stdin_cursor
+        lines=stdin_cursor(self,emitter,node,source,kind)
+        if lines is not None:return lines
         kind=kind or self.sites[(emitter.plan.index,id(node),"source",None)].kind
         if iterator_kind(source.kind):return source
         record=kind.record;record.emitted=True
