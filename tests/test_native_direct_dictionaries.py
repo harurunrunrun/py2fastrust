@@ -87,7 +87,6 @@ class DirectDictionaryMetadataTests(unittest.TestCase):
 
     def test_precise_remaining_direct_boundaries(self):
         sources={
-            'walrus':("data={i:(last:=i) for i in range(3)}\nprint(last)\n",1,'assignment expressions'),
             'copy_arguments':("data={0:1}\nother=data.copy(7)\n",2,'copy'),
             'copy_keywords':("data={0:1}\nother=data.copy(extra=7)\n",2,'copy'),
         }

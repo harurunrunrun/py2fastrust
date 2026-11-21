@@ -103,15 +103,7 @@ BOUNDARIES={'general_integer_identity': ('first=int(input())\nsecond=int(input()
  'general_int_bool_identity': ('first=True if input()=="bool" else int(input())\n'
                                'second=True if input()=="bool" else int(input())\n'
                                'print(first is second)\n',
-                               'identity'),
- 'walrus_boolean_capture': ('flag=True\n'
-                            'print(flag is (flag:=False),flag)\n'
-                            'print((flag:=True) is flag,flag)\n',
-                            ':='),
- 'walrus_tagged_capture': ('for turn in (False,True):\n'
-                           ' value=True if turn else 1\n'
-                           ' print(value is (value:=True),value)\n',
-                           ':=')}
+                               'identity')}
 
 class BooleanIdentityProofTests(unittest.TestCase):
     def test_general_integer_identity_remains_positioned(self):

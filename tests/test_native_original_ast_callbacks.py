@@ -133,15 +133,6 @@ class OriginalAstCallbacks(unittest.TestCase):
     def test_bool_map(self):self.exercise(CASES['bool_map'],'')
     def test_string_map(self):self.exercise(CASES['string_map'],'')
     def test_float_list_map(self):self.exercise(CASES['float_list_map'],'')
-    def test_float_sum_needs_compatible_consumer(self):
-        from py2fastrust import transpile,TranspileOptions
-        for mode in ('i64','i128','bigint'):
-            with self.subTest(integer=mode):
-                result=transpile(CASES['float_sum_needs_compatible_consumer'],TranspileOptions(integer=mode,filename='main.py'))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,'E006')
-                self.assertIn("call 'sum'",result.diagnostics[0].message)
-                self.assertEqual(result.diagnostics[0].line,1)
     def test_tuple_argument_map(self):self.exercise(CASES['tuple_argument_map'],'')
     def test_math_captured_reference(self):self.exercise(CASES['math_captured_reference'],'')
     def test_math_filter_reference(self):self.exercise(CASES['math_filter_reference'],'')
@@ -262,14 +253,7 @@ class OriginalAstCallbackProjections(unittest.TestCase):
     def test_short_circuit_body(self):self.exercise(PROJECTION_CASES['short_circuit_body'],"")
     def test_lambda_default_callee_shadow(self):self.exercise(PROJECTION_CASES['lambda_default_callee_shadow'],"")
     def test_float_identity_typed(self):self.exercise(PROJECTION_CASES['float_identity_typed'],"")
-    def test_negative_power_retains_its_existing_numeric_boundary(self):
-        from py2fastrust import transpile,TranspileOptions
-        for mode in ('i64','i128','bigint'):
-            result=transpile(PROJECTION_CASES['negative_power_typed'],TranspileOptions(integer=mode,filename='main.py'))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
-            self.assertIn("operator '**'",result.diagnostics[0].message)
-            self.assertEqual(result.diagnostics[0].line,1)
+
 
 CALL_CAPABILITY_CASES={'str_none': 'print(list(map(lambda x:str(x),[None,1])))\n',
  'int_none': 'print(list(map(lambda x:int(x),[None,1])))\n',

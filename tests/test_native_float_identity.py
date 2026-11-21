@@ -322,6 +322,16 @@ CASES['original_list_float_sort_boundary']=("import heapq\nshared=float('nan')\n
 CASES['original_integral_power_boundary']=("import heapq\nvalue=float('nan')\nqueue=[(value,2),(value,1)]\nheapq.heapify(queue)\nprint(2**-1)\n",('',))
 
 CASES['original_float_power_boundary']=("import heapq\nvalue=float('nan')\nqueue=[(value,2),(value,1)]\nheapq.heapify(queue)\nprint(2.0**2)\n",('',))
+CASES['math_nan_origin']=('import heapq\n'
+                     'import math\n'
+                     'q=[(math.nan,2),(math.nan,1)]\n'
+                     'heapq.heapify(q)\n'
+                     'print([heapq.heappop(q)[1] for _ in range(2)])\n',('',))
+CASES['float_sum_boundary']=('import heapq\n'
+                        "value=float('nan')\n"
+                        'queue=[(value,2),(value,1)]\n'
+                        'heapq.heapify(queue)\n'
+                        'print(sum([value]))\n',('',))
 
 BOUNDARIES={'constant_nan_origin': ('import heapq\n'
                          'def get():return 1e400-1e400\n'
@@ -329,18 +339,6 @@ BOUNDARIES={'constant_nan_origin': ('import heapq\n'
                          'heapq.heapify(q)\n'
                          'print([heapq.heappop(q)[1] for _ in range(2)])\n',
                          'constant'),
- 'math_nan_origin': ('import heapq\n'
-                     'import math\n'
-                     'q=[(math.nan,2),(math.nan,1)]\n'
-                     'heapq.heapify(q)\n'
-                     'print([heapq.heappop(q)[1] for _ in range(2)])\n',
-                     'math'),
- 'float_sum_boundary': ('import heapq\n'
-                        "value=float('nan')\n"
-                        'queue=[(value,2),(value,1)]\n'
-                        'heapq.heapify(queue)\n'
-                        'print(sum([value]))\n',
-                        'sum'),
  'float_sum_start_boundary': ('import heapq\n'
                               "value=float('nan')\n"
                               'queue=[(value,2),(value,1)]\n'
