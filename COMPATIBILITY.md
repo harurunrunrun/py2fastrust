@@ -46,6 +46,11 @@ Programs that read `math.pi`, `math.e`, `math.tau`, `math.inf` or `math.nan`
 `str` and `bytes` `is*()` predicates in framed programs use the same helpers as
 ordinary programs for the configured string profile.
 
+`str.ljust`, `rjust`, `center` and `zfill` pad as CPython does (code points in
+Unicode mode, bytes in the ASCII profile), and `removeprefix`/`removesuffix`
+drop one matching affix. `swapcase`, `capitalize` and `title` follow ASCII case
+rules in the default profile and remain positioned diagnostics in Unicode mode.
+
 Item assignment to a tuple, string, bytes, number, `None` or function raises
 CPython's `TypeError` after the value, receiver and index are evaluated.
 

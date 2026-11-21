@@ -791,6 +791,8 @@ class Solver:
             if name=='decode'and receiver.alternatives=={'bytes'}and not receiver.unknown and not receiver.unbound:return value('str')
             if name=='encode'and receiver.alternatives=={'str'}and not receiver.unknown and not receiver.unbound:return value('bytes')
             if name in {"strip","lstrip","rstrip","join","upper","lower"} and kinds&{"str","bytes"}:return value("bytes" if "bytes" in kinds else "str")
+            from .native_text_transforms import NAMES as transform_names
+            if name in transform_names and kinds=={"str"}:return value("str")
             if name in {"pop","popleft"} and "deque"in category:return self.field_values(identity.receiver,"iteration")
             if name in {"pop","popleft"} and "deque_int" in kinds:return value("int")
             if name=="copy"and "deque_int"in kinds:return value("deque_int")

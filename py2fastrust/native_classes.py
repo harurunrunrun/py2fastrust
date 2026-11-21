@@ -3883,6 +3883,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(percent_runtime(model))
     from .native_class_text_predicates import runtime as predicate_runtime
     pieces.append(predicate_runtime(model))
+    from .native_text_transforms import runtime as transform_runtime
+    pieces.append(transform_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)

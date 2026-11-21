@@ -31,6 +31,8 @@ def requires_frames(unit,analysis):
     if format_requires_frames(unit,analysis):return True
     from .native_ascii_text_case import requires_frames as case_requires_frames
     if case_requires_frames(unit,analysis):return True
+    from .native_text_transforms import requires_frames as transform_requires_frames
+    if transform_requires_frames(unit,analysis):return True
     from .native_class_text_replace import requires_frames as replace_requires_frames
     if replace_requires_frames(unit,analysis):return True
     from .native_class_text_search import requires_frames as search_requires_frames
@@ -68,6 +70,9 @@ def analyze(model,plan,node,receiver,arguments,keywords,environment=None):
     from .native_ascii_text_case import analyze as analyze_case
     changed=analyze_case(model,plan,node,receiver,arguments,keywords)
     if changed is not None:return changed
+    from .native_text_transforms import analyze as analyze_transform
+    transformed=analyze_transform(model,plan,node,receiver,arguments,keywords)
+    if transformed is not None:return transformed
     from .native_class_text_replace import analyze as analyze_replace
     replacement=analyze_replace(model,plan,node,receiver,arguments,keywords)
     if replacement is not None:return replacement
@@ -103,6 +108,9 @@ def emit(emitter,node,receiver,arguments,keywords,wanted):
     from .native_ascii_text_case import emit as emit_case
     changed=emit_case(emitter,node,receiver,arguments,keywords,wanted)
     if changed is not None:return changed
+    from .native_text_transforms import emit as emit_transform
+    transformed=emit_transform(emitter,node,receiver,arguments,keywords,wanted)
+    if transformed is not None:return transformed
     from .native_class_text_replace import emit as emit_replace
     replacement=emit_replace(emitter,node,receiver,arguments,keywords,wanted)
     if replacement is not None:return replacement
