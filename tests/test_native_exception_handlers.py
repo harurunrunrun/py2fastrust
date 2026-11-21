@@ -131,6 +131,7 @@ except ZeroDivisionError:
     print(next(stream,77))
 ''', ''),
     'caught_text_binding': ('for raw in ["12", "x", ""]:\n    try:\n        print(int(raw))\n    except ValueError as error:\n        print("bad:", error)\n        print(f"[{error}]", str(error))\nd = {}\ntry:\n    d["k"]\nexcept KeyError as missing:\n    print(missing)\ntry:\n    [1][5]\nexcept (IndexError, KeyError) as err:\n    print(err)\ntry:\n    raise ValueError("custom message")\nexcept ValueError as v:\n    print(v)\ntry:\n    raise ValueError\nexcept ValueError as v2:\n    print(repr(str(v2)))\n', ''),
+    'sibling_text_bindings': ('for raw in ["4", "0", "x"]:\n    try:\n        print(8 // int(raw))\n    except ValueError as error:\n        print("value", error)\n    except ZeroDivisionError as error:\n        print(f"zero {error}")\n', ''),
     'exit_is_not_an_exception': ('''import sys
 try:
     sys.exit(4)
@@ -214,6 +215,9 @@ class NativeExceptionHandlerTests(unittest.TestCase):
     def test_caught_text_binding(self):
         compare(self, *CASES['caught_text_binding'])
 
+    def test_sibling_text_bindings(self):
+        compare(self, *CASES['sibling_text_bindings'])
+
     def test_exit_is_not_an_exception(self):
         compare(self, *CASES['exit_is_not_an_exception'])
 
@@ -223,6 +227,7 @@ class NativeExceptionHandlerTests(unittest.TestCase):
             'ValueError=3\ntry:\n    pass\nexcept ValueError:\n    pass\n': ('canonical builtin exception class', ':4:8:'),
             'try:\n    int("a")\nexcept ValueError as error:\n    print(type(error))\n': ('caught exception object', ':3:1:'),
             'try:\n    int("a")\nexcept ValueError as error:\n    pass\nprint(error)\n': ('outside its handler', ':3:1:'),
+            'try:\n    int("a")\nexcept ValueError as error:\n    try:\n        1 // 0\n    except ZeroDivisionError as error:\n        print(error)\n    print(error)\n': ('nested handler rebinds', ':3:1:'),
             'import sys\ntry:\n    sys.exit(1)\nexcept:\n    pass\n': ('SystemExit', ':4:1:'),
             'try:\n    pass\nexcept SystemExit:\n    pass\n': ('termination', ':3:8:'),
             'for i in range(2):\n    try:\n        pass\n    finally:\n        break\n': ('finally', ':5:9:'),

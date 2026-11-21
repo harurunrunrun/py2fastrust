@@ -177,9 +177,10 @@ def runtime(model):
 def _text_only_binding(model,handler):
     """Admit `except E as name` when only str(name) is observable.
 
-    Every use of the name is inside this handler body as a positional print()
-    argument, str(name) or a plain f-string field, and nothing else in the
-    module reads, writes or deletes it, so the implicit unbinding at the
+    Every use of the name is inside the body of a handler that binds the same
+    name (this one or a sibling, never nested in another) as a positional
+    print() argument, str(name) or a plain f-string field, and nothing else in
+    the module reads, writes or deletes it, so the implicit unbinding at each
     handler end and the exception object's identity are unobservable.
     """
     from .native_classes import ClassUnsupported
@@ -187,11 +188,21 @@ def _text_only_binding(model,handler):
     try:key=unit.name_for(handler)
     except KeyError:key=None
     reason=None
-    inside={id(child)for statement in handler.body for child in ast.walk(statement)}
+    def bound_here(other):
+        if not isinstance(other,ast.ExceptHandler)or other.name is None:return False
+        try:return unit.name_for(other)==key
+        except KeyError:return False
+    handlers=[other for other in ast.walk(model.tree)if key is not None and bound_here(other)]
+    inside=set()
+    for other in handlers:
+        body={id(child)for statement in other.body for child in ast.walk(statement)}
+        if any(id(nested)in body for nested in handlers):reason='a nested handler rebinds the name'
+        inside|=body
     parents={}
     for parent in ast.walk(model.tree):
         for child in ast.iter_child_nodes(parent):parents[id(child)]=parent
     for item in ast.walk(model.tree):
+        if reason is not None:break
         if not isinstance(item,ast.Name)or key is None:continue
         try:resolved=unit.name_for(item)
         except KeyError:continue
