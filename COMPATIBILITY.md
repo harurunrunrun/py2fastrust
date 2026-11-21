@@ -1,5 +1,9 @@
 # Compatibility
 
+`itertools.groupby` without a key function follows CPython's groupby/grouper
+state: advancing the outer iterator skips the rest of the current group and an
+older grouper yields nothing. A key function remains a positioned diagnostic.
+
 `for` loops and comprehensions over `sys.stdin` or `sys.stdin.buffer` yield
 successive `readline()` results, text or bytes with their newlines, until end
 of file, through the same buffer as `input()`.

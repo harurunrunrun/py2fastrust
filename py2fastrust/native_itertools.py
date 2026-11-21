@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from .native_types import EMPTY,EmptyType
 
 
-NAMES=frozenset({'repeat','chain','islice','pairwise','accumulate','product','combinations','permutations','combinations_with_replacement','count','starmap'})
+NAMES=frozenset({'repeat','chain','islice','pairwise','accumulate','product','combinations','permutations','combinations_with_replacement','count','starmap','groupby'})
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,9 @@ class ItertoolsAdapter:
         if identity.name=='count':
             from .native_itertools_count import analyze
             return analyze(model,plan,node,positional,keywords,environment,factory=factory)
+        if identity.name=='groupby':
+            from .native_itertools_groupby import analyze
+            return analyze(model,plan,node,positional,keywords,environment,factory=factory)
         if identity.name in {'combinations','permutations','combinations_with_replacement'}:
             from .native_itertools_choices import analyze
             return analyze(model,plan,node,identity,normalized_call,positional,keywords,environment,factory=factory)
@@ -104,6 +107,9 @@ class ItertoolsAdapter:
             return emit(emitter,node,call,positional,keywords)
         if identity.name=='count':
             from .native_itertools_count import emit
+            return emit(emitter,node,call,positional,keywords)
+        if identity.name=='groupby':
+            from .native_itertools_groupby import emit
             return emit(emitter,node,call,positional,keywords)
         if identity.name in {'combinations','permutations','combinations_with_replacement'}:
             from .native_itertools_choices import emit
