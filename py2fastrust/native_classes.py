@@ -3819,6 +3819,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(runtime.joinpath("integer.rs").read_text(encoding="utf-8"))
     from .native_random_runtime import runtime as random_runtime
     pieces.append(random_runtime(model))
+    from .native_time_module import runtime as time_runtime
+    pieces.append(time_runtime(model))
     from .native_bytes_sequences import runtime as bytes_sequence_runtime
     pieces.append(bytes_sequence_runtime(model))
     from .native_bytearray_runtime import runtime as bytearray_runtime

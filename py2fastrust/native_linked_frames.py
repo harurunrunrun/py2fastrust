@@ -132,6 +132,8 @@ class LinkedModel(Model):
         provider.register_member_adapter('bisect',BisectAdapter)
         from .native_copy_module import CopyAdapter
         provider.register_member_adapter('copy',CopyAdapter)
+        from .native_time_module import TimeAdapter
+        provider.register_member_adapter('time',TimeAdapter)
         from .native_class_counters import CollectionsAdapter
         provider.register_member_adapter('collections',CollectionsAdapter)
         return provider
