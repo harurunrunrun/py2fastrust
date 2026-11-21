@@ -19,6 +19,9 @@ class NativeCounterAlgebraTests(unittest.TestCase):
     def test_operators(self):
         compare(self, *CASES['operators'])
 
+    def test_operators_without_other_dictionary_iteration(self):
+        compare(self, 'from collections import Counter\nc1 = Counter("aaabbc")\nc2 = Counter("abbbd")\nprint(c1 + c2)\nprint(c1 - c2)\n', '')
+
     def test_counts_from_input(self):
         compare(self, *CASES['counts_from_input'])
 

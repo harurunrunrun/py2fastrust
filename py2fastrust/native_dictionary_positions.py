@@ -112,6 +112,9 @@ def primitive_sources(model):
             yield from provider(record)
     for site in model.mappings.counters.sites.values():
         if site.mapping_source and site.source is not None:yield site.source
+    # Counter + - | & iterate both operands with dictionary cursors.
+    for record in model.mappings.records:
+        if record.operation=='counter_operator':yield from getattr(record,'operands',())
     for site in model.mappings.defaultdicts.sites.values():
         if site.source is not None and site.source_type is None:yield site.source
     iterables={id(node.iter)for node in model.iter_nodes()if isinstance(node,(ast.For,ast.comprehension))}
