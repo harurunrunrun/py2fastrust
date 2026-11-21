@@ -85,4 +85,5 @@ def pull(registry,emitter,node,value,active):
     advanced=emitter.numeric.binary(ast.Add(),emitter.scalar(Expression(index+'.clone()','int')),
         emitter.scalar(Expression(emitter.literal(1),'int',1)),node)
     code+=state+'.index='+advanced.code+';'+index+'};Some(('+index+','+item+'))}'
-    return Expression('{'+code+'}',kind)
+    # A labeled block is already one expression; extra braces trip unused_braces.
+    return Expression(code,kind)
