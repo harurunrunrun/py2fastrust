@@ -541,6 +541,9 @@ class Model:
                 raise ClassUnsupported(node,"reading this method requires its retained bound descriptor adapter",proof="bound receiver lifetime and callable identity")
         if name.startswith("__") and name.endswith("__"):
             raise ClassUnsupported(node)
+        if writing:
+            from .native_class_slots import check_write
+            check_write(self,owner,name,node)
         result = owner.fields.setdefault(name, Field(name))
         result.written |= writing
         return result.cell

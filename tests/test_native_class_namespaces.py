@@ -225,8 +225,9 @@ class ClassNamespaceCapabilityTests(unittest.TestCase):
             result=transpile(source,TranspileOptions(integer=mode))
             self.assertFalse(result.success)
             self.assertEqual(result.diagnostics[0].code,'E006')
+            # Empty slots leave no room for 'value'; CPython raises AttributeError there.
             self.assertIn('__slots__',result.diagnostics[0].message)
-            self.assertIn('metadata',result.diagnostics[0].message)
+            self.assertEqual(result.diagnostics[0].line,3)
 
     def test_generation_is_deterministic_across_python_hash_seeds(self):
         source=CASES['class_name_not_in_globals']['main.py']

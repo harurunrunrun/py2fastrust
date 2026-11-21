@@ -127,6 +127,11 @@ class ClassNamespaces:
         if member is None:return False
         self.named_tuples.local_store_guard(member.owner,member.name,node)
         from .native_source_display import bind_alias
+        if member.name=='__slots__':
+            from .native_class_slots import declare
+            if declare(self.model,member.owner,node):
+                self.model.remember(plan,node,value)
+                return True
         if self.special_name(member.name)and not bind_alias(self,plan,node,value):
             from .native_classes import ClassUnsupported
             raise ClassUnsupported(node,f"class-body metadata assignment {member.name!r} requires its compiler/metaclass namespace validation; that metadata protocol is not implemented",proof="class compiler metadata initialization and validation")
@@ -392,7 +397,11 @@ class ClassNamespaces:
 
     def emit_assign_name(self,emitter,node,value):
         member=self.local_member(emitter.plan,node)
-        return None if member is None else self.emit_store(emitter,member,value,node)
+        if member is None:return None
+        if member.name=='__slots__'and getattr(member.owner,'node',None)in getattr(self.model,'class_slots',{}):
+            # The literal declaration became the instance layout; no namespace value is kept.
+            return f"let _={value.code};"
+        return self.emit_store(emitter,member,value,node)
 
     def emit_name(self,emitter,node,wanted=None):
         from .native_classes import Expression,shape
