@@ -1689,6 +1689,9 @@ class _Generator:
             call = node.value
             if isinstance(call, ast.Constant) and type(call.value) is str:
                 return ";", environment
+            if isinstance(call, ast.Constant) and call.value is Ellipsis:
+                # A placeholder statement only loads an immortal constant.
+                return "", environment
             if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
                     and isinstance(call.func.value, ast.Name)):
                 target = call.func.value

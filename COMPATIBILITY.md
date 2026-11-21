@@ -40,6 +40,9 @@ of file, through the same buffer as `input()`.
 `sys.stdin.readlines()` and `sys.stdin.buffer.readlines()` collect those
 remaining lines into a list; a size hint is a positioned diagnostic.
 
+An `...` expression statement is a placeholder with no effect, in functions,
+class bodies and module code; using the `Ellipsis` value is a positioned diagnostic.
+
 `chr()` converts integer code points, reporting CPython 3.14's `ValueError`
 for every value outside `range(0x110000)`; a lone surrogate code point is a
 runtime `NotImplementedError` because native text cannot hold it.

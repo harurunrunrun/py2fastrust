@@ -40,7 +40,7 @@ def publication_closed(state,owner):
     from .references import BuiltinIdentity
     for node in owner.node.body:
         if isinstance(node,ast.Pass):continue
-        if isinstance(node,ast.Expr) and isinstance(node.value,ast.Constant) and isinstance(node.value.value,str):continue
+        if isinstance(node,ast.Expr) and isinstance(node.value,ast.Constant) and (isinstance(node.value.value,str) or node.value.value is Ellipsis):continue
         if isinstance(node,(ast.Assign,ast.AnnAssign)):
             targets=node.targets if isinstance(node,ast.Assign) else (node.target,)
             if not all(isinstance(target,ast.Name) for target in targets):return False

@@ -643,7 +643,7 @@ class Model:
                 for value in node.names:
                     if (value.asname or value.name)in names:raise ClassUnsupported(node)
                     self.global_symbols[value.asname or value.name] = Cell("sys")
-            elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and type(node.value.value) is str:
+            elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and (type(node.value.value) is str or node.value.value is Ellipsis):
                 continue
             else:
                 effects = True
@@ -672,7 +672,7 @@ class Model:
         if node.bases:registry.named_tuples.plan(owner)
         from .native_annotations import class_body_statement,class_body_effect
         for member in node.body:
-            if isinstance(member,ast.Pass)or isinstance(member,ast.Expr)and isinstance(member.value,ast.Constant)and type(member.value.value)is str:
+            if isinstance(member,ast.Pass)or isinstance(member,ast.Expr)and isinstance(member.value,ast.Constant)and(type(member.value.value)is str or member.value.value is Ellipsis):
                 continue
             if class_body_statement(member):continue
             if registry is not None and isinstance(member,ast.ClassDef):
@@ -1630,6 +1630,8 @@ class Model:
                 continue
             from .native_annotations import future_directive
             if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal))or future_directive(node):
+                continue
+            if isinstance(node,ast.Expr)and isinstance(node.value,ast.Constant)and node.value.value is Ellipsis:
                 continue
             if isinstance(node,ast.Expr):
                 value=self.expression(plan,node.value,environment)
@@ -3180,7 +3182,7 @@ class Emitter:
         if isinstance(node,(ast.Pass,ast.Global,ast.Nonlocal))or future_directive(node):
             return ""
         if isinstance(node,ast.Expr):
-            if isinstance(node.value,ast.Constant)and type(node.value.value)is str:
+            if isinstance(node.value,ast.Constant)and(type(node.value.value)is str or node.value.value is Ellipsis):
                 return ""
             return self.expression(node.value).code+";"
         if isinstance(node,ast.Assert):
