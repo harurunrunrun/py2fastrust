@@ -11,6 +11,7 @@ PROGRAMS = (
     'd = {"a": 1.5}\nprint(d.get("a", 0), d.get("b", 2.5))\n',
     'd = {1: "x"}\nprint(d.get(2, "y") + "z", d.get(1, "q"))\n',
     'd = {1: True}\nprint(d.get(1, False), d.get(3, False))\n',
+    'd = dict()\nd.get("z", 100)\nprint(d.get("a", 0))\nd["x"] = d.get("x", 0) + 10\nprint(d)\n',
 )
 
 

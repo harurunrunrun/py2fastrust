@@ -58,7 +58,7 @@ def requires_frames(unit,analysis):
                 and not parent.args and not parent.keywords):continue
         # d.get(k, <non-None literal>) has a direct ordinary lowering (the counting idiom).
         if (node.attr=='get'and isinstance(parent,ast.Call)and parent.func is node and len(parent.args)==2 and not parent.keywords
-                and _literal_default(parent.args[1])):continue
+                and _literal_default(parent.args[1])and not isinstance(parents.get(id(parent)),ast.Expr)):continue
         ordinal=unit.ordinal(node.value)
         for facts in analysis.scopes.values():
             value=facts.values.get(ordinal)
