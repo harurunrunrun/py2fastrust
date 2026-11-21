@@ -40,6 +40,10 @@ of file, through the same buffer as `input()`.
 `sys.stdin.readlines()` and `sys.stdin.buffer.readlines()` collect those
 remaining lines into a list; a size hint is a positioned diagnostic.
 
+`math.prod(iterable, start=1)` multiplies integer and boolean values exactly in
+the selected integer mode and returns `start` for an empty iterable; float
+operands remain positioned diagnostics.
+
 Programs that read `math.pi`, `math.e`, `math.tau`, `math.inf` or `math.nan`
 (as module attributes or imported names) use the framed module constants.
 

@@ -73,16 +73,19 @@ def guard_observation(model, node, module):
             proof='complete canonical math star namespace observation')
 
 
+FRAME_ONLY = frozenset(CONSTANT_BITS) | {'prod'}
+
+
 def requires_frames(unit):
-    """Route reads of math constants, which only the framed module data provides."""
+    """Route math constants and math.prod, which only the framed module adapters provide."""
     import ast
     aliases = set()
     for node in ast.walk(unit.tree):
         if isinstance(node, ast.Import):
             aliases.update(alias.asname or alias.name for alias in node.names if alias.name == 'math')
         elif isinstance(node, ast.ImportFrom) and node.module == 'math' and not node.level:
-            if any(alias.name in CONSTANT_BITS for alias in node.names):
+            if any(alias.name in FRAME_ONLY for alias in node.names):
                 return True
-    return any(isinstance(node, ast.Attribute) and node.attr in CONSTANT_BITS
+    return any(isinstance(node, ast.Attribute) and node.attr in FRAME_ONLY
                and isinstance(node.value, ast.Name) and node.value.id in aliases
                for node in ast.walk(unit.tree))
