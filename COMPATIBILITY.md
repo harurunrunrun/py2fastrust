@@ -61,6 +61,9 @@ iteration. Because CPython gives it a separate buffer, it is admitted only as a
 single `open(0)` evaluated once in a program that does not also use `input()`
 or `sys.stdin`; other `open()` calls remain positioned diagnostics.
 
+`dict.fromkeys(iterable[, value])` inserts keys in iteration order, each mapped
+to the same value object.
+
 `str.splitlines([keepends])` uses CPython's line boundaries (including `\r\n`,
 `\v`, `\f`, `\x1c`-`\x1e`, `\x85`, `\u2028`, `\u2029`); `partition` and
 `rpartition` return three strings and reject an empty separator.

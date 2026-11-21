@@ -81,6 +81,8 @@ def proved(kind,model=None,seen=frozenset()):
         valid=record.source is not None and all(proved(choice,model,seen)for choice in alternatives(shape(record.source)))
     elif record.operation in {'constructor','Counter','defaultdict'}:
         valid=source_proof(record.source,record.source_type,record.flavor=='Counter')
+    elif record.operation=='fromkeys':
+        valid=source_proof(record.source,record.source_type)
     elif record.operation=='counter_operator':
         # A fresh Counter filled only by insertions while visiting both operands.
         operands=getattr(record,'operands',())

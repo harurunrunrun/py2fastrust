@@ -1208,6 +1208,9 @@ class Model:
     def call(self, plan, node, environment):
         from .native_source_generators import guard_call as source_generator_guard_call
         source_generator_guard_call(self,plan,node,environment)
+        from .native_dict_fromkeys import analyze as analyze_fromkeys
+        fromkeys=analyze_fromkeys(self,plan,node,environment)
+        if fromkeys is not None:return self.remember(plan,node,fromkeys)
         expanded=self.expanded_calls.analyze(plan,node,environment)
         if expanded is not None:return expanded
         value=self.callable_cells.analyze(plan,node,environment)
@@ -2759,6 +2762,9 @@ class Emitter:
         return self.encoded("{"+"".join(lines)+f"let {temporary}={result.code};"+exported+temporary+"}",result.kind,self.kind(node),node)
 
     def call(self, node):
+        from .native_dict_fromkeys import emit as emit_fromkeys
+        fromkeys=emit_fromkeys(self,node)
+        if fromkeys is not None:return fromkeys
         from .native_retained_generators import emit_method as retained_method
         retained=retained_method(self,node)
         if retained is not None:return retained

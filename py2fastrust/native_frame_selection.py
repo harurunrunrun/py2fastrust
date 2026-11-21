@@ -191,6 +191,8 @@ def select_frames(unit,*,integer="i64"):
     if any(_Builtin('dict')in call.identity.alternatives and(call.positional or call.keywords)
            for facts in analysis.scopes.values()for call in facts.calls.values()):
         reasons+=('dict constructor arguments',)
+    from .native_dict_fromkeys import requires_frames as fromkeys_frames
+    if fromkeys_frames(unit):reasons+=('dict.fromkeys',)
     from .native_open_stdin import requires_frames as open_stdin_frames
     if open_stdin_frames(unit):reasons+=('open(0) standard-input file',)
     from .native_list_deletion import requires_frames as list_deletion_frames
