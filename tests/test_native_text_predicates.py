@@ -93,13 +93,19 @@ class PredicatePlanTests(unittest.TestCase):
             if term.operation=='index':kinds[site]=Opaque()
         self.assertEqual(dict(derive_regions(analysis,replace(scope,expressions=kinds),64)),{})
 
-    def test_invalid_signatures_and_missing_bytes_methods_are_positioned(self):
-        for source in ('print(0)\nprint("A".isupper(1))\n','print(0)\nprint("A".isupper(x=1))\n',
-                       'print(0)\nprint(b"A".isdecimal())\n','print(0)\nprint(b"A".isnumeric())\n','print(0)\nprint(b"A".isidentifier())\n'):
+    def test_invalid_signatures_are_positioned(self):
+        for source in ('print(0)\nprint("A".isupper(1))\n','print(0)\nprint("A".isupper(x=1))\n'):
             result=transpile(source,TranspileOptions(filename='bad_predicate.py'))
             self.assertFalse(result.success)
             self.assertIsNone(result.rust_source)
             self.assertEqual((result.diagnostics[0].code,result.diagnostics[0].line,result.diagnostics[0].filename),('E006',2,'bad_predicate.py'))
+
+    @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+    def test_missing_bytes_methods_raise_attribute_error(self):
+        from test_native_exception_handlers import compare
+        for name in ('isdecimal','isnumeric','isidentifier'):
+            with self.subTest(name=name):
+                compare(self,'print(0)\nprint(b"A".%s())\n'%name,'')
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
