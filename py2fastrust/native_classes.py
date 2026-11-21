@@ -1542,7 +1542,8 @@ class Model:
                 positional_store(self,owner,node.slice,value,node)
                 self.remember(plan,node,owner.args[0])
                 return
-            if owner.tag=="union":
+            from .native_finite_list_writes import TARGETS as finite_targets
+            if owner.tag=="union"or owner.tag in finite_targets:
                 from .native_finite_list_writes import analyze
                 if analyze(self,plan,node,owner,index,value):return
             if owner.tag is None and not self.final:

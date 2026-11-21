@@ -1,5 +1,8 @@
 """Indexed stores for closed builtin list/non-list receiver alternatives.
 
+A receiver whose alternatives are all immutable builtins (tuple, str, bytes,
+numbers, None, functions) always reports the assignment TypeError.
+
 The captured receiver and index keep their original value identities. Each
 mutable arm retains its actual uniform list element ABI; immutable arms report
 Python's assignment error after target operand evaluation.
@@ -14,11 +17,14 @@ INDICES = TARGETS | frozenset({'function','range'})
 def supported(owner, index):
     from .native_classes import domain
     from .native_unions import union_kind
-    return ((union_kind(owner)or union_kind(index)or index not in {'int','bool','int_bool'})
-            and any(domain(kind) == 'list' for kind in alternatives(owner))
-            and all(domain(kind) in TARGETS for kind in alternatives(owner))
-            and index is not None
-            and all(domain(kind) in INDICES for kind in alternatives(index)))
+    kinds = alternatives(owner)
+    if (not kinds or index is None or not all(domain(kind) in TARGETS for kind in kinds)
+            or not all(domain(kind) in INDICES for kind in alternatives(index))):
+        return False
+    if any(domain(kind) == 'list' for kind in kinds):
+        return union_kind(owner) or union_kind(index) or index not in {'int', 'bool', 'int_bool'}
+    # Every receiver alternative is immutable: the store always raises TypeError.
+    return True
 
 
 def analyze(model, plan, node, owner, index, value):
@@ -45,6 +51,10 @@ def analyze(model, plan, node, owner, index, value):
         if member.tag == 'list':
             if not model.namespace.contribute(result, member.args[0], node, force=True):
                 model.contribute(result, member.args[0], node)
+    if not any(member.tag == 'list' for member in branches(owner)):
+        from .native_classes import Cell
+        from .native_types import EMPTY
+        model.contribute(result, Cell(EMPTY), node)
     model.remember(plan, node, result)
     return True
 

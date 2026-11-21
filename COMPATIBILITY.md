@@ -40,6 +40,9 @@ of file, through the same buffer as `input()`.
 `sys.stdin.readlines()` and `sys.stdin.buffer.readlines()` collect those
 remaining lines into a list; a size hint is a positioned diagnostic.
 
+Item assignment to a tuple, string, bytes, number, `None` or function raises
+CPython's `TypeError` after the value, receiver and index are evaluated.
+
 An `...` expression statement is a placeholder with no effect, in functions,
 class bodies and module code; using the `Ellipsis` value is a positioned diagnostic.
 
