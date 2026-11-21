@@ -1,5 +1,17 @@
 # Compatibility
 
+Ordinary typed lists support `in` / `not in` for integer, boolean, text,
+bytes, tuple and `None` elements after evaluating the item and then the list.
+Float and other identity-dependent element/item pairs remain positioned
+diagnostics. `name += iterable` on a list extends the same object in place, so
+aliases observe the change; `list.extend` and `+=` accept borrowed list
+arguments and shared rows. A list display of literal constants may be repeated
+into a wider element slot, such as `[None] * n` later holding lists, when no
+alias of a stored list must be preserved; indexed reads of such `list | None`
+elements remain positioned diagnostics. Framed `list.count`, `index` and `remove` use the same identity-then-equality
+test as membership, so a NaN element matches its own object only. Framed statement blocks no longer
+emit doubled braces or blank lines for empty statements.
+
 Exact boolean singleton `is` / `is not` comparisons retain native bool
 values and the bool/int tag of finite numeric alternatives. `True` and `1`
 remain distinct objects even when they compare equal. Ordinary native chains

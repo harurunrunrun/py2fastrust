@@ -46,8 +46,18 @@ class ListOperation:
     length: int | None = None
 
 
-def plan_binary(operator, left, right):
-    """Resolve list operator meaning after each operand has been lowered once."""
+def _constant_display(node):
+    """A list display of literals: each repeated element is a fresh immutable value."""
+    return isinstance(node, ast.List) and all(isinstance(item, ast.Constant) for item in node.elts)
+
+
+def plan_binary(operator, left, right, *, constant_elements=False):
+    """Resolve list operator meaning after each operand has been lowered once.
+
+    ``constant_elements`` proves the sequence operand holds only literal
+    constants, possibly coerced to a wider element slot such as ``list | None``.
+    Repeating those values copies no mutable identity.
+    """
     a, b = list_type(left.kind), list_type(right.kind)
     if not (a or b):
         return None
@@ -65,7 +75,7 @@ def plan_binary(operator, left, right):
         return ListOperation("concat", result, element, length=length)
     if isinstance(operator, ast.Mult) and a != b:
         values, count = (left, right) if a else (right, left)
-        if count.kind not in {"int", "bool", "int_bool"} or not immutable(_element(values.kind)):
+        if count.kind not in {"int", "bool", "int_bool"} or not (constant_elements or immutable(_element(values.kind))):
             raise _Unsupported
         length = None
         if values.length is not None and count.constant is not None and -(1 << 31) <= count.constant < (1 << 31):
@@ -75,7 +85,10 @@ def plan_binary(operator, left, right):
 
 
 def binary(generator, operator, left, right, node):
-    plan = plan_binary(operator, left, right)
+    sequence = None
+    if isinstance(node, ast.BinOp):
+        sequence = node.left if list_type(left.kind) else node.right
+    plan = plan_binary(operator, left, right, constant_elements=_constant_display(sequence))
     if plan is None:
         return None
     generator.has_lists = generator.has_typed_lists = True

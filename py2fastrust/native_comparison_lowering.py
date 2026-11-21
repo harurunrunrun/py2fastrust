@@ -22,6 +22,9 @@ def compare_values(g,node,values,environment=None):
         from .native_key_containers import comparison as keyed_comparison
         keyed=keyed_comparison(g,node,values)
         if keyed is not None:return keyed
+        from .native_list_membership import membership as list_membership
+        listed=list_membership(g,node,values)
+        if listed is not None:return listed
     from .native_tuple_sequences import comparison as sequence_comparison
     sequence=sequence_comparison(g,node,values)
     if sequence is not None:return sequence

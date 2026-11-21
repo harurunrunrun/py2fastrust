@@ -172,7 +172,9 @@ def converted_result(g,node,result):
     source=canonical_kind(result.kind)
     if not isinstance(source,ListType) or not isinstance(canonical_kind(expected),ListType):return result
     target=canonical_kind(expected)
-    if not result.owned or not immutable(source.element) or not immutable(target.element):raise _Unsupported
+    # Converting copies source elements. Immutable source values carry no
+    # identity, so a None placeholder may become a mutable element slot.
+    if not result.owned or not immutable(source.element):raise _Unsupported
     g.register_type(expected);g.has_typed_lists=g.has_lists=True
     item=g.temporary()
     conversion=g.coerce(_Expression(item,source.element),target.element)

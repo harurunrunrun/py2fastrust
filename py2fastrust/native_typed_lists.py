@@ -320,6 +320,9 @@ def try_statement(g,node,environment):
         from .native_list_methods import try_expression as sequence_method
         method=sequence_method(g,node.value,environment)
         if method is not None:return method.code+";",environment
+    from .native_list_methods import augmented_extend
+    extended=augmented_extend(g,node,environment)
+    if extended is not None:return extended
     printed = _print(g,node,environment)
     if printed is not None:
         return printed

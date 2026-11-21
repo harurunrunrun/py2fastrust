@@ -90,11 +90,16 @@ def try_expression(g,node,environment):
                     g.iterating_lists.extend(owners)
                     continue
             temporary=g.temporary()
-            code=f"({value.code}).clone()"if not value.owned else value.code
-            lines.append(f"let {temporary}={code};")
-            bound[operand.parameter]=_Expression(temporary,value.kind)
+            bound[operand.parameter]=_capture_operand(g,lines,temporary,value,method.name=="extend")
     finally:
         del g.iterating_lists[depth:]
+    _record_mutation(g,storage,method,receiver,environment)
+    result=lower(g,storage,method,bound,node,environment,sort_key=sort_key)
+    captured=g.temporary()
+    return _Expression("{"+" ".join(lines)+f"let {captured}={result.code};{captured}"+"}",result.kind)
+
+
+def _record_mutation(g,storage,method,receiver,environment):
     if method.mutates and storage.mutation_binding is not None:
         g.expression_mutations.append(storage.mutation_binding)
     if method.mutates and storage.binding_name is not None:
@@ -108,6 +113,50 @@ def try_expression(g,node,environment):
             elif method.name in {"pop","remove"}:length=None if length is None else max(0,length-1)
             elif method.name=="extend":length=None
             g.update_info(environment,name,g.binding(_Expression("",receiver.kind,length=length)))
-    result=lower(g,storage,method,bound,node,environment,sort_key=sort_key)
-    captured=g.temporary()
-    return _Expression("{"+" ".join(lines)+f"let {captured}={result.code};{captured}"+"}",result.kind)
+
+
+def augmented_extend(g,node,environment):
+    """Lower ``name += value`` on a list as in-place ``list.__iadd__``.
+
+    The target is loaded before the value. ``list.__iadd__`` extends the same
+    object and returns it, so rebinding the name preserves every alias.
+    """
+    import ast
+    from .native_nested_lists import kind_for
+    from .native_sequence_plans import sequence_method
+    from .native_sequence_storage import capture_owned
+    from .native_sequence_methods import lower
+    if not(isinstance(node,ast.AugAssign)and isinstance(node.op,ast.Add)and isinstance(node.target,ast.Name)):
+        return None
+    kind=kind_for(g,node.target,environment)
+    if not list_type(kind)or deque_type(kind):return None
+    receiver=g.expression(node.target,environment)
+    method=sequence_method(receiver.kind,"extend")
+    if method is None:return None
+    g.has_lists=g.has_typed_lists=True
+    g.register_type(receiver.kind)
+    storage=capture_owned(g,receiver,node.target,environment,mutates=True)
+    lines=list(storage.setup)
+    depth=len(g.iterating_lists)
+    g.iterating_lists.extend(storage.forbidden_owners)
+    try:value=g.expression(node.value,environment)
+    finally:del g.iterating_lists[depth:]
+    bound=_capture_operand(g,lines,g.temporary(),value,True)
+    _record_mutation(g,storage,method,receiver,environment)
+    result=lower(g,storage,method,{"iterable":bound},node,environment)
+    return "{"+" ".join(lines)+result.code+";}",environment
+
+
+def _capture_operand(g,lines,temporary,value,borrow_list):
+    """Capture one explicit operand after its evaluation, before any borrow.
+
+    A borrowed list operand may be a slice argument or a shared handle, whose
+    clone is not an owned vector. Extending reads it immediately afterwards,
+    so keeping a reference observes the same contents as Python.
+    """
+    if borrow_list and not value.owned and list_type(value.kind):
+        lines.append(f"let {temporary}=&({value.code});")
+        return _Expression(temporary,value.kind,owned=False)
+    code=f"({value.code}).clone()"if not value.owned else value.code
+    lines.append(f"let {temporary}={code};")
+    return _Expression(temporary,value.kind)

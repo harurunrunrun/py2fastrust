@@ -1309,6 +1309,9 @@ class Model:
                         bound=method.signature.bind([receiver]+arguments,keywords,defaults).by_name
                     except CallBindingError:raise ClassUnsupported(node)from None
                     self.sequence_calls[(plan.index,id(node))]=method
+                    if method.name in {"count","index","remove"}:
+                        from .native_float_identity import require as require_float_identity
+                        require_float_identity(self,plan,node,"sequence_search",receiver)
                     item=receiver.args[0]
                     if method.name=="append":self.contribute(item,bound["value"],node)
                     elif method.name=="insert"and bound["index"].root().tag in {None,"int","bool","int_bool","union"}:
@@ -2632,7 +2635,14 @@ class Emitter:
             at=emitter.at
             from .native_class_storage import shared_element
             shared_element=staticmethod(shared_element)
-            def sequence_equal(self,left,right,node):return emitter.comparison(ast.Eq(),left,right,node)
+            from .native_float_identity import enabled as _float_identity
+            float_identity_equal=_float_identity(emitter.model)
+            def sequence_equal(self,left,right,node):
+                # list.count/index/remove compare with an identity shortcut, as
+                # membership does; a NaN element matches its own object.
+                from .native_float_identity import scalar_comparison
+                identity=scalar_comparison(emitter,ast.Eq(),left,right,node,identity=True)
+                return identity if identity is not None else emitter.comparison(ast.Eq(),left,right,node)
             def sequence_ordering(self,left,right,node):
                 from .native_class_storage import ordering
                 return ordering(emitter,left,right,node)
@@ -3037,8 +3047,9 @@ class Emitter:
     def statements(self, values):
         reached=getattr(self.model,'reached_statements',None)
         from .native_statement_lifetimes import scope
-        return "\n".join(scope(self,value,self.statement(value))for value in values
-                         if reached is None or(self.plan.index,id(value))in reached)
+        emitted=(scope(self,value,self.statement(value))for value in values
+                 if reached is None or(self.plan.index,id(value))in reached)
+        return "\n".join(code for code in emitted if code)
 
     def statement(self, node):
         from .native_abrupt_values import emit_statement

@@ -50,7 +50,7 @@ def scope(emitter,node,code):
     # Every original statement owns its implementation-only operand captures.
     # Persistent Python bindings live in the function's separately declared
     # slots, not in these temporary Rust lets.
-    result='{'+code+'}'
+    result=code if _single_block(code)else'{'+code+'}'
     if flow is None or isinstance(node,(ast.Return,ast.Raise,ast.Break,ast.Continue)):
         return result
     live=flow.after.get(id(node))
@@ -77,3 +77,11 @@ def scope(emitter,node,code):
             else:owners[owner.index]=True
         if owners[owner.index]:result+=slot+'=None;'
     return result
+
+
+def _single_block(code):
+    """Whether one balanced Rust block already scopes every statement temporary."""
+    from .rust_pruning import _lex,_Unsupported
+    try:tokens,_,pairs=_lex(code)
+    except _Unsupported:return False
+    return bool(tokens)and tokens[0].text=='{'and pairs.get(0)==len(tokens)-1

@@ -38,7 +38,8 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
         source=element_type(value.kind)
         if not immutable(source)and not(storage.shared and shared_kind(source)):
             raise _Unsupported("list.extend would copy mutable elements whose shared Python identities must be retained; the identity-preserving element adapter is not implemented for these source/destination storages",node=node,types=(("receiver",storage.kind),("iterable",value.kind)),proof="mutable element sharing during extend")
-        if not storage.shared and value.owned:
+        from .native_types import SharedListType
+        if not storage.shared and value.owned and not isinstance(value.kind,SharedListType):
             if source==element:
                 code=g.at(f"native_typed_extend({storage.mutable},{value.code})",node)
             else:
@@ -46,7 +47,6 @@ def lower(g,storage,method,bound,node,environment,*,sort_key=None):
                 converted=g.coerce(_Expression(item,source),element)
                 code=g.at(f"native_typed_extend_mapped({storage.mutable},{value.code},|{item}|{converted})",node)
         else:
-            from .native_types import SharedListType
             sequence=f"&({value.code}.borrow())[..]" if isinstance(value.kind,SharedListType) or storage.shared and not isinstance(storage.kind,SharedListType) else f"&({value.code})[..]"
             # Shared contents are snapshotted before taking a mutable borrow,
             # including x.extend(x). Captured owned vectors need no second copy.
@@ -148,7 +148,9 @@ def _remove(g,storage,needle,node):
     if custom_equal is None and(not _supported(element)or not _supported(needle.kind)):
         raise _Unsupported("list.remove requires Python equality and identity for this element/needle pair; that equality adapter is not implemented",node=node,types=(("element",element),("needle",needle.kind)),proof="Python list removal equality and identity")
     from .native_classes import has_float_payload
-    if has_float_payload(element)or has_float_payload(needle.kind):
+    numeric={"int","bool","int_bool","float"}
+    identity=getattr(g,"float_identity_equal",False)and element in numeric and needle.kind in numeric
+    if(has_float_payload(element)or has_float_payload(needle.kind))and not identity:
         raise _Unsupported("list.remove requires identity-aware floating-point equality, including NaN objects; this element/needle adapter is not implemented",node=node,types=(("element",element),("needle",needle.kind)),proof="floating-point identity in list removal")
     cursor,item,found,removed,values,candidate=(g.temporary()for _ in range(6))
     if storage.shared:
@@ -156,15 +158,17 @@ def _remove(g,storage,needle,node):
         equal=custom_equal(value,needle,node)if custom_equal else _equal(g,value,needle)
         compare=(f"let {candidate}={{let {values}={storage.read};{values}.get({cursor}).cloned()}};"
                  +f"let {found}=match {candidate}"
-                 +f"{{Some({item})=>{{let same={equal};drop({item});same}},None=>{{{missing};unreachable!()}}}};")
+                 +f"{{Some({item})=>{equal},None=>{{{missing};unreachable!()}}}};")
     else:
         equal=_equal(g,_Expression(f"(*{item})",element,owned=False),needle)
         compare=(f"let {found}={{({storage.read}).get({cursor}).map(|{item}|{equal})}};"
                  +f"let {found}=match {found}{{Some(value)=>value,None=>{{{missing};unreachable!()}}}};")
     advance=g.at(f'{cursor}.checked_add(1).ok_or_else(||"OverflowError: list removal index overflow".to_owned())',node)
     return (f"{{let mut {cursor}=0_usize;loop{{"+compare
-            +f"if {found}{{let {removed}={{let {values}={storage.mutable};"
-            +f"if {cursor}<{values}.len(){{Some({values}.remove({cursor}))}}else{{None}}}};drop({removed});break;}}"
+            # The removed value is dropped when this block exits, after the
+            # list borrow above has ended; its destructor cannot observe it.
+            +f"if {found}{{let _{removed}={{let {values}={storage.mutable};"
+            +f"if {cursor}<{values}.len(){{Some({values}.remove({cursor}))}}else{{None}}}};break;}}"
             +f"{cursor}={advance};"+"}}")
 
 
