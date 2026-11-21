@@ -187,6 +187,8 @@ def select_frames(unit,*,integer="i64"):
     if exit_requires_frames(analysis):reasons+=('native process termination unwinding',)
     from .native_sum_binding import requires_frames as sum_requires_frames
     if sum_requires_frames(analysis):reasons+=('canonical sum binding errors',)
+    from .native_sum_binding import sequence_start_frames
+    if sequence_start_frames(unit,analysis):reasons+=('sum with a list start',)
     from .native_float_sum import requires_frames as float_sum_frames
     if float_sum_frames(unit,analysis):reasons+=('compensated floating sum',)
     nodes={unit.ordinal(node):node for node in ast.walk(unit.tree)}

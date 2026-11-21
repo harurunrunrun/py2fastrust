@@ -9,6 +9,9 @@ diagnostics.
 accumulate exactly until the first float, after which a Neumaier compensated
 sum adds floats and converted integers, so `sum([1.0, 1e-17, -1.0])` is
 `1e-17`. An empty iterable returns the int start.
+With a list start, such as `sum(rows, [])`, each list or tuple item is added
+with list `+` into a new list; an empty iterable returns the start object
+itself, and scalar items raise CPython's concatenation `TypeError`.
 
 `math.gcd(*values)` and `math.lcm(*values)` accept a runtime number of builtin
 integer arguments, mixed with ordinary positional arguments.

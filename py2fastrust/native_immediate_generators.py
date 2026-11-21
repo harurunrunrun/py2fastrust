@@ -162,7 +162,7 @@ class Generators:
             emitter.numeric.scope_code=old_numeric_scope
 
     def consume(self,emitter,node,name,value,arguments,keywords,wanted,*,append_item=None):
-        from .native_classes import Expression,shape
+        from .native_classes import Expression,shape,domain
         from .native_class_comprehensions import Collector,_Iterator,emit
         from .native_class_calls import entry_result
         from .native_generator_effects import ensure_protocol
@@ -191,6 +191,10 @@ class Generators:
                 elif name=='list':
                     reserve=e.at(f'{result}.try_reserve(1).map_err(|_|"MemoryError: cannot allocate list".to_owned())',node)
                     action=reserve+';'+f'{result}.push({e.coerce(item,wanted.element,node)});'
+                elif name=='sum'and len(arguments)==2 and domain(arguments[1].kind)=='list':
+                    # A list start concatenates with list.__add__ per item.
+                    computed=e.binary(ast.Add(),Expression(result+'.clone()',wanted),item,node,wanted,identity=('sum_sequence_add',))
+                    action=f'{result}={e.coerce(computed,wanted,node)};'
                 elif name=='sum':
                     computed=e.numeric.binary(ast.Add(),e.scalar(Expression(result+'.clone()',wanted)),e.scalar(item),node)
                     action=f'{result}={e.coerce(computed,wanted,node)};'

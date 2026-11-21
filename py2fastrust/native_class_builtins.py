@@ -200,6 +200,21 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
             from .native_float_sum import analyze as analyze_float_sum
             floating_sum=analyze_float_sum(model,node,_alternatives(shape(item)),arguments[1]if len(arguments)==2 else Cell("int"),cell)
         if floating_sum is not None:return floating_sum
+        if len(arguments)==2 and arguments[1].root().tag=="list":
+            # PyNumber_Add(result, item) per element: each step builds a new list;
+            # with no elements the start object itself is the result.
+            result=cell()
+            self.contribute(result,arguments[1],node)
+            from .native_types import ListType,TupleType,TupleSequenceType,alternatives as _kinds
+            if not isinstance(item.tag,EmptyType)and item.tag is not None:
+                kinds=_kinds(shape(item))
+                if all(kind in {"int","bool","int_bool","float","none","str"}for kind in kinds):pass
+                elif all(isinstance(kind,(ListType,TupleType,TupleSequenceType))for kind in kinds):
+                    self.contribute(result,self.binary(plan,node,ast.Add(),result,item,identity=("sum_sequence_add",)),node)
+                else:
+                    raise ClassUnsupported(node,'summing these items onto a list start needs their reflected __radd__ protocol; list, tuple and builtin scalar items are implemented',
+                                           types=(('item',shape(item)),),proof='sum sequence item addition protocol')
+            return result
         if not isinstance(item.tag,EmptyType)and item.tag not in {None,"int","bool","int_bool"}:
             from .native_types import alternatives
             if 'float'in alternatives(shape(item)):
@@ -651,7 +666,18 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
             else:raise ClassUnsupported(node)
             from .native_types import EmptyType
             from .native_types import alternatives as _alternatives
-            if name=="sum"and not isinstance(kind,EmptyType)and('float'in _alternatives(kind)or start.kind=='float'):
+            if name=="sum"and domain(start.kind)=="list":
+                if isinstance(kind,EmptyType):action=f"match {member}{{}};"
+                elif all(choice in {"int","bool","int_bool","float","none","str"}for choice in _alternatives(kind)):
+                    # list.__add__ rejects a non-list operand; no scalar defines __radd__ for lists.
+                    name_code=_type_name(self,Expression(member,kind),node)
+                    message='format!("TypeError: can only concatenate list (not \\"{}\\") to list",'+name_code+')'
+                    action=f"{accumulator}={_error(self,node,wanted,message).code};"
+                else:
+                    value=self.binary(ast.Add(),Expression(accumulator+".clone()",wanted),Expression(member,kind),node,wanted,identity=("sum_sequence_add",))
+                    action=f"{accumulator}={self.coerce(value,wanted,node)};"
+                ending=accumulator
+            elif name=="sum"and not isinstance(kind,EmptyType)and('float'in _alternatives(kind)or start.kind=='float'):
                 from .native_float_sum import emit as emit_float_sum
                 setup,action,finish=emit_float_sum(self,node,start,kind,wanted,member,accumulator)
                 code+=setup

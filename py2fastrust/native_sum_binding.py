@@ -26,3 +26,23 @@ def requires_frames(analysis):
     return any(BuiltinIdentity('sum')in call.identity.alternatives
                and error(len(call.positional),(name for name,_ in call.keywords))is not None
                for facts in analysis.scopes.values()for call in facts.calls.values())
+
+
+def sequence_start_frames(unit, analysis):
+    """Route sum() calls whose start is a list to the framed list-addition reducer."""
+    import ast
+    from .native_types import ListType, alternatives
+    for node in ast.walk(unit.tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'sum'):
+            continue
+        starts = node.args[1:2] + [keyword.value for keyword in node.keywords if keyword.arg == 'start']
+        for start in starts:
+            if isinstance(start, (ast.List, ast.ListComp)):
+                return True
+            try:
+                ordinal = unit.ordinal(start)
+            except KeyError:
+                continue
+            if any(isinstance(kind, ListType) for facts in analysis.scopes.values() for kind in alternatives(facts.expressions.get(ordinal))):
+                return True
+    return False
