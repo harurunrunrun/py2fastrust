@@ -3864,6 +3864,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(handler_runtime(model))
     from .native_class_round import runtime as round_runtime
     pieces.append(round_runtime(model))
+    from .native_percent_format import runtime as percent_runtime
+    pieces.append(percent_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)

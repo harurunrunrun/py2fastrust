@@ -32,8 +32,6 @@ def parse(text):
         if kind == '%' and match.end() - start == 2:
             pieces.append('%')
         elif kind in INTEGER | REAL | TEXT | {CHARACTER}:
-            if kind in INTEGER and match.group('precision') is not None:
-                return None, 'integer precision padding'
             pieces.append(match.groupdict())
         else:
             return None, f'the %{kind} conversion'
@@ -113,7 +111,47 @@ def _directive(emitter, node, directive, value):
         value = Expression(emitter.at(f'{operation}({emitter.scalar(value).code})', node), 'int')
     if kind in REAL and tag != 'float':
         value = Expression(emitter.coerce(value, 'float', node), 'float')
+    if kind in INTEGER and directive['precision'] is not None:
+        return _integer_precision(emitter, node, directive, value)
     return format_value(emitter, node, value, literal)
+
+
+def _integer_precision(emitter, node, directive, value):
+    """Integer precision is a minimum digit count after sign and prefix; width pads the result."""
+    from .native_classes import Expression
+    from .native_formatting import format_value
+    from .native import _string
+    flags, kind = directive['flags'], directive['type']
+    prefixed = '#' in flags and kind in {'x', 'X', 'o'}
+    inner = ('+' if '+' in flags else ' ' if ' ' in flags else '') + ('#' if prefixed else '') + {'i': 'd', 'u': 'd'}.get(kind, kind)
+    before, text = emitter.capture(format_value(emitter, node, value, Expression('NativeText::from(' + _string(inner) + ')', 'str', inner)))
+    emitter.model.native_percent_precision_used = True
+    arguments = ','.join((directive['precision'] or '0', directive['width'] or '0', str('-' in flags).lower(),
+                          str('0' in flags and '-' not in flags).lower(), str(prefixed).lower()))
+    return Expression('{' + before + 'NativeText::from(native_percent_precision(&(' + text.code + '),' + arguments + '))}', 'str')
+
+
+RUNTIME = r'''
+fn native_percent_precision(text:&str,precision:usize,width:usize,left:bool,zero:bool,prefixed:bool)->String{
+    let sign=if text.starts_with(['+','-',' ']){1}else{0};
+    let head=sign+if prefixed{2}else{0};
+    let digits=&text[head..];
+    let mut body=String::with_capacity(width.max(precision+head));
+    body.push_str(&text[..head]);
+    for _ in digits.len()..precision{body.push('0');}
+    body.push_str(digits);
+    let length=body.len();
+    if length>=width{return body;}
+    if left{body.extend(std::iter::repeat(' ').take(width-length));return body;}
+    let fill=if zero{'0'}else{' '};
+    let padding:String=std::iter::repeat(fill).take(width-length).collect();
+    if zero{body.insert_str(head,&padding);body}else{padding+&body}
+}
+'''
+
+
+def runtime(model):
+    return RUNTIME if getattr(model, 'native_percent_precision_used', False) else ''
 
 
 def _character(emitter, node, value, tag):

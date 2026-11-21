@@ -16,8 +16,8 @@ integer arguments, mixed with ordinary positional arguments.
 `literal % values` formats with `d i u x X o e E f F g G s r a c %` directives,
 the `- + space 0 #` flags, width and precision, mapped onto the canonical
 format specification; argument count and operand type errors keep CPython's
-messages. Mapping keys, `*` widths and integer precision remain
-positioned diagnostics.
+messages. Integer precision is a minimum digit count, as in CPython.
+Mapping keys and `*` widths remain positioned diagnostics.
 
 Programs with assignment expressions (`:=`) use the framed path, which binds
 them in the enclosing scope, including from comprehensions.
