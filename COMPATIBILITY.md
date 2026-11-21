@@ -51,6 +51,10 @@ Unicode mode, bytes in the ASCII profile), and `removeprefix`/`removesuffix`
 drop one matching affix. `swapcase`, `capitalize` and `title` follow ASCII case
 rules in the default profile and remain positioned diagnostics in Unicode mode.
 
+`itertools.zip_longest` with a fixed number of iterables follows CPython's
+pull order: an exhausted iterator is never pulled again and yields `fillvalue`.
+Starred argument lists remain positioned diagnostics.
+
 Item assignment to a tuple, string, bytes, number, `None` or function raises
 CPython's `TypeError` after the value, receiver and index are evaluated.
 
