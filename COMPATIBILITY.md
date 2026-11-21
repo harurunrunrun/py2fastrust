@@ -61,6 +61,9 @@ iteration. Because CPython gives it a separate buffer, it is admitted only as a
 single `open(0)` evaluated once in a program that does not also use `input()`
 or `sys.stdin`; other `open()` calls remain positioned diagnostics.
 
+Reading a global name that no statement binds and that is not a builtin raises
+CPython's `NameError` (with its traceback) when the read executes.
+
 `copy.copy` and `copy.deepcopy` handle builtin lists, tuples and immutable
 scalars; deep copies keep CPython's identity memo, so a list reached twice stays
 shared in the copy. Other containers and objects remain positioned diagnostics.

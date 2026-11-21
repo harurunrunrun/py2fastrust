@@ -107,6 +107,9 @@ def select_frames(unit,*,integer="i64"):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
     if any(isinstance(node,(ast.Try,getattr(ast,'TryStar',ast.Try)))for node in ast.walk(unit.tree)):
         return FrameSelection(True,('exception handler regions',),None,frozenset(),MappingProxyType({}))
+    from .native_undefined_names import requires_frames as undefined_name_frames
+    if undefined_name_frames(unit):
+        return FrameSelection(True,('runtime NameError for unbound global names',),None,frozenset(),MappingProxyType({}))
     from .native_match import requires_frames as match_frames
     if match_frames(unit):
         return FrameSelection(True,('structural pattern matching',),None,frozenset(),MappingProxyType({}))
