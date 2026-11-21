@@ -500,7 +500,12 @@ class Builder:
             head,body,otherwise,after=self.new(),self.new(),self.new(),self.new();self.end(('jump',head));self.current=head
             if domain(kind)=='list':pull='{let source='+source.code+';let item=source.borrow().get(frame.'+index+').cloned();item}';item_kind=kind.element
             elif domain(kind)=='tuple':
-                item_kind=self.emitter.kind(node.target)
+                if isinstance(node.target,(ast.Tuple,ast.List)):
+                    # A destructuring target has no record of its own; the item is each field's shared kind.
+                    if not kind.fields or any(part!=kind.fields[0]for part in kind.fields):
+                        raise Unproved('this destructured tuple iteration needs a union item carrier')
+                    item_kind=kind.fields[0]
+                else:item_kind=self.emitter.kind(node.target)
                 pull='match frame.'+index+'{'+','.join(str(i)+'=>Some('+self.emitter.coerce(Expression('('+source.code+').'+str(i)+'.clone()',part),item_kind,node)+')'for i,part in enumerate(kind.fields))+',_=>None}'
             elif domain(kind)=='range':pull='frame.'+iterator+'.as_mut().unwrap().next()';item_kind='int'
             else:raise Unproved('this iterator cursor is not an owned builtin list/tuple/range continuation')
@@ -623,10 +628,11 @@ impl Drop for ClassNativeSegment{fn drop(&mut self){CLASS_NATIVE_DEPTH.with(|dep
 fn class_native_enter()->Option<ClassNativeSegment>{CLASS_NATIVE_DEPTH.with(|depth|{
 if depth.get()>='''+str(MAX_NATIVE_CALL_DEPTH)+'''{None}else{depth.set(depth.get()+1);Some(ClassNativeSegment)}})}''')
     result.append('enum ClassNativeState{'+','.join('F_'+str(i)+'(ClassNativeFrame_'+str(i)+',ClassNativePc_'+str(i)+')'for i in builders)+'}')
-    result.append('enum ClassNativeReturn{'+','.join('F_'+str(i)+'('+b.emitter.rust_type(shape(b.plan.result))+')'for i,b in builders.items())+'}')
-    result.append('enum ClassNativeContinuation{'+','.join('Site_'+str(site.index)+'{frame:ClassNativeFrame_'+str(site.caller.index)+'}'for site in registry.sites)+'}')
-    result.append('enum ClassNativeStep{'+','.join(['Jump_'+str(i)+'(ClassNativePc_'+str(i)+'),Return_'+str(i)+'('+b.emitter.rust_type(shape(b.plan.result))+')'for i,b in builders.items()]+['Call_'+str(site.index)+('(ClassNativeFrame_'+str(site.callee.index)+')'if site.owned_child else'')for site in registry.sites])+'}')
-    unwinds=','.join('ClassNativeContinuation::Site_'+str(site.index)+'{..}=>{error.frames.push(('+str(site.node.lineno)+','+builders[site.caller.index].emitter.location_code()+'));}'for site in registry.sites)
+    # A never-built variant keeps each root's fallback arm reachable with a single function.
+    result.append('enum ClassNativeReturn{'+','.join(['F_'+str(i)+'('+b.emitter.rust_type(shape(b.plan.result))+')'for i,b in builders.items()]+['Unreachable'])+'}')
+    result.append('enum ClassNativeContinuation{'+','.join(['Site_'+str(site.index)+'{frame:ClassNativeFrame_'+str(site.caller.index)+'}'for site in registry.sites]+['Unreachable'])+'}')
+    result.append('enum ClassNativeStep{'+','.join(['Jump_'+str(i)+'(ClassNativePc_'+str(i)+'),Return_'+str(i)+'('+b.emitter.rust_type(shape(b.plan.result))+')'for i,b in builders.items()]+['Call_'+str(site.index)+('(ClassNativeFrame_'+str(site.callee.index)+')'if site.owned_child else'')for site in registry.sites]+['Unreachable'])+'}')
+    unwinds=','.join('ClassNativeContinuation::Site_'+str(site.index)+'{..}=>{error.frames.push(('+str(site.node.lineno)+','+builders[site.caller.index].emitter.location_code()+'));}'for site in registry.sites)+',ClassNativeContinuation::Unreachable=>{}'
     result.append('fn class_native_unwind(stack:&mut Vec<ClassNativeContinuation>,class_scope:&ClassScope,mut error:NativeError)->NativeError{'
                   'while let Some(caller)=stack.pop(){class_scope.control.borrow_mut().depth-=1;match caller{'+unwinds+'}}error}')
     state_arms=[]
