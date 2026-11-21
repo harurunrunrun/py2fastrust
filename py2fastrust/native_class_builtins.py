@@ -6,7 +6,7 @@ and the adapter never traverses/evaluates argument ASTs a second time.
 import ast
 from .references import BuiltinIdentity
 
-SUPPORTED=frozenset({"type","exit","quit","classmethod","staticmethod","property","ord","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bytearray","bool","float","len","abs","id","globals","isinstance",
+SUPPORTED=frozenset({"type","exit","quit","classmethod","staticmethod","property","ord","chr","bin","oct","hex","format","repr","ascii","divmod","input","print","int","str","bytes","bytearray","bool","float","len","abs","id","globals","isinstance",
                      "round","range","list","tuple","sum","min","max","map","zip","enumerate","filter","iter","reversed","next","any","all","pow","sorted","dict","set"})
 
 
@@ -55,7 +55,7 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
             from .native_source_display import analyze as analyze_display
             analyze_display(model,plan,node,arguments[0],environment,name in {'repr','ascii'})
         return cell("str")
-    if name in {'ord','bin','oct','hex'}:
+    if name in {'ord','chr','bin','oct','hex'}:
         from .native_character_builtins import analyze as analyze_character
         return analyze_character(model,plan,node,name,arguments,keywords,factory=cell)
     if name=='divmod':
@@ -254,7 +254,7 @@ def emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=F
         from .native_integer_base import emit as emit_integer_base
         explicit=emit_integer_base(emitter,node,arguments,keywords,wanted)
         if explicit is not None:return explicit
-    if identity.name in {'ord','bin','oct','hex'}:
+    if identity.name in {'ord','chr','bin','oct','hex'}:
         from .native_character_builtins import emit as emit_character
         return emit_character(emitter,node,identity.name,arguments,keywords,wanted)
     if identity.name in {"format","repr","ascii"}:

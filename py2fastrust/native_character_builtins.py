@@ -2,7 +2,7 @@
 from .native_types import alternatives, union_type
 from .references import BuiltinIdentity
 
-NAMES = frozenset({'ord', 'bin', 'oct', 'hex'})
+NAMES = frozenset({'ord', 'chr', 'bin', 'oct', 'hex'})
 
 
 def requires_frames(analysis):
@@ -80,6 +80,15 @@ def emit(emitter, node, name, arguments, keywords, wanted):
                 'format!("TypeError: \'{}\' object cannot be interpreted as an integer",'
                 + _type_name(emitter, value, node) + ')').code
         before, number = emitter.capture(Expression(emitter.number(value), 'int'))
+        if name == 'chr':
+            # CPython 3.14 reports every out-of-range integer as ValueError.
+            wide = f'{number.code}.to_i128()' if emitter.model.integer == 'bigint' else f'Some({number.code} as i128)'
+            point, character = emitter.fresh(), emitter.fresh()
+            outside = _error(emitter, node, wanted, '"ValueError: chr() arg not in range(0x110000)".to_owned()').code
+            surrogate = _error(emitter, node, wanted, '"NotImplementedError: native text cannot hold a lone surrogate code point from chr()".to_owned()').code
+            text = emitter.coerce(Expression(f'NativeText::from({character}.to_string())', 'str'), wanted, node)
+            return ('{' + before + f'match {wide}.filter(|{point}|(0..=0x10FFFF).contains({point})){{None=>{outside},Some({point})=>'
+                    + f'match char::from_u32({point} as u32){{Some({character})=>{text},None=>{surrogate}}}}}}}')
         prefix = {'bin': '0b', 'oct': '0o', 'hex': '0x'}[name]
         base = {'bin': 2, 'oct': 8, 'hex': 16}[name]
         if emitter.model.integer == 'bigint':

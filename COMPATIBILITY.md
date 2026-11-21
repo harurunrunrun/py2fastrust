@@ -1,5 +1,9 @@
 # Compatibility
 
+`chr()` converts integer code points, reporting CPython 3.14's `ValueError`
+for every value outside `range(0x110000)`; a lone surrogate code point is a
+runtime `NotImplementedError` because native text cannot hold it.
+
 Builtin set operators `|`, `&`, `-`, `^` and their in-place forms follow the
 CPython 3.14.4 `Objects/setobject.c` algorithms on the CPython-order set table,
 including operand-size choices, the difference copy and intersection
