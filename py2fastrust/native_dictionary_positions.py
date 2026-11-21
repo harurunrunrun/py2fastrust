@@ -61,7 +61,10 @@ def proved(kind,model=None,seen=frozenset()):
     from .native_types import alternatives
     if not mapping_kind(kind)or kind.record.category!='dict'or kind.record.flavor not in {'dict','Counter','defaultdict'}:return False
     record=kind.record
-    if record.index in seen:return False
+    # A loop-carried copy cycle (dp=dict(dp)) revisits a record already being proved. Each record
+    # in the cycle still passes its own origin check, and every runtime value comes from a finite
+    # chain that starts at a proved non-cyclic origin, so the revisit is assumed (co-inductively).
+    if record.index in seen:return True
     seen=seen|{record.index}
     def source_proof(value,source_type,counter=False):
         if value is None:return True

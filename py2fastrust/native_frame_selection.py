@@ -187,6 +187,10 @@ def select_frames(unit,*,integer="i64"):
     if exit_requires_frames(analysis):reasons+=('native process termination unwinding',)
     from .native_sum_binding import requires_frames as sum_requires_frames
     if sum_requires_frames(analysis):reasons+=('canonical sum binding errors',)
+    from .references import BuiltinIdentity as _Builtin
+    if any(_Builtin('dict')in call.identity.alternatives and(call.positional or call.keywords)
+           for facts in analysis.scopes.values()for call in facts.calls.values()):
+        reasons+=('dict constructor arguments',)
     from .native_open_stdin import requires_frames as open_stdin_frames
     if open_stdin_frames(unit):reasons+=('open(0) standard-input file',)
     from .native_list_deletion import requires_frames as list_deletion_frames

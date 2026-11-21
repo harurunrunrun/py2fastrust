@@ -857,7 +857,14 @@ class Solver:
             result=value(self.allocation(term.site,name,context))
             if not args and not keywords:self.constructors.add((context,term.site))
             if args:
-                if name=="dict":return UNKNOWN
+                if name=="dict":
+                    # dict(mapping) copies the keys and values of a builtin dictionary.
+                    source=self.provenance(args[0])
+                    if (len(args)!=1 or keywords or source.unknown or source.unbound or not source.alternatives
+                            or not all(isinstance(part,Allocation)and part.category=="dict"for part in source.alternatives)):return UNKNOWN
+                    self.insert(result,"key",self.field_values(args[0],"iteration"))
+                    self.insert(result,"value",self.field_values(args[0],"value"))
+                    return result
                 self.insert(result,"element" if name=="list" else "key",self.field_values(args[0],"iteration"))
             return result
         if name in {"range","iter","reversed","filter","map","enumerate","zip","sorted"}:
