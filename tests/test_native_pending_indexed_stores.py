@@ -1,4 +1,5 @@
 """Actual helper effects settle before rejecting a provisional scalar target."""
+import shutil
 import unittest
 from py2fastrust import transpile,TranspileOptions
 import test_native_annotations_assertions as support
@@ -84,14 +85,9 @@ for _name,_arguments in CASES.items():
  setattr(PendingIndexedStoreExecutionTests,'test_'+_name,_case)
 
 class PendingIndexedStoreBoundaries(unittest.TestCase):
- def test_complete_scalar_target_stays_positioned(self):
-  cases=(
-   'class Grid:\n def __init__(self):\n  self.rows=[0]\n  self.prepare()\n  self.rows[0][0]=3\n def prepare(self):pass\ngrid=Grid()\n',
-  )
-  for source in cases:
-   for integer in ('i64','i128','bigint'):
-    result=transpile(source,TranspileOptions(integer=integer,license='none',filename='pending_store.py'))
-    self.assertFalse(result.success)
-    self.assertTrue(any(item.code=='E006'and item.line>0 for item in result.diagnostics),result.diagnostics)
+ @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
+ def test_complete_scalar_target_raises_type_error(self):
+  from test_native_exception_handlers import compare
+  compare(self,'class Grid:\n def __init__(self):\n  self.rows=[0]\n  self.prepare()\n  self.rows[0][0]=3\n def prepare(self):pass\ngrid=Grid()\n','')
 
 if __name__=='__main__':unittest.main()

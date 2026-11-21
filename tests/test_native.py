@@ -352,7 +352,7 @@ print(b[0],b[1],b[-1],len(b))
             "a=[i for i in range(3)]\nprint(i)",
             "a=[i for i in range(3) for j in range(2)]", "a=[1]\nfor a in a:\n pass",
         ]
-        self.check_source_cases(rejected, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16], compile_only=(8,))
+        self.check_source_cases(rejected, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16], compile_only=(8,))
         self.differential("a=[1]\na=2\nprint(a)")
         self.differential("a=[1]\nb=a[0:1]\nb.append(2)\nprint(*a)\nprint(*b)")
         self.differential("a=[]\nprint(sum(a, True))")
