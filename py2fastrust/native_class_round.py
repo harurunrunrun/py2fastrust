@@ -42,10 +42,43 @@ def _kind(number, digits, node):
             'round() on these operands requires the __round__ or __index__ object protocol; that protocol is not implemented by the integral adapter',
             types=(('number', number), ('ndigits', digits)), proof='round operand and integer-index protocols')
     if tags[0] == 'float':
-        raise ClassUnsupported(node,
-            'round() of a binary64 value requires its decimal rounding, overflow and result-kind protocol; only integral round is implemented',
-            types=(('number', number),), proof='binary64 round protocol')
+        return 'int' if tags[1] == 'none' else 'float' if tags[1] in INTEGRAL else EMPTY
     return 'int' if tags[0] in INTEGRAL and tags[1] in INTEGRAL | {'none'} else EMPTY
+
+
+RUNTIME = r'''
+fn class_round_float(value:f64,digits:i128)->f64 {
+    // float.__round__ in CPython 3.14: correctly rounded decimal digits with
+    // ties to even, NDIGITS_MAX=323 and NDIGITS_MIN=-308.
+    if !value.is_finite()||digits>323 {return value;}
+    if digits< -308 {return 0.0*value;}
+    if digits>=0 {return format!("{:.*}",digits as usize,value).parse().unwrap();}
+    let places=(-digits) as usize;
+    let exact=format!("{:.0}",value.abs().trunc());
+    let fraction=value.fract()!=0.0;
+    let (high,low)=if exact.len()>places {exact.split_at(exact.len()-places)} else {("",exact.as_str())};
+    let low=format!("{:0>width$}",low,width=places);
+    let half=format!("5{}","0".repeat(places-1));
+    let odd=high.bytes().last().map_or(false,|digit|(digit-b'0')%2==1);
+    let up=low>half||low==half&&(fraction||odd);
+    let mut kept:Vec<u8>=if high.is_empty(){vec![b'0']}else{high.bytes().collect()};
+    if up {
+        let mut index=kept.len();
+        loop {
+            if index==0 {kept.insert(0,b'1');break;}
+            index-=1;
+            if kept[index]==b'9' {kept[index]=b'0';} else {kept[index]+=1;break;}
+        }
+    }
+    let text=format!("{}{}",String::from_utf8(kept).unwrap(),"0".repeat(places));
+    let magnitude:f64=text.parse().unwrap();
+    if value.is_sign_negative() {-magnitude} else {magnitude}
+}
+'''
+
+
+def runtime(model):
+    return RUNTIME if getattr(model, 'native_float_round_used', False) else ''
 
 
 def analyze(model, plan, node, arguments, keywords, *, factory):
@@ -119,6 +152,16 @@ def emit(emitter, node, arguments, keywords, wanted):
                     lower(values[:index] + [Expression(f'({code}).clone()', kind)] + values[index + 1:]).code), wanted)
         number, digits = values
         _kind(number.kind, digits.kind, node)
+        if domain(number.kind) == 'float' and domain(digits.kind) in INTEGRAL | {'none'}:
+            raw = emitter.scalar(number).code
+            if digits.kind == 'none':
+                operation = 'Int::from_f64' if emitter.model.integer == 'bigint' else 'native_float_integer'
+                return emitter.encoded(emitter.at(f'{operation}(({raw}).round_ties_even())', node), 'int', wanted, node)
+            emitter.model.native_float_round_used = True
+            count = emitter.number(digits)
+            wide = (f'({count}).to_i128().unwrap_or(if ({count}).is_negative(){{i128::MIN}}else{{i128::MAX}})'
+                    if emitter.model.integer == 'bigint' else f'({count}) as i128')
+            return emitter.encoded(f'class_round_float({raw},{wide})', 'float', wanted, node)
         if domain(number.kind) not in INTEGRAL:
             return _error(emitter, node, wanted,
                 'format!("TypeError: type {} doesn\'t define __round__ method",' + _type_name(emitter, number, node) + ')')

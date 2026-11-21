@@ -21,10 +21,8 @@ class NativeIntegralRoundTests(unittest.TestCase):
     def test_invalid_digits_has_the_real_integer_index_error(self):
         self.exercise('saved=round\nprint("before")\nsaved(17,"bad")\n',('',))
 
-    def test_binary64_capability_is_explicit(self):
-        result=transpile('print(round(2.5))\n')
-        self.assertFalse(result.success)
-        self.assertIn('binary64',str(result.diagnostics[0]))
+    def test_binary64_round_follows_float_round(self):
+        self.exercise('print(round(2.5),round(3.5),round(2.675,2),round(-1250.0,-2))\n',('',))
 
     def test_sealed_absent_attribute_does_not_block_union_convergence(self):
         self.exercise('class Packet:\n def __init__(self,value):self.value=value\ndef choose(flag):\n if flag:return 5\n return Packet(9)\nprint(choose(int(input())).value)\n',('0\n','1\n'))

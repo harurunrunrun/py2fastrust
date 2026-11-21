@@ -4,6 +4,10 @@
 for every value outside `range(0x110000)`; a lone surrogate code point is a
 runtime `NotImplementedError` because native text cannot hold it.
 
+`round()` of a float follows `float.__round__`: ties to even, an int result
+without `ndigits`, correctly rounded decimal digits for positive and negative
+`ndigits`, and its `NDIGITS_MAX`/`NDIGITS_MIN` bounds.
+
 Builtin set operators `|`, `&`, `-`, `^` and their in-place forms follow the
 CPython 3.14.4 `Objects/setobject.c` algorithms on the CPython-order set table,
 including operand-size choices, the difference copy and intersection
