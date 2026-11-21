@@ -44,6 +44,9 @@ def analyze(model, plan):
     complete(model,plan)
 
 
+VERIFICATION_SWEEP_LIMIT = 64
+
+
 def solve(model):
     from .native_class_allocation_facts import publish
     from .native_list_positions import refresh
@@ -102,6 +105,14 @@ def solve(model):
             publish(model)
             refresh(model)
             stats['verification_sweeps'] += 1
+            if stats['verification_sweeps'] > VERIFICATION_SWEEP_LIMIT:
+                # Ordinary programs settle within a few sweeps; an oscillating
+                # fact must become a positioned diagnostic, never a hang.
+                from .native_classes import ClassUnsupported
+                anchor = model.tree.body[0] if getattr(model.tree, 'body', None) else model.tree
+                raise ClassUnsupported(anchor, 'native type inference did not reach a fixed point within '
+                                       + str(VERIFICATION_SWEEP_LIMIT) + ' verification sweeps; some list layout or alias facts oscillate',
+                                       proof='convergent native type inference')
             if checkpoint(model) == before_verification:
                 consumers=release_stable(model)
                 if consumers:
