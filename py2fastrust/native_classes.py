@@ -1314,6 +1314,9 @@ class Model:
             from .native_class_stdio import analyze_lines
             lines=analyze_lines(self,plan,node,receiver,arguments,keywords)
             if lines is not None:return lines
+            from .native_class_text_predicates import analyze as analyze_predicate
+            predicate=analyze_predicate(self,plan,node,receiver,arguments,keywords)
+            if predicate is not None:return predicate
             from .native_class_splits import analyze as analyze_split
             split=analyze_split(self,plan,node,receiver,arguments,keywords)
             if split is not None:return split
@@ -2852,6 +2855,9 @@ class Emitter:
             from .native_class_stdio import emit_lines
             lines=emit_lines(self,node,receiver,wanted)
             if lines is not None:return Expression("{"+"\n".join(setup)+lines.code+"}",wanted)
+            from .native_class_text_predicates import emit as emit_predicate
+            predicate=emit_predicate(self,node,receiver,arguments,keywords,wanted)
+            if predicate is not None:return Expression("{"+"\n".join(setup)+predicate.code+"}",wanted)
             from .native_class_splits import emit as emit_split
             split=emit_split(self,node,receiver,arguments,keywords,wanted)
             if split is not None:return Expression("{"+"\n".join(setup)+split.code+"}",wanted)
@@ -3875,6 +3881,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(round_runtime(model))
     from .native_percent_format import runtime as percent_runtime
     pieces.append(percent_runtime(model))
+    from .native_class_text_predicates import runtime as predicate_runtime
+    pieces.append(predicate_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)

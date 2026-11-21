@@ -43,6 +43,9 @@ remaining lines into a list; a size hint is a positioned diagnostic.
 Programs that read `math.pi`, `math.e`, `math.tau`, `math.inf` or `math.nan`
 (as module attributes or imported names) use the framed module constants.
 
+`str` and `bytes` `is*()` predicates in framed programs use the same helpers as
+ordinary programs for the configured string profile.
+
 Item assignment to a tuple, string, bytes, number, `None` or function raises
 CPython's `TypeError` after the value, receiver and index are evaluated.
 
