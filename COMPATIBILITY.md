@@ -1,5 +1,8 @@
 # Compatibility
 
+Programs with assignment expressions (`:=`) use the framed path, which binds
+them in the enclosing scope, including from comprehensions.
+
 `zip(*iterables)` with a runtime number of arguments takes `iter()` of each
 argument when called and yields variable-length tuples until one iterator is
 exhausted; expanded calls may also be comprehension sources.
