@@ -1717,6 +1717,9 @@ class Model:
                         if not self.lexical.delete(plan,target,environment):self.namespace.delete(plan,target,environment)
             elif isinstance(node,ast.With):
                 environment=self.context_managers.analyze(plan,node,environment)
+            elif isinstance(node,ast.Match):
+                from .native_match import analyze as analyze_match
+                environment=analyze_match(self,plan,node,environment)
             elif isinstance(node,(ast.Try,getattr(ast,'TryStar',ast.Try))):
                 from .native_exception_handlers import analyze as analyze_try
                 environment=analyze_try(self,plan,node,environment)
@@ -3144,6 +3147,9 @@ class Emitter:
         control=control_statement(self,node)
         if control is not None:return control
         if isinstance(node,ast.With):return self.model.context_managers.emit(self,node)
+        if isinstance(node,ast.Match):
+            from .native_match import emit as emit_match
+            return emit_match(self,node)
         if isinstance(node,ast.Try):
             from .native_exception_handlers import emit as emit_try
             return emit_try(self,node)

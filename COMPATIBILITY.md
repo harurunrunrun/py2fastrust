@@ -1,5 +1,10 @@
 # Compatibility
 
+`match` statements support value (`==`), singleton (`is`), capture, wildcard
+and or-patterns with guards; a capture made before a failing guard stays
+bound. Sequence, mapping, class and capturing or-patterns remain positioned
+diagnostics.
+
 `sum()` over int, bool and float items follows CPython 3.14.4: integers
 accumulate exactly until the first float, after which a Neumaier compensated
 sum adds floats and converted integers, so `sum([1.0, 1e-17, -1.0])` is
