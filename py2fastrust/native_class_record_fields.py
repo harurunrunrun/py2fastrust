@@ -113,5 +113,5 @@ def runtime(emitter,record):
     for index,kind in enumerate(record.fields):
         rust=emitter.rust_type(kind)
         result.append(f'fn {name}_get_{index}(owner:{handle})->Result<{rust},String>{{let result={{let owner=owner.borrow();let values=owner.{field}.as_ref().expect("checked stable field");values.{index}.clone()}};Ok(result)}}')
-        result.append(f'fn {name}_set_{index}(owner:{handle},value:{rust})->Result<(),String>{{let previous={{let mut owner=owner.borrow_mut();let values=owner.{field}.as_mut().expect("checked stable field");std::mem::replace(&mut values.{index},value)}};drop(previous);Ok(())}}')
+        result.append(f'fn {name}_set_{index}(owner:{handle},value:{rust})->Result<(),String>{{let _previous={{let mut owner=owner.borrow_mut();let values=owner.{field}.as_mut().expect("checked stable field");std::mem::replace(&mut values.{index},value)}};Ok(())}}')
     return '\n'.join(result)

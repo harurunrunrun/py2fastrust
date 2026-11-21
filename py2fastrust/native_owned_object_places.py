@@ -267,7 +267,8 @@ def store(emitter,ref,value,node):
         previous=emitter.fresh()
         from .native_initialized_owned_fields import wrap
         stored=wrap(emitter.model,root.owner,index,emitter.coerce(value,kind,node))
-        return '{let '+previous+'={let owner='+root.mutable()+';std::mem::replace(&mut owner.field_'+str(index)+','+stored+')};drop('+previous+');}'
+        # The replaced value is dropped at this block's end, after the borrow.
+        return '{let _'+previous+'={let owner='+root.mutable()+';std::mem::replace(&mut owner.field_'+str(index)+','+stored+')};}'
     _,root,info,index=ref
     from .native_owned_class_lists import prefix
     return emitter.at(prefix(info)+'_set('+root.mutable()+',&('+emitter.number(index)+'),'+emitter.coerce(value,info.kind.element,node)+')',node)+';'
