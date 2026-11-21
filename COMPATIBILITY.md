@@ -8,6 +8,10 @@ runtime `NotImplementedError` because native text cannot hold it.
 without `ndigits`, correctly rounded decimal digits for positive and negative
 `ndigits`, and its `NDIGITS_MAX`/`NDIGITS_MIN` bounds.
 
+`min()`/`max()` whose candidates mix int and float values, such as distances
+initialised with `float("inf")`, use the framed extrema adapter that returns
+the original winning object.
+
 Builtin set operators `|`, `&`, `-`, `^` and their in-place forms follow the
 CPython 3.14.4 `Objects/setobject.c` algorithms on the CPython-order set table,
 including operand-size choices, the difference copy and intersection

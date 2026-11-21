@@ -28,7 +28,23 @@ def requires_frames(unit,analysis):
             if not any(BuiltinIdentity(name)in fact.identity.alternatives for name in ('min','max')):continue
             node=nodes.get(site)
             if isinstance(node,ast.Call)and any(keyword.arg!='key'or not isinstance(keyword.value,ast.Constant)or keyword.value.value is not None for keyword in node.keywords):return True
+            # Mixed int/float candidates keep the original winning object; only
+            # the framed extrema adapter compares and returns those alternatives.
+            if isinstance(node,ast.Call)and _mixed_numeric([facts.expressions.get(unit.ordinal(argument))for argument in node.args]):return True
     return False
+
+
+def _mixed_numeric(kinds):
+    from .native_types import ListType,TupleType,TupleSequenceType,alternatives
+    leaves=set()
+    def visit(kind):
+        for choice in alternatives(kind):
+            if isinstance(choice,(ListType,TupleSequenceType)):visit(choice.element)
+            elif isinstance(choice,TupleType):
+                for field in choice.fields:visit(field)
+            elif isinstance(choice,str):leaves.add(choice)
+    for kind in kinds:visit(kind)
+    return 'float'in leaves and bool(leaves&{'int','bool','int_bool'})
 
 
 def binding_error(name,count,keywords):
