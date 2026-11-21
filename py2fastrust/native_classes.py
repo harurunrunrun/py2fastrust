@@ -2563,6 +2563,15 @@ class Emitter:
             test = self.comparison(ast.Eq(),left,item,node)
             code = f"{right.code}.borrow().iter().any(|class_item|{test})"
             return f"!({code})"if isinstance(operator,ast.NotIn)else code
+        if isinstance(operator,(ast.In,ast.NotIn))and b=="deque":
+            # deque_contains compares items in order; builtin equality cannot mutate the deque.
+            element=shape(right.kind.record.element)
+            if has_float_payload(element):
+                raise ClassUnsupported(node)
+            item = Expression("class_item.clone()",element)
+            test = self.comparison(ast.Eq(),left,item,node)
+            code = f"{right.code}.borrow().values.iter().any(|class_item|{test})"
+            return f"!({code})"if isinstance(operator,ast.NotIn)else code
         if a==b=="str"and isinstance(operator,(ast.In,ast.NotIn)):
             code=f"({right.code}).contains(({left.code}).as_str())"
             return f"!({code})"if isinstance(operator,ast.NotIn)else code

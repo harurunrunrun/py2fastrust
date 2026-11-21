@@ -194,6 +194,15 @@ def select_frames(unit,*,integer="i64"):
     if any(_Builtin('dict')in call.identity.alternatives and(call.positional or call.keywords)
            for facts in analysis.scopes.values()for call in facts.calls.values()):
         reasons+=('dict constructor arguments',)
+    from .native_constraints import Allocation as _Allocation
+    def _deque_operand(facts,node):
+        known=facts.values.get(unit.ordinal(node))
+        return(facts.expressions.get(unit.ordinal(node))=='deque_int'or known is not None and any(
+            isinstance(part,_Allocation)and part.category=='deque'for part in known.alternatives))
+    if any(isinstance(node,ast.Compare)and any(isinstance(op,(ast.In,ast.NotIn))and _deque_operand(facts,right)
+                                               for op,right in zip(node.ops,node.comparators))
+           for node in ast.walk(unit.tree)for facts in analysis.scopes.values()):
+        reasons+=('deque membership',)
     from .native_dict_fromkeys import requires_frames as fromkeys_frames
     if fromkeys_frames(unit):reasons+=('dict.fromkeys',)
     from .native_open_stdin import requires_frames as open_stdin_frames
