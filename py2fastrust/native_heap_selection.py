@@ -3,7 +3,7 @@
 The public route contract is documented by Python's heapq API. The native
 bounded heap uses this project's existing heap helpers and stable ordinals.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from types import SimpleNamespace
 from .call_semantics import Argument,CallArguments,FunctionSignature,CallBindingError
 from .native_types import EmptyType,alternatives,union_type
@@ -20,6 +20,8 @@ class SelectionCall:
     source:object=None
     callback:object=None
     error:str|None=None
+    # Shared with the sort emitter: selection keys use builtin orderings only.
+    rich_comparisons:dict=field(default_factory=dict)
 
 
 def requires_frames(analysis):
