@@ -203,6 +203,8 @@ def select_frames(unit,*,integer="i64"):
                                                for op,right in zip(node.ops,node.comparators))
            for node in ast.walk(unit.tree)for facts in analysis.scopes.values()):
         reasons+=('deque membership',)
+    from .native_tuple_methods import requires_frames as tuple_method_frames
+    if tuple_method_frames(unit,analysis):reasons+=('tuple count/index',)
     from .native_dict_fromkeys import requires_frames as fromkeys_frames
     if fromkeys_frames(unit):reasons+=('dict.fromkeys',)
     from .native_open_stdin import requires_frames as open_stdin_frames

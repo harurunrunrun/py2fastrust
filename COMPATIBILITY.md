@@ -61,6 +61,8 @@ iteration. Because CPython gives it a separate buffer, it is admitted only as a
 single `open(0)` evaluated once in a program that does not also use `input()`
 or `sys.stdin`; other `open()` calls remain positioned diagnostics.
 
+`tuple.count(x)` and one-argument `tuple.index(x)` compare items in order with `==`.
+
 `x in deque` and `x not in deque` compare items in order with builtin equality.
 
 Reading a global name that no statement binds and that is not a builtin raises

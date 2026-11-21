@@ -1320,6 +1320,9 @@ class Model:
             from .native_class_text_predicates import analyze as analyze_predicate
             predicate=analyze_predicate(self,plan,node,receiver,arguments,keywords)
             if predicate is not None:return predicate
+            from .native_tuple_methods import analyze as analyze_tuple_method
+            tuple_method=analyze_tuple_method(self,plan,node,receiver,arguments,keywords)
+            if tuple_method is not None:return tuple_method
             from .native_open_stdin import analyze_method as analyze_file0
             file0=analyze_file0(self,plan,node,receiver,arguments,keywords)
             if file0 is not None:return file0
@@ -2876,6 +2879,9 @@ class Emitter:
             from .native_class_text_predicates import emit as emit_predicate
             predicate=emit_predicate(self,node,receiver,arguments,keywords,wanted)
             if predicate is not None:return Expression("{"+"\n".join(setup)+predicate.code+"}",wanted)
+            from .native_tuple_methods import emit as emit_tuple_method
+            tuple_method=emit_tuple_method(self,node,receiver,arguments,wanted)
+            if tuple_method is not None:return Expression("{"+"\n".join(setup)+tuple_method.code+"}",wanted)
             from .native_open_stdin import emit_method as emit_file0
             file0=emit_file0(self,node,receiver,wanted)
             if file0 is not None:return Expression("{"+"\n".join(setup)+file0.code+"}",wanted)
