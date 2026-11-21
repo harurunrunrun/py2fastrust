@@ -298,7 +298,6 @@ print(any(a+i==0 for i in range(3)),max(a+i for i in range(3)))
         for source in (
             "print(sum(x for x in [1]));print(x)",
             "from collections import deque\nq=deque([1,2])\nprint(sum((x for x in q),q.popleft()))",
-            "print(sum(float(x) for x in range(3)))",
             "print(sum(x for (x,) in [1]))",
             "print(sum(x for x in zip([1])))",
         ):

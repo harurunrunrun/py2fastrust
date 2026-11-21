@@ -1,5 +1,10 @@
 # Compatibility
 
+`sum()` over int, bool and float items follows CPython 3.14.4: integers
+accumulate exactly until the first float, after which a Neumaier compensated
+sum adds floats and converted integers, so `sum([1.0, 1e-17, -1.0])` is
+`1e-17`. An empty iterable returns the int start.
+
 `math.gcd(*values)` and `math.lcm(*values)` accept a runtime number of builtin
 integer arguments, mixed with ordinary positional arguments.
 

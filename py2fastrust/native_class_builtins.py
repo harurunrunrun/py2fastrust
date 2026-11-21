@@ -194,6 +194,12 @@ def analyze(model,plan,node,identity,arguments,keywords,environment,*,factory=No
             if self.iterators.needs_source_cursor(shape(source)):source=Cell(self.iterators.source(plan,node,source,environment=environment))
             item = self.iterators.demand(plan,node,source,environment)
         item = item.root()
+        from .native_types import alternatives as _alternatives
+        floating_sum=None
+        if not isinstance(item.tag,EmptyType)and item.tag is not None:
+            from .native_float_sum import analyze as analyze_float_sum
+            floating_sum=analyze_float_sum(model,node,_alternatives(shape(item)),arguments[1]if len(arguments)==2 else Cell("int"),cell)
+        if floating_sum is not None:return floating_sum
         if not isinstance(item.tag,EmptyType)and item.tag not in {None,"int","bool","int_bool"}:
             from .native_types import alternatives
             if 'float'in alternatives(shape(item)):
@@ -644,7 +650,13 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
                 iterator="["+",".join(values)+"].into_iter()"
             else:raise ClassUnsupported(node)
             from .native_types import EmptyType
-            if name=="sum":
+            from .native_types import alternatives as _alternatives
+            if name=="sum"and not isinstance(kind,EmptyType)and('float'in _alternatives(kind)or start.kind=='float'):
+                from .native_float_sum import emit as emit_float_sum
+                setup,action,finish=emit_float_sum(self,node,start,kind,wanted,member,accumulator)
+                code+=setup
+                ending='{'+finish+accumulator+'}'
+            elif name=="sum":
                 if isinstance(kind,EmptyType):action=f"match {member}{{}};"
                 else:
                     value=self.numeric.binary(ast.Add(),self.scalar(Expression(accumulator+".clone()",wanted)),self.scalar(Expression(member,kind)),node)
