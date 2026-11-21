@@ -185,9 +185,12 @@ def _sort(emitter,node,values,element,reverse,key,site):
         return code
     prefix='.0'if key.kind!='none'else''
     comparison=_ordering(emitter,Expression(f'(*{first}){prefix}',key_kind),Expression(f'(*{second}){prefix}',key_kind),node)
+    from .native_statement_lifetimes import _single_block
+    # A comparison that is already one block is the closure body itself.
+    closure=comparison if comparison.startswith('{')and _single_block(comparison)else'{'+comparison+'}'
     code+=f'let mut {error}:Option<String>=None;'
-    code+=f'if std::mem::size_of::<{emitter.rust_type(key_kind)}>()==0&&{decorated}.len()>1{{let {first}=&{decorated}[1];let {second}=&{decorated}[0];let {order}:Result<std::cmp::Ordering,String>=(||{{{comparison}}})();if let Err(value)={order}{{{error}=Some(value);}}}}'
-    code+=f'{decorated}.sort_by(|{first},{second}|{{if {error}.is_some(){{return std::cmp::Ordering::Equal;}}let {order}:Result<std::cmp::Ordering,String>=(||{{{comparison}}})();'
+    code+=f'if std::mem::size_of::<{emitter.rust_type(key_kind)}>()==0&&{decorated}.len()>1{{let {first}=&{decorated}[1];let {second}=&{decorated}[0];let {order}:Result<std::cmp::Ordering,String>=(||{closure})();if let Err(value)={order}{{{error}=Some(value);}}}}'
+    code+=f'{decorated}.sort_by(|{first},{second}|{{if {error}.is_some(){{return std::cmp::Ordering::Equal;}}let {order}:Result<std::cmp::Ordering,String>=(||{closure})();'
     code+=f'match {order}{{Ok(value)=>if {reverse}{{value.reverse()}}else{{value}},Err(value)=>{{{error}=Some(value);std::cmp::Ordering::Equal}}}}}});'
     if key.kind!='none':code+=f'{values}={decorated}.into_iter().map(|(_,value)|value).collect();'
     code+=f'if let Some(error)={error}{{'+emitter.at('Err::<(),String>(error)',node)+';}'
