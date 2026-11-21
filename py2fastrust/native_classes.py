@@ -3887,6 +3887,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(transform_runtime(model))
     from .native_list_deletion import runtime as list_deletion_runtime
     pieces.append(list_deletion_runtime(model))
+    from .native_text_partition import runtime as partition_runtime
+    pieces.append(partition_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)

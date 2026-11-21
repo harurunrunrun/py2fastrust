@@ -55,6 +55,10 @@ rules in the default profile and remain positioned diagnostics in Unicode mode.
 pull order: an exhausted iterator is never pulled again and yields `fillvalue`.
 Starred argument lists remain positioned diagnostics.
 
+`str.splitlines([keepends])` uses CPython's line boundaries (including `\r\n`,
+`\v`, `\f`, `\x1c`-`\x1e`, `\x85`, `\u2028`, `\u2029`); `partition` and
+`rpartition` return three strings and reject an empty separator.
+
 `del lst[i]` and `del lst[i:j:k]` on lists follow CPython: an item index outside
 the list raises `IndexError: list assignment index out of range`, a zero step
 raises `ValueError`, and extended slices remove every selected position.

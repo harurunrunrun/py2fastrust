@@ -793,6 +793,9 @@ class Solver:
             if name in {"strip","lstrip","rstrip","join","upper","lower"} and kinds&{"str","bytes"}:return value("bytes" if "bytes" in kinds else "str")
             from .native_text_transforms import NAMES as transform_names
             if name in transform_names and kinds=={"str"}:return value("str")
+            from .native_text_partition import constraint as partition_constraint
+            partitioned=partition_constraint(self,term,context,name,kinds,value,TupleValue)
+            if partitioned is not None:return partitioned
             if name in {"pop","popleft"} and "deque"in category:return self.field_values(identity.receiver,"iteration")
             if name in {"pop","popleft"} and "deque_int" in kinds:return value("int")
             if name=="copy"and "deque_int"in kinds:return value("deque_int")
