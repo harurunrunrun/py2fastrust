@@ -55,6 +55,10 @@ rules in the default profile and remain positioned diagnostics in Unicode mode.
 pull order: an exhausted iterator is never pulled again and yields `fillvalue`.
 Starred argument lists remain positioned diagnostics.
 
+`del lst[i]` and `del lst[i:j:k]` on lists follow CPython: an item index outside
+the list raises `IndexError: list assignment index out of range`, a zero step
+raises `ValueError`, and extended slices remove every selected position.
+
 Item assignment to a tuple, string, bytes, number, `None` or function raises
 CPython's `TypeError` after the value, receiver and index are evaluated.
 

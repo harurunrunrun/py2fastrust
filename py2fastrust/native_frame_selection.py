@@ -187,6 +187,8 @@ def select_frames(unit,*,integer="i64"):
     if exit_requires_frames(analysis):reasons+=('native process termination unwinding',)
     from .native_sum_binding import requires_frames as sum_requires_frames
     if sum_requires_frames(analysis):reasons+=('canonical sum binding errors',)
+    from .native_list_deletion import requires_frames as list_deletion_frames
+    if list_deletion_frames(unit,analysis):reasons+=('list item and slice deletion',)
     from .native_math_exports import requires_frames as math_constant_frames
     if math_constant_frames(unit):reasons+=('math module constants',)
     from .native_sum_binding import sequence_start_frames
