@@ -2,7 +2,9 @@ name: tests
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # setup-python publishes the pinned 3.14.x patch builds for 22.04/24.04;
+    # ubuntu-latest moved to 26.04, where 3.14.2-3.14.5 are not available.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
