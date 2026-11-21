@@ -65,6 +65,8 @@ iteration. Because CPython gives it a separate buffer, it is admitted only as a
 single `open(0)` evaluated once in a program that does not also use `input()`
 or `sys.stdin`; other `open()` calls remain positioned diagnostics.
 
+`sys.maxsize` is `2**63 - 1`, the 64-bit target's `Py_ssize_t` maximum.
+
 `print(..., file=sys.stderr)` writes the rendered line to standard error, and
 `file=sys.stdout` behaves as the default; other writer objects remain positioned
 diagnostics.

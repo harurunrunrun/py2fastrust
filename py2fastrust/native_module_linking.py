@@ -473,6 +473,8 @@ class ModuleLinker:
         if seed_math_constant(self,module,name):return
         from .native_string_exports import seed as seed_string_constant
         if seed_string_constant(self,module,name):return
+        from .native_sys_constants import seed as seed_sys_constant
+        if seed_sys_constant(self,module,name):return
         from .native_typing_aliases import seed_alias
         if seed_alias(self,module,name):return
         from .native_module_calls import BuiltinRef
