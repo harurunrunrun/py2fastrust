@@ -109,6 +109,9 @@ def select_frames(unit,*,integer="i64"):
         return FrameSelection(True,('exception handler regions',),None,frozenset(),MappingProxyType({}))
     if any(isinstance(node,ast.NamedExpr)for node in ast.walk(unit.tree)):
         return FrameSelection(True,('assignment expression bindings',),None,frozenset(),MappingProxyType({}))
+    from .native_percent_format import requires_frames as percent_frames
+    if percent_frames(unit):
+        return FrameSelection(True,('printf-style text formatting',),None,frozenset(),MappingProxyType({}))
     from .native_stdin_iteration import requires_frames as stdin_frames
     if stdin_frames(unit):
         return FrameSelection(True,('standard input line iteration',),None,frozenset(),MappingProxyType({}))
