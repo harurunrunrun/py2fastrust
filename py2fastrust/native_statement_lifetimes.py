@@ -95,3 +95,17 @@ def _single_block(code):
         elif token.text in {')',']','}'}:depth-=1
         elif token.text==';'and depth==0:return False
     return True
+
+
+def unbraced_expression(code):
+    """Drop the braces of a block that holds only one expression (rustc's unused_braces)."""
+    from .rust_pruning import _lex,_Unsupported
+    if not code.startswith('{')or not _single_block(code):return code
+    try:tokens,_,pairs=_lex(code)
+    except _Unsupported:return code
+    depth=0
+    for token in tokens[1:-1]:
+        if token.text in {'(','[','{'}:depth+=1
+        elif token.text in {')',']','}'}:depth-=1
+        elif depth==0 and(token.text in {';','let'}or token.text.startswith("'")):return code
+    return code[1:-1]if len(tokens)>2 else code

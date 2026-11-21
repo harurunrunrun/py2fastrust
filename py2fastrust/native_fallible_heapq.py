@@ -104,7 +104,8 @@ def emit(emitter,node,name,heap,arguments,wanted,comparison):
   setup,value=emitter.capture(value)
   less=emitter.truth(value,node,identity=comparison.truth)
  else:less=_builtin(emitter,ast.Lt(),a,b,node)
- closure=('async 'if asynchronous else'')+'|'+first+':'+emitter.rust_type(heap.kind.element)+','+second+':'+emitter.rust_type(heap.kind.element)+'|{'+setup+'Ok::<bool,NativeError>('+less+')}'
+ from .native_statement_lifetimes import unbraced_expression
+ closure=('async 'if asynchronous else'')+'|'+first+':'+emitter.rust_type(heap.kind.element)+','+second+':'+emitter.rust_type(heap.kind.element)+'|{'+setup+'Ok::<bool,NativeError>('+unbraced_expression(less)+')}'
  parameters='&'+heap.code
  if len(arguments)==2:parameters+=','+emitter.coerce(arguments[1],heap.kind.element,node)
  parameters+=','+closure+',&|message:&str|native_error(message.to_owned(),'+str(node.lineno)+','+emitter.location_code()+')'
