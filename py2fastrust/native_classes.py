@@ -2357,8 +2357,14 @@ class Emitter:
             def tail(index,left):
                 if index==len(node.ops):
                     return "true"
-                setup,right = self.capture(self.expression(values[index+1]))
+                value=self.expression(values[index+1])
+                # None needs no temporary; an unread unit binding would later be
+                # dropped and leave a block holding only its tail expression.
+                setup,right = ("",value)if value.code=="()"else self.capture(value)
                 test = self.comparison(node.ops[index],left,right,node)
+                # Without setup statements a block would only wrap its tail
+                # expression, which rustc reports as unnecessary braces.
+                if not setup:return f"(({test})&&({tail(index+1,right)}))"
                 return f"{{{setup}({test})&&({tail(index+1,right)})}}"
             return Expression(f"{{{first_setup}{tail(0,first)}}}",wanted)
         if isinstance(node,ast.Call):

@@ -31,7 +31,22 @@ def requires_frames(unit,analysis):
             # Mixed int/float candidates keep the original winning object; only
             # the framed extrema adapter compares and returns those alternatives.
             if isinstance(node,ast.Call)and _mixed_numeric([facts.expressions.get(unit.ordinal(argument))for argument in node.args]):return True
+            # A mutable winner (for example one row of a list of lists) must be
+            # returned as the same object; the ordinary result handler only
+            # carries immutable values, the framed adapter shares the handle.
+            if isinstance(node,ast.Call)and _mutable_candidates([facts.expressions.get(unit.ordinal(argument))for argument in node.args]):return True
     return False
+
+
+def _mutable_candidates(kinds):
+    from .native_types import ListType,TupleType,TupleSequenceType,alternatives,immutable
+    candidates=[]
+    if len(kinds)==1:
+        for choice in alternatives(kinds[0]):
+            if isinstance(choice,(ListType,TupleSequenceType)):candidates.append(choice.element)
+            elif isinstance(choice,TupleType):candidates.extend(choice.fields)
+    else:candidates=kinds
+    return any(kind is not None and not immutable(kind)for candidate in candidates for kind in alternatives(candidate))
 
 
 def _mixed_numeric(kinds):
