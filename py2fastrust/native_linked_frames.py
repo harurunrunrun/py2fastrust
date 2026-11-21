@@ -130,6 +130,8 @@ class LinkedModel(Model):
         provider.register_member_adapter('heapq',HeapAdapter)
         from .native_frame_bisect import BisectAdapter
         provider.register_member_adapter('bisect',BisectAdapter)
+        from .native_copy_module import CopyAdapter
+        provider.register_member_adapter('copy',CopyAdapter)
         from .native_class_counters import CollectionsAdapter
         provider.register_member_adapter('collections',CollectionsAdapter)
         return provider
