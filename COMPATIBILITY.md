@@ -26,9 +26,10 @@ them in the enclosing scope, including from comprehensions.
 argument when called and yields variable-length tuples until one iterator is
 exhausted; expanded calls may also be comprehension sources.
 
-`itertools.groupby` without a key function follows CPython's groupby/grouper
+`itertools.groupby` follows CPython's groupby/grouper
 state: advancing the outer iterator skips the rest of the current group and an
-older grouper yields nothing. A key function remains a positioned diagnostic.
+older grouper yields nothing.
+The key function, when not None, is called once per pulled element.
 
 `for` loops and comprehensions over `sys.stdin` or `sys.stdin.buffer` yield
 successive `readline()` results, text or bytes with their newlines, until end

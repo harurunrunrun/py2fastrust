@@ -1,11 +1,13 @@
-"""itertools.groupby without a key function, following Modules/itertoolsmodule.c.
+"""itertools.groupby, following Modules/itertoolsmodule.c.
 
 The outer state keeps tgtkey, currkey, currvalue and the identity of the only
 live grouper (currgrouper). Advancing the outer iterator skips the rest of the
-current group; an older grouper then yields nothing. Keys compare with the
-same native equality as ``==`` on the element type.
+current group; an older grouper then yields nothing. groupby_step calls the key
+function once per pulled element (identity when it is None); keys compare with
+the same native equality as ``==`` on the key type.
 """
-from .native_types import EmptyType
+from .call_semantics import Argument, CallArguments
+from .native_types import EmptyType, alternatives
 
 
 def bind(positional, keywords):
@@ -25,25 +27,27 @@ def bind(positional, keywords):
 
 
 def analyze(model, plan, node, positional, keywords, environment, *, factory):
-    from .native_classes import Cell, ClassUnsupported, shape
+    from .native_classes import Cell
     from .native_itertools import ToolCall
     values, error = bind(positional, keywords)
     if error:
         return ToolCall(factory('none'), error=error)
     iterable, key = values
-    if key is not None and shape(key) != 'none':
-        if shape(key) is None and not model.final:
-            return ToolCall(factory())
-        raise ClassUnsupported(node, 'groupby() with a key function needs a captured per-element callback and its result-key equality; only the identity key is implemented',
-                               types=(('key', shape(key)),), proof='groupby key callback protocol')
     registry = model.iterators
     from .native_iterator_hints import ABSENT
     outer = registry._record(plan, node, 'itertools_groupby')
     outer.hint_protocol = ABSENT
     outer.adapter = GroupbyState
     outer.tool = 'groupby'
+    if outer.callback is None:
+        outer.callback = Cell()
+    if not hasattr(outer, 'keys'):
+        outer.keys = Cell()
+    registry._contribute(outer.callback, key if key is not None else Cell('none'), node)
     outer.input_types = (registry.source(plan, node, iterable, ('itertools', 'groupby', 0), environment=environment),)
     item = registry.item(outer.input_types[0])
+    if key is None or 'none' in alternatives(shape_of(key)):
+        registry._contribute(outer.keys, item, node)
     grouper = registry._record(plan, node, 'itertools_grouper')
     grouper.hint_protocol = ABSENT
     grouper.adapter = GrouperState
@@ -51,7 +55,7 @@ def analyze(model, plan, node, positional, keywords, environment, *, factory):
     grouper.parent = outer
     outer.grouper = grouper
     registry._contribute(grouper.element, item, node)
-    registry._contribute(outer.element, Cell('tuple', (item, Cell(grouper.kind))), node)
+    registry._contribute(outer.element, Cell('tuple', (outer.keys, Cell(grouper.kind))), node)
     return ToolCall(factory(outer.kind), outer)
 
 
@@ -63,9 +67,16 @@ def emit(emitter, node, call, positional, keywords):
     record.emitted = True
     record.grouper.emitted = True
     setup, cursor = emitter.capture(emitter.model.iterators.construct(emitter, node, values[0], kind=record.input_types[0]))
+    callback = values[1] if values[1] is not None else Expression('()', 'none')
+    before, callback = emitter.capture(callback)
     state = ('Rc::new(RefCell::new(ClassIteratorState_' + str(record.index) + '{source:Some(' + cursor.code
-             + '),tgtkey:None,currkey:None,currvalue:None,current:0,issued:0}))')
-    return Expression('{' + setup + state + '}', record.kind)
+             + '),callback:' + callback.code + ',tgtkey:None,currkey:None,currvalue:None,current:0,issued:0}))')
+    return Expression('{' + setup + before + state + '}', record.kind)
+
+
+def shape_of(cell):
+    from .native_classes import shape
+    return shape(cell)
 
 
 def _key_equal(emitter, node, kind, left, right):
@@ -78,44 +89,83 @@ def _key_equal(emitter, node, kind, left, right):
 
 def _step(registry, emitter, node, outer, handle, active, label):
     """groupby_step: pull one value; on exhaustion leave the labeled block with None."""
-    from .native_classes import Expression
+    from .native_classes import ClassUnsupported, Expression, shape
     from .native_iterator_stop_policy import cleanup_pull
-    source, value = emitter.fresh(), emitter.fresh()
+    from .native_unions import project, union_kind
+    from .native_aot_callables import emit_values
+    source, value, key, callback = emitter.fresh(), emitter.fresh(), emitter.fresh(), emitter.fresh()
     nested = registry.pull(emitter, node, Expression(source, outer.input_types[0]), active + (outer.index,))
     cleanup = '{' + handle + '.borrow_mut().source=None;}'
     nested = cleanup_pull(emitter, nested, cleanup)
+    wanted = shape(outer.keys)
+    item = shape(registry.item(outer.input_types[0]))
+
+    def branch(kind, code):
+        if kind == 'none':
+            return emitter.coerce(Expression(value + '.clone()', item), wanted, node)
+        site = outer.demands.get((emitter.plan.index, id(node), kind))
+        if site is None:
+            raise ClassUnsupported(node, 'the deferred groupby key callback has no matching typed demand proof',
+                                   proof='deferred groupby key callback demand site')
+        return emit_values(emitter, node, site, Expression('(' + code + ').clone()', kind), [Expression(value + '.clone()', item)], [], wanted).code
+    kind = shape(outer.callback)
+    computed = project(kind, callback, branch) if union_kind(kind) else branch(kind, callback)
     return ('let Some(' + source + ')=({' + handle + '.borrow().source.clone()})else{break \'' + label + ' None;};'
             + 'let Some(' + value + ')=(' + nested.code + ')else{' + cleanup + 'break \'' + label + ' None;};'
-            + '{let mut state=' + handle + '.borrow_mut();state.currkey=Some(' + value + '.clone());state.currvalue=Some(' + value + ');}')
+            + 'let ' + callback + '={' + handle + '.borrow().callback.clone()};let ' + key + '=' + computed + ';'
+            + '{let mut state=' + handle + '.borrow_mut();state.currkey=Some(' + key + ');state.currvalue=Some(' + value + ');}')
+
+
+def _demand_key(registry, plan, node, outer, item, environment):
+    """Analyze the key callback for one pull site; identity keys are the elements."""
+    from .native_classes import Environment, shape
+    from .native_aot_callables import analyze_values
+    if isinstance(shape(item), EmptyType) or shape(item) is None:
+        return
+    model = registry.model
+    for kind in alternatives(shape(outer.callback)):
+        if kind is None or kind == 'none':
+            continue
+        inside = Environment(environment)
+        metadata = CallArguments((Argument(outer.node),), ())
+        site = analyze_values(model.callable_cells, plan, node, model.cell_for_kind(kind), metadata, [item], [], inside,
+                              identity=('groupby_key', outer.index, kind))
+        outer.demands[(plan.index, id(node), kind)] = site
+        model.replace_environment(environment, model.join(environment, inside, node, 'groupby_key'))
+        registry._contribute(outer.keys, site.result, node)
 
 
 class GroupbyState:
     @staticmethod
     def owned(record):
-        return tuple(record.input_types)
+        from .native_classes import shape
+        return (*record.input_types, shape(record.callback), shape(record.keys))
 
     @staticmethod
     def demand(registry, plan, node, record, environment, active):
         from .native_classes import Cell
-        registry.demand(plan, node, Cell(record.input_types[0]), environment, active + (record.index,))
+        item = registry.demand(plan, node, Cell(record.input_types[0]), environment, active + (record.index,))
+        _demand_key(registry, plan, node, record, item, environment)
         return record.element
 
     @staticmethod
     def may_call(registry, record, seen):
-        return registry.may_call(record.input_types[0], seen | {record.index})
+        from .native_classes import shape
+        return shape(record.callback) != 'none' or registry.may_call(record.input_types[0], seen | {record.index})
 
     @staticmethod
     def fields(emitter, record):
         from .native_classes import shape
         item = emitter.rust_type(shape(emitter.model.iterators.item(record.input_types[0])))
-        return (f'source:Option<{emitter.rust_type(record.input_types[0])}>,tgtkey:Option<{item}>,'
-                f'currkey:Option<{item}>,currvalue:Option<{item}>,current:usize,issued:usize')
+        key = emitter.rust_type(shape(record.keys))
+        return (f'source:Option<{emitter.rust_type(record.input_types[0])}>,callback:{emitter.rust_type(shape(record.callback))},'
+                f'tgtkey:Option<{key}>,currkey:Option<{key}>,currvalue:Option<{item}>,current:usize,issued:usize')
 
     @staticmethod
     def pull(registry, emitter, node, value, active):
         from .native_classes import Expression, shape
         record = value.kind.record
-        item_kind = shape(registry.item(record.input_types[0]))
+        item_kind = shape(record.keys)
         handle, current, target, label = emitter.fresh(), emitter.fresh(), emitter.fresh(), 'groupby_' + emitter.fresh()
         equal = _key_equal(emitter, node, item_kind, target, current)
         # groupby_next: clear currgrouper, then skip to the next key.
@@ -137,6 +187,7 @@ class GrouperState:
 
     @staticmethod
     def demand(registry, plan, node, record, environment, active):
+        GroupbyState.demand(registry, plan, node, record.parent, environment, active)
         return record.element
 
     @staticmethod
@@ -146,14 +197,14 @@ class GrouperState:
     @staticmethod
     def fields(emitter, record):
         from .native_classes import shape
-        return f'parent:ClassIterator_{record.parent.index},id:usize,tgtkey:{emitter.rust_type(shape(record.element))}'
+        return f'parent:ClassIterator_{record.parent.index},id:usize,tgtkey:{emitter.rust_type(shape(record.parent.keys))}'
 
     @staticmethod
     def pull(registry, emitter, node, value, active):
         from .native_classes import Expression, shape
         record = value.kind.record
         outer = record.parent
-        kind = shape(record.element)
+        kind = shape(outer.keys)
         parent, target, current, label = emitter.fresh(), emitter.fresh(), emitter.fresh(), 'grouper_' + emitter.fresh()
         equal = _key_equal(emitter, node, kind, target, current)
         # _grouper_next: only the current grouper reads; fetch on demand,
@@ -163,4 +214,4 @@ class GrouperState:
                 + 'if ' + parent + '.borrow().currvalue.is_none(){' + _step(registry, emitter, node, outer, parent, active + (record.index,), label) + '}'
                 + 'let ' + current + '=' + parent + '.borrow().currkey.clone().unwrap();'
                 + 'if !(' + equal + '){break \'' + label + ' None;}let taken=' + parent + '.borrow_mut().currvalue.take();taken}')
-        return Expression(code, kind)
+        return Expression(code, shape(record.element))
