@@ -1308,6 +1308,9 @@ class Model:
             if joined is not None:return joined
             deque=self.deques.analyze_method(plan,node,receiver,arguments,keywords,environment)
             if deque is not None:return deque
+            from .native_class_stdio import analyze_lines
+            lines=analyze_lines(self,plan,node,receiver,arguments,keywords)
+            if lines is not None:return lines
             from .native_class_splits import analyze as analyze_split
             split=analyze_split(self,plan,node,receiver,arguments,keywords)
             if split is not None:return split
@@ -2837,6 +2840,9 @@ class Emitter:
             result=emit_builtin(self,node,BuiltinIdentity(name),arguments,keywords,wanted,raw_kind)
             return Expression("{"+"\n".join(setup)+"let class_value="+result.code+";class_value}",wanted,result.constant)
         elif receiver is not None:
+            from .native_class_stdio import emit_lines
+            lines=emit_lines(self,node,receiver,wanted)
+            if lines is not None:return Expression("{"+"\n".join(setup)+lines.code+"}",wanted)
             from .native_class_splits import emit as emit_split
             split=emit_split(self,node,receiver,arguments,keywords,wanted)
             if split is not None:return Expression("{"+"\n".join(setup)+split.code+"}",wanted)

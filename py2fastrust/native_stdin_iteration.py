@@ -67,10 +67,12 @@ class StdinCursor:
 
 
 def requires_frames(unit):
-    """Route loops whose iterable is spelled as a stdin stream attribute."""
+    """Route loops over, and readlines() calls on, a stdin stream attribute."""
     import ast
     for node in ast.walk(unit.tree):
         source = node.iter if isinstance(node, (ast.For, ast.comprehension)) else None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'readlines':
+            source = node.func.value
         if isinstance(source, ast.Attribute) and source.attr in {'stdin', 'buffer'}:
             return True
     return False

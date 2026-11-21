@@ -33,6 +33,8 @@ older grouper yields nothing. A key function remains a positioned diagnostic.
 `for` loops and comprehensions over `sys.stdin` or `sys.stdin.buffer` yield
 successive `readline()` results, text or bytes with their newlines, until end
 of file, through the same buffer as `input()`.
+`sys.stdin.readlines()` and `sys.stdin.buffer.readlines()` collect those
+remaining lines into a list; a size hint is a positioned diagnostic.
 
 `chr()` converts integer code points, reporting CPython 3.14's `ValueError`
 for every value outside `range(0x110000)`; a lone surrogate code point is a

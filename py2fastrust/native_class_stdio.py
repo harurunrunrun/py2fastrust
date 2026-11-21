@@ -131,3 +131,41 @@ def emit(emitter, node, reader, arguments, keywords, wanted):
     if kind == 'str':
         code = 'NativeText::from(' + code + ')'
     return Expression(emitter.coerce(Expression(code, kind), wanted, node), wanted)
+
+
+def _lines_receiver(kind, node):
+    import ast
+    from .native_classes import domain
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != 'readlines':
+        return None
+    tag = domain(kind)
+    return tag if tag in {'stdin', 'stdin_buffer'} else None
+
+
+def analyze_lines(model, plan, node, receiver, arguments, keywords):
+    """sys.stdin.readlines() and sys.stdin.buffer.readlines(): readline() until end of file."""
+    from .native_classes import Cell, ClassUnsupported, shape
+    tag = _lines_receiver(shape(receiver), node)
+    if tag is None:
+        return None
+    if arguments or keywords:
+        raise ClassUnsupported(node, 'readlines() with a size hint is not implemented; the argument-free form reads every remaining line',
+                               proof='standard-input readlines hint protocol')
+    element = model.cell(plan, node, identity=('stdin_readlines_element',))
+    model.contribute(element, Cell('bytes' if tag == 'stdin_buffer' else 'str'), node)
+    return model.cell(plan, node, 'list', (element,))
+
+
+def emit_lines(emitter, node, receiver, wanted):
+    from .native_classes import Expression
+    tag = _lines_receiver(receiver.kind, node)
+    if tag is None:
+        return None
+    binary = tag == 'stdin_buffer'
+    read = emitter.at('class_read_bytes(&class_scope,true)' if binary else 'class_read_text(&class_scope,true,false)', node)
+    line, values = emitter.fresh(), emitter.fresh()
+    item = Expression(line if binary else 'NativeText::from(' + line + ')', 'bytes' if binary else 'str')
+    converted = emitter.coerce(item, wanted.element, node)
+    code = ('{let mut ' + values + '=Vec::<' + emitter.rust_type(wanted.element) + '>::new();loop{let ' + line + '=' + read
+            + ';if ' + line + '.is_empty(){break;}' + values + '.push(' + converted + ');}class_list(' + values + ')}')
+    return Expression(code, wanted)
