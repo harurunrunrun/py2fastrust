@@ -566,6 +566,18 @@ def binding_error(target,arguments,error,*,implicit_count=0):
     return f"TypeError: {name} {text}"
 
 
+def _direct_mapping_method(emitter,node):
+    """The exact mapping-method kind of a direct ``receiver.method(...)`` call, if any."""
+    from .native_mapping_method_callables import is_method
+    if not isinstance(node.func,ast.Attribute):return None
+    try:kind=emitter.kind(node.func)
+    except Exception:return None
+    if not is_method(kind)or kind.name!=node.func.attr:return None
+    try:receiver=emitter.kind(node.func.value)
+    except Exception:return None
+    return kind if receiver==kind.receiver else None
+
+
 def emit_call(emitter,node):
     from .native import _Expression,_string
     from .native_classes import ClassUnsupported,Emitter,shape
@@ -585,6 +597,13 @@ def emit_call(emitter,node):
         # Its exact actual class is already retained by the typed entry. The
         # class-global lookup is proved present; explicit args still follow.
         immediate=global_call=callee=None;before=''
+    elif _direct_mapping_method(emitter,node)is not None:
+        # d.get(k)/d.setdefault(k, v): the bound method is never observed, so
+        # build it by value instead of allocating a shared method object.
+        immediate=global_call=None
+        kind=_direct_mapping_method(emitter,node)
+        before,receiver=emitter.capture(emitter.expression(node.func.value))
+        callee=_Expression('(NativeMappingMethod_'+str(kind.receiver.index)+'_'+node.func.attr+'{receiver:('+receiver.code+').clone()})',kind)
     else:
         with capture_callee(emitter,node.func)as immediate,capture_global(emitter,node.func)as global_call:
             from .native_binding_places import capture as capture_binding
