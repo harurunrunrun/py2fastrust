@@ -259,7 +259,7 @@ scenario()
   model.namespace.cells[key]=old
   self.assertGreater(registry.stats['module_attribute_reads'],0)
 
- def test_true_method_only_and_unsupported_effect_producers_keep_diagnostics(self):
+ def test_method_only_raises_and_unsupported_effect_producers_keep_diagnostics(self):
   cases={
    'method_only':'''class Record:
  def data(self):return 1
@@ -282,11 +282,17 @@ scenario()
   for name,source in cases.items():
    with self.subTest(name=name):
     result,registries=self.capture(source)
+    if name=='method_only':
+     # Item assignment to the bound method raises TypeError at runtime; no field is invented.
+     self.assertTrue(result.success,result.diagnostics)
+     self.assertTrue(all('data'not in owner.fields for registry in registries for owner in registry.model.classes.values()))
+     if shutil.which('rustc'):
+      from test_native_exception_handlers import compare
+      compare(self,source,'')
+     continue
     self.assertFalse(result.success);self.assertIsNone(result.rust_source)
     self.assertTrue(all(d.code=='E006'and d.line>0 for d in result.diagnostics))
-    if name=='method_only':
-     self.assertTrue(all('data'not in owner.fields for registry in registries for owner in registry.model.classes.values()))
-    else:self.assertIn('eval',str(result.diagnostics))
+    self.assertIn('eval',str(result.diagnostics))
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
