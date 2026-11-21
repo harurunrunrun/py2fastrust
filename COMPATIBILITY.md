@@ -61,6 +61,10 @@ iteration. Because CPython gives it a separate buffer, it is admitted only as a
 single `open(0)` evaluated once in a program that does not also use `input()`
 or `sys.stdin`; other `open()` calls remain positioned diagnostics.
 
+`print(..., file=sys.stderr)` writes the rendered line to standard error, and
+`file=sys.stdout` behaves as the default; other writer objects remain positioned
+diagnostics.
+
 The `string` module's text constants (`ascii_lowercase`, `ascii_uppercase`,
 `ascii_letters`, `digits`, `hexdigits`, `octdigits`, `punctuation`, `whitespace`,
 `printable`) are available as module attributes or imported names.

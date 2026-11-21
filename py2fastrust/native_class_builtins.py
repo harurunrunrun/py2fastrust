@@ -434,7 +434,8 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
             if value.kind!='str':
                 name=_type_name(emitter,value,node)
                 return _error(emitter,node,wanted,f'format!("TypeError: {key} must be None or a string, not {{}}",{name})')
-        if "file"in keywords and keywords["file"].kind!="none":
+        stream=keywords["file"].kind if "file"in keywords else "none"
+        if stream not in {"none","stdout","stderr"}:
             raise ClassUnsupported(node,"this print file needs the supplied writer object's write/flush protocol; typed arbitrary output writers are not implemented",proof="print file writer protocol")
         pieces=[]
         for i,value in enumerate(arguments):
@@ -454,6 +455,15 @@ def _emit(emitter,node,identity,arguments,keywords,wanted,raw_kind,*,owned_list=
                 rendered=self.fresh()
                 pieces.append(f"let {rendered}={self.show(value,node)};class_scope.io.borrow_mut().output.push_str(&{rendered});")
         pieces.append(f"class_scope.io.borrow_mut().output.push_str(&{end.code});")
+        if stream=="stderr":
+            # Render into a private buffer, then write it to the unbuffered error stream.
+            buffer=self.fresh()
+            pieces=[piece.replace("class_scope.io.borrow_mut().output",buffer)for piece in pieces]
+            pieces.insert(0,f"let mut {buffer}=String::new();")
+            pieces.append(f"{{use std::io::Write as _;let _=std::io::stderr().write_all({buffer}.as_bytes());}}")
+            code="{"+"".join(pieces)+"()}"
+            raw_kind="none"
+            return self.encoded(code,raw_kind,wanted,node)
         if "flush"in keywords:
             flush = self.truth(keywords["flush"])
             call = self.at("native_flush_output(&mut class_scope.io.borrow_mut().output)",node)

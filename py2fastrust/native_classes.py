@@ -280,7 +280,7 @@ class Model:
     BUILTINS = {"type","input", "property", "print", "range", "len", "int", "bool", "str", "float",
                 "list", "map", "enumerate", "filter", "iter", "next", "any", "all", "sum", "min", "max", "abs", "id"}
     DATA = {'int_bool', 'function', 'exception_value', 'range', 'dict', 'object', 'exception_class', 'union', 'globals_dict', 'complex', 'float', 'bool', 'dict_view', 'str', 'tuple_sequence', 'none', 'bytes', 'bytearray', 'array', 'tuple', 'builtin_singleton', 'list', 'int', 'set'}
-    INTRINSICS = {"sys", "stdin", "stdin_buffer", "stdin_file", "reader_text", "reader_bytes", "read_text", "read_bytes", "stdout", "write_text", "flush_text"}
+    INTRINSICS = {"sys", "stdin", "stdin_buffer", "stdin_file", "stderr", "reader_text", "reader_bytes", "read_text", "read_bytes", "stdout", "write_text", "flush_text"}
 
     def __init__(self, tree, filename, integer, trusted_imports, unit=None, string_mode="ascii"):
         self.tree, self.filename, self.integer = tree, filename, integer
@@ -1437,7 +1437,7 @@ class Model:
             owner = self.classes[receiver.args[0]]
             name = self.resolved_name(plan,node)
             return self.remember(plan, node, self.field(owner, name, node))
-        intrinsic = {("sys","stdin"):"stdin", ("sys","stdout"):"stdout", ("stdout","write"):"write_text", ("stdout","flush"):"flush_text", ("stdin","buffer"):"stdin_buffer",
+        intrinsic = {("sys","stdin"):"stdin", ("sys","stdout"):"stdout", ("sys","stderr"):"stderr", ("stdout","write"):"write_text", ("stdout","flush"):"flush_text", ("stdin","buffer"):"stdin_buffer",
                      ("stdin","readline"):"reader_text", ("stdin","read"):"read_text",
                      ("stdin_buffer","readline"):"reader_bytes", ("stdin_buffer","read"):"read_bytes"}.get((receiver.tag,node.attr))
         if intrinsic:

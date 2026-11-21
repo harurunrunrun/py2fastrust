@@ -450,7 +450,7 @@ class LinkedEmitter(Emitter):
                 def branch(kind,code):
                     if kind=='none':return self.missing_module_attribute(node,wanted)
                     module=self.model.module_linker.by_number[kind.number]
-                    if module.native_adapter and module.name=="sys"and node.attr in {"stdin","stdout"}:return '()'
+                    if module.native_adapter and module.name=="sys"and node.attr in {"stdin","stdout","stderr"}:return '()'
                     value=self.export(Expression(code,kind),kind,node.attr,node)
                     return self.coerce(value,wanted,node)
                 code=project(owner_kind,owner.code,branch)if union_kind(owner_kind)else branch(owner_kind,owner.code)
@@ -531,8 +531,8 @@ class LinkedEmitter(Emitter):
     def export(self,owner,kind,name,node,*,importing=False):
         from .native import _string
         module=self.model.module_linker.by_number[kind.number]
-        if module.native_adapter and module.name=='sys'and name=='stdout':
-            return Expression('{let _='+owner.code+';()}', 'stdout')
+        if module.native_adapter and module.name=='sys'and name in {'stdout','stderr'}:
+            return Expression('{let _='+owner.code+';()}', name)
         key=self.model.unit.global_name(self.model.module_linker.by_number[kind.number].name,name)
         index=self.model.namespace.index(key)
         wanted=dict(self.model.namespace.fields())[key]
