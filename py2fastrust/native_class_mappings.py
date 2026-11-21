@@ -649,7 +649,8 @@ class Mappings:
         if mapping_kind(left.kind)and isinstance(operator,(ast.Is,ast.IsNot)):
             code='Rc::ptr_eq(&'+left.code+','+'&'+right.code+')'if left.kind==right.kind else'false'
             return '!('+code+')'if isinstance(operator,ast.IsNot)else code
-        return None
+        from .native_set_algebra import comparison as set_comparison
+        return set_comparison(emitter,operator,left,right,node)
 
     def runtime(self,emitter):
         from .native_classes import shape

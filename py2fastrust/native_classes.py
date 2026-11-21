@@ -1069,6 +1069,9 @@ class Model:
         return self.binary_builtin(plan,node,operator,left,right,identity=identity,environment=environment)
 
     def binary_builtin(self, plan, node, operator, left, right, *, identity=None, environment=None):
+        from .native_set_algebra import analyze as set_algebra
+        algebra=set_algebra(self,plan,node,operator,left,right,identity)
+        if algebra is not None:return algebra
         from .native_list_inplace_iterables import analyze as list_inplace
         inplace=list_inplace(self,plan,node,operator,left,right,environment,identity)
         if inplace is not None:return inplace
@@ -2344,6 +2347,9 @@ class Emitter:
         return self.binary_builtin(operator,left,right,node,wanted,identity=identity)
 
     def binary_builtin(self, operator, left, right, node, wanted, *, identity=None):
+        from .native_set_algebra import emit as set_algebra
+        algebra=set_algebra(self,operator,left,right,node,wanted)
+        if algebra is not None:return algebra
         from .native_list_inplace_iterables import emit as list_inplace
         inplace=list_inplace(self,operator,left,right,node,wanted,identity)
         if inplace is not None:return inplace

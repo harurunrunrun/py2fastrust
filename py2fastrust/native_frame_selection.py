@@ -128,6 +128,9 @@ def select_frames(unit,*,integer="i64"):
     from .native_bytearray import requires_frames as bytearray_requires_frames
     if bytearray_requires_frames(analysis):
         return FrameSelection(True,('native mutable bytearray storage and protocols',),analysis,frozenset(),MappingProxyType({}))
+    from .native_set_algebra import requires_frames as set_algebra_frames
+    if set_algebra_frames(unit,analysis):
+        return FrameSelection(True,('CPython-order set operators',),analysis,frozenset(),MappingProxyType({}))
     from .native_bytes_sequences import requires_frames as byte_sequence_frames
     if byte_sequence_frames(unit,analysis):
         return FrameSelection(True,('native immutable bytes operations',),analysis,frozenset(),MappingProxyType({}))

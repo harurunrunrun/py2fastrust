@@ -130,7 +130,7 @@ class CPythonSets:
         converter='|'+key+','+canonical_source+'|{let '+stored+':'+emitter.rust_type(wanted)+'='+converted+';let canonical='+copied+';('+stored+',canonical)}'
         body='let '+other+'=('+source.code+').clone();let '+loan+'='+other+'.borrow();'+emitter.at(owner.code+'.borrow_mut().merge_projected(&*'+loan+','+converter+')',node)+';'
         if self.payload(emitter,owner.kind.record)==self.payload(emitter,source.kind.record):
-            return '{if !Rc::ptr_eq(&'+owner.code+',&('+source.code+')){'+body+'}}'
+            return 'if !Rc::ptr_eq(&'+owner.code+',&('+source.code+')){'+body+'}'
         return '{'+body+'}'
 
     def from_mapping(self,emitter,node,owner,source):

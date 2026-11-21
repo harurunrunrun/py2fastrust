@@ -1,5 +1,13 @@
 # Compatibility
 
+Builtin set operators `|`, `&`, `-`, `^` and their in-place forms follow the
+CPython 3.14.4 `Objects/setobject.c` algorithms on the CPython-order set table,
+including operand-size choices, the difference copy and intersection
+shortcuts and dummy compaction, so printing and iteration show CPython's order.
+In-place forms keep the target object. Set `==`, `!=`, `<`, `<=`, `>`, `>=`
+compare two builtin sets by size and subset. Operators with other operand
+types and the named set-algebra methods remain positioned diagnostics.
+
 `functools.cache` and `functools.lru_cache(maxsize=None)` decorate module
 functions that are defined once at top level and only called directly with
 every parameter passed positionally. Each call looks up the exact argument

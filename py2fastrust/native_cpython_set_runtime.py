@@ -154,6 +154,15 @@ impl<K,C:Eq> NativeCPSet<K,C> {
         }
         Ok(())
     }
+    fn swap_body(&mut self,other:&mut Self) {
+        std::mem::swap(&mut self.table,&mut other.table);
+        std::mem::swap(&mut self.fill,&mut other.fill);std::mem::swap(&mut self.used,&mut other.used);
+    }
+    fn compact_after_discards(&mut self)->Result<(),String> {
+        if self.fill-self.used<=(self.capacity()-1)/4 {return Ok(());}
+        let multiple=if self.used>50000 {2}else{4};
+        self.resize(self.used.checked_mul(multiple).ok_or_else(||"MemoryError".to_owned())?)
+    }
     fn copy_set(&self)->Result<Self,String> where K:Clone,C:Clone {
         let mut result=Self::new();result.merge(self)?;Ok(result)
     }
