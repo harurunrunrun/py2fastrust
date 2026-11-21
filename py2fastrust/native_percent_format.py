@@ -13,6 +13,7 @@ DIRECTIVE = re.compile(r'%(?P<flags>[-+ 0#]*)(?P<width>\d*)(?:\.(?P<precision>\d
 INTEGER = {'d', 'i', 'u', 'x', 'X', 'o'}
 REAL = {'e', 'E', 'f', 'F', 'g', 'G'}
 TEXT = {'s', 'r', 'a'}
+CHARACTER = 'c'
 
 
 def parse(text):
@@ -30,7 +31,7 @@ def parse(text):
         kind = match.group('type')
         if kind == '%' and match.end() - start == 2:
             pieces.append('%')
-        elif kind in INTEGER | REAL | TEXT:
+        elif kind in INTEGER | REAL | TEXT | {CHARACTER}:
             if kind in INTEGER and match.group('precision') is not None:
                 return None, 'integer precision padding'
             pieces.append(match.groupdict())
@@ -41,7 +42,7 @@ def parse(text):
 
 def specification(directive):
     flags, width, precision, kind = directive['flags'], directive['width'], directive['precision'], directive['type']
-    text = kind in TEXT
+    text = kind in TEXT or kind == CHARACTER
     spec = ''
     if '-' in flags:
         spec += '<'
@@ -53,7 +54,7 @@ def specification(directive):
         if '0' in flags and '-' not in flags:
             spec += '0'
     spec += width
-    if precision is not None:
+    if precision is not None and kind != CHARACTER:
         spec += '.' + (precision or '0')
     if not text:
         spec += {'i': 'd', 'u': 'd'}.get(kind, kind)
@@ -98,6 +99,8 @@ def _directive(emitter, node, directive, value):
     if kind in TEXT:
         shown = conversion(emitter, node, value, {'s': 115, 'r': 114, 'a': 97}[kind])
         return format_value(emitter, node, shown, literal)
+    if kind == CHARACTER:
+        return format_value(emitter, node, _character(emitter, node, value, tag), literal)
     numeric = {'int', 'bool', 'int_bool', 'float'}
     if tag not in numeric:
         name = _type_name(emitter, value, node)
@@ -111,6 +114,26 @@ def _directive(emitter, node, directive, value):
     if kind in REAL and tag != 'float':
         value = Expression(emitter.coerce(value, 'float', node), 'float')
     return format_value(emitter, node, value, literal)
+
+
+def _character(emitter, node, value, tag):
+    """%c: an integer code point or a one-character string (formatchar in unicodeobject.c)."""
+    from .native_classes import Expression
+    from .native_class_builtins import _error, _type_name
+    if tag == 'str':
+        holder = emitter.fresh()
+        failure = _error(emitter, node, 'str', 'format!("TypeError: %c requires an int or a unicode character, not a string of length {}",' + holder + '.chars().count())').code
+        return Expression('{let ' + holder + '=' + value.code + '.clone();if ' + holder + '.chars().count()==1{' + holder + '}else{' + failure + '}}', 'str')
+    if tag not in {'int', 'bool', 'int_bool'}:
+        name = _type_name(emitter, value, node)
+        return _error(emitter, node, 'str', 'format!("TypeError: %c requires an int or a unicode character, not {}",' + name + ')')
+    before, number = emitter.capture(Expression(emitter.number(value), 'int'))
+    wide = f'{number.code}.to_i128()' if emitter.model.integer == 'bigint' else f'Some({number.code} as i128)'
+    point, character = emitter.fresh(), emitter.fresh()
+    outside = _error(emitter, node, 'str', '"OverflowError: %c arg not in range(0x110000)".to_owned()').code
+    surrogate = _error(emitter, node, 'str', '"NotImplementedError: native text cannot hold a lone surrogate code point from %c".to_owned()').code
+    return Expression('{' + before + f'match {wide}.filter(|{point}|(0..=0x10FFFF).contains({point})){{None=>{outside},Some({point})=>'
+                      + f'match char::from_u32({point} as u32){{Some({character})=>NativeText::from({character}.to_string()),None=>{surrogate}}}}}}}', 'str')
 
 
 def emit(emitter, operator, left, right, node, wanted):
