@@ -236,7 +236,17 @@ class ExpandedCalls:
                     from .native_builtin_callables import binding_error
                     site.builtin_errors[identity] = binding_error(identity, site.arguments)
                     self._contribute(site.result, Cell("none"), node)
-                if kind.members:
+                if kind.members and all(member.module == 'math' and member.name in {'gcd', 'lcm'} for member in kind.members) and not site.keywords:
+                    # math.gcd/lcm accept any number of integer arguments.
+                    from .native_math_calls import _index_kind
+                    element = shape(site.element)
+                    if element is not None and not all(choice in {'int', 'bool', 'int_bool'} for choice in alternatives(element)):
+                        raise ClassUnsupported(node, 'expanded math.gcd/lcm arguments need the __index__ protocol for these elements; only builtin integers are implemented',
+                                               types=(('element', element),), proof='expanded integer gcd/lcm arguments')
+                    for member in kind.members:
+                        self.model.native_math_functions = getattr(self.model, 'native_math_functions', set()) | {member.name}
+                    self._contribute(site.result, Cell('int'), node)
+                elif kind.members:
                     member = kind.members[0]
                     raise ClassUnsupported(node, "expanded arguments to native member " +
                         repr(member.module + "." + member.name) + " need that member's runtime-arity projection",
@@ -434,6 +444,10 @@ class ExpandedCalls:
                         from .native_callable_field_demand import demand
                         context=self.model.module_linker.call_context(emitter,'class_selected_method.module.clone()')if hasattr(self.model,'module_linker')and demand(self.model,identity).module else''
                     return '{'+bind_payload(provider,identity,payload)+context+code+'}'
+                if getattr(identity,'module',None)=='math'and identity.name in {'gcd','lcm'}:
+                    item=emitter.fresh()
+                    values=vector if element=='int'else f'{vector}.iter().map(|{item}|{emitter.number(Expression("(*"+item+").clone()",element))}).collect::<Vec<NativeInt>>()'
+                    return emitter.coerce(Expression(f'native_math_{identity.name}(&{values})','int'),wanted,node)
                 if getattr(identity,'name',None)=='zip':
                     from .native_zip_expanded import emit as emit_zip
                     return emitter.coerce(Expression(emit_zip(emitter,node,site.zip_record,vector,element),site.zip_record.kind),wanted,node)
