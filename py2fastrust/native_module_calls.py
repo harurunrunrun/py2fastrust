@@ -115,8 +115,38 @@ def _read_reference(g,node,environment):
         g.function.required.add(node.id)
 
 
+def _constant_integer(node):
+    """Fold a small closed integer literal expression such as 10**6 or 1<<20."""
+    if isinstance(node,ast.Constant)and type(node.value)is int:return node.value
+    if isinstance(node,ast.BinOp):
+        left,right=_constant_integer(node.left),_constant_integer(node.right)
+        if left is None or right is None:return None
+        if isinstance(node.op,ast.Pow)and 0<=right<=64 and abs(left)<=1<<16:return left**right
+        if isinstance(node.op,ast.LShift)and 0<=right<=64:return left<<right
+        if isinstance(node.op,ast.Mult):return left*right
+        if isinstance(node.op,ast.Add):return left+right
+    return None
+
+
+def _recursion_limit(g,call):
+    """sys.setrecursionlimit on the ordinary path, which has no recursive frames.
+
+    Only a closed constant large enough for every static ordinary call depth is
+    admitted; it cannot raise, so the statement has no runtime effect here.
+    """
+    limit=_constant_integer(call.args[0])if len(call.args)==1 and not call.keywords else None
+    if limit is None or not 1000<=limit<=2**31-1:
+        raise _Unsupported("sys.setrecursionlimit on the ordinary path accepts only a closed integer constant between 1000 and 2**31-1; checking other limits against the current Python depth is not implemented here",node=call,operation="sys.setrecursionlimit",proof="recursion limit validity independent of the current depth")
+    return ""
+
+
 def try_statement(g,node,environment):
     from .native_stdio import SYS
+    if (isinstance(node,ast.Expr)and isinstance(node.value,ast.Call)and isinstance(node.value.func,ast.Attribute)
+            and node.value.func.attr=="setrecursionlimit"and isinstance(node.value.func.value,ast.Name)
+            and environment.get(node.value.func.value.id)is SYS):
+        _read_reference(g,node.value.func,environment)
+        return _recursion_limit(g,node.value),environment
     if isinstance(node,ast.Import):
         if not all(alias.name in MODULES or alias.name=="sys"for alias in node.names):return None
         values=[(alias.asname or alias.name,SYS if alias.name=="sys"else MODULES[alias.name])for alias in node.names]

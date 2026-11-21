@@ -505,6 +505,8 @@ class Model:
         if isinstance(node,ast.expr)and not isinstance(getattr(node,'ctx',None),(ast.Store,ast.Del)):
             from .native_typing_aliases import runtime_value
             runtime_value(result,node,self,plan)
+            from .native_function_cache import guard_value
+            guard_value(result,node)
         self.records[(plan.index, id(node))] = result
         return result
 
@@ -529,12 +531,17 @@ class Model:
         registry=getattr(self,"class_namespaces",None)
         admitted_descriptor=(owner is not None and registry is not None and
                              registry.member(owner,self.unit.name_for(node)).descriptor!="function")
+        cache_decorator=None
         if getattr(node,"decorator_list",())and not admitted_descriptor:
-            raise ClassUnsupported(node.decorator_list[0],"decorator calls can replace the method/function object at definition time; that native decorated-callable capture is not implemented on the class path",operation=f"decorator of function {name!r}")
+            from .native_function_cache import candidate
+            cache_decorator=candidate(node)if owner is None else None
+            if cache_decorator is None:
+                raise ClassUnsupported(node.decorator_list[0],"decorator calls can replace the method/function object at definition time; that native decorated-callable capture is not implemented on the class path",operation=f"decorator of function {name!r}")
         if getattr(node,"type_params",()):
             raise ClassUnsupported(node,"generic type-parameter objects and lazy bound/default evaluation are not implemented on the class path",operation=f"generic function definition {name!r}")
         arguments = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
         plan = FunctionPlan(node, len(self.plans), owner)
+        plan.cache_decorator=cache_decorator
         self.bind_plan_origin(plan,node)
         if self.unit is not None:
             signature=self.unit.signature_for(node)
@@ -1565,6 +1572,10 @@ class Model:
             if isinstance(node,(ast.Import,ast.ImportFrom))and self.import_statement(plan,node,environment):
                 continue
             if isinstance(node,(ast.ClassDef,ast.FunctionDef)):
+                defined=self.functions.definitions.get(node)if isinstance(node,ast.FunctionDef)else None
+                if getattr(defined,'cache_decorator',None)is not None:
+                    from .native_function_cache import validate as validate_cache
+                    validate_cache(self,plan,node,defined,environment)
                 if self.lexical.define(plan,node,environment):
                     self.namespace.define(plan,node,environment)
                     continue
@@ -1680,6 +1691,9 @@ class Model:
                         if not self.lexical.delete(plan,target,environment):self.namespace.delete(plan,target,environment)
             elif isinstance(node,ast.With):
                 environment=self.context_managers.analyze(plan,node,environment)
+            elif isinstance(node,(ast.Try,getattr(ast,'TryStar',ast.Try))):
+                from .native_exception_handlers import analyze as analyze_try
+                environment=analyze_try(self,plan,node,environment)
             elif isinstance(node,ast.If):
                 self.condition(plan,node.test,environment)
                 from .native_guard_flow import branches
@@ -2536,6 +2550,7 @@ class Emitter:
 
     def call_user(self, node, callee, receiver=None, constructor=None,defining_module=None,defining_class=None):
         setup,arguments = [],[]
+        cache_record=None
         if receiver is not None:
             from .native_owned_object_places import call_receiver as owned_call_receiver
             owned_receiver=owned_call_receiver(self,node,callee)
@@ -2560,10 +2575,17 @@ class Emitter:
                 call_plan=signature.plan(call_arguments,implicit_count=len(arguments),allow_variadic=True)
                 bound=call_plan.capture(argument_value,implicit=arguments,defaults=default_emitter.captured_defaults(callee),pack_positional=lambda members:pack_emission(self,callee,members,node))
             except CallBindingError:raise ClassUnsupported(node)from None
+            from .native_function_cache import cached
+            cache_record=cached(self.model,callee)if constructor is None and receiver is None else None
             if constructor is None:
                 from .native_frame_specialization import native_target
                 callee=native_target(self.model,callee,bound.by_name)
             values=[self.coerce(value,shape(callee.arguments[name]),node)for name,value in zip(bound.parameters,bound.values)]
+            if cache_record is not None:
+                captured=[]
+                for value in values:
+                    temporary=self.fresh();setup.append(f'let {temporary}={value};');captured.append(temporary)
+                values=captured;cache_arguments=(list(bound.parameters),list(captured))
         name = (f"class_construct_{constructor.index}"if constructor is not None else self.function_name(callee))
         from .native_source_state import call_arguments
         state_arguments=call_arguments(self,node,callee)if callee is not None else None
@@ -2591,7 +2613,13 @@ class Emitter:
         from .native_class_calls import call as compiled_call
         call = compiled_call(self,invocation,callee,node)
         from .native_scalar_data_results import call_result as data_call_result
+        direct=call
         call=data_call_result(self,node,invocation,call)
+        if callee is not None and constructor is None and cache_record is not None:
+            from .native_function_cache import wrap as cache_wrap,_unsupported as cache_unsupported
+            if call!=direct or state_arguments is not None:
+                raise cache_unsupported(node,'this cached call uses a specialized scalar-data or source-state result protocol; memoizing that representation is not implemented')
+            call=cache_wrap(self,node,cache_record,callee,*cache_arguments,call)
         context=self.prepare_call_context(callee,receiver,constructor,defining_module,node=node)
         code="{"+"\n".join(setup)+context+call+"}"
         if constructor is not None:
@@ -3084,6 +3112,9 @@ class Emitter:
         control=control_statement(self,node)
         if control is not None:return control
         if isinstance(node,ast.With):return self.model.context_managers.emit(self,node)
+        if isinstance(node,ast.Try):
+            from .native_exception_handlers import emit as emit_try
+            return emit_try(self,node)
         if isinstance(node,(ast.Import,ast.ImportFrom)):
             imported=self.emit_import(node)
             if imported is not None:return imported
@@ -3206,7 +3237,8 @@ class Emitter:
             self.loops.pop()
             from .native_list_access_regions import tail_scope
             with tail_scope(self,node):tail=leave(self,node,label)
-            return "{"+flags+cache+f"'{label}:loop{{{setup}if !({self.truth(test)}){{break;}}{body}}}"+tail+"}"
+            loop=f"'{label}:loop{{{setup}if !({self.truth(test)}){{break;}}{body}}}"
+            return "{"+flags+cache+loop+tail+"}"if flags or cache or tail else loop
         if isinstance(node,ast.For):
             return self.for_statement(node)
         if isinstance(node,ast.Break):
@@ -3624,6 +3656,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
         prepare_scalar_data_results(model)
         from .native_scalar_data_locals import prepare as prepare_scalar_data_locals
         prepare_scalar_data_locals(model)
+        from .native_function_cache import require_validated
+        require_validated(model)
         emitters=[model.emitter(plan)for plan in model.plans if plan.reachable]
         bodies=[emitter.generate()for emitter in emitters]
         from .native_source_state import bodies as source_state_bodies
@@ -3782,6 +3816,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     pieces.append(source_length_runtime(model))
     from .native_list_extend import runtime as list_extend_runtime
     pieces.append(list_extend_runtime(model))
+    from .native_exception_handlers import runtime as handler_runtime
+    pieces.append(handler_runtime(model))
     if getattr(model,'owned_list_repetition',False):
         from .native_owned_local_lists import RUNTIME as owned_list_runtime
         pieces.append(owned_list_runtime)
@@ -3801,6 +3837,8 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     result=context_runtime(result,model)
     from .native_exception_runtime import runtime as exception_runtime
     result=exception_runtime(result,model)
+    from .native_function_cache import runtime as cache_runtime
+    result=cache_runtime(result,model)
     from .native_class_gc import runtime as gc_runtime
     result=gc_runtime(result,model)
     from .native_text_policy import apply_text_policy

@@ -84,4 +84,14 @@ def _single_block(code):
     from .rust_pruning import _lex,_Unsupported
     try:tokens,_,pairs=_lex(code)
     except _Unsupported:return False
-    return bool(tokens)and tokens[0].text=='{'and pairs.get(0)==len(tokens)-1
+    if not tokens or tokens[-1].text!='}':return False
+    if tokens[0].text=='{':return pairs.get(0)==len(tokens)-1
+    # One labeled loop is also a complete block-like statement.
+    if len(tokens)<4 or not tokens[0].text.startswith("'")or tokens[1].text!=':'or tokens[2].text not in {'loop','while','for'}:
+        return False
+    depth=0
+    for token in tokens:
+        if token.text in {'(','[','{'}:depth+=1
+        elif token.text in {')',']','}'}:depth-=1
+        elif token.text==';'and depth==0:return False
+    return True

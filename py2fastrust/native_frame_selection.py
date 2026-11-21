@@ -105,6 +105,10 @@ def select_frames(unit,*,integer="i64"):
         return FrameSelection(True,('source generator suspension',),None,frozenset(),MappingProxyType({}))
     if any(isinstance(node,ast.ClassDef)for node in ast.walk(unit.tree)):
         return FrameSelection(True,('class objects',),None,frozenset(),MappingProxyType({}))
+    if any(isinstance(node,(ast.Try,getattr(ast,'TryStar',ast.Try)))for node in ast.walk(unit.tree)):
+        return FrameSelection(True,('exception handler regions',),None,frozenset(),MappingProxyType({}))
+    if any(isinstance(node,ast.FunctionDef)and node.decorator_list for node in ast.walk(unit.tree)):
+        return FrameSelection(True,('decorated function wrappers',),None,frozenset(),MappingProxyType({}))
     analysis=analyze(unit)
     from .native_complex_literals import requires_frames as complex_literal_frames
     if complex_literal_frames(unit,analysis):

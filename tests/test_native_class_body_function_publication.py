@@ -260,7 +260,7 @@ class FunctionPublicationProofTests(unittest.TestCase):
   self.assertTrue(_is_unbinding(cleanup[0],nodes))
   result=transpile(source,TranspileOptions(license='none'))
   self.assertFalse(result.success)
-  self.assertTrue(any('exception-handler routing'in diagnostic.message for diagnostic in result.diagnostics),result.diagnostics)
+  self.assertTrue(any('caught exception object'in diagnostic.message for diagnostic in result.diagnostics),result.diagnostics)
  def test_unreferenced_function_proof_and_all_reference_barriers(self):
   import ast
   from py2fastrust.native_class_body_function_reads import _unbinding_can_execute,_effects_closed

@@ -177,6 +177,9 @@ class TailConstructorProofs(unittest.TestCase):
      self.assertEqual(result.diagnostics,baseline.diagnostics)
      self.assertTrue(all(d.code=='E006'and d.line>=1 and d.column>=1 for d in result.diagnostics))
 
+# try/finally is a native region now; the returned constructor still runs cleanup first.
+CASES['finally_cleanup_on_return']=BOUNDARIES.pop('finally_cleanup_on_return')
+
 @unittest.skipUnless(shutil.which('rustc'),'rustc required')
 class TailConstructorExecution(unittest.TestCase):
  cases=CASES
@@ -191,7 +194,7 @@ class TailConstructorExecution(unittest.TestCase):
   for name in ('mutable_owner_aliases','empty_constructor'):
    with self.subTest(name=name):self.check(name)
  def test_cleanup_control(self):
-  for name in ('context_cleanup_on_success','context_cleanup_on_exception'):
+  for name in ('context_cleanup_on_success','context_cleanup_on_exception','finally_cleanup_on_return'):
    with self.subTest(name=name):self.check(name)
  def test_failed_import_constructor_context_and_defaults(self):
   _modules.NativeLinkedModuleTests.exercise(self,FAILED_RETRY)

@@ -299,7 +299,7 @@ class NamespaceReadPlaceProofs(unittest_module.TestCase):
 
     def test_effectful_index_and_invalid_receiver_keep_the_old_conversion(self):
         for name in ("index_deletes_member", "index_mutates_alias", "receiver_error_before_index",
-                     "module_deleted_member", "failed_generation_class_parameter"):
+                     "module_deleted_member"):
             for integer in ("i64", "i128", "bigint"):
                 with self.subTest(name=name, integer=integer):
                     # Use one stable filename for visible trace metadata.
@@ -364,6 +364,10 @@ class NamespaceReadPlaceExecution(unittest_module.TestCase):
                         self.assertEqual(actual.stdout, expected.stdout)
                         self.assertEqual(frames(actual.stderr), frames(expected.stderr))
                         self.assertEqual(actual.stderr.splitlines()[-1:], expected.stderr.splitlines()[-1:])
+
+    def test_failed_import_generation_reads_the_retried_class(self):
+        # The retried module creates a new class generation; reads use its slot.
+        self.exercise("failed_generation_class_parameter")
 
     def test_mutable_aliases_receiver_capture_and_effectful_indices(self):
         for name in ("class_alias_and_mutation", "module_replacement_and_alias",

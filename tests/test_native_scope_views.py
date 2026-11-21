@@ -487,16 +487,6 @@ class NativeScopeViewSourceTests(unittest.TestCase):
                     frames=lambda s:re.findall(r'File "[^"]+", line (\d+), in ([^\n]+)',s)
                     self.assertEqual(frames(actual.stderr),frames(wanted.stderr))
 
-    def test_existing_function_try_finally_diagnostic(self):
-        source=CASES["module_exception_finally"][0]["main.py"]
-        files=CASES["module_exception_finally"][0]
-        folder=Path(self.directory.name)/"unsupported_finally";folder.mkdir(exist_ok=True)
-        for name,text in files.items():(folder/name).write_text(text)
-        for integer in ("i64","i128","bigint"):
-            result=transpile(source,TranspileOptions(integer=integer,filename=str(folder/"main.py")))
-            self.assertFalse(result.success)
-            self.assertIn("exception handler",str(result.diagnostics))
-
     def test_runtime_view_preserves_owned_clone_and_actual_pointer(self):
         files,inputs=CASES["cross_module_callback_context"]
         folder=Path(self.directory.name)/"view_codegen";folder.mkdir(exist_ok=True)
@@ -514,7 +504,7 @@ def install_source(name):
     setattr(NativeScopeViewSourceTests,test.__name__,test)
 
 for name in CASES:
-    if name!="module_exception_finally":install_source(name)
+    install_source(name)
 
 
 @unittest.skipUnless(shutil.which("rustc"),"rustc is required")

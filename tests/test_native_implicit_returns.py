@@ -34,18 +34,8 @@ class ImplicitReturnExecutionTests(unittest.TestCase):
 def _case(name):
  def test(self):self.compare(*CASES[name])
  return test
-BOUNDARIES={'finally_runs_on_return_and_fallthrough','handler_and_finally_completion'}
 for _name in CASES:
- if _name not in BOUNDARIES:setattr(ImplicitReturnExecutionTests,'test_'+_name,_case(_name))
-
-class ImplicitReturnBoundaryTests(unittest.TestCase):
- def test_nested_loop_exception_unwinding_retains_a_positioned_boundary(self):
-  for name in sorted(BOUNDARIES):
-   source=CASES[name][0]
-   for integer in ('i64','i128','bigint'):
-    result=transpile(source,TranspileOptions(integer=integer,filename='implicit_return.py'))
-    self.assertFalse(result.success,(name,integer))
-    self.assertTrue(any(item.code=='E006'and item.line==3 and 'exception-handler routing and unwinding'in item.message for item in result.diagnostics),result.diagnostics)
+ setattr(ImplicitReturnExecutionTests,'test_'+_name,_case(_name))
 
 class ImplicitReturnModelTests(unittest.TestCase):
  def test_final_validation_keeps_genuine_completion_in_registered_producers(self):

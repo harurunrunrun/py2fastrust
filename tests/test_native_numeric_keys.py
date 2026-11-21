@@ -212,6 +212,10 @@ BOUNDARIES={'set_finite_history': ("values=[0.0,-0.0,1.5,-1.5,2.0,True,900719925
  'numeric_mapping_equality_boundary': ('first={1.0:2}\nsecond={1:2}\nprint(first==second)\n', None),
  'numeric_set_subset_boundary': ('first={1.0}\nsecond={1,2}\nprint(first<second)\n', None)}
 
+# Handlers observe the partial mutation made before the unhashable item.
+for _name in ('caught_dict_partial_mutation','caught_set_partial_mutation'):
+    CASES[_name]=BOUNDARIES.pop(_name)[0]
+
 CONTROLS={'float_query_shadowed_dict': 'def dict(value):return value+1.0\nprint(dict(1.5))\n',
  'int_dictionary_float_values_control': 'mapping={1:2.5,2:1.5}\n'
                                         'print(list(mapping.items()),mapping[1]+mapping[2])\n',
@@ -342,6 +346,12 @@ print(len(mapping),mapping[integer],mapping[floating],integer==floating,floating
 
     def test_captured_numeric_mapping_methods(self):
         self.check('captured_numeric_mapping_methods')
+
+    def test_caught_dict_partial_mutation(self):
+        self.check('caught_dict_partial_mutation')
+
+    def test_caught_set_partial_mutation(self):
+        self.check('caught_set_partial_mutation')
 
     def test_numeric_counter_defaultdict(self):
         self.check('numeric_counter_defaultdict')

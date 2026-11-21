@@ -1,5 +1,29 @@
 # Compatibility
 
+`functools.cache` and `functools.lru_cache(maxsize=None)` decorate module
+functions that are defined once at top level and only called directly with
+every parameter passed positionally. Each call looks up the exact argument
+tuple before entering the function frame, so a hit uses no recursion depth;
+results are stored only after normal completion. Keys are int, bool, str,
+`None` or tuples of them, and results are immutable scalars or tuples. Other
+decorators, bounded LRU caches, wrapper objects (`cache_info`, passing the
+function) and float or mixed int/bool keys remain positioned diagnostics.
+
+`sys.setrecursionlimit` with a closed integer constant from 1000 to
+`2**31-1`, such as `10**6` or `1 << 25`, keeps a program without recursive
+calls on the ordinary native path.
+
+`try` statements with `except`, `else` and `finally` clauses run natively on
+the framed path. Handlers name canonical builtin exception classes, or tuples
+of them, and catch every builtin subclass, including errors raised by builtin
+operations such as `int`, indexing, `input` at end of file and recursion
+limits. `return`, `break` and `continue` leave protected regions after
+`finally` runs; an error raised by a handler or `finally` keeps the handled
+error as its context. Exit requests are not caught by `except Exception`.
+Binding `except ... as name`, user-defined exception classes, catch-all
+handlers in programs that call `exit()`, `except*`, suspension inside `try`
+and control transfer out of `finally` remain positioned diagnostics.
+
 Ordinary typed lists support `in` / `not in` for integer, boolean, text,
 bytes, tuple and `None` elements after evaluating the item and then the list.
 Float and other identity-dependent element/item pairs remain positioned

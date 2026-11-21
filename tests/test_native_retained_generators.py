@@ -215,7 +215,6 @@ class RetainedExpressionAnalysisTests(unittest.TestCase):
    'send':'g=(x for x in [1])\nprint(g.send(None))',
    'throw':'g=(x for x in [1])\nprint(g.throw(ValueError))',
    'recursive/asynchronous':'g=(next(g) for x in [1])\nprint(next(g))',
-   'exception-handler routing':'g=(10//x for x in [0])\ntry:\n next(g)\nexcept ZeroDivisionError:\n print(next(g,77))',
   }
   for expected,source in cases.items():
    with self.subTest(expected=expected):

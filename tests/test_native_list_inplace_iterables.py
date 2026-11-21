@@ -21,6 +21,11 @@ def _execution(source):
     return test
 
 
+# Native exception handler regions now observe these partial-effect protocols.
+for _name in ('partial_generator_error', 'hint_value_error_before_pull', 'target_store_error_after_extension',
+              'partial_generator_finally', 'hint_error_finally', 'target_error_finally', 'noniterable_finally'):
+    SOURCES[_name] = BOUNDARIES.pop(_name)
+
 for _name, _source in SOURCES.items():
     setattr(ListInplaceIterableExecutionTests, 'test_' + _name, _execution(_source))
 

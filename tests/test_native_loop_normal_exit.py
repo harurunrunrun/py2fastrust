@@ -234,7 +234,8 @@ class LoopNormalExitProofTests(unittest.TestCase):
  def test_cleanup_syntax_does_not_disappear_behind_infinite_loop_proof(self):
   for clause in ['finally:\n   print(2)','except ValueError:\n   break']:
    source='def answer():\n while True:\n  try:\n   return 1\n  '+clause+'\nprint(answer())\n'
-   result=transpile(source,TranspileOptions(license='none'))
-   self.assertFalse(result.success)
-   self.assertTrue(any('Try'in diagnostic.message or 'try'in diagnostic.message for diagnostic in result.diagnostics),result.diagnostics)
+   # Cleanup and handler clauses are native regions; they must still run.
+   with self.subTest(clause=clause):
+    from test_native_exception_handlers import compare
+    compare(self,source,'')
 

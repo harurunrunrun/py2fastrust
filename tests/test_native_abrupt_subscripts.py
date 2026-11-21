@@ -164,14 +164,11 @@ print(pair)
 '''
         PendingGeometryExecution.check_module(self,module,source,[b'0\n',b'1\n'])
 
-    def test_class_try_finally_retains_existing_explicit_boundary(self):
-        source=HEADER+'''try:
-    x=None[0]
+    def test_class_try_finally_runs_cleanup_before_the_subscript_error(self):
+        from test_native_exception_handlers import compare
+        compare(self,HEADER+'''missing=None
+try:
+    x=missing[0]
 finally:
     print('cleanup')
-'''
-        result=transpile(source,TranspileOptions(filename='cleanup.py'))
-        self.assertFalse(result.success)
-        message='\n'.join(map(str,result.diagnostics))
-        self.assertIn('cleanup.py:',message)
-        self.assertIn('E006',message)
+''','')

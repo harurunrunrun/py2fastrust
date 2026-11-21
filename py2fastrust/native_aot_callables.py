@@ -625,9 +625,19 @@ def emit_definition_body(emitter,node,site,definition,positional,keywords,wanted
 def emit_bound_definition_body(emitter,node,bound,wanted,*,source_call_location=None):
     """Emit one already-bound original invocation, including its selected ABI."""
     target=bound.target
+    from .native_function_cache import cached
+    record=cached(emitter.model,bound.source)
+    cache_lines=''
+    if record is not None:
+        from dataclasses import replace
+        captured=[]
+        for value in bound.values:
+            temporary=emitter.fresh();cache_lines+=f'let {temporary}={value};';captured.append(temporary)
+        bound=replace(bound,values=tuple(captured))
     from .native_source_state import bound_call
     invocation,state_output=bound_call(emitter,node,bound)
     from .native_scalar_data_results import bound_call as data_bound_call
+    plain=invocation
     invocation=data_bound_call(emitter,node,target,invocation)
     from .native_class_calls import call
     from .native_source_returns import emit_result
@@ -636,7 +646,13 @@ def emit_bound_definition_body(emitter,node,bound,wanted,*,source_call_location=
         value,witness=emitter.fresh(),emitter.fresh()
         called='{let ('+value+','+witness+')='+called+';'+state_output+'='+witness+';'+value+'}'
     from .native_scalar_data_results import call_result as data_call_result
+    direct=called
     called=data_call_result(emitter,node,invocation,called)
+    if record is not None:
+        from .native_function_cache import wrap,_unsupported
+        if called!=direct or invocation!=plain or state_output is not None or bound.projection is not None or len(bound.values)!=len(target.parameters):
+            raise _unsupported(node,'this cached call uses a specialized projection, scalar-data or source-state protocol; memoizing that representation is not implemented')
+        called='{'+cache_lines+wrap(emitter,node,record,target,list(target.parameters),list(bound.values),called)+'}'
     return emit_result(emitter,node,target,called,wanted)
 
 

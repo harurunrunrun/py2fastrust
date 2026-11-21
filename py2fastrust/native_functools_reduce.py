@@ -40,12 +40,15 @@ def _count(node,metadata):
 
 
 class FunctoolsAdapter:
-    NAMES=frozenset({'reduce','cmp_to_key'})
+    NAMES=frozenset({'reduce','cmp_to_key','cache','lru_cache'})
     TYPES=frozenset()
     EAGER_ARGUMENTS={'reduce':frozenset({1})}
 
     @staticmethod
     def analyze(model,plan,node,identity,metadata,positional,keywords,environment,*,factory):
+        if identity.name in {'cache','lru_cache'}:
+            from .native_classes import ClassUnsupported
+            raise ClassUnsupported(node,f'functools.{identity.name} is lowered only as the decorator of a module-level function that is called directly; a first-class cache wrapper object is not implemented',proof='native memoized function wrapper')
         if identity.name=='cmp_to_key':
             from .native_cmp_keys import analyze
             return analyze(model,plan,node,identity,metadata,positional,keywords,environment,factory=factory)

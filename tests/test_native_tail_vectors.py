@@ -80,10 +80,10 @@ def build(flag):
 print(build(int(input())))
 ''',('0\n','1\n'))
 
-    def test_pending_cleanup_keeps_its_explicit_unsupported_diagnostic(self):
-        # This control-flow feature is also unsupported by the base compiler.
-        # Ownership lowering must retain that diagnostic, never erase cleanup.
-        source='''class Marker:pass
+    def test_pending_cleanup_mutates_the_returned_vector(self):
+        # finally runs after the returned list object was selected, so the
+        # caller observes the cleanup mutation through the same object.
+        self.exercise('''class Marker:pass
 def build():
  values=[[1],[2]]
  try:
@@ -91,16 +91,10 @@ def build():
  finally:
   values[0][0]=7
 print(build())
-'''
-        for mode in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
-            self.assertEqual(result.diagnostics[0].line,4)
-            self.assertIn('exception-handler routing',result.diagnostics[0].message)
+''')
 
-    def test_cleanup_before_return_also_keeps_its_unsupported_diagnostic(self):
-        source='''class Marker:pass
+    def test_cleanup_before_return_publishes_both_writes(self):
+        self.exercise('''class Marker:pass
 def build():
  values=[[1],[2]]
  try:
@@ -109,13 +103,7 @@ def build():
   values[1][0]=9
  return values
 print(build())
-'''
-        for mode in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
-            self.assertEqual(result.diagnostics[0].line,4)
-            self.assertIn('exception-handler routing',result.diagnostics[0].message)
+''')
 
     def test_lambda_body_is_not_a_statement_tail(self):
         self.exercise('''class Marker:pass

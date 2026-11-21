@@ -85,11 +85,11 @@ class TypeVarProtocolTests(unittest.TestCase):
             source='from state import saved\ntry:\n import factory\nexcept ValueError:\n pass\ntry:\n import factory\nexcept ValueError:\n pass\nprint(len(saved))\n'
             result=transpile(source,TranspileOptions(filename=str(folder/'main.py'),module_paths=(folder,)))
             self.assertFalse(result.success)
-            # Exception handlers are currently an earlier native boundary;
-            # once supported, the TypeVar uniqueness gate must still reject
+            # Handlers are native now. Observing the saved TypeVar object is an
+            # earlier boundary; the TypeVar uniqueness gate must still reject
             # repeated failed module generations instead of merging them.
             self.assertTrue(any(text in str(result.diagnostics[0])for text in
-                                ('failed module initialization can be retried','exception-handler routing')))
+                                ('failed module initialization can be retried','typing metadata-object protocol')))
             (folder/'ordinary.py').write_text('value=3\n')
             source='from typing import TypeVar\nT=TypeVar("T")\ndef load():\n import ordinary\n return ordinary.value\nprint(load())\n'
             result=transpile(source,TranspileOptions(filename=str(folder/'main.py'),module_paths=(folder,)))

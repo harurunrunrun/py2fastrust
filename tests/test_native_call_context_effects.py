@@ -295,7 +295,7 @@ class ContextEffectProofs(unittest.TestCase):
   self.assertTrue(any(not summary.incoming_module for _,summary in self.named(observed,'combine')))
   self.assertNotEqual(result.rust_source,baseline.rust_source)
  def test_unknown_implicit_protocol_capability_boundaries_are_unchanged(self):
-  for name in ('foreign_user_iterable','foreign_user_truth','foreign_user_unpack','foreign_nested_comparison','foreign_chained_comparison','failed_import_default_generations'):
+  for name in ('foreign_user_iterable','foreign_user_truth','foreign_user_unpack','foreign_nested_comparison','foreign_chained_comparison'):
    for mode in ('i64','i128','bigint'):
     with self.subTest(name=name,mode=mode):
      result,baseline,_=self.compile_pair(name,mode)
@@ -321,6 +321,9 @@ class ContextEffectExecution(unittest.TestCase):
  def test_actual_closures_identity_defaults_and_saved_callable(self):
   for name in ('literal_default_unused_environment','nonliteral_default_effects','function_rebound_during_argument'):
    with self.subTest(name=name):self.exercise(name)
+ def test_actual_failed_import_default_generations(self):
+  # Each retried import evaluates its own default; both saved functions differ.
+  self.exercise('failed_import_default_generations')
  def test_actual_implicit_inplace_and_builtin_iteration(self):
   for name in ('foreign_inplace_operator','builtin_iteration_unpack'):
    with self.subTest(name=name):self.exercise(name)
