@@ -4,6 +4,8 @@ import unittest
 from test_native_exception_handlers import compare
 
 PROGRAMS = {
+    'function_item_assignment': 'def callback():return 1\ncallback[0]=8\n',
+    'selected_function_item_assignment': 'def callback():return 1\nrow=[2]\ntargets=[row,callback]\ntarget=targets[1]\ntarget[0]=8\n',
     'negative_power_map': 'print(list(map(lambda x:x**-1,[1,2])))\n',
     'walrus_boolean_capture': 'flag=True\nprint(flag is (flag:=False),flag)\nprint((flag:=True) is flag,flag)\n',
     'walrus_tagged_capture': 'for turn in (False,True):\n value=True if turn else 1\n print(value is (value:=True),value)\n',

@@ -171,9 +171,11 @@ print(target[0] is leaf,row[0],leaf)
 
 
 class CallableIndexedWriteProofTests(unittest.TestCase):
- def test_list_alternative_remains_required(self):
+ def test_list_or_immutable_receivers_are_supported(self):
   function=AotFunctionType.from_targets((BuiltinIdentity('len'),))
-  self.assertFalse(supported(function,'int'))
+  # Without a list alternative, every receiver raises the item-assignment TypeError.
+  self.assertTrue(supported(function,'int'))
+  self.assertFalse(supported(function,InstanceType('Index')))
   self.assertTrue(supported(union_type(ListType('int'),function),'int'))
   self.assertFalse(supported(union_type(ListType('int'),ClassReferenceType(1)),'int'))
   self.assertFalse(supported(union_type(ListType('int'),BuiltinClass('type')),'int'))
@@ -190,10 +192,8 @@ class CallableIndexedWriteProofTests(unittest.TestCase):
   ordinary=select_frames(build_program('row=[1]\nrow[0]=2\nprint(row)\n','ordinary.py').main)
   self.assertNotIn('finite builtin indexed assignment targets',ordinary.reasons)
 
- def test_pure_callable_and_custom_index_keep_explicit_boundaries(self):
+ def test_custom_index_keeps_explicit_boundary(self):
   cases=(
-   'def callback():return 1\ncallback[0]=8\n',
-   'def callback():return 1\nrow=[2]\ntargets=[row,callback]\ntarget=targets[1]\ntarget[0]=8\n',
    'class Index:\n def __index__(self):return 0\nrow=[1]\nrow[Index()]=8\n',
   )
   for source in cases:
