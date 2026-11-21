@@ -110,8 +110,6 @@ def select_frames(unit,*,integer="i64"):
     from .native_match import requires_frames as match_frames
     if match_frames(unit):
         return FrameSelection(True,('structural pattern matching',),None,frozenset(),MappingProxyType({}))
-    if any(isinstance(node,ast.NamedExpr)for node in ast.walk(unit.tree)):
-        return FrameSelection(True,('assignment expression bindings',),None,frozenset(),MappingProxyType({}))
     from .native_percent_format import requires_frames as percent_frames
     if percent_frames(unit):
         return FrameSelection(True,('printf-style text formatting',),None,frozenset(),MappingProxyType({}))
@@ -168,6 +166,8 @@ def select_frames(unit,*,integer="i64"):
     from .native_frame_references import prove
     from .native_lexical_cells import requires_environments
     reasons=(('recursive source calls',)if recursive else())+_semantic_requirements(unit,analysis,targets)
+    # The ordinary emitter has no assignment-expression bindings; keep the other reasons too.
+    if any(isinstance(node,ast.NamedExpr)for node in ast.walk(unit.tree)):reasons+=('assignment expression bindings',)
     from .native_mapping_deletion import requires_frames as mapping_delete_requires_frames
     if mapping_delete_requires_frames(unit,analysis):reasons+=('native indexed deletion protocols',)
     if floating_power:reasons+=('finite real/complex floating power results',)
