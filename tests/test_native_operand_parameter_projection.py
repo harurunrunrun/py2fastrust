@@ -130,7 +130,8 @@ def header_fixture():
         arguments={'cls':Cell(CLASS),'amount':Cell('int')},result=Cell('int'))
     lexical=SimpleNamespace(scope=lambda current:4,environments={},initialize=lambda emitter:'',
         signature=lambda current:'')
-    model=SimpleNamespace(lexical=lexical,namespace=SimpleNamespace(local_kind=lambda current,name:None))
+    # Emitter.generate now consults model.INTRINSICS for parameter slots; the fixture has none.
+    model=SimpleNamespace(lexical=lexical,namespace=SimpleNamespace(local_kind=lambda current,name:None),INTRINSICS=frozenset())
     emitter=Emitter.__new__(Emitter)
     emitter.model=model;emitter.plan=plan
     emitter.slots={('cls',CLASS):'slot_cls',('amount','int'):'slot_amount',('local','int'):'slot_local'}

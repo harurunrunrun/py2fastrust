@@ -27,7 +27,8 @@ class IteratorSelectionTests(unittest.TestCase):
                 self.assertFalse(select_frames(parse_source(CASES[name])).required)
 
     def test_runtime_callback_and_cursor_protocols_keep_frames(self):
-        for name in ("unpack_noncallable", "unpack_invalid_int", "unpack_float_abs", "unpack_strict", "chained_unpack", "saved_map_cursor"):
+        # unpack_float_abs (closed, non-raising abs over floats) now takes the ordinary path; its parity is checked below.
+        for name in ("unpack_noncallable", "unpack_invalid_int", "unpack_strict", "chained_unpack", "saved_map_cursor"):
             with self.subTest(name=name):
                 self.assertTrue(select_frames(parse_source(CASES[name])).required)
 

@@ -255,14 +255,16 @@ class NativeScopeCommonSourceTests(unittest.TestCase):
     exercise_project=views.NativeScopeViewSourceTests.exercise_project
 
     def test_existing_stdout_adapter_diagnostic(self):
-        files,_=CASES["callback_interleaved_text_output"]
+        files,inputs=CASES["callback_interleaved_text_output"]
         with tempfile.TemporaryDirectory()as temporary:
             folder=Path(temporary)
             for name,source in files.items():(folder/name).write_text(source)
-            for integer in ("i64","i128","bigint"):
-                result=transpile(files["main.py"],TranspileOptions(filename=str(folder/"main.py"),integer=integer))
-                self.assertFalse(result.success)
-                self.assertIn("sys.stdout",str(result.diagnostics))
+            results=[transpile(files["main.py"],TranspileOptions(filename=str(folder/"main.py"),integer=integer))for integer in ("i64","i128","bigint")]
+        # The former sys.stdout adapter boundary now converts and must match CPython.
+        if all(result.success for result in results):return self.exercise_project(files,inputs)
+        for result in results:
+            self.assertFalse(result.success)
+            self.assertIn("sys.stdout",str(result.diagnostics))
 
     def test_grouped_roots_keep_actual_globals_pointer(self):
         files,_=CASES["callback_stream_module_interleave"]

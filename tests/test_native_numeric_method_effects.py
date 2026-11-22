@@ -2,6 +2,7 @@
 import ast,os,re,shutil,subprocess,sys,tempfile,unittest
 from pathlib import Path
 from py2fastrust import transpile,TranspileOptions
+from native_boundaries import converted_or_positioned
 from py2fastrust.frontend import parse_source
 from py2fastrust.native_constraints import analyze
 from py2fastrust.native_frame_selection import select_frames
@@ -66,6 +67,8 @@ class NumericMethodEffectProofs(unittest.TestCase):
    with self.subTest(name=name):
     unit=parse_source(source,"numeric_effect.py")
     self.assertEqual(bool(may_stop(unit,analyze(unit))),name!='saved_method_boundary')
+    # Former boundaries that now convert (real_next_after_numeric) must match CPython.
+    if converted_or_positioned(self,source,('1\n','0\n')if 'input()'in source else('',)):continue
     for mode in ('i64','i128','bigint'):
      result=transpile(source,TranspileOptions(integer=mode,license='none'))
      self.assertFalse(result.success)

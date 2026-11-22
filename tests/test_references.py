@@ -29,15 +29,13 @@ class CallScopeReferenceTests(unittest.TestCase):
         self.assertIs(value["convert"],captured)
 
     def test_class_builtin_shadowing_is_not_silently_replaced_with_default_operations(self):
+        from native_boundaries import converted_or_positioned
         sources=("input=3\nclass C:\n def run(self):return input()\nprint(C().run())\n",
                  "int=3\nclass C:\n def run(self):return int('4')\nprint(C().run())\n",
                  "map=3\nclass C:\n def run(self):return list(map(int,['4']))\nprint(C().run())\n")
         for source in sources:
-            for mode in ("i64","i128","bigint"):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertIsNone(result.rust_source)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+            # Former boundary now converts and must match CPython (TypeError: not callable).
+            converted_or_positioned(self,source)
         result=transpile("def int(value):return 9\nclass C:\n def run(self):return int('4')\nprint(C().run())\n")
         self.assertTrue(result.success,result.diagnostics)
 
@@ -85,8 +83,10 @@ class ClassReferenceSlotTests(unittest.TestCase):
 
 class ClassNamespaceProofTests(unittest.TestCase):
     def test_unproved_module_builtin_fallback_and_loop_rebinding_are_not_erased(self):
-        sources=("import sys\nclass Marker:pass\nif int(input()):input=sys.stdin.readline\nprint(input())\n",
-                 "class C:\n def run(self):return input()\nfor _ in range(2):\n print(C().run())\n input=3\n")
+        from native_boundaries import converted_or_positioned
+        # Former boundary now converts and must match CPython.
+        converted_or_positioned(self,"class C:\n def run(self):return input()\nfor _ in range(2):\n print(C().run())\n input=3\n",inputs=("a\nb\n",))
+        sources=("import sys\nclass Marker:pass\nif int(input()):input=sys.stdin.readline\nprint(input())\n",)
         for source in sources:
             for mode in ("i64","i128","bigint"):
                 result=transpile(source,TranspileOptions(integer=mode))

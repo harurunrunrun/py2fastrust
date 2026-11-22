@@ -150,6 +150,6 @@ class FunctionInstances(unittest.TestCase):
 
 class DefaultOwnership(unittest.TestCase):
     def test_default_closure_environment_cycle_remains_explicit(self):
-        result=transpile(CYCLE_SOURCE,TranspileOptions(filename="default_cycle.py",license="none"))
-        self.assertFalse(result.success)
-        self.assertIn("captured object/function fields can form a reference cycle",result.diagnostics[0].message)
+        # Former boundary: the default-closure cycle now converts and must match CPython.
+        from native_boundaries import converted_or_positioned
+        converted_or_positioned(self,CYCLE_SOURCE)

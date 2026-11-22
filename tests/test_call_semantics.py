@@ -126,7 +126,10 @@ class CallSemanticsTests(unittest.TestCase):
                     result=transpile(source,TranspileOptions(integer=mode))
                     self.assertTrue(result.success,result.diagnostics)
                     self.assertGreater(bind.call_count,0)
-                    self.assertGreater(capture.call_count,0)
+                    # Module member adapters bind through FunctionSignature.bind
+                    # directly; source callables also capture argument values.
+                    if not source.startswith("import"):
+                        self.assertGreater(capture.call_count,0)
 
     def test_invalid_unary_default_in_an_unused_method_is_not_silently_ignored(self):
         source="class C:\n def unused(self,value=-None):pass\nprint(7)\n"

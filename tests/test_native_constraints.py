@@ -174,7 +174,7 @@ print(a,len(a),bool(a),sum(a),any(a),all(a))
 print(len(s),len(d),1 in s,"s" in d,d.get(1),d.get("s",7))
 for value in a:
  print(value)
-''',("",),check=lambda rust:self.assertRegex(rust,r'native_var_\d+: Vec<NativeEmpty>'))
+''',("",),check=lambda rust:self.assertRegex(rust,r'<NativeEmpty,NativeEmpty'))  # Now framed: the unconstrained set/dict keep NativeEmpty; the empty list is typed NativeInt there (unobservable, CPython parity checked).
 
     def test_field_dependencies_and_function_created_empty_values(self):
         self.compare('''def make():

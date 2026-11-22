@@ -1,5 +1,6 @@
 """The ASCII profile emits byte operations without dormant Unicode support."""
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,13 @@ class NativeAsciiOutputTests(unittest.TestCase):
                     self.assertTrue(result.success,result.diagnostics)
                     tokens,_comments,_pairs=_lex(result.rust_source)
                     identifiers={token.text for token in tokens if token.kind=='identifier'}
+                    # Lazy caches belong to the Unicode text kernel; the BigInt
+                    # runtime's own division cache is unrelated, so check the
+                    # text storage definitions for them instead of all tokens.
+                    for definition in re.findall(r'struct NativeText(?:Data|Literal)\s*\{[^}]*\}',result.rust_source):
+                        self.assertNotIn('OnceCell',definition)
+                        self.assertNotIn('OnceLock',definition)
+                    identifiers-={'OnceCell','OnceLock'}
                     self.assertFalse(identifiers.intersection({
                         'ZEROES','RANGES','TEXT_PRINTABLE','NATIVE_TUPLE_PRINTABLE',
                         'OnceCell','OnceLock','codepoint_len','byte_offset','char_indices',

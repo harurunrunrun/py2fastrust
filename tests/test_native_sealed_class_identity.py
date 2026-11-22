@@ -2,21 +2,23 @@
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+# The plain-instance certificate is now native_source_native_effects._instance_value (was native_value_classes.selected).
 
 from py2fastrust.native_sealed_class_identity import match
 
 
 class SealedClassIdentityContracts(unittest.TestCase):
     def fixture(self):
-        actual,other = object(),object()
-        model = SimpleNamespace()
+        # match() now needs class_key, indexed owners and published_metadata (current contract).
+        actual,other = SimpleNamespace(index=1),SimpleNamespace(index=2)
+        model = SimpleNamespace(class_key=lambda owner: 'C%d' % owner.index,published_metadata={1,2})
         model.source_state = SimpleNamespace(model=model,barrier=None,class_root=lambda owner: True)
         return model,actual,other
 
     def test_only_the_actual_same_owner_is_equal(self):
         model,actual,other = self.fixture()
         with patch('py2fastrust.native_class_binding_contexts.owner',return_value=actual), \
-             patch('py2fastrust.native_value_classes.selected',return_value=True):
+             patch('py2fastrust.native_source_native_effects._instance_value',return_value=True):
             self.assertTrue(match(model,object(),actual))
             self.assertFalse(match(model,object(),other))
 
@@ -33,10 +35,10 @@ class SealedClassIdentityContracts(unittest.TestCase):
         with patch('py2fastrust.native_class_binding_contexts.owner',return_value=None):
             self.assertIsNone(match(model,object(),actual))
         with patch('py2fastrust.native_class_binding_contexts.owner',return_value=actual), \
-             patch('py2fastrust.native_value_classes.selected',return_value=False):
+             patch('py2fastrust.native_source_native_effects._instance_value',return_value=False):
             self.assertIsNone(match(model,object(),actual))
         with patch('py2fastrust.native_class_binding_contexts.owner',return_value=actual), \
-             patch('py2fastrust.native_value_classes.selected',return_value=True):
+             patch('py2fastrust.native_source_native_effects._instance_value',return_value=True):
             model.source_state.class_root = lambda owner: owner is actual
             self.assertIsNone(match(model,object(),other))
 

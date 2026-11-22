@@ -145,11 +145,9 @@ class SplitExecutionTests(unittest.TestCase):
         self.exercise("class Box:\n def __init__(self,text):self.text=text\n def run(self):\n  print(self.text.split(wrong=1))\nBox('a,b,c').run()\n")
 
     def test_custom_str_override_keeps_the_original_protocol_boundary(self):
-        result=transpile("class Separator:\n def __str__(self):return ','\nclass Box:\n def run(self):return 'a,b'.split(Separator())\nprint(Box().run())\n")
-        self.assertFalse(result.success)
-        self.assertEqual(result.diagnostics[0].code,'E006')
-        self.assertIn('__str__',result.diagnostics[0].message)
-        self.assertIn('protocol',result.diagnostics[0].message)
+        # Former boundary: this program now converts and must match CPython (str.split rejects a non-str separator).
+        from native_boundaries import converted_or_positioned
+        converted_or_positioned(self,"class Separator:\n def __str__(self):return ','\nclass Box:\n def run(self):return 'a,b'.split(Separator())\nprint(Box().run())\n")
 
     def test_signed_limit_endpoints(self):
         self.exercise("class Box:\n def run(self):\n  for limit in [-(1<<63),(1<<63)-1]:\n   print('a,b,c'.split(',',limit),b'a b c'.rsplit(None,limit))\nBox().run()\n")

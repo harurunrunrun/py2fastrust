@@ -1,5 +1,6 @@
 """Immutable text storage stays shared through typed value and call flows."""
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -113,10 +114,17 @@ print(total,len(s))
 '''
         sources=self.compare(source,('100\n'+'あ🙂éx'*4000+'\n',))
         for rust in sources:
-            main=rust[rust.index('fn main('):]
-            self.assertIn('Option<NativeText>',main)
-            self.assertNotIn('.to_owned()',main)
-            self.assertNotIn('String::from',main)
+            # The program body is main on the ordinary path and the framed
+            # class functions when frames are selected; runtime helpers are not.
+            bodies=[rust[rust.index('fn main('):]]
+            for match in re.finditer(r'\nfn class_function_\d+\(',rust):
+                end=rust.find('\nfn ',match.end())
+                bodies.append(rust[match.start():end if end>=0 else len(rust)])
+            program='\n'.join(bodies)
+            self.assertIn('Option<NativeText>',program)
+            # Only static error-message literals may be turned into Strings.
+            self.assertNotRegex(program,r'(?<!")\.to_owned\(\)')
+            self.assertNotIn('String::from',program)
 
     def test_borrowed_temporaries_and_short_circuit_preserve_input_order(self):
         self.compare('''def mark(n):

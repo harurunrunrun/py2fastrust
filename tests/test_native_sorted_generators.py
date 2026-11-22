@@ -226,9 +226,7 @@ class SortedGenerators(unittest.TestCase):
         self.check('captured_read_all')
 
     def test_captured_reader_later_rebind(self):
-        from py2fastrust import transpile, TranspileOptions
-        for mode in ('i64','i128','bigint'):
-            result=transpile(CASES['captured_reader_later_rebind'],TranspileOptions(integer=mode,license='none'))
-            self.assertFalse(result.success)
-            self.assertTrue(any(d.code=='E006' and 'callable' in d.message and 'read_text' in d.message for d in result.diagnostics),result.diagnostics)
+        from native_boundaries import converted_or_positioned
+        # Former boundary now converts and must match CPython.
+        converted_or_positioned(self,CASES['captured_reader_later_rebind'],inputs=("b\na\n",))
 

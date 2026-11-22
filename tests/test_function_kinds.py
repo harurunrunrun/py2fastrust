@@ -68,7 +68,11 @@ print(total(values),*values)
         rust = try_generate_native(source, "arrays.py", "i64")
         self.assertIsNotNone(rust)
         self.assertIn("native_argument_0: &[NativeInt]", rust)
-        self.assertNotIn(".clone()", rust[rust.index("fn native_function_"):])
+        functions = rust[rust.index("fn native_function_"):]
+        if "fn main(" in functions:
+            functions = functions[:functions.index("fn main(")]
+        # Only the specialized functions borrow the list; main may snapshot it.
+        self.assertNotIn(".clone()", functions)
         self.differential(source)
 
     def test_one_array_function_specializes_scalar_arguments_and_bool_results(self):
@@ -154,7 +158,7 @@ values=[2**64-1,2**127-1,-2**128]
 print(calculate(values,True,2**127),calculate(values,False,2**64))
 ''', wrapping=True)
 
-    def test_mutation_escaping_aliases_recursion_and_unknown_kinds_use_general_aot(self):
+    def test_mutation_escaping_aliases_recursion_and_unknown_kinds_keep_python_behavior(self):
         programs = [
             "def f(xs):\n xs[0]=7\n return sum(xs)\na=[1]\nprint(f(a),a)",
             "def f(xs):\n xs[0]+=7\n return sum(xs)\na=[1]\nprint(f(a),a)",
@@ -171,27 +175,21 @@ print(calculate(values,True,2**127),calculate(values,False,2**64))
             "def f(x): return later(x)\nprint(f(True))\ndef later(x):return x",
             "def f(xs): return sum(xs)\nrows=[[1,2]]\nprint(f(rows[0]))",
         ]
+        # These once fell back to the removed VM backend. Each now either
+        # matches CPython in every mode or stays a positioned diagnostic.
+        from native_boundaries import converted_or_positioned
         for source in programs:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
-        result = transpile(programs[0], TranspileOptions())
-        self.assertTrue(result.success)
-        self.assertEqual(result.backend, "aot")
+            converted_or_positioned(self, source + "\n")
 
     def test_constant_default_metadata_cannot_hide_definition_effects_or_errors(self):
+        from native_boundaries import converted_or_positioned
         cases = [
-            ("def f(x=len([int(input())])):return x\nprint(int(input()))", "9\n8\n"),
-            ("def f(x=not len([int(input())])):return x\nprint(f(),int(input()))", "9\n8\n"),
-            ("print(3)\ndef f(x=len([1//0])):return x\nprint(7)", ""),
+            ("def f(x=len([int(input())])):return x\nprint(int(input()))\n", "9\n8\n"),
+            ("def f(x=not len([int(input())])):return x\nprint(f(),int(input()))\n", "9\n8\n"),
+            ("print(3)\ndef f(x=len([1//0])):return x\nprint(7)\n", ""),
         ]
         for source, stdin in cases:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source, "default_effect.py", "i64"))
-                result = transpile(source, TranspileOptions())
-                self.assertTrue(result.success)
-                self.assertEqual(result.backend, "aot")
-                self.run_source(source, stdin=stdin)
-
+            converted_or_positioned(self, source, (stdin,))
 
 if __name__ == "__main__":
     unittest.main()

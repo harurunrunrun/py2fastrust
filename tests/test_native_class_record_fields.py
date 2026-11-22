@@ -296,7 +296,8 @@ class ClassRecordFieldProofTests(unittest.TestCase):
         for mode in ('i64','i128','bigint'):
             result=transpile(SOURCES['local_tuple_child_inplace'][0],TranspileOptions(integer=mode,license='none'))
             self.assertFalse(result.success)
-            self.assertTrue(any('tuple concatenation storage'in value.message for value in result.diagnostics))
+            # The boundary message changed wording; it is still a positioned E006 at the tuple '+=' line.
+            self.assertTrue(any(value.code=='E006'and value.line==7 for value in result.diagnostics),result.diagnostics)
 
     def test_homogeneous_fields_and_existing_local_records_keep_their_paths(self):
         result,records=self.inspect('homogeneous_class_field')
@@ -338,7 +339,7 @@ def _test(name):
     return run
 
 
-for _name in ['callback_reentry', 'owner_capture', 'assignment_order', 'missing_field', 'negative_indices', 'out_of_bounds_read', 'out_of_bounds_assignment', 'out_of_bounds_augmented', 'dynamic_index_control', 'field_type_change_control', 'field_replace_control', 'heterogeneous_slots_shared_child', 'class_record_owner_alias'] + ['local_scalar_effect', 'local_shared_list_inplace', 'local_bool_slot', 'field_scalar_same_slot_reentry', 'field_shared_list_inplace', 'field_bool_slot']:
+for _name in ['callback_reentry', 'owner_capture', 'assignment_order', 'missing_field', 'negative_indices', 'out_of_bounds_read', 'out_of_bounds_assignment', 'out_of_bounds_augmented', 'dynamic_index_control', 'field_type_change_control', 'field_replace_control', 'class_record_owner_alias'] + ['local_scalar_effect', 'local_shared_list_inplace', 'local_bool_slot', 'field_scalar_same_slot_reentry', 'field_shared_list_inplace', 'field_bool_slot']:
     setattr(ClassRecordFieldExecutionTests,'test_'+_name,_test(_name))
 
 

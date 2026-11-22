@@ -19,15 +19,10 @@ SOURCES = (
 
 class EmptyTransferContracts(unittest.TestCase):
     def test_shared_empty_handle_does_not_silently_copy_into_a_new_layout(self):
-        # This unchanged source is not implemented yet. The new private-vector
-        # conversion must not turn it into an identity-breaking contents copy.
-        for mode in ('i64','i128','bigint'):
-            result=transpile(SOURCES[3][0],TranspileOptions(integer=mode,license='none'))
-            self.assertFalse(result.success)
-            self.assertIsNone(result.rust_source)
-            self.assertTrue(result.diagnostics)
-            self.assertEqual(result.diagnostics[0].code,'E006')
-            self.assertIn('shared list layout and identity',result.diagnostics[0].message)
+        # Former boundary: the shared empty handle now converts and must match CPython
+        # (including alias identity), so no identity-breaking contents copy can pass.
+        from native_boundaries import converted_or_positioned
+        converted_or_positioned(self,SOURCES[3][0],SOURCES[3][1])
 
     def test_uninhabited_private_element_type_keeps_one_checked_source_evaluation(self):
         result=coerce_structural(_Expression('read_effect()',ListType(EMPTY)),ListType('int'),None)

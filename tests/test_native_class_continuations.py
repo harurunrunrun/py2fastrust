@@ -453,7 +453,7 @@ class NativeClassContinuationProofTests(unittest.TestCase):
                      'recursive_numeric_add','reflected_notimplemented_recursion','recursive_unary',
                      'recursive_rich_comparison','bound_method_iterator_callback','recursive_method_cleanup',
                      'owned_field_suspending_index','mutable_field_augmented_suspension',
-                     'fixed_local_list_inside_method','default_string_observation','constructor_only_observer','unused_definition_default','identity_builtin_callback','representation_builtin_callback'):
+                     'default_string_observation','constructor_only_observer','unused_definition_default','identity_builtin_callback','representation_builtin_callback'):
             with self.subTest(source=name):
                 result,model=self.capture(name)
                 self.assertFalse(model.typed_continuations.plans)
@@ -512,6 +512,7 @@ class NativeClassContinuationExecutionTests(unittest.TestCase):
     def test_deep_shared_receiver(self):self.exercise('deep_shared_receiver')
     def test_private_method_binding(self):self.exercise('private_recursive_method')
     def test_unbound_local_after_empty_loop(self):self.exercise('empty_method_loop_and_unbound')
+    def test_fixed_local_list_inside_method(self):self.exercise('fixed_local_list_inside_method')
 
 
 if __name__=='__main__':unittest.main()

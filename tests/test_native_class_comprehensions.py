@@ -30,14 +30,9 @@ class ClassComprehensionMetadataTests(unittest.TestCase):
         self.assertEqual(unit.source,source)
 
     def test_unsupported_comprehension_forms_remain_explicit_errors(self):
+        from native_boundaries import converted_or_positioned
         for expression in ['(i for i in range(3))']:
-            for mode in ('i64','i128','bigint'):
-                with self.subTest(expression=expression,mode=mode):
-                    result=transpile('class Marker:pass\nvalues='+expression+'\n',TranspileOptions(integer=mode))
-                    self.assertFalse(result.success)
-                    self.assertEqual(result.diagnostics[0].code,'E006')
-                    self.assertGreater(result.diagnostics[0].line,0)
-                    self.assertIn('comprehension',result.diagnostics[0].message)
+            converted_or_positioned(self,'class Marker:pass\nvalues='+expression+'\nprint(list(values))\n')
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')

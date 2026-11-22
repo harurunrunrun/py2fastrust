@@ -165,7 +165,7 @@ from py2fastrust import TranspileOptions,transpile
 
 
 def normalized_stderr(value):
-    """Keep error/header/frame order, elide only CP's source-line decorations.
+    """Keep error/header/frame order, elide only CP's source-line decorations and suggestions.
 
     Pointer values vary between processes. Their equivalence classes are
     retained, so two aliases must print the same address and independent live
@@ -179,6 +179,9 @@ def normalized_stderr(value):
             def identity(match):
                 return identities.setdefault(match.group(),'<address-'+str(len(identities))+'>')
             line=re.sub(r'0x[0-9a-fA-F]+',identity,line)
+        # CPython's traceback display appends name suggestions computed from
+        # the live namespaces; they are not part of the exception message.
+        line=re.sub(r"\. Did you mean: .*\?$",'',line)
         result.append(line)
     return '\n'.join(result)
 

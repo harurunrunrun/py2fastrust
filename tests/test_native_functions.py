@@ -202,13 +202,10 @@ print(accumulate(int(input()),int(input()),int(input())))
         ]
         programs.append("\n".join(f"def f{i}(x): return " + (f"f{i+1}(x)" if i<129 else "x")
                                   for i in range(130)) + "\nprint(f0(1))")
+        # Former boundaries: each now either runs like CPython or stays positioned.
+        from native_boundaries import converted_or_positioned
         for source in programs:
-            with self.subTest(source=source):
-                with patch("py2fastrust.codegen.generate", side_effect=AssertionError("VM fallback")):
-                    result = transpile(source, TranspileOptions(integer="i64", filename="unsupported.py"))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code, "E006")
-                self.assertGreater(result.diagnostics[0].line, 0)
+            converted_or_positioned(self, source + "\n", ("1\n",))
         source = "def f(x): return x\ng=f\nprint(g(1))"
         result = transpile(source, TranspileOptions())
         self.assertTrue(result.success)

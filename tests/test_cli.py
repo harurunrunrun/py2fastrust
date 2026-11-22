@@ -67,12 +67,12 @@ class APITests(unittest.TestCase):
             package.mkdir()
             (package / "__init__.py").write_text("from .calc import twice\n")
             (package / "calc.py").write_text("def twice(x):\n return x*2\n")
-            (root / "extra.py").write_text("value=13\n")
+            # The exec/--include-module subcase needed the removed VM (now E006); keep the static package bundling.
             source = root / "main.py"
-            source.write_text("from helpers import twice\nprint(twice(4))\nexec('import extra\\nprint(extra.value)')\n")
+            source.write_text("from helpers import twice\nprint(twice(4))\n")
             output = root / "main.rs"
-            generated = subprocess.run([sys.executable, "-m", "py2fastrust", str(source), "-o", str(output),
-                                        "--include-module", "extra"], capture_output=True, text=True)
+            generated = subprocess.run([sys.executable, "-m", "py2fastrust", str(source), "-o", str(output)],
+                                       capture_output=True, text=True)
             self.assertEqual(generated.returncode, 0, generated.stderr)
             self.assertTrue(output.is_file())
             compiled = subprocess.run(["rustc", "--edition=2021", str(output), "-o", str(root / "main")],
@@ -81,7 +81,7 @@ class APITests(unittest.TestCase):
             # Execute away from all bundled .py files.
             result = subprocess.run([str(root / "main")], cwd="/tmp", capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, "8\n13\n")
+            self.assertEqual(result.stdout, "8\n")
 
 
 if __name__ == "__main__":

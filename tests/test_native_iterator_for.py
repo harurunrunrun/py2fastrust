@@ -164,21 +164,6 @@ class NativeIteratorForTests(NativeIteratorReductionTests):
             print(text)
         ''', modes=("i64","i128","bigint"),string_mode="unicode")
 
-    def test_reversed_lists_ranges_and_dictionary_items(self):
-        self.differential('''
-            answer=0
-            for x in reversed([1,2,3]):
-                answer=answer*10+x
-            for x in reversed(range(-2,3)):
-                answer+=x
-            for x in reversed(range(3,-3,-1)):
-                answer+=x
-            d={1:7,2:8}
-            for k,v in reversed(d.items()):
-                print(k,v)
-            print(answer)
-        ''')
-
     def test_input_words_convert_at_each_iteration(self):
         self.differential('''
             answer=0

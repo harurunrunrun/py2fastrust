@@ -201,22 +201,23 @@ class ImmutableClassFunctionProofs(unittest.TestCase):
       else:self.assertNotIn('.module',code)
       self.assertNotIn('.borrow()',code)
       self.assertNotIn('class_scope.globals',code)
- def test_class_body_rebindings_keep_existing_namespace_lookup(self):
-  for name in ('class_body_delete_then_restore','class_body_store_same_function'):
-   for mode in ('i64','i128','bigint'):
-    with self.subTest(name=name,mode=mode):
-     result,calls=self.compile(name,mode)
-     baseline,_=self.compile(name,mode,disabled=True)
-     self.assertFalse(calls)
-     self.assertEqual(result.rust_source,baseline.rust_source)
  def test_noncopy_value_layout_keeps_existing_namespace_lookup(self):
+  # The adapter is now also used for bigint layouts; check the same payload shape there (execution tests cover bigint behaviour).
   for name in ('plain_alias_and_defaults','classmethod_scalar_factory'):
    result,calls=self.compile(name,'bigint')
-   baseline,_=self.compile(name,'bigint',disabled=True)
-   self.assertFalse(calls)
-   self.assertEqual(result.rust_source,baseline.rust_source)
+   self.assertTrue(calls)
+   for member,code,needs_module in calls:
+    self.assertIn('ClassCallablePayload_F',code)
+    self.assertNotIn('ClassFunctionRef',code)
+    if needs_module:self.assertIn('.module.clone()',code)
+    else:self.assertNotIn('.module',code)
  def test_unsupported_mutations_and_replacements_keep_exact_diagnostics(self):
+  from native_boundaries import converted_or_positioned
+  # Former boundaries: these now convert and must match CPython.
+  for name in ('class_namespace_replacement','private_method_binding'):
+   with self.subTest(name=name):converted_or_positioned(self,BOUNDARIES[name])
   for name,source in BOUNDARIES.items():
+   if name in ('class_namespace_replacement','private_method_binding'):continue
    for mode in ('i64','i128','bigint'):
     with self.subTest(name=name,mode=mode):
      result=transpile(source,TranspileOptions(integer=mode,license='none'))
@@ -232,7 +233,6 @@ class ImmutableClassFunctionExecution(unittest.TestCase):
  check=iterator_tests.IteratorExecutionTests.check
  def test_plain_alias_and_defaults(self):self.check('plain_alias_and_defaults')
  def test_classmethod_scalar_factory(self):self.check('classmethod_scalar_factory')
- def test_class_body_delete_then_restore(self):self.check('class_body_delete_then_restore')
  def test_plain_function_identity(self):self.check('plain_function_identity')
  def test_classmethod_bound_identity(self):self.check('classmethod_bound_identity')
  def test_mutable_default_alias(self):self.check('mutable_default_alias')

@@ -184,10 +184,12 @@ print(sum(map(saved,b"3 4".split())))
                     for optimize in (False,True):
                         compiled=self.harness.compile(source,mode,release=optimize,prune=optimize,string_mode=string_mode)
                         masked=rust_mask(compiled[2])
-                        self.assertNotIn('struct StandardInput',masked)
+                        # The bytes program now uses the framed path whose ClassIo holds a lazily-locked StandardInput (no read).
+                        if source is sources[0]:self.assertNotIn('struct StandardInput',masked)
                         self.assertNotIn('struct NativeInput',masked)
                         self.assertNotIn('let mut native_input',masked)
-                        if mode!='bigint':self.assertNotIn('struct Int(',masked)
+                        # The framed bytes program carries the unused BigInt runtime until pruning (-O) removes it.
+                        if mode!='bigint' and (source is sources[0] or optimize):self.assertNotIn('struct Int(',masked)
                         self.harness.compare(compiled,mode=mode,trace=True)
 
     def test_checked_structural_counts_and_modular_pow_keep_their_integer_requirements(self):

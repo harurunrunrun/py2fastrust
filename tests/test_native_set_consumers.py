@@ -142,42 +142,43 @@ s=set(values)
 print(sorted(s),len(s),(1<<180) in s)
 ''',modes=("bigint",),profiles=(False,True))
 
+    def converted_or_positioned(self,source,inputs=("",)):
+        """A boundary either converts with CPython-equal behavior or stays a positioned E006."""
+        from test_native_exception_handlers import compare
+        results=[transpile(source,TranspileOptions(integer=mode))for mode in("i64","i128","bigint")]
+        if all(result.success for result in results):
+            for data in inputs:
+                with self.subTest(source=source,stdin=data):compare(self,source,data)
+            return
+        for result in results:
+            self.assertFalse(result.success,source)
+            self.assertEqual(result.diagnostics[0].code,"E006")
+
     def test_order_permission_does_not_cross_callbacks_or_positional_adapters(self):
-        # These remain explicit proof boundaries. They are not accepted as
-        # successful conversions or included in feature acceptance counts.
-        sources=(
+        # Set iteration order reaches callbacks and positional adapters only
+        # through the CPython-order set kernel; outputs must equal CPython.
+        for source in(
             'def f(x):\n print(x)\n return x\nprint(sorted(map(f,{1,2})))\n',
             'def f(x):\n print(x)\n return x\nprint(sorted(filter(f,{1,2})))\n',
             'print(sorted(enumerate({1,2})))\n',
             'print(sorted(zip({1,2},range(2))))\n',
             'print(sorted((x for x in {1,2})))\n',
             'print(sorted({-1,1},key=abs))\n',
-        )
-        for mode in("i64","i128","bigint"):
-            for source in sources:
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+        ):
+            self.converted_or_positioned(source)
 
     def test_mutable_aliases_are_never_implemented_as_silent_copies(self):
-        source='s=set([1,2])\nt=s\nt.add(3)\nprint(len(s))\n'
-        for mode in("i64","i128","bigint"):
-            result=transpile(source,TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,"E006")
+        self.converted_or_positioned('s=set([1,2])\nt=s\nt.add(3)\nprint(len(s), s is t, sorted(s))\n')
 
     def test_constructor_identity_and_arity_cannot_reenter_spelling_dispatch(self):
-        for mode in("i64","i128","bigint"):
-            for source in(
-                'set=range\nprint(set())\n',
-                'build=set\nprint(build(1,2))\n',
-                'build=set\nprint(build(iterable=[1,2]))\n',
-                'if int(input()):\n build=set\nprint(build([1]))\n',
-                'build=int(input())\nprint(build([1]))\n',
-            ):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+        for source,inputs in(
+            ('set=range\nprint(set())\n',("",)),
+            ('build=set\nprint(build(1,2))\n',("",)),
+            ('build=set\nprint(build(iterable=[1,2]))\n',("",)),
+            ('if int(input()):\n build=set\nprint(build([1]))\n',("1\n","0\n")),
+            ('build=int(input())\nprint(build([1]))\n',("3\n",)),
+        ):
+            self.converted_or_positioned(source,inputs)
 
 
 if __name__=="__main__":unittest.main()

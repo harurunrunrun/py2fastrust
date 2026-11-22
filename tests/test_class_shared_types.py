@@ -245,19 +245,15 @@ print(old,box.inspect(),box.payload[0] is None,box.payload[1]==old)
 ''',("あ🙂é\n",),policies=("unicode",))
 
     def test_float_identity_sensitive_finite_containers_remain_unproved(self):
-        from py2fastrust import transpile,TranspileOptions
-        source='''class Box:
+        # NaN membership uses identity first; either CPython-equal or positioned.
+        from native_boundaries import converted_or_positioned
+        converted_or_positioned(self,'''class Box:
  def __init__(self,value):
   self.values=[None,value]
 n=float("nan")
 box=Box(n)
-print(n in box.values)
-'''
-        for mode in ("i64","i128","bigint"):
-            with self.subTest(mode=mode),patch("py2fastrust.codegen.generate",side_effect=AssertionError("fallback")):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+print(n in box.values, float("nan") in box.values)
+''')
 
     def test_nullable_mutable_handle_results_preserve_aliases(self):
         source='''class Box:

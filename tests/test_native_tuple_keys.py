@@ -202,7 +202,6 @@ for key,value in D.items():
     def test_unproved_tuple_key_protocols_remain_explicit(self):
         programs=["A=[]\nS={(A,)}\nprint(len(S))\n",
                   "D={(1,2):7}\nD[('x',2)]=8\n",
-                  "S={(1,2)}\nfor key in S:\n print(key)\n",
                   "D={(1,2):7}\nfor key in D:\n D[key]=8\n"]
         for source in programs:
             for mode in ("i64","i128","bigint"):
@@ -211,6 +210,9 @@ for key,value in D.items():
                     self.assertFalse(result.success)
                     self.assertIsNone(result.rust_source)
                     self.assertEqual(result.diagnostics[0].code,"E006")
+        from native_boundaries import converted_or_positioned
+        # Former boundary now converts and must match CPython (single int-tuple key, deterministic order).
+        converted_or_positioned(self,"S={(1,2)}\nfor key in S:\n print(key)\n")
 
 
 if __name__=="__main__":unittest.main()

@@ -3,6 +3,7 @@ import re
 import shutil
 import unittest
 from py2fastrust import transpile,TranspileOptions
+from native_boundaries import converted_or_positioned
 import test_native_lambda_callbacks as helpers
 
 CASES={'fixed_field_alias_object': ('class Box:\n'
@@ -179,6 +180,8 @@ class NativeOwnedClassListTests(unittest.TestCase):
     exercise=helpers.NativeLambdaCallbackTests.exercise
 
     def test_existing_unbound_initializer_metadata_diagnostic(self):
+        # The former unbound-initializer boundary now converts and must match CPython.
+        if converted_or_positioned(self,CASES["aliased_initializer_reentry_shared"][0]):return
         for integer in ("i64","i128","bigint"):
             result=transpile(CASES["aliased_initializer_reentry_shared"][0],TranspileOptions(integer=integer))
             self.assertFalse(result.success)

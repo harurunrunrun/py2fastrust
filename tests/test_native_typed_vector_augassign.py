@@ -156,9 +156,11 @@ class TypedVectorLayoutProofs(unittest.TestCase):
   self.assertFalse(shared_payload('float'))
 
  def test_nan_element_comparisons_remain_positioned_missing_protocols(self):
-  sources=["x=float('nan')\nvalues=[x]\nalias=values\nprint(values==alias)\n",
-           "x=float('nan')\nvalues=[x]\nalias=values\nprint(alias.count(x))\n",
-           "x=float('nan')\nvalues=(x,)\nprint(values==values)\n"]
+  from native_boundaries import converted_or_positioned
+  # Former boundaries now convert and must match CPython (identity-aware NaN equality prints True).
+  converted_or_positioned(self,"x=float('nan')\nvalues=[x]\nalias=values\nprint(values==alias)\n")
+  converted_or_positioned(self,"x=float('nan')\nvalues=(x,)\nprint(values==values)\n")
+  sources=["x=float('nan')\nvalues=[x]\nalias=values\nprint(alias.count(x))\n"]
   for source in sources:
    for mode in ('i64','i128','bigint'):
     with self.subTest(mode=mode,source=source):

@@ -27,7 +27,8 @@ class ConstantDivisorProofs(unittest.TestCase):
                 result = transpile(source(divisor), TranspileOptions(integer=mode, license='none'))
                 self.assertTrue(result.success, result.diagnostics)
                 self.assertIn('let class_checked_divisor=', result.rust_source)
-                self.assertIn('class_lexical_get_', result.rust_source)
+                # The never-rebound closure divisor may be read as a proved
+                # constant instead of through its lexical cell getter.
                 self.assertIn('wrapping_rem(', result.rust_source)
                 self.assertIn('wrapping_div(', result.rust_source)
 

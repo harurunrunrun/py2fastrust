@@ -54,10 +54,13 @@ print(saved, s, saved == s)
 '''
         self.differential(source, ("猫🐈\n!\n", "\n海\n"))
         rust = try_generate_native(source, "snapshots.py", "i64")
-        self.assertRegex(rust, r"fn native_function_\d+_str\(native_argument_0: NativeText")
-        main = rust[rust.index("fn main() {"):]
+        # Rebinding the parameter selects frames ('container formal binding
+        # changes'); either path passes the argument as owned text.
+        self.assertRegex(rust, r"fn native_function_\d+_str\(native_argument_0: NativeText"
+                               r"|fn class_function_\d+\(class_scope:&ClassScope ?,class_argument_0:NativeText\)")
+        start = rust.index("fn main() {") if "fn main() {" in rust else rust.index("fn class_function_0(")
         # The saved binding and by-value argument still need owned snapshots.
-        self.assertIn(".clone()", main)
+        self.assertIn(".clone()", rust[start:])
 
     def test_index_and_comparison_call_order_and_short_circuit(self):
         self.differential('''

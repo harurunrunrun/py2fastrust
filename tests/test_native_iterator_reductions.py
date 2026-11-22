@@ -295,8 +295,11 @@ print(any(a+i==0 for i in range(3)),max(a+i for i in range(3)))
                         self.compare(self.compile(source, mode, release))
 
     def test_unproved_binding_mutation_and_escaped_generators_are_rejected(self):
+        # The comprehension variable does not leak: print(x) is a runtime
+        # NameError, which now converts and must match CPython.
+        from native_boundaries import converted_or_positioned
+        converted_or_positioned(self,"print(sum(x for x in [1]));print(x)\n")
         for source in (
-            "print(sum(x for x in [1]));print(x)",
             "from collections import deque\nq=deque([1,2])\nprint(sum((x for x in q),q.popleft()))",
             "print(sum(x for (x,) in [1]))",
             "print(sum(x for x in zip([1])))",

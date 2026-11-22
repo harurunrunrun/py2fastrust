@@ -141,7 +141,8 @@ except Exception:
 }
 
 
-def compare(test, source, stdin):
+def compare(test, source, stdin, normalize=None):
+    """normalize, when given, maps both stdouts before comparison (e.g. object addresses)."""
     with tempfile.TemporaryDirectory(prefix='pytors-exception-handlers-') as directory:
         script = Path(directory) / 'program.py'
         script.write_text(source)
@@ -166,7 +167,8 @@ def compare(test, source, stdin):
                 actual = subprocess.run([str(binary)], input=stdin, capture_output=True, text=True, timeout=20,
                                         env={**os.environ, 'PATH': '/no-python-runtime'})
                 with test.subTest(integer=integer, optimized=optimized):
-                    test.assertEqual((actual.returncode, actual.stdout), (expected.returncode, expected.stdout), actual.stderr)
+                    view = normalize or (lambda text: text)
+                    test.assertEqual((actual.returncode, view(actual.stdout)), (expected.returncode, view(expected.stdout)), actual.stderr)
                     test.assertEqual(normalized_stderr(actual.stderr), normalized_stderr(expected.stderr))
 
 

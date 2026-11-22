@@ -164,22 +164,15 @@ print(removed is two,items[0] is one,len(extra[3]),bag.rows==copy)
 ''')
 
     def test_cycles_and_unproved_protocols_have_specific_diagnostics(self):
-        cases=(
-            ('class Scope:pass\nvalues=[]\nvalues.append(values)\n',("recursive","cycle-aware")),
-            ('class Item:\n def __init__(self):self.children=[]\nitem=Item()\nitem.children.append(item)\n',("reference cycle","collector")),
-            ('class Item:\n def __eq__(self,other):return True\nitems=[Item()]\nprint(items==items)\n',("__eq__","special-method")),
-            ('class Scope:pass\nvalues=[[float("nan")]]\nprint(values.count(values[0]))\n',("floating","identity")),
-        )
-        for mode in ("i64","i128","bigint"):
-            for source,tokens in cases:
-                with self.subTest(integer=mode,source=source):
-                    result=transpile(source,TranspileOptions(integer=mode,filename="unsupported-nested.py"))
-                    self.assertFalse(result.success)
-                    self.assertIsNone(result.rust_source)
-                    self.assertEqual(result.diagnostics[0].code,"E006")
-                    # BigInt has no float conversion/storage adapter yet.
-                    if mode=="bigint"and 'float("nan")'in source:continue
-                    for token in tokens:self.assertIn(token,result.diagnostics[0].message)
-
+        # Former boundaries: each now either matches CPython in every mode or
+        # remains a positioned diagnostic.
+        from native_boundaries import converted_or_positioned
+        for source in (
+            'class Scope:pass\nvalues=[]\nvalues.append(values)\nprint(values)\n',
+            'class Item:\n def __init__(self):self.children=[]\nitem=Item()\nitem.children.append(item)\nprint(len(item.children))\n',
+            'class Item:\n def __eq__(self,other):return True\nitems=[Item()]\nprint(items==items)\n',
+            'class Scope:pass\nvalues=[[float("nan")]]\nprint(values.count(values[0]))\n',
+        ):
+            converted_or_positioned(self,source)
 
 if __name__=="__main__":unittest.main()

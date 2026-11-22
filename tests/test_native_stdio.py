@@ -9,7 +9,7 @@ import unittest
 
 from py2fastrust import TranspileOptions,transpile
 from py2fastrust.native import try_generate_native
-from test_streaming_io import PipeSession
+from pipe_session import PipeSession
 
 
 @unittest.skipUnless(shutil.which("rustc"),"rustc is required")
@@ -233,7 +233,6 @@ print(*A)
             self.assertEqual(diagnostics[0].code,"E006")
         programs=["import sys\nsys.stdin=7\nprint(sys.stdin.readline())\n",
                   "import sys\nread=sys.stdin.readline\nsys.stdin.readline=read\nprint(read())\n",
-                  "import sys\nread=sys.stdin.readline\nread=7\nprint(read())\n",
                   "import sys\ninput=sys.stdin\nprint(input())\n",
                   "import sys\ndef main():\n print(int(input()))\n input=sys.stdin.readline\nmain()\n",
                   "def main():\n import sys\n a,b=map(int,input().split())\n input=sys.stdin.readline\nmain()\n",
@@ -247,6 +246,9 @@ print(*A)
                     self.assertIsNone(result.rust_source)
                     self.assertEqual(result.diagnostics[0].code,"E006")
                     self.assertEqual(result.diagnostics[0].filename,"missing.py")
+        from native_boundaries import converted_or_positioned
+        # Former boundary now converts and must match CPython.
+        converted_or_positioned(self,"import sys\nread=sys.stdin.readline\nread=7\nprint(read())\n",inputs=("x\n",))
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 import test_native_class_iterators as iterator_tests
-from test_streaming_io import PipeSession
+from pipe_session import PipeSession
 from py2fastrust import transpile,TranspileOptions
 
 CASES={

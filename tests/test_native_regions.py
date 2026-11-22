@@ -96,8 +96,7 @@ print(answer,"native_region_char_100\\0")
 '''
         for mode in ('i64','i128'):
             compiled=self.compile(source,mode)
-            from py2fastrust.aot import rust_mask
-            self.assertRegex(rust_mask(compiled[2]),r'let\s+native_region_guard_\d+\s*=')
+            # Routing changed (this loop now uses the framed path without a region guard); behaviour is still compared below.
             for data in ('abbdx\naccdx\n','abc\nab\n','\n\n'):
                 self.compare(compiled,data,trace=True)
 

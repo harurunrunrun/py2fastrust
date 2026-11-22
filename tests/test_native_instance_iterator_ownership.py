@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from py2fastrust import transpile,TranspileOptions
+from native_boundaries import converted_or_positioned
 from py2fastrust.native_class_storage import validate,validate_instance_graph
 from py2fastrust.native_classes import Cell,ClassUnsupported,InstanceType
 from py2fastrust.native_types import ListType,TupleType,NullableType
@@ -130,6 +131,9 @@ class IteratorOwnershipMetadataTests(unittest.TestCase):
 
     def test_method_shadow_store_reports_the_descriptor_boundary(self):
         source='class Holder:\n def method(self):return 1\nitem=Holder()\nitem.method=3\n'
+        # The former descriptor boundary now converts and must match CPython (also with the shadow observed).
+        if converted_or_positioned(self,source):
+            converted_or_positioned(self,source+'print(item.method,Holder().method())\n');return
         result=transpile(source,TranspileOptions(filename='ownership.py'))
         self.assertFalse(result.success)
         self.assertRegex(str(result.diagnostics),'instance-dictionary storage and descriptor lookup')

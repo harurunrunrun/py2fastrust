@@ -7,7 +7,6 @@ import subprocess
 import tempfile
 import unittest
 
-import test_runtime
 from test_integer import wrap
 
 
@@ -105,25 +104,6 @@ class IntegerFormatTests(unittest.TestCase):
         commands += [("format", 123, spec) for spec in ("s", "a", "q", "#s", "-z", "z", "zd", ".0d", ".5x", ".d", "..d", ",_d", "_,d", "_,", "__d", "#_n", ",x", "_,x", "#++d", "12dd", "99999999999999999999999999999d")]
         for bits in (0, 64, 128):
             self.check_cases(bits, commands)
-
-
-@unittest.skipUnless(shutil.which("rustc"), "rustc is required")
-class IntegerFormatIntegrationTests(unittest.TestCase):
-    run_source = test_runtime.RuntimeTests.run_source
-
-    def test_bigint_builtins_and_format_routes(self):
-        self.run_source('''
-            for n in [0, 65, -65, 2**200 + 12345, -(2**200 + 12345)]:
-                print(bin(n), oct(n), hex(n))
-                for spec in ['', 'd', '#x', '#X', '020_x', '+#090x', '💠^90d', ',d']:
-                    print(format(n, spec), n.__format__(spec), '{:#x}'.format(n))
-                print(f'{n:#x}', f'{n:090,d}')
-            for n in [2**63-1, -2**63]:
-                print(bin(n), oct(n), hex(n), format(n, '#070x'))
-            class Index:
-                def __index__(self): return 2**200
-            print(bin(Index()), oct(Index()), hex(Index()))
-        ''', integer="bigint")
 
 
 if __name__ == "__main__":

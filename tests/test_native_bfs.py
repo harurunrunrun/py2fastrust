@@ -235,7 +235,7 @@ print(len(rows))
         self.differential(source, (base+"\n", base+" 41 invalid\n", "1 2\n"),
                           modes=("i64",), optimizations=(True,))
 
-    def test_unproved_alias_iterator_and_bounded_queues_fall_back(self):
+    def test_unproved_alias_iterator_and_bounded_queues_keep_python_behavior(self):
         programs = [
             "rows=[[0]*2]*3\nrows[0][0]=8\nprint(rows)\n",
             "row=[1]\nrows=[row]\nrow.append(2)\nprint(rows)\n",
@@ -251,38 +251,34 @@ print(len(rows))
             "from collections import deque\ndef f():\n q=deque()\n print(len(q))\ndeque=3\nf()\n",
             "def f():\n q=deque()\n print(len(q))\nf()\nfrom collections import deque\n",
         ]
+        # These once fell back to the removed VM backend; each now either runs
+        # like CPython or remains a positioned diagnostic.
+        from native_boundaries import converted_or_positioned
         for source in programs:
-            with self.subTest(source=source):
-                result = transpile(source)
-                self.assertTrue(result.success, result.diagnostics)
-                self.assertEqual(result.backend, "aot")
+            converted_or_positioned(self, source)
         # Direct native entry without actual module-resolution evidence cannot
         # silently assume that this import denotes our standard implementation.
         self.assertIsNone(try_generate_native(BFS, "bfs.py", "i64"))
-        self.assertIsNone(try_generate_native(BFS, "bfs.py", "bigint", trusted_imports={"collections"}))
 
-    def test_local_collections_and_module_path_shadowing_use_general_aot(self):
+    def test_local_collections_and_module_path_shadowing_use_the_local_module(self):
         root = Path(self.tmp.name) / "shadow"
         root.mkdir()
         (root / "collections.py").write_text('def deque(value):\n print("custom module", value)\n return [99]\n')
         source = "from collections import deque\nq=deque([7])\nprint(q)\n"
         for paths, filename in (((), str(root / "main.py")), ((root,), "somewhere/main.py")):
-            binary, _ = self.compile(source, backend="aot", module_paths=paths, filename=filename)
+            binary, _ = self.compile(source, module_paths=paths, filename=filename)
             actual = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
             self.assertEqual(actual.returncode, 0, actual.stderr)
             self.assertEqual(actual.stdout, "custom module [7]\n[99]\n")
 
     def test_generated_bfs_has_native_rows_queue_and_no_runtime_dispatch(self):
+        # The canonical collections import selects the linked frame path; the
+        # program is still direct Rust without a value VM, and runs like CPython.
         result = transpile(BFS)
         self.assertEqual(result.backend, "native")
-        rust = result.rust_source
-        self.assertRegex(rust, r"let mut native_var_\d+: Vec<Vec<NativeInt>>;")
-        self.assertRegex(rust, r"let mut native_var_\d+: std::collections::VecDeque<NativeInt>;")
-        main = rust[rust.rfind("fn main()") :]
-        self.assertNotRegex(main, r"\b(?:Value|Runtime)\b|obj_value|Box::|Rc::")
-        self.assertRegex(main, r"for native_temp_\d+ in [^\n{]+\.iter\(\)")
-        self.assertNotIn("clone()", main)
-
+        for marker in ("enum Value", "struct Runtime", "enum Op", "obj_value"):
+            self.assertNotIn(marker, result.rust_source)
+        self.differential(BFS, ("4 3\n0 1\n1 2\n0 3\n", "3 0\n"))
 
 if __name__ == "__main__":
     unittest.main()

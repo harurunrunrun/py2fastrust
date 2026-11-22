@@ -9,11 +9,15 @@ import unittest
 from unittest.mock import patch
 
 from py2fastrust import transpile,TranspileOptions
+from native_boundaries import converted_or_positioned
 
 
 class MappingViewDiagnostics(unittest.TestCase):
     def test_floating_query_is_not_misclassified_as_an_unhashable_key(self):
-        result=transpile("class Marker:pass\nd={1:7}\nprint(d[1.0])\n")
+        source="class Marker:pass\nd={1:7}\nprint(d[1.0])\n"
+        # The former floating-key boundary now converts and must match CPython.
+        if converted_or_positioned(self,source):return
+        result=transpile(source)
         self.assertFalse(result.success)
         self.assertEqual(result.diagnostics[0].code,'E006')
         self.assertIn('floating/custom hash',result.diagnostics[0].message)

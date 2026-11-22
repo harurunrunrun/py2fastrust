@@ -11,6 +11,7 @@ import unittest
 from py2fastrust import TranspileOptions, transpile
 from py2fastrust.native import try_generate_native
 from wrapping_reference import execute
+from native_boundaries import converted_or_positioned
 
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
@@ -25,9 +26,13 @@ class NativeSetTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def compile(self, source, integer, optimized):
-        rust = try_generate_native(source, "native_sets.py", integer)
-        self.assertIsNotNone(rust, source)
-        self.assertIn("HashSet<NativeInt>", rust)
+        # Use the public pipeline: some set programs convert only on the framed path, not via try_generate_native.
+        result = transpile(source, TranspileOptions(integer=integer))
+        self.assertTrue(result.success, (source, result.diagnostics))
+        self.assertEqual(result.backend, "native")
+        rust = result.rust_source
+        # Exact-integer sets are now either HashSet or the CPython-order set table (iteration order matches CPython).
+        self.assertTrue("HashSet<NativeInt>" in rust or "NativeCPSet<NativeInt," in rust, source)
         self.assertNotIn("enum Value", rust)
         self.assertNotIn("struct Runtime", rust)
         type(self).counter += 1
@@ -173,39 +178,49 @@ print(len(s),sum(s),sum(s,a),a in s)
 ''', inputs, wrapping=True)
 
     def test_order_alias_dynamic_types_and_unbound_values_fall_back(self):
-        programs = [
-            "s={1}; t=s; t.add(2); print(len(s))",
-            "s=t=set(); print(len(s))",
-            "s={1}; print(s)",
-            "s={1}; print(list(s))",
-            "s={1}; print(s.pop())",
-            "s={1}; s.pop()",
-            "s={1};\nfor x in s:\n print(x)",
-            "s={1}; t=[x for x in s]; print(sum(t))",
+        # Programs that are still outside the native set proof.
+        rejected = [
             "s={1}; print(s=={1})",
-            "s={True}; print(len(s))",
-            "s=set(); s.add(True)",
             "s={1}; print(True in s)",
-            "s=set(); s.add(1.5)",
             "s={1}; s.add([2])",
             "s={1}; x=s.add(2)",
-            "s={1}; s.update([2],[3])",
-            "s={1}\nif input(): s='changed'\nprint(s)",
-            "s={1}; f(s)",
-            "s=set(x)",
-            "set=list; s=set([1]); print(len(s))",
-            "if int(input()): s={1}\nprint(len(s))",
-            "for i in range(0): s=set()\nprint(len(s))",
             "class I(int): pass\ns={I(1)}; print(len(s))",
         ]
-        for source in programs:
+        for source in rejected:
             with self.subTest(source=source):
                 self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+        # Former fallback programs (aliasing, printing/iteration order, pop, bool keys, floats, dynamic names) now
+        # convert; each must either match CPython (incl. set order) in every mode or stay a positioned E006.
+        converting = [
+            ("s={1}; t=s; t.add(2); print(len(s))", ("",)),
+            ("s=t=set(); print(len(s))", ("",)),
+            ("s={1}; print(s)", ("",)),
+            ("s={1}; print(list(s))", ("",)),
+            ("s={1}; print(s.pop())", ("",)),
+            ("s={1}; s.pop()", ("",)),
+            ("s={1};\nfor x in s:\n print(x)", ("",)),
+            ("s={1}; t=[x for x in s]; print(sum(t))", ("",)),
+            ("s={True}; print(len(s))", ("",)),
+            ("s=set(); s.add(True)", ("",)),
+            ("s=set(); s.add(1.5)", ("",)),
+            ("s={1}; s.update([2],[3])", ("",)),
+            ("s={1}\nif input(): s='changed'\nprint(s)", ("\n", "x\n")),
+            ("s={1}; f(s)", ("",)),
+            ("s=set(x)", ("",)),
+            ("set=list; s=set([1]); print(len(s))", ("",)),
+            ("if int(input()): s={1}\nprint(len(s))", ("0\n", "1\n")),
+            ("for i in range(0): s=set()\nprint(len(s))", ("",)),
+        ]
+        for source, inputs in converting:
+            converted_or_positioned(self, source, inputs)
         self.differential("s={1}; s='changed'; print(s)")
-        self.differential("s={1}\nfor i in range(1): s.clear()\nfor x in range(len(s)): pass\nprint(x)")
+        # x may stay unbound after the zero-trip loop: either CPython-equal or positioned in every mode.
+        converted_or_positioned(self, "s={1}\nfor i in range(1): s.clear()\nfor x in range(len(s)): pass\nprint(x)\n")
+        converted_or_positioned(self, "s={1}\nfor i in range(1): s.clear()\nprint(len(s))\n")
+        # The VM fallback backend was removed; the aliasing program now converts natively (behaviour checked above).
         result = transpile("s={1}; t=s; t.add(2); print(len(s))", TranspileOptions())
         self.assertTrue(result.success)
-        self.assertEqual(result.backend, "aot")
+        self.assertEqual(result.backend, "native")
 
     def test_bigint_integer_sets_use_native_backend(self):
         source = "s={1,1<<128};s.add(1<<256);print(len(s),sum(s),1<<256 in s)"

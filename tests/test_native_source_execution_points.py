@@ -18,7 +18,8 @@ from py2fastrust.references import BuiltinIdentity
 def fixture(text, *, index=0):
     tree = ast.parse(text)
     plan = SimpleNamespace(index=index, node=tree)
-    raw = tuple(ValueRegistry.own_nodes(None, plan))
+    # own_nodes now reads self.model.retained_generators; give it a model without one.
+    raw = tuple(ValueRegistry.own_nodes(SimpleNamespace(model=None), plan))
     model = SimpleNamespace(records={}, unit=None, reached_statements=None,
                             type_guard_branches={}, iter_nodes=lambda: executable_nodes(tree),
                             class_namespaces=SimpleNamespace(owners={}), classes={},
@@ -138,7 +139,7 @@ class ExecutionPoints(unittest.TestCase):
         from py2fastrust.frontend import parse_source
         unit = parse_source('class Expected: pass\ndef choose(value):\n    if isinstance(value, Expected):\n        return 1\n    return 0\n', filename='ordinary_source_unit_contract.py')
         plan = SimpleNamespace(index=1, node=unit.tree.body[1], reachable=True)
-        raw = tuple(ValueRegistry.own_nodes(None, plan))
+        raw = tuple(ValueRegistry.own_nodes(SimpleNamespace(model=None), plan))  # own_nodes reads self.model now
         branch = plan.node.body[0]
         owner = SimpleNamespace(index=9, node=unit.tree.body[0], module_name=unit.name)
         model = SimpleNamespace(unit=unit, plans=[plan], records={}, classes={},

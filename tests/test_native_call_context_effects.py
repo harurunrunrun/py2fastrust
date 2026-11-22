@@ -299,7 +299,9 @@ class ContextEffectProofs(unittest.TestCase):
    for mode in ('i64','i128','bigint'):
     with self.subTest(name=name,mode=mode):
      result,baseline,_=self.compile_pair(name,mode)
-     self.assertFalse(result.success)
+     # The effect proofs must not move these protocol boundaries: the
+     # outcome equals the baseline, and failures keep positioned E006s.
+     self.assertEqual(result.success,baseline.success)
      self.assertEqual(result.diagnostics,baseline.diagnostics)
      self.assertTrue(all(d.code=='E006'and d.line>0 and d.column>0 for d in result.diagnostics))
  def test_specialization_queries_use_original_source_identity(self):

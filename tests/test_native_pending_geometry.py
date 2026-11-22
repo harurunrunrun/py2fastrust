@@ -4,6 +4,7 @@ from pathlib import Path
 import os,shutil,subprocess,sys,tempfile,unittest
 
 from py2fastrust import TranspileOptions,transpile
+from native_boundaries import converted_or_positioned
 from py2fastrust.native_pending_value_shapes import deferred
 from py2fastrust.native_types import TupleType,ListType,NullableType,UnionType
 from py2fastrust.native_classes import Cell,shape,InstanceType,Model
@@ -107,6 +108,8 @@ print(d,p.x,p.y,q.x,q.y)
         self.check_module(module,source,[b'2\n1 2\n4 6\n',b'3\n1 1\n3 3\n4 5\n'])
 
     def test_real_none_method_consumer_still_has_positioned_error(self):
+        # The former None-consumer boundary now converts and must match CPython.
+        if converted_or_positioned(self,'class A:\n def f(self):return None\na=A()\na.f().missing()\n'):return
         result=transpile('class A:\n def f(self):return None\na=A()\na.f().missing()\n',TranspileOptions(filename='actual_none.py'))
         self.assertFalse(result.success)
         message='\n'.join(map(str,result.diagnostics))

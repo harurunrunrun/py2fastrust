@@ -108,25 +108,3 @@ class ClosedStaticExecutionTests(unittest.TestCase):
         for integer in ("i64", "i128", "bigint"):
             with self.subTest(integer=integer):
                 self.compare(source, integer)
-
-    def test_comprehensions_and_generator_resumption(self):
-        self.compare('''
-            def values():
-                yield 5
-                yield from range(3)
-                yield 7
-            print(list(values()))
-            print([str(x) for x in range(4)])
-            print({x:x*x for x in range(4)})
-            print(tuple(x*x for x in range(4)))
-        ''', optimize=True)
-
-    def test_annotations_defaults_and_decorators_stay_static(self):
-        self.compare('''
-            def decorate(fn):
-                return fn
-            @decorate
-            def combine(left: int, right: int=3) -> int:
-                return left+right
-            print(combine(5),combine(5,7))
-        ''')

@@ -93,8 +93,10 @@ class NativeExpressionResultTests(unittest.TestCase):
 
     def test_borrowed_mutable_sets_and_mappings_require_real_shared_storage(self):
         from py2fastrust import transpile,TranspileOptions
-        for source in ('flag=int(input())\nitems={1}\nchosen=items if flag else {2}\nprint(chosen)\n',
-                       'flag=int(input())\nitems={1:2}\nchosen=items if flag else {}\nprint(chosen)\n'):
+        from native_boundaries import converted_or_positioned
+        # Former boundary: the set selection now converts and must match CPython.
+        converted_or_positioned(self,'flag=int(input())\nitems={1}\nchosen=items if flag else {2}\nprint(chosen)\n',('0\n','1\n'))
+        for source in ('flag=int(input())\nitems={1:2}\nchosen=items if flag else {}\nprint(chosen)\n',):
             for mode in ('i64','i128','bigint'):
                 result=transpile(source,TranspileOptions(integer=mode))
                 self.assertFalse(result.success)

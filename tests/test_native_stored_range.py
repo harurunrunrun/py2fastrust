@@ -207,12 +207,10 @@ class StoredRangeProofTests(unittest.TestCase):
                 self.assertGreater(error.line,0);self.assertIn("range",error.message)
 
     def test_returned_suspension_requires_the_existing_generator_adapter(self):
+        from native_boundaries import converted_or_positioned
         source="class Source:\n def choose(self,flag):\n  if flag:return (x+1 for x in [1,2])\n  return [7,8]\nsource=Source()\nprint(list(source.choose(True)),list(source.choose(False)))\n"
-        for integer in ("i64","i128","bigint"):
-            result=transpile(source,TranspileOptions(integer=integer,filename="boundary.py"))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,"E006")
-            self.assertIn("suspension",result.diagnostics[0].message)
+        # Former boundary now converts and must match CPython.
+        converted_or_positioned(self,source)
 
 
 @unittest.skipUnless(shutil.which("rustc"),"rustc is required")

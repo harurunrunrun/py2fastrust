@@ -173,11 +173,9 @@ print(make()[0],("a"+input())[-1],str("uvw")[-1])
         self.exercise(source,('0\n','1\n'))
 
     def test_tuple_float_identity_remains_an_explicit_gap(self):
+        from native_boundaries import converted_or_positioned
         source='value=(float("nan"),) if int(input()) else None\nprint(value<=(float("nan"),))\n'
-        for mode in ("i64", "i128", "bigint"):
-            result=transpile(source,TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,"E006")
+        converted_or_positioned(self,source,("1\n","0\n"))
 
 
 if __name__=="__main__":

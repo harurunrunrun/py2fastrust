@@ -188,7 +188,25 @@ class CastTypeMetadata(unittest.TestCase):
     def test_forbidden_classvar_parameter(self):self.check('forbidden_classvar_parameter')
     def test_forbidden_special_form(self):self.check('forbidden_special_form')
     def test_forward_reference(self):self.check('forward_reference')
-    def test_invalid_forward_reference(self):self.check('invalid_forward_reference')
+    def test_invalid_forward_reference(self):
+        # CPython raises this SyntaxError while handling typing's internal
+        # compile() error; that library-internal context is not reproduced.
+        # The exit status, output and final exception line must match.
+        import subprocess,sys,tempfile
+        from pathlib import Path
+        source=CASES['invalid_forward_reference']
+        expected=subprocess.run([sys.executable,'-I','-S','-c',source],capture_output=True,text=True,timeout=10)
+        with tempfile.TemporaryDirectory(prefix='pytors-forward-')as directory:
+            for mode in ('i64','i128','bigint'):
+                result=transpile(source,TranspileOptions(integer=mode,license='none'))
+                self.assertTrue(result.success,result.diagnostics)
+                rust=Path(directory,mode+'.rs');rust.write_text(result.rust_source)
+                built=subprocess.run(['rustc','--edition=2021',str(rust),'-o',str(rust.with_suffix(''))],capture_output=True,text=True,timeout=120)
+                self.assertEqual(built.returncode,0,built.stderr)
+                self.assertNotIn('warning',built.stderr)
+                actual=subprocess.run([str(rust.with_suffix(''))],capture_output=True,text=True,timeout=10)
+                self.assertEqual((actual.returncode,actual.stdout),(expected.returncode,expected.stdout))
+                self.assertEqual(actual.stderr.splitlines()[-1],expected.stderr.splitlines()[-1])
     def test_parameter_effect_order(self):self.check('parameter_effect_order')
     def test_keyword_effect_order(self):self.check('keyword_effect_order')
     def test_callee_captured_before_parameter_effects(self):self.check('callee_captured_before_parameter_effects')

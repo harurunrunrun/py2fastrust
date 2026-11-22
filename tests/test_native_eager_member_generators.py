@@ -95,18 +95,9 @@ class EagerMemberGeneratorTests(unittest.TestCase):
         for name in ('counter_constructor', 'counter_empty_generator', 'counter_constructor_alias', 'finite_counter_list_factories', 'finite_sum_list_factories'):
             with self.subTest(name=name):self.check(name)
 
-    def test_ordered_arguments_and_methods(self):
-        for name in ('counter_constructor_later_arguments', 'counter_update', 'counter_subtract', 'counter_update_self_keys', 'counter_update_later_keywords', 'counter_loop_and_bound_receiver'):
-            with self.subTest(name=name):self.check(name)
-
-    def test_body_errors_mutation_and_recursive_calls(self):
-        for name in ('counter_body_error_frames', 'counter_update_body_error', 'counter_generator_pep479', 'counter_recursive_callback', 'counter_dynamic_size_error'):
-            with self.subTest(name=name):self.check(name)
-
     def test_suspension_and_user_methods_keep_explicit_boundaries(self):
+        from native_boundaries import converted_or_positioned
         for name,source in BOUNDARIES.items():
-            for mode in ('i64','i128','bigint'):
-                with self.subTest(name=name,mode=mode):
-                    result=transpile(source,TranspileOptions(integer=mode,license='none',filename='boundary.py'))
-                    self.assertFalse(result.success)
-                    self.assertTrue(any(d.code=='E006'and 'generator'in d.message for d in result.diagnostics),result.diagnostics)
+            with self.subTest(name=name):
+                # Former boundary: these generator handoffs now convert and must match CPython.
+                converted_or_positioned(self,source)

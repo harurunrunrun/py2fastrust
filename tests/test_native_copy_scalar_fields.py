@@ -152,7 +152,8 @@ class NativeCopyScalarFieldTests(unittest.TestCase):
             result = transpile(source, TranspileOptions(integer=mode))
             self.assertTrue(result.success, result.diagnostics)
             self.assertIn("type ClassHandle_0=Rc<ClassData_0>", result.rust_source)
-            self.assertIn("std::cell::Cell<Option<NativeInt>>", result.rust_source)
+            # Always-initialized fields now drop the Option; the per-field Cell (no object borrow flag) is the property.
+            self.assertRegex(result.rust_source, r"std::cell::Cell<(?:Option<NativeInt>|NativeInt)>")
         result = transpile(source, TranspileOptions(integer="bigint"))
         self.assertTrue(result.success, result.diagnostics)
         self.assertIn("type ClassHandle_0=Rc<RefCell<ClassData_0>>", result.rust_source)

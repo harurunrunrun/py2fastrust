@@ -12,6 +12,7 @@ import unittest
 from py2fastrust import TranspileOptions, transpile
 from py2fastrust.native import try_generate_native
 from wrapping_reference import execute
+from native_boundaries import converted_or_positioned
 
 
 @unittest.skipUnless(shutil.which("rustc"), "rustc is required")
@@ -31,12 +32,17 @@ class NativeRebindingTests(unittest.TestCase):
         self.assertNotIn("enum Value", rust)
         self.assertNotIn("struct Runtime", rust)
         declarations = re.findall(r"let mut (native_var_\d+): ([^;]+);", rust)
+        # Some programs now take the framed class-scope path, whose typed slots are `class_local_N:Option<T>`.
+        declarations += [(name, kind) for name, kind in re.findall(r"let mut (class_local_\d+):Option<(.+?)>=None;", rust)]
         self.assertTrue(declarations)
         # Every generated slot has one type within its Rust function. Names
         # can reuse a slot or move to a different typed slot on assignment.
+        # Generated monomorphic tagged unions (NativeUnion<hash>), text and shared lists are also static slot types now.
         self.assertTrue(all(kind in {"NativeInt", "bool", "NativeScalar", "Vec<NativeInt>", "NativeDict", "NativeSet",
-                                    "Option<NativeInt>", "Option<bool>", "Option<NativeScalar>"}
-                            for _, kind in declarations))
+                                    "Option<NativeInt>", "Option<bool>", "Option<NativeScalar>", "NativeText",
+                                    "NativeSharedList<NativeInt>"}
+                            or re.fullmatch(r"NativeUnion[0-9a-f]+", kind)
+                            for _, kind in declarations), declarations)
         type(self).counter += 1
         path = Path(self.tmp.name) / f"rebindings{self.counter}.rs"
         path.write_text(rust, encoding="utf-8")
@@ -307,9 +313,9 @@ print(value)
             "value=[1,2]\nfor x in value:\n value=3\nprint(value)",
             "value=1\nif input(): value='text'\nprint(value)",
         ]
+        # Former fallback boundaries may now convert; they must then match CPython, else stay positioned E006.
         for source in programs:
-            with self.subTest(source=source):
-                self.assertIsNone(try_generate_native(source, "fallback.py", "i64"))
+            converted_or_positioned(self, source, ("\n", "x\n") if "input()" in source else ("",))
         self.differential("value=1\nvalue='text'\nprint(value)")
         alias = '''
 value=[1]
@@ -328,19 +334,8 @@ value=[7]
 old.add(2)
 print(sorted(old),value)
 '''
-        result = transpile(alias, TranspileOptions())
-        self.assertTrue(result.success)
-        self.assertEqual(result.backend, "aot")
-        path = Path(self.tmp.name) / "alias.rs"
-        path.write_text(result.rust_source, encoding="utf-8")
-        binary = path.with_suffix("")
-        compiled = subprocess.run(["rustc", "--edition=2021", str(path), "-o", str(binary)], capture_output=True, text=True, timeout=90)
-        self.assertEqual(compiled.returncode, 0, compiled.stderr)
-        actual = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
-        expected = subprocess.run([sys.executable, "-I", "-c", alias], capture_output=True, text=True, timeout=5)
-        self.assertEqual(actual.returncode, expected.returncode, actual.stderr)
-        self.assertEqual(actual.stdout, expected.stdout)
-
+        # The AOT backend was removed; the alias program must now convert natively or be a positioned E006.
+        converted_or_positioned(self, alias)
 
 if __name__ == "__main__":
     unittest.main()

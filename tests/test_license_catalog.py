@@ -22,7 +22,8 @@ class LicenseCatalogTests(unittest.TestCase):
     def test_every_catalog_license_can_be_selected_by_api(self):
         from py2fastrust import TranspileOptions, transpile
         from py2fastrust.settings import LICENSES as catalog
-        self.assertEqual(set(catalog), EXPECTED_IDS)
+        # NONE selects output without a license text; every other entry is a document.
+        self.assertEqual(set(catalog) - {"NONE"}, EXPECTED_IDS)
         for identifier in sorted(EXPECTED_IDS):
             with self.subTest(identifier=identifier):
                 result = transpile('print(1)\n', TranspileOptions(license=identifier.lower()))

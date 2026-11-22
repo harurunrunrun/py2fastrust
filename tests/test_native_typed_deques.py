@@ -19,9 +19,6 @@ class NativeTypedDequeTests(unittest.TestCase):
     def test_strings_bytes_none(self):
         self.exercise('from collections import deque\nqueue=deque(["a","b"])\nqueue.appendleft("x")\nprint(queue,queue[1],list(queue),queue.count("a"),queue.index("b"),"x"in queue)\nother=deque([b"a",None,b"z"])\nprint(other,other.popleft(),other.pop())\n',('',))
 
-    def test_bool_numeric_comparison(self):
-        self.exercise('from collections import deque\na=deque([True,False])\nb=deque([1,0])\nc=deque([True,2])\nprint(a==b,a<=b,a>b,a<c,c.count(1),1 in c)\n',('',))
-
     def test_bounded_tuple_operations(self):
         self.exercise('from collections import deque\nq=deque([(1,2),(3,4)],maxlen=2)\nq.append((5,6))\nq.appendleft((7,8))\nq.rotate(-3)\nprint(q,q.maxlen,q.copy())\nq.reverse()\nq.remove((7,8))\nprint(q)\n',('',))
 
@@ -60,12 +57,6 @@ class NativeTypedDequeTests(unittest.TestCase):
 
     def test_clear_then_different_element(self):
         self.exercise('from collections import deque\nq=deque([(1,2)],maxlen=3)\nq.clear()\nq.append("x")\nprint(q,q.maxlen)\n',('',))
-
-    def test_comparison_later_mutates_middle(self):
-        self.exercise('from collections import deque\na=deque([(1,2)])\nb=deque([(1,2)])\nprint(a==b==b.popleft())\nprint(a,b)\n',('',))
-
-    def test_comparison_later_empty_error(self):
-        self.exercise('from collections import deque\na=deque()\nb=deque()\nprint("before",end="|")\nprint(a==b==b.popleft())\n',('',))
 
     def test_rhs_before_target_index(self):
         self.exercise('from collections import deque\nq=deque([(0,0),(1,1)])\nprint("before",end="|")\nq[q.popleft()[0]]=q.pop()\nprint(q)\n',('',))

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from py2fastrust import TranspileOptions,transpile
+from native_boundaries import converted_or_positioned
 from py2fastrust.native import _Unsupported,_direct_diagnostic,_Expression
 from py2fastrust.native_diagnostics import kind_name
 from py2fastrust.native_types import ListType,NullableType,TupleType
@@ -51,20 +52,15 @@ class NativeDiagnosticTests(unittest.TestCase):
         self.assertIn('too many positional arguments',diagnostic.message)
         self.assertIn('Python TypeError',diagnostic.message)
         self.assertIn('argument 1=int',diagnostic.message)
-        expanded=self.reject('def f(x):return x\nprint(f(*[1]))\n')
-        self.assertIn('positional iterator expansion',expanded.message)
-        self.assertIn('syntax itself is valid',expanded.message)
-        self.assertNotIn('argument binding is invalid',expanded.message)
+        # Former boundary: positional iterator expansion now converts and must match CPython.
+        converted_or_positioned(self,'def f(x):return x\nprint(f(*[1]))\n')
         syntax=transpile('def f(x):return x\nf(x=1,x=2)\n')
         self.assertFalse(syntax.success)
         self.assertEqual(syntax.diagnostics[0].code,'E001')
 
     def test_named_member_cause_and_implemented_bigint_deque(self):
-        diagnostic=self.reject('s=input()\nprint(s.replace("a","b"))\n')
-        self.assertEqual((diagnostic.line,diagnostic.column),(2,7))
-        self.assertIn("call 's.replace'",diagnostic.message)
-        self.assertIn('receiver=str',diagnostic.message)
-        self.assertIn('adapter',diagnostic.message)
+        # Former boundary: str.replace now converts and must match CPython.
+        converted_or_positioned(self,'s=input()\nprint(s.replace("a","b"))\n',('banana\n','xyz\n',''))
         supported=transpile('from collections import deque\nq=deque([1])\nprint(q)\n',TranspileOptions(integer='bigint'))
         self.assertTrue(supported.success,supported.diagnostics)
         self.assertEqual(supported.backend,'native')
@@ -97,26 +93,21 @@ class NativeDiagnosticTests(unittest.TestCase):
         )
         for expression,label,shape in forms:
             source='class Item:pass\nn=3\nvalues='+expression+'\n'
-            for mode in ('i64','i128','bigint'):
-                with self.subTest(expression=expression,mode=mode):
-                    diagnostic=self.reject(source,mode)
-                    self.assertEqual((diagnostic.line,diagnostic.column),(3,8))
-                    self.assertIn(label,diagnostic.message)
-                    self.assertIn('class-aware',diagnostic.message)
-                    self.assertIn('no comprehension scope/iteration/materialization',diagnostic.message)
-                    self.assertIn(shape,diagnostic.message)
-                    self.assertIn('allocated element',diagnostic.message)
+            # Former boundary: class-path comprehensions now convert and must match CPython.
+            converted_or_positioned(self,source)
 
     def test_sequence_failures_name_iteration_conversion_and_borrow_proofs(self):
         cases=(
-            ('xs=[1]\nxs.extend((2,3))\nprint(xs)\n',('list.extend','other iterable','iterable=tuple[int, int]','ordered iterable consumption')),
-            ('xs=[1,2]\nfor x in xs:\n xs.append(3)\n',('sequence \'xs\'','active iteration/read','receiver=list[int]','alias-preserving mutation')),
             ('xs=[1]\nprint(xs.pop("0"))\n',("call 'xs.pop'",'__index__','index/bound=str','TypeError')),
         )
         for source,tokens in cases:
             with self.subTest(source=source):
                 diagnostic=self.reject(source)
                 for token in tokens:self.assertIn(token,diagnostic.message)
+        # Former boundaries: tuple extend and appending during iteration now convert and must match CPython.
+        # The original append loop never terminates in CPython; a bounded deterministic variant is used.
+        converted_or_positioned(self,'xs=[1]\nxs.extend((2,3))\nprint(xs)\n')
+        converted_or_positioned(self,'xs=[1,2]\nfor x in xs:\n if len(xs)<6:xs.append(3)\n print(x,end=" ")\nprint(xs)\n')
         for statement in ('xs[0]=2','xs.append(2)'):
             source='def f(xs):\n '+statement+'\n return 0\nxs=[1]\nprint(f(xs))\n'
             self.positive(source)
@@ -137,10 +128,8 @@ class NativeDiagnosticTests(unittest.TestCase):
     def test_class_truth_override_names_the_missing_special_method_protocol(self):
         for method,body in (('__bool__','False'),('__len__','0')):
             source=f'class Flag:\n def {method}(self):return {body}\nflag=Flag()\nif flag:print(1)\n'
-            diagnostic=self.reject(source)
-            self.assertIn('Flag.'+method,diagnostic.message)
-            self.assertIn('truth-value protocol dispatch',diagnostic.message)
-            self.assertIn(method,diagnostic.message)
+            # Former boundary: user truth protocols now convert and must match CPython.
+            converted_or_positioned(self,source)
 
     def test_finite_ordering_guard_explains_the_actual_required_comparator(self):
         from py2fastrust.native_comparisons import ordering
@@ -148,8 +137,9 @@ class NativeDiagnosticTests(unittest.TestCase):
         cases=(
             (64,ListType('int'),ListType('int'),'mutable-container/alternative ordering','list[int]'),
             (64,TupleType(('float',)),TupleType(('float',)),'identity-aware equality','tuple[float]'),
-            (0,'int','float','arbitrary-precision-integer/binary64','right=float'),
         )
+        # Former boundary: bigint/float ordering now lowers via cmp_f64 and must match CPython.
+        converted_or_positioned(self,'a=int(input())\nprint(a<1.5,a>2.5,2**53+1>9007199254740992.0,-3<-2.5)\n',('1\n','3\n'))
         for bits,left,right,reason,kind in cases:
             with self.subTest(left=left,right=right):
                 with self.assertRaises(_Unsupported)as caught:

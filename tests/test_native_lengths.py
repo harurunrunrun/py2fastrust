@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock,patch
 
 from py2fastrust import transpile,TranspileOptions
+from native_boundaries import converted_or_positioned
 from py2fastrust.native_lengths import try_expression
 from py2fastrust.references import UnknownReference
 
@@ -112,12 +113,14 @@ class NativeLengthBindingTests(unittest.TestCase):
             self.assertIsNone(try_expression(generator,ast.parse("len(effect())").body[0].value,{}))
         self.assertIsNone(try_expression(generator,ast.Constant(value=1),{}))
         generator.expression.assert_not_called()
-        result=transpile("len=3\nprint(len([1,2]))\n")
-        self.assertFalse(result.success)
-        self.assertIsNone(result.rust_source)
+        # The former shadowed-len boundary now converts and must match CPython.
+        if not converted_or_positioned(self,"len=3\nprint(len([1,2]))\n"):
+            self.assertIsNone(transpile("len=3\nprint(len([1,2]))\n").rust_source)
 
     def test_invalid_bindings_and_unproved_view_protocols_are_explicit(self):
-        for source in ("print(len())\n","print(len([1],[2]))\n","print(len(obj=[1]))\n","print(len([1].keys()))\n"):
+        # The missing list.keys attribute now converts (AttributeError) and must match CPython.
+        converted_or_positioned(self,"print(len([1].keys()))\n")
+        for source in ("print(len())\n","print(len([1],[2]))\n","print(len(obj=[1]))\n"):
             with self.subTest(source=source):
                 result=transpile(source,TranspileOptions(filename="bad-length.py"))
                 self.assertFalse(result.success)

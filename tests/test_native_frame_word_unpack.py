@@ -20,7 +20,9 @@ class FrameWordUnpackSelection(unittest.TestCase):
         for mode in ('i64','i128','bigint'):
             result=transpile(source,TranspileOptions(integer=mode,license='none'))
             self.assertFalse(result.success)
-            self.assertIn('__bool__',str(result.diagnostics[0]))
+            # Diagnostic wording now names the source truth conversion instead of __bool__; still positioned E006.
+            self.assertEqual((result.diagnostics[0].code,result.diagnostics[0].line),('E006',4))
+            self.assertIn('truth',str(result.diagnostics[0]))
 
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')

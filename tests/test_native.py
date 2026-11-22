@@ -69,7 +69,10 @@ class NativeTests(unittest.TestCase):
                 else:
                     with patch("py2fastrust.codegen.generate", side_effect=AssertionError("general backend entered")):
                         result = transpile(source, TranspileOptions(filename="boundary.py", license="none"))
-                    self.assertFalse(result.success)
+                    if result.success:
+                        # A former boundary that now converts must behave like CPython.
+                        self.differential(source, ("", "0\n", "1\n0\n", "3\n0\n"))
+                        continue
                     self.assertIsNone(result.rust_source)
                     self.assertTrue(result.diagnostics)
                     for diagnostic in result.diagnostics:

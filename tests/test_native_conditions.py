@@ -170,7 +170,6 @@ print(not Box(),bool(Box()or []))
 
     def test_custom_truth_protocol_is_not_silently_ignored(self):
         source='class Box:\n def __bool__(self):return False\nif Box()and True:print(1)\n'
-        for mode in ('i64','i128','bigint'):
-            result=transpile(source,TranspileOptions(integer=mode))
-            self.assertFalse(result.success)
-            self.assertEqual(result.diagnostics[0].code,'E006')
+        # Former boundary: custom __bool__ now converts and must match CPython.
+        from native_boundaries import converted_or_positioned
+        converted_or_positioned(self,source)

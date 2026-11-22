@@ -172,13 +172,12 @@ print(g('hello'),g(1.25),g(True),g(7))
                    "def f(x):return x\ndef h(x):return x+1\ng=f\nfor i in range(3):\n print(g(i))\n g=h\n",
                    "def f(x):return x\nfor i in range(3):\n print(f(i))\n f=7\n",
                    "def f(x):return x\nif int(input()):\n g=f\nprint(g(1))\n"]
-        for source in sources:
-            for mode in ("i64","i128","bigint"):
-                with self.subTest(source=source,mode=mode):
-                    result=transpile(source,TranspileOptions(integer=mode,filename="unproved.py"))
-                    self.assertFalse(result.success)
-                    self.assertIsNone(result.rust_source)
-                    self.assertEqual(result.diagnostics[0].code,"E006")
+        # Former boundaries: these alias programs now convert and must match CPython.
+        from native_boundaries import converted_or_positioned
+        inputs={1:("5\n",),10:("0\n","1\n")}
+        for index,source in enumerate(sources):
+            with self.subTest(source=source):
+                converted_or_positioned(self,source,inputs.get(index,("",)))
 
 
 if __name__ == "__main__":

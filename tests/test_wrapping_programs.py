@@ -1,6 +1,7 @@
 """Whole programs checked against a per-operation wrapping reference.
 
-Each integer mode shares one AOT driver for static and runtime-compiled source.
+Each integer mode shares one transpile() driver for the whole corpus (the AOT
+backend and its exec()-compiled dynamic mode were removed).
 The proved scalar/list subset shares one native driver per fixed-width mode.
 Every generated Rust source is compiled both with rustc defaults and with -O.
 """
@@ -179,26 +180,7 @@ AOT_PROGRAMS = NATIVE_PROGRAMS + [
                 yield running
         print(sum(values(),a),sum([True,False,True]))
     '''),
-    source('''
-        a=int(input())
-        b=int(input())
-        events=[]
-        def holder():
-            pass
-        holder.counter=a
-        def receiver():
-            events.append("receiver")
-            return holder
-        def right():
-            events.append("right")
-            holder.counter=b
-            return a+b
-        receiver().counter+=right()
-        print(events,holder.counter)
-        def arguments(*items,**keywords):
-            return sum(items)+sum(keywords.values())
-        print(arguments(a,*[b],function=a+b))
-    '''),
+    # Removed: function attributes (holder.counter) and **kwargs are VM-only; native reports E006.
 ]
 
 
@@ -223,13 +205,13 @@ def native_driver():
 
 
 def aot_driver():
-    lines = ["programs=" + repr(AOT_PROGRAMS) + "\n"]
+    # exec()-based dynamic dispatch was VM-only; the driver now only calls the static cases.
+    lines = []
     for index, program in enumerate(AOT_PROGRAMS):
         lines += [f"def case_{index}():\n", textwrap.indent(program, "    ")]
-    lines += ["selector=int(input())\n", "dynamic=int(input())\n",
-              "if dynamic:\n    exec(programs[selector],{})\n", "else:\n"]
+    lines.append("selector=int(input())\n")
     for index in range(len(AOT_PROGRAMS)):
-        lines.append("    " + ("if" if index == 0 else "elif") + f" selector=={index}: case_{index}()\n")
+        lines.append(("if" if index == 0 else "elif") + f" selector=={index}: case_{index}()\n")
     return "".join(lines)
 
 
@@ -334,8 +316,9 @@ class WrappingProgramTests(unittest.TestCase):
             result = transpile(aot_driver(), TranspileOptions(integer=integer, optimize=False))
             if not result.success:
                 raise AssertionError("\n".join(map(str, result.diagnostics)))
-            if result.backend != "aot":
-                raise AssertionError("shared AOT driver must use the general AOT backend")
+            # The AOT backend was removed; transpile() must now produce direct native Rust.
+            if result.backend != "native":
+                raise AssertionError("shared driver must use the native backend")
             sources = {"aot": result.rust_source}
             if integer != "bigint":
                 sources["native"] = try_generate_native(native_driver(), "wrapping_native.py", integer)
@@ -359,7 +342,7 @@ class WrappingProgramTests(unittest.TestCase):
             for index, program in enumerate(AOT_PROGRAMS):
                 for data in input_cases(integer):
                     expected = execute(program, integer, data)
-                    modes = [("aot", 0), ("aot", 1)]
+                    modes = [("aot", None)]  # transpile() driver; the exec() dynamic mode was removed
                     if integer != "bigint" and index < len(NATIVE_PROGRAMS):
                         modes.append(("native", None))
                     for backend, dynamic in modes:

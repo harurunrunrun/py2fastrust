@@ -97,8 +97,12 @@ class NativeStringModeTests(unittest.TestCase):
                             # Canonical cached text getters delegate to the same
                             # mode-selected byte consumer instead of returning String.
                             self.assertNotIn("NATIVE_TEXT_UNICODE",result.rust_source)
-                            self.assertNotIn("OnceCell",result.rust_source)
-                            self.assertNotIn("OnceLock",result.rust_source)
+                            # The ASCII text kernel has no lazily cached offsets. The
+                            # BigInt runtime's division cache is unrelated to text.
+                            text_runtime="\n".join(line for line in result.rust_source.splitlines()
+                                                   if "IntDivisionCache" not in line and "division:" not in line)
+                            self.assertNotIn("OnceCell",text_runtime)
+                            self.assertNotIn("OnceLock",text_runtime)
                             self.assertIn("native_text_get(value,",result.rust_source)
                             self.assertRegex(result.rust_source,rf"fn {helper}\(value:&NativeText")
                     if expected.returncode:

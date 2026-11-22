@@ -330,7 +330,10 @@ class FallibleHeapGuards(unittest.TestCase):
 class Item:
  def __lt__(self,other):return True
 heapq.heapify([([Item()],),([Item()],)])
-''',"import heapq\nheapq.heapify([(0,float('nan')),(0,float('nan'))])\n"]
+''']
+  # Former boundary: NaN tuple keys now convert and must match CPython.
+  from native_boundaries import converted_or_positioned
+  converted_or_positioned(self,"import heapq\nheapq.heapify([(0,float('nan')),(0,float('nan'))])\n")
   for source in sources:
    result=transpile(source,TranspileOptions(license='none'))
    self.assertFalse(result.success)

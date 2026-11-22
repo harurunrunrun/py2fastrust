@@ -381,8 +381,10 @@ class SetMethodTests(unittest.TestCase):
             with self.subTest(name=name):self.check(name)
 
     def test_unimplemented_hash_and_stored_methods_are_named(self):
-        sources=("s=set()\ns.update([1.5])\n",
-                 "s={1}\nupdate=s.update\nupdate([2])\n")
+        from native_boundaries import converted_or_positioned
+        # Former boundary now converts and must match CPython.
+        converted_or_positioned(self,"s=set()\ns.update([1.5])\n")
+        sources=("s={1}\nupdate=s.update\nupdate([2])\n",)
         for source in sources:
             for mode in ('i64','i128','bigint'):
                 with self.subTest(source=source,mode=mode):

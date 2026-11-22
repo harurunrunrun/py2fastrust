@@ -2,6 +2,7 @@
 import ast,shutil,unittest
 from unittest.mock import patch
 from py2fastrust import transpile,TranspileOptions
+from native_boundaries import converted_or_positioned
 from py2fastrust.native_scalar_attribute_projection import read
 import test_native_class_iterators as iterator_tests
 
@@ -248,6 +249,8 @@ class ScalarAttributeProofs(unittest.TestCase):
   self.assertTrue(any('initialized loop field'in code for _,_,_,code in calls))
  def test_unimplemented_protocols_keep_positioned_diagnostics(self):
   for name,source in BOUNDARIES.items():
+   # Former boundaries that now convert (property_descriptor_boundary) must match CPython.
+   if converted_or_positioned(self,source):continue
    for mode in ('i64','i128','bigint'):
     with self.subTest(name=name,mode=mode):
      current=transpile(source,TranspileOptions(integer=mode,license='none'))

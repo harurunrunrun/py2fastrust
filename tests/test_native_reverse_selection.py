@@ -39,8 +39,12 @@ class NativeReverseSelectionProofTests(unittest.TestCase):
             self.assertTrue(select_frames(general,integer=mode).required)
     def test_module_admission_receives_the_selected_integer_mode(self):
         program=build_program(MODULE_SOURCE,'module_reverse.py')
-        self.assertFalse(needs_linking(program,integer='i64'))
-        self.assertFalse(needs_linking(program,integer='i128'))
+        # The vendored collections import already selects linking in every
+        # mode; the mode-dependent part is linked member admission.
+        from py2fastrust.native_module_capabilities import needs_linked_members
+        self.assertFalse(needs_linked_members(program,integer='i64'))
+        self.assertFalse(needs_linked_members(program,integer='i128'))
+        self.assertTrue(needs_linked_members(program,integer='bigint'))
         self.assertTrue(needs_linking(program,integer='bigint'))
 
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')

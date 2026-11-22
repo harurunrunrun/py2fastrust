@@ -167,7 +167,8 @@ class DirectClassMethodProofs(unittest.TestCase):
     self.assertTrue(calls)
     self.assertTrue(all(not module for _,module in calls))
  def test_retained_unproved_layout_and_recursive_calls_keep_native_path(self):
-  for name in ('retained_only','list_owner_declines','recursive_classmethod_declines_direct_mode'):
+  # list_owner_declines now takes the direct path (stale routing fact); its CPython parity stays in DirectClassMethodExecution.
+  for name in ('retained_only','recursive_classmethod_declines_direct_mode'):
    for mode in ('i64','i128','bigint'):
     with self.subTest(name=name,mode=mode):
      result,calls=self.convert(name,mode)

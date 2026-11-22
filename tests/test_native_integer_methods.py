@@ -170,10 +170,12 @@ print(s)
             "class I(int):\n def bit_length(self):return 77\nprint(I(1).bit_length())\n",
             "print((1).bit_length(3))\n",
             "print((1).bit_count(extra=3))\n",
-            "print((1.5).bit_length())\n",
             "m=(1).bit_count\nprint(m())\n",
         ]
         for mode in ("i64", "i128", "bigint"):
             for source in programs:
                 with self.subTest(mode=mode,source=source):
                     self.assertIsNone(try_generate_native(source, "main.py", mode))
+        # Former boundary: a float receiver now converts (AttributeError) and must match CPython.
+        from native_boundaries import converted_or_positioned
+        converted_or_positioned(self, "print((1.5).bit_length())\n")

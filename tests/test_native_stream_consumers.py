@@ -101,20 +101,20 @@ print(a,b)
         ''',("0\n","1\n"),modes=("i64","i128","bigint"))
 
     def test_aliases_missing_on_a_control_flow_edge_are_rejected(self):
-        from py2fastrust import transpile
-        for source in ("if int(input()):\n seq=range\nprint(sum(seq(4)))\n",
-                       "for _ in range(0):\n seq=range\nprint(sum(seq(4)))\n",
-                       "def f():\n print(sum(seq(4)))\n seq=range\nf()\n",
-                       "int=filter\nprint(int(1))\n"):
-            with self.subTest(source=source):
-                result=transpile(source)
-                self.assertFalse(result.success)
-                self.assertEqual(result.diagnostics[0].code,"E006")
+        from native_boundaries import converted_or_positioned
+        # Former boundaries now convert and must match CPython (including NameError/UnboundLocalError/TypeError exits).
+        for source,inputs in (("if int(input()):\n seq=range\nprint(sum(seq(4)))\n",("1\n","0\n")),
+                              ("for _ in range(0):\n seq=range\nprint(sum(seq(4)))\n",("",)),
+                              ("def f():\n print(sum(seq(4)))\n seq=range\nf()\n",("",)),
+                              ("int=filter\nprint(int(1))\n",("",))):
+            converted_or_positioned(self,source,inputs=inputs)
 
     def test_invalid_call_binding_is_positioned_diagnostic(self):
         from py2fastrust import transpile
-        for source in ("print(input(prompt='x'))", "print(sum(range()))", "values=[1]\nvalues.sort(unknown=True)",
-                       "a,b=map(int,input().split(unknown=1))"):
+        from native_boundaries import converted_or_positioned
+        # Former boundary now converts and must match CPython.
+        converted_or_positioned(self,"a,b=map(int,input().split(unknown=1))",inputs=("1 2\n",))
+        for source in ("print(input(prompt='x'))", "print(sum(range()))", "values=[1]\nvalues.sort(unknown=True)"):
             result=transpile(source)
             self.assertFalse(result.success)
             self.assertEqual(result.diagnostics[0].code,"E006")

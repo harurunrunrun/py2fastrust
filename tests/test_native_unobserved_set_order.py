@@ -226,10 +226,13 @@ print(a)
     def __del__(self): print('finalizer')
 a=list(set([1,3]))
 a.sort()
-''','__del__'),('a=list(set([1.0,2.0]))\na.sort()\n','key')]:
+''','__del__')]:
             result=transpile(source,TranspileOptions(filename='boundary.py'))
             self.assertFalse(result.success)
             self.assertIn(part,result.diagnostics[0].message)
+        from native_boundaries import converted_or_positioned
+        # Former float-key boundary now converts and must match CPython (sorted, so order is deterministic).
+        converted_or_positioned(self,'a=list(set([1.0,2.0]))\na.sort()\nprint(a)\n')
 
 
     def test_retained_generator_keeps_late_captured_set_values(self):

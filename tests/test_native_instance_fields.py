@@ -307,15 +307,11 @@ class NativeInstanceFieldTests(unittest.TestCase):
         self.compare("mutual_reference_cycle")
 
     def test_container_and_callback_cycles_remain_explicit(self):
+        # Cycles now either run like CPython or keep a positioned diagnostic.
+        from native_boundaries import converted_or_positioned
         for name in ("cycle_through_list_field","cycle_through_callback_capture"):
-            source,_=CASES[name]
-            for mode in ("i64","i128","bigint"):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success)
-                message=result.diagnostics[0].message
-                self.assertIn("cycle",message)
-                self.assertTrue("collector"in message or"collection"in message)
-                self.assertNotIn("field representation is not implemented",message)
+            source,inputs=CASES[name]
+            converted_or_positioned(self,source,inputs if isinstance(inputs,tuple)else(inputs,))
 
     def test_python_finalizers_remain_an_explicit_protocol_boundary(self):
         for mode in ("i64","i128","bigint"):

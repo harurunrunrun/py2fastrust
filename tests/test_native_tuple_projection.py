@@ -203,7 +203,8 @@ class TupleProjectionProofs(unittest.TestCase):
   result,calls=self.compile('class_leaves')
   self.assertEqual(len(calls),2)
   for scope,line,code in calls:
-   self.assertIn('.as_ref().ok_or_else(',code)
+   # A never-rebound parameter is now borrowed directly instead of through its Option slot; either root is owned.
+   self.assertRegex(code,r'\.as_ref\(\)\.ok_or_else\(|=&\(class_argument_\d+\);')
    self.assertRegex(code,r'\(class_temp_\d+\.[01]\)\.clone\(\)')
    self.assertNotRegex(code,r'class_local_\d+\.clone\(\)')
  def test_nested_projection_uses_one_root_check(self):
@@ -229,7 +230,10 @@ class TupleProjectionProofs(unittest.TestCase):
    self.assertFalse(calls)
    self.assertEqual(result.rust_source,old.rust_source)
  def test_existing_unsupported_invocations_keep_positioned_diagnostics(self):
-  for source in BOUNDARIES.values():
+  from native_boundaries import converted_or_positioned
+  # Former boundary now converts and must match CPython (IndexError exit).
+  converted_or_positioned(self,BOUNDARIES['invalid_index_boundary'])
+  for source in (BOUNDARIES['namedtuple_excluded'],):
    for mode in ('i64','i128','bigint'):
     result=transpile(source,TranspileOptions(integer=mode,license='none'))
     self.assertFalse(result.success)

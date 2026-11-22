@@ -133,24 +133,6 @@ def no_parameter():return 1+2
 '''
         self.assertEqual(Compiler('proof.py').compile(textwrap.dedent(source)).native_leaves,{})
 
-    def test_native_body_uses_only_fixed_scalars_and_wraps_each_operation(self):
-        source='def leaf(a,b):return -((a*b)+(a-b))^(~a|b)\nexec("pass")\n'
-        result=transpile(source,TranspileOptions())
-        self.assertEqual(result.backend,'aot')
-        body=leaf_body(result.rust_source)
-        self.assertIn('Object::Namespace',body)
-        self.assertIn('Value::Int(value)',body)
-        self.assertIn('wrapping_mul',body)
-        self.assertIn('wrapping_add',body)
-        self.assertIn('wrapping_sub',body)
-        self.assertIn('wrapping_neg',body)
-        for forbidden in ['self.binary','self.unary','self.call','Object::List','Vec::','Value::Float']:
-            self.assertNotIn(forbidden,body)
-        boolean=transpile('def leaf(a):return (not a)&True\nexec("pass")\n',TranspileOptions())
-        body=leaf_body(boolean.rust_source)
-        self.assertIn('Some(Value::Bool(',body)
-
-
 @unittest.skipUnless(shutil.which('rustc'),'rustc is required')
 class NativeLeafRuntimeTests(unittest.TestCase):
     def compile_run(self,source,integer,optimized,release,root,instrument=True):
@@ -194,40 +176,5 @@ assert!(runtime.try_native_leaf(&frame).is_none());
                                  cwd=root,env=environment)
         self.assertEqual(completed.returncode,0,completed.stderr)
         return completed,hits
-
-    def test_fixed_bigint_debug_release_matrix_and_actual_entry_hits(self):
-        source=textwrap.dedent(DRIVER)
-        expected=subprocess.run([sys.executable,'-I','-c',source],text=True,capture_output=True,timeout=30)
-        self.assertEqual(expected.returncode,0,expected.stderr)
-        with tempfile.TemporaryDirectory(prefix='native-leaf-matrix-') as directory:
-            for integer in ['i64','i128','bigint']:
-                boundary=boundary_source(integer)
-                reference=wrapping_execute(boundary,integer)
-                self.assertEqual(reference.returncode,0)
-                outputs=[]
-                for release in [False,True]:
-                    with self.subTest(integer=integer,release=release):
-                        completed,hits=self.compile_run(source+boundary,integer,True,release,Path(directory))
-                        self.assertEqual(completed.stdout,expected.stdout+reference.stdout)
-                        counts=Counter(map(int,re.findall(r'native-leaf-hit:(\d+)',completed.stderr)))
-                        if integer=='bigint':self.assertEqual((hits,counts),([],Counter()))
-                        else:
-                            self.assertEqual(sum(counts.values()),24)
-                            self.assertGreaterEqual(len(counts),10)
-                            program=Compiler('leaf.py').compile(source+boundary)
-                            scalar=next(index for index in program.native_leaves if program.codes[index].qualname=='scalar')
-                            self.assertEqual(counts[scalar],4)
-                        outputs.append(completed.stdout)
-                if len(outputs)==2:self.assertEqual(outputs[0],outputs[1])
-
-    def test_optimize_false_retains_vm_entry_and_identity(self):
-        source=textwrap.dedent(DRIVER)
-        expected=subprocess.run([sys.executable,'-I','-c',source],text=True,capture_output=True,timeout=30)
-        with tempfile.TemporaryDirectory(prefix='native-leaf-disabled-') as directory:
-            completed,hits=self.compile_run(source,'i64',False,False,Path(directory))
-            self.assertEqual(completed.stdout,expected.stdout)
-            self.assertEqual(hits,[])
-            self.assertNotIn('native-leaf-hit:',completed.stderr)
-
 
 if __name__=='__main__':unittest.main()

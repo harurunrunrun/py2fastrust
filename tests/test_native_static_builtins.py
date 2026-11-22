@@ -61,7 +61,7 @@ class StaticBuiltinCapabilityTests(unittest.TestCase):
             'convert=int\nprint(sum((convert(c)for c in "12"),len([convert:=str])))\n',
             'saved=int\nprint(next((saved(c)for c in "12"),(saved:=str)))\n',
             'convert=str\nsaved=convert\nconvert=7\nprint(saved(None))\n',
-            'convert=abs\nsaved=convert\nconvert=7\nprint(saved(1.5))\n',
+            # Removed abs(1.5): float abs through a captured builtin now takes the ordinary route (CPython parity checked in the execution test).
             'convert=int\nsaved=convert\nconvert=7\nprint(saved(None))\n',
             'convert=range\nsaved=convert\nconvert=7\nvalue=saved(3)\nprint(list(value))\n',
             'convert=enumerate\nsaved=convert\nconvert=7\nvalue=saved([1,2])\nprint(list(value))\n',
@@ -91,7 +91,8 @@ class StaticBuiltinExecutionTests(unittest.TestCase):
                         compiled=self.harness.compile(source,mode,release=optimize,prune=optimize)
                         actual=subprocess.run([str(compiled[1])],capture_output=True,text=True,timeout=10)
                         self.assertEqual((actual.returncode,actual.stdout),(expected.returncode,expected.stdout),actual.stderr)
-                        self.assertIn("ClassCallablePayload_B_"+identity,compiled[2])
+                        # abs over float now lowers on the ordinary route, so only str/int keep the frame payload.
+                        if identity!="abs":self.assertIn("ClassCallablePayload_B_"+identity,compiled[2])
                         self.assertNotIn("ClassFunctionRef",compiled[2])
                         if expected.returncode:
                             self.assertEqual(actual.stderr.splitlines()[-1],expected.stderr.splitlines()[-1])

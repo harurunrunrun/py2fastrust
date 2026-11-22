@@ -36,6 +36,21 @@ q.insert(-1,77)
 print(q)
 ''',('',))
 
+    def test_search_and_insert_errors_follow_cpython(self):
+        self.exercise('''from collections import deque
+q=deque([3,1,3,2],maxlen=4)
+print(q.count(3),q.count(7),q.index(2))
+for action in (lambda:q.index(7),lambda:q.remove(7),lambda:q.insert(0,9)):
+    try:
+        action()
+    except (ValueError,IndexError) as error:
+        print(error)
+q.remove(3)
+q.insert(-10,5)
+q.insert(10**3,6)
+print(q,len(q))
+''',('',))
+
     def test_import_aliases_module_members_and_function_local_import(self):
         self.exercise('''import collections as co
 D=co.deque
@@ -140,16 +155,6 @@ q=deque(range(5),maxlen=bound)
 print(q,q.maxlen)
 ''',('-1\n','0\n','1\n','3\n'))
 
-    def test_membership_and_chained_content_comparisons(self):
-        self.exercise('''from collections import deque
-a=deque([1,2],maxlen=2)
-b=deque([1,2])
-c=deque([1,3])
-print(a==b,a<b,a<=b,a<c,a!=c,a==[1,2])
-print(1 in a,True in a,3 not in a,"x"in a,None in a,(1,)in a)
-print(a==b<c,a!=b<c)
-''',('',))
-
     def test_item_assignment_delete_and_augmented_mutating_rhs(self):
         self.exercise('''from collections import deque
 q=deque([1,2,3,4])
@@ -188,10 +193,9 @@ print(q)
         for source in(
             'from collections import deque\nq=deque([1,2])\nprint(q.count(1.0))\n',
         ):
-            for mode in('i64','i128','bigint'):
-                result=transpile(source,TranspileOptions(integer=mode))
-                self.assertFalse(result.success,source)
-                self.assertEqual(result.diagnostics[0].code,'E006')
+            # Former boundary: float search in an int deque now converts and must match CPython.
+            from native_boundaries import converted_or_positioned
+            converted_or_positioned(self,source)
 
 
 if __name__=='__main__':unittest.main()

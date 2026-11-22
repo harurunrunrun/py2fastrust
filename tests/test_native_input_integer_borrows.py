@@ -7,7 +7,7 @@ import os
 import subprocess
 import tempfile
 from py2fastrust import transpile,TranspileOptions
-from test_streaming_io import PipeSession
+from pipe_session import PipeSession
 
 CASES={
  'repeated_lines': '''n, q = map(int, input().split())

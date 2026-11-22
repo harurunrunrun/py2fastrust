@@ -43,18 +43,6 @@ class RuntimeTests(unittest.TestCase):
                     self.assertEqual(actual_error, expected_error)
             return actual
 
-    def test_binary_standard_streams_and_command_line_arguments(self):
-        self.run_source('''
-            import sys
-            print(sys.argv[1:], flush=True)
-            print(repr(sys.stdin.buffer.readline()), flush=True)
-            print(sys.stdin.buffer.read(2), flush=True)
-            sys.stdout.buffer.write(sys.stdin.buffer.read())
-            sys.stdout.buffer.write(b"\\x00\\xff")
-            sys.stdout.buffer.flush()
-            print("tail", flush=True)
-        ''', stdin=b"12 34\nraw\xff\n", argv=("alpha", "日本語"))
-
     def test_scalars_rebinding_and_short_circuit(self):
         self.run_source('''
             x = 1
@@ -104,26 +92,6 @@ class RuntimeTests(unittest.TestCase):
                 print("empty")
         ''')
 
-    def test_functions_defaults_closures_and_recursion(self):
-        self.run_source('''
-            shared = []
-            def outer(value):
-                def inner(step=1, *, factor=2):
-                    nonlocal value
-                    value += step * factor
-                    shared.append(value)
-                    return value
-                return inner
-            f = outer(3)
-            print(f(), f(2, factor=3), shared)
-            def fact(n):
-                return 1 if n < 2 else n * fact(n - 1)
-            print(fact(10))
-            def collect(a, /, b=2, *items, k=3, **kw):
-                print(a, b, items, k, kw)
-            collect(1, 4, 5, 6, k=8, extra=9)
-        ''')
-
     def test_comprehensions_and_generators(self):
         self.run_source('''
             def make(n):
@@ -137,63 +105,6 @@ class RuntimeTests(unittest.TestCase):
             print(list(gen()))
             print(sum(i*i for i in range(5)))
         ''')
-
-    def test_exceptions_and_finally(self):
-        self.run_source('''
-            def f():
-                try:
-                    return 3
-                finally:
-                    print("cleanup")
-            print(f())
-            try:
-                1 // 0
-            except ZeroDivisionError as e:
-                print(type(e).__name__)
-            finally:
-                print("done")
-            try:
-                raise ValueError("message")
-            except (TypeError, ValueError):
-                print("caught")
-        ''')
-
-    def test_classes_and_context_manager(self):
-        self.run_source('''
-            class Point:
-                def __init__(self, x):
-                    self.x = x
-                def double(self):
-                    return self.x * 2
-            p = Point(7)
-            print(p.x, p.double())
-            class Guard:
-                def __enter__(self):
-                    print("enter")
-                    return 5
-                def __exit__(self, kind, error, tb):
-                    print("exit", kind is None)
-                    return True
-            with Guard() as value:
-                print(value)
-                raise ValueError("hidden")
-            print("after")
-        ''')
-
-    def test_dynamic_eval_exec_and_compile(self):
-        self.run_source('''
-            expr = input()
-            print(eval(expr))
-            namespace = {"start": 4}
-            exec("def f(x):\\n    return x + start\\n", namespace)
-            print(namespace["f"](3))
-            print(eval(compile("2 ** 10", "dynamic.py", "eval")))
-            def f():
-                x = 1
-                exec("x = 2")
-                print(x, locals()["x"])
-            f()
-        ''', "sum([i*i for i in range(5)])\n")
 
     def test_input_lines_unicode_and_formatting(self):
         self.run_source('''
@@ -212,16 +123,6 @@ class RuntimeTests(unittest.TestCase):
             print(pow(3, -1, 1000000007))
             print(10 ** 400 / 10 ** 400)
         ''', integer="bigint")
-
-    def test_unbound_local_exception(self):
-        self.run_source('''
-            x = 1
-            def f():
-                print(x)
-                x = 2
-            f()
-        ''')
-
 
 if __name__ == "__main__":
     unittest.main()

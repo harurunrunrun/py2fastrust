@@ -56,7 +56,9 @@ class SharedFrontendTests(unittest.TestCase):
                 with self.subTest(source=source,mode=mode), \
                      patch("ast.parse",wraps=original_parse)as parse, \
                      patch("symtable.symtable",wraps=original_scope)as scope, \
-                     patch("builtins.compile",wraps=original_compile)as validate:
+                     patch("builtins.compile",wraps=original_compile)as validate, \
+                     patch("py2fastrust.api._non_ascii_text_literal",return_value=False):
+                    # The API's ASCII-literal pre-scan is an intentional extra parse (False is exact for these ASCII sources).
                     result=transpile(source,TranspileOptions(integer=mode))
                     self.assertTrue(result.success,result.diagnostics)
                     self.assertEqual(parse.call_count,1,parse.call_args_list)
@@ -129,7 +131,9 @@ from py2fastrust import transpile
 source="class Box:\n def __init__(self):self.value=1.25\nprint(Box().value)\n"
 with patch("ast.parse",wraps=ast.parse)as parse:
  result=transpile(source)
-print(json.dumps({"success":result.success,"parses":parse.call_count,"forbidden":[name for name in ["py2fastrust.compiler","py2fastrust.codegen","py2fastrust.python_profile","py2fastrust.ir","py2fastrust.ir_flow"]if name in sys.modules]}))
+# Count only parses of the source by the frontend: skip the API ASCII pre-scan and inspect's builtin-signature parses.
+parses=sum(1 for call in parse.call_args_list if call.args and call.args[0]==source and "filename" in call.kwargs)
+print(json.dumps({"success":result.success,"parses":parses,"forbidden":[name for name in ["py2fastrust.compiler","py2fastrust.codegen","py2fastrust.python_profile","py2fastrust.ir","py2fastrust.ir_flow"]if name in sys.modules]}))
 '''
         run=subprocess.run([sys.executable,"-I","-c",driver,str(package)],capture_output=True,text=True,timeout=15)
         self.assertEqual(run.returncode,0,run.stderr)
