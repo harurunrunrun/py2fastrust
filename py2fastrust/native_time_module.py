@@ -9,8 +9,15 @@ only differences are meaningful, as in CPython. The ``*_ns`` variants return
 the same readings as integers. ``sleep(secs)`` converts its argument with the
 ``_PyTime_FromSecondsObject`` rules (round away from zero, 64-bit nanosecond
 range) before checking the sign, then suspends the thread.
+
+CPython 3.14.7 changed Python/pytime.c so that both the integer and the float
+overflow raise "timestamp out of range for C PyTime_t"; 3.14.0-3.14.6 report
+"timestamp too large to convert to C PyTime_t" and "timestamp out of range for
+platform time_t". The generated messages follow the CPython build running the
+converter, like the rest of its builtin-module facts.
 """
 from dataclasses import dataclass
+import sys
 
 CLOCKS = {'time': 'class_time_realtime_ns()', 'monotonic': 'class_time_monotonic_ns()', 'perf_counter': 'class_time_monotonic_ns()'}
 NAMES = frozenset(CLOCKS) | frozenset(name + '_ns' for name in CLOCKS) | {'sleep'}
@@ -118,7 +125,7 @@ fn class_time_seconds(nanoseconds:i128)->f64 {
 
 fn class_time_integer_timeout(seconds:Option<i128>)->Result<i64,String> {
     seconds.and_then(|value|value.checked_mul(1_000_000_000)).and_then(|value|i64::try_from(value).ok())
-        .ok_or_else(||"OverflowError: timestamp too large to convert to C PyTime_t".to_owned())
+        .ok_or_else(||"OverflowError: __INTEGER_OVERFLOW__".to_owned())
 }
 
 fn class_time_float_timeout(seconds:f64)->Result<i64,String> {
@@ -126,7 +133,7 @@ fn class_time_float_timeout(seconds:f64)->Result<i64,String> {
     let scaled=seconds*1e9;
     let rounded=if scaled>=0.0{scaled.ceil()}else{scaled.floor()};
     if !((i64::MIN as f64)<=rounded&&rounded< -(i64::MIN as f64)){
-        return Err("OverflowError: timestamp out of range for platform time_t".to_owned());
+        return Err("OverflowError: __FLOAT_OVERFLOW__".to_owned());
     }
     Ok(rounded as i64)
 }
@@ -139,5 +146,15 @@ fn class_time_sleep(nanoseconds:i64)->Result<(),String> {
 '''
 
 
+def overflow_messages(version=None):
+    """(integer, float) overflow texts of _PyTime_FromSecondsObject for a CPython version."""
+    if (version or sys.version_info)[:3] >= (3, 14, 7):
+        return 'timestamp out of range for C PyTime_t', 'timestamp out of range for C PyTime_t'
+    return 'timestamp too large to convert to C PyTime_t', 'timestamp out of range for platform time_t'
+
+
 def runtime(model):
-    return RUNTIME if getattr(model, 'native_time_required', False) else ''
+    if not getattr(model, 'native_time_required', False):
+        return ''
+    integer, real = overflow_messages()
+    return RUNTIME.replace('__INTEGER_OVERFLOW__', integer).replace('__FLOAT_OVERFLOW__', real)

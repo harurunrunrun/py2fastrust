@@ -28,6 +28,13 @@ class NativeTimeModuleTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn('tm.py:4:', '\n'.join(map(str, result.diagnostics)))
 
+    def test_overflow_messages_follow_the_converting_cpython_release(self):
+        # Python/pytime.c changed both texts in 3.14.7.
+        from py2fastrust.native_time_module import overflow_messages
+        self.assertEqual(overflow_messages((3, 14, 6)),
+                         ('timestamp too large to convert to C PyTime_t', 'timestamp out of range for platform time_t'))
+        self.assertEqual(overflow_messages((3, 14, 7)), ('timestamp out of range for C PyTime_t',) * 2)
+
 
 if __name__ == '__main__':
     unittest.main()
