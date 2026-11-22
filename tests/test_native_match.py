@@ -15,7 +15,7 @@ class NativeMatchTests(unittest.TestCase):
         compare(self, *CASES['values_captures_guards'])
 
     def test_structural_patterns_are_positioned(self):
-        for source in ('match [1, 2]:\n    case [a, b]:\n        print(a)\n',
+        for source in ('match {1: 2}:\n    case {1: a}:\n        print(a)\n',
                        'match 3:\n    case int():\n        print(1)\n',
                        'match 3:\n    case (1 as x) | (2 as x):\n        print(x)\n'):
             with self.subTest(source=source):
