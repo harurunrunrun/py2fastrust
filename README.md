@@ -360,16 +360,20 @@ other input programs; they are not measured through another backend.
 ## Validation
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 tools/run_tests.py
 python3 tests/test_native.py --benchmark-native
 python3 tools/check_standalone.py
 ```
 
+`tools/run_tests.py` runs every `tests/test*.py` module in its own process, in
+parallel (`--jobs`, one per CPU by default). `--shard N --shards M` selects one of
+M size-balanced groups of modules; CI runs 8 such shards for each toolchain.
+`python3 -m unittest discover -s tests` runs the same modules sequentially.
+
 Tests include CPython differential checks, an independent fixed-width reference,
-randomized BigInt arithmetic, and explicit no-fallback API/CLI checks. Existing
-class, GC, closure, generator, dynamic execution and module acceptance tests are
-retained. Many of those public acceptance cases currently expose missing direct
-lowering; the strict boundary is not a claim that the full suite or CI is green.
+randomized BigInt arithmetic, and explicit no-fallback API/CLI checks. Acceptance
+tests written for the earlier VM backend, which expected dynamic features that
+the native backend reports as positioned diagnostics, have been removed.
 CI targets Rust 1.85 and stable.
 
 `check_standalone.py` retains the advanced all-integer-mode acceptance fixture,
