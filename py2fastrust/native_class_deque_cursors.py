@@ -30,6 +30,8 @@ impl<T> ClassDeque<T>{
     fn reverse(&mut self){self.inner.values.make_contiguous().reverse();}
     fn rotate(&mut self,amount:isize){if self.inner.len()>1{self.state=self.state.wrapping_add(1);}self.inner.rotate(amount);}
     fn clear(&mut self){if !self.inner.is_empty(){self.state=self.state.wrapping_add(1);}self.inner.clear();}
+    fn insert_at(&mut self,index:isize,value:T)->Result<(),String>{self.inner.insert(index,value)?;self.state=self.state.wrapping_add(1);Ok(())}
+    fn remove_at(&mut self,index:usize){self.inner.values.remove(index);self.state=self.state.wrapping_add(1);}
 }
 
 struct ClassDequeCursor<T>{owner:Rc<RefCell<ClassDeque<T>>>,state:usize,index:usize,remaining:usize}

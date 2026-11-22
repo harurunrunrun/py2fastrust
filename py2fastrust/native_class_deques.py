@@ -1,10 +1,11 @@
 """Registered shared builtin deque handles for independently typed frames."""
+import ast
 from dataclasses import dataclass,field
 from .call_semantics import FunctionSignature,CallBindingError,normalize_call
 from .native_types import EMPTY,alternatives
 
 CONSTRUCTOR=FunctionSignature.declaration(('iterable','maxlen'),default_names=('iterable','maxlen'))
-METHODS={'append':('value',),'appendleft':('value',),'pop':(),'popleft':(),'clear':(),'copy':(),'extend':('iterable',),'extendleft':('iterable',),'reverse':(),'rotate':('n',)}
+METHODS={'append':('value',),'appendleft':('value',),'pop':(),'popleft':(),'clear':(),'copy':(),'extend':('iterable',),'extendleft':('iterable',),'reverse':(),'rotate':('n',),'count':('value',),'index':('value',),'remove':('value',),'insert':('i','x')}
 
 @dataclass(frozen=True)
 class DequeType:
@@ -102,7 +103,7 @@ class Deques:
         kinds=alternatives(shape(receiver))
         if not kinds or not all(isinstance(kind,DequeType)for kind in kinds):return None
         name=node.func.attr
-        if name not in METHODS:raise ClassUnsupported(node,'deque.'+name+' needs its shared deque operation/cursor adapter; this typed frame slice implements append, appendleft, pop, popleft, clear, copy, extend, extendleft, reverse and rotate',proof='registered deque method protocol')
+        if name not in METHODS:raise ClassUnsupported(node,'deque.'+name+' needs its shared deque operation/cursor adapter; this typed frame slice implements append, appendleft, pop, popleft, clear, copy, extend, extendleft, reverse, rotate, count, index (without start/stop), remove and insert',proof='registered deque method protocol')
         parameters=METHODS[name];binding=self._binding(node,FunctionSignature.declaration(parameters,positional_only=parameters,default_names=('n',)if name=='rotate'else()),normalize_call(node))
         site=DequeSite(receiver,name,binding)
         if name in {'extend','extendleft'}:
@@ -123,6 +124,19 @@ class Deques:
             result=self.model.cell(plan,node)
             for kind in kinds:self._contribute(result,kind.record.element,node)
         elif name=='copy':result=self.model.cell(plan,node);self._contribute(result,receiver,node)
+        elif name in {'count','index','remove'}:
+            # deque_count/deque_index/deque_remove compare items with ==; a
+            # user __eq__ could mutate the deque during the scan.
+            from .native_classes import domain
+            for kind in kinds:
+                element=shape(kind.record.element)
+                if element is not None and any(domain(choice)=='object'for choice in alternatives(element)):
+                    raise ClassUnsupported(node,'deque.'+name+' over source instances needs __eq__ dispatch with the deque mutation check; builtin element values are implemented',types=(('element',element),),proof='deque search equality protocol')
+            result=self.model.cell(plan,node,'int'if name!='remove'else'none')
+        elif name=='insert':
+            self.indexes._index(node,arguments[0])
+            for kind in kinds:self._contribute(kind.record.element,arguments[1],node)
+            result=self.model.cell(plan,node,'none')
         else:result=self.model.cell(plan,node,'none')
         self.sites[(plan.index,id(node))]=site
         return result
@@ -220,6 +234,23 @@ class Deques:
                 amount=self._rotation(emitter,node,arguments[0])if arguments else'1_isize'
                 rotation=emitter.fresh();prefix+='let '+rotation+'='+amount+';'
                 code=owner+'.borrow_mut().rotate('+rotation+')';raw='none'
+            elif site.name in {'count','index','remove'}:
+                queue,item,position=emitter.fresh(),emitter.fresh(),emitter.fresh()
+                element=shape(kind.record.element)
+                test=emitter.comparison(ast.Eq(),Expression(item+'.clone()',element),Expression(arguments[0].code+'.clone()',arguments[0].kind),node)
+                if site.name=='count':
+                    code=('{let '+queue+'='+owner+'.borrow();let mut '+position+'=0_usize;for '+item+' in '+queue+'.iter(){if '+test+'{'+position+'+=1;}}class_from_usize('+position+')}')
+                    raw='int'
+                else:
+                    missing=emitter.at('Err::<usize,String>("ValueError: deque.'+site.name+'(x): x not in deque".to_owned())',node)
+                    found=('{let '+queue+'='+owner+'.borrow();let found='+queue+'.iter().position(|'+item+'|'+test+');found}')
+                    found_code='match '+found+'{Some(value)=>value,None=>'+missing+'}'
+                    if site.name=='index':code='class_from_usize('+found_code+')';raw='int'
+                    else:code='{let '+position+'='+found_code+';'+owner+'.borrow_mut().remove_at('+position+')}';raw='none'
+            elif site.name=='insert':
+                index=emitter.fresh();prefix+='let '+index+'='+self._rotation(emitter,node,arguments[0])+';'
+                value=emitter.coerce(arguments[1],shape(kind.record.element),node)
+                code=emitter.at(owner+'.borrow_mut().insert_at('+index+','+value+')',node);raw='none'
             else:code='Rc::new(RefCell::new(ClassDeque::from_deque('+emitter.at('native_deque_mapped_copy(&'+owner+'.borrow(),|value|value.clone())',node)+')))';raw=kind
             result=emitter.coerce(Expression(code,raw),wanted,node)
             return '{'+prefix+'let '+read+'='+result+';'+read+'}'

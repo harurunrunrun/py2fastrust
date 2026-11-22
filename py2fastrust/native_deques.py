@@ -179,7 +179,13 @@ def try_expression(g,node,environment):
         value=g.expression(node.value,environment);index=g.expression(node.slice,environment)
         owner,offset=g.temporary(),g.temporary();binding=value.code if value.owned else f'&({value.code})'
         checked=g.at(f'native_deque_index({offset},{owner}.len())',node)
-        code=f'{{let {owner}={binding};let {offset}={_ssize(g,index,node,index_error=True)};{g.coerce(_Expression(f'{owner}.values[{checked}]',element_type(value.kind),owned=False),element_type(value.kind))}}}'
+        item=g.coerce(_Expression(f'{owner}.values[{checked}]',element_type(value.kind),owned=False),element_type(value.kind))
+        position=f'let {offset}={_ssize(g,index,node,index_error=True)};'
+        # Reading a named deque has no effect, so the index (which may itself
+        # mutate the deque, as in q[q.popleft()]) can be computed before the
+        # owner is borrowed; a computed owner keeps source evaluation order.
+        code=(f'{{{position}let {owner}={binding};{item}}}'if not value.owned else
+              f'{{let {owner}={binding};{position}{item}}}')
         g.has_deques=True;return _Expression(code,element_type(value.kind))
     return None
 
