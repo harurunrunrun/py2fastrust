@@ -80,7 +80,7 @@ def default_noniterable(model,kind):
     from .native_classes import InstanceType
     if isinstance(kind,InstanceType):
         owner=model.classes[kind.name]
-        return not owner.node.bases and not {'__iter__','__getitem__'}.intersection(owner.methods)
+        return not (owner.node.bases or getattr(owner,'subclassed',False)) and not {'__iter__','__getitem__'}.intersection(owner.methods)
     return False
 
 

@@ -48,7 +48,7 @@ class Registry:
         from .native_namespace_read_places import lifetime_closed
         if not selected(self.model,owner)or not lifetime_closed(self.model):
             raise Unproved('shared scalar layout lacks a closed lifetime certificate')
-        if (owner.node.bases or owner.node.keywords or owner.node.decorator_list
+        if ((owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list
                 or owner.node.type_params or any(name in owner.methods for name in
                     ('__new__','__del__','__setattr__','__delattr__','__getattribute__','__getattr__'))):
             raise Unproved('shared allocation or attribute protocol is not plain')

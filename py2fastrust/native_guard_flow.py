@@ -106,7 +106,7 @@ def _classinfo(model,plan,node,environment):
     if isinstance(kind,BuiltinClass)and kind.name in TYPE_NAMES:return [('builtin',kind.name)]
     if isinstance(kind,ClassReferenceType):
         owner=next(owner for owner in model.classes.values()if owner.index==kind.definition)
-        if not isinstance(owner.node,ast.ClassDef)or owner.node.bases or owner.node.keywords:return None
+        if not isinstance(owner.node,ast.ClassDef)or owner.node.bases and owner.base is None or owner.node.keywords:return None
         return [('source',kind.definition)]
     targets=getattr(kind,'targets',())
     if len(targets)==1 and isinstance(targets[0],BuiltinIdentity)and targets[0].name in TYPE_NAMES:
@@ -120,7 +120,9 @@ def _matches(model,value,classes):
     possible=False
     for category,name in classes:
         if category=='source':
-            if tag=='object'and model.classes[shape(value).name].index==name:return True
+            if tag=='object':
+                from .native_class_inheritance import mro_indices
+                if name in mro_indices(model.classes[shape(value).name]):return True
         elif name=='int':
             if tag in {'int','bool','int_bool'}:return True
         elif name=='bool'and tag=='int_bool':possible=True

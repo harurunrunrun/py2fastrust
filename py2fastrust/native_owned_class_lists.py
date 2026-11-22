@@ -69,7 +69,7 @@ class Registry:
         if model.unit is None:raise Unproved('official original-source bindings are unavailable')
         if getattr(model,'gc_classes',())or any('__del__'in item.methods for item in model.classes.values()if item.used):
             raise Unproved('source collection/finalizer lifetime observations are retained')
-        if owner.node.bases or owner.node.keywords or owner.node.decorator_list or owner.node.type_params:
+        if (owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list or owner.node.type_params:
             raise Unproved('inheritance, metaclasses or class replacement are retained')
         if any(name in owner.methods for name in ('__new__','__del__','__getattribute__','__getattr__','__setattr__','__delattr__')):
             raise Unproved('custom allocation, attributes or destruction are retained')

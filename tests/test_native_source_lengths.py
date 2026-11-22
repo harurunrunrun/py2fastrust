@@ -187,7 +187,6 @@ class SourceLengthGuards(unittest.TestCase):
   for source,fragment in (
    ('class Bag:\n __len__=None\nprint(bool(Bag()))\n','__len__'),
    ('class Bag:\n __len__=lambda self:1\nprint(len(Bag()))\n','lambda'),
-   ('class Base:\n def __len__(self):return 0\nclass Bag(Base):pass\nprint(bool(Bag()))\n','inherit'),
    ('class Index:\n def __index__(self):return 1\nclass Bag:\n def __len__(self):return Index()\nprint(len(Bag()))\n','__index__'),
    ('class Bag:\n def __iter__(self):return iter([1,2])\n def __len__(self):\n  print(1)\n  raise TypeError("hint")\n def __length_hint__(self):\n  print(2)\n  return 3\nprint(list(Bag()),sorted(Bag()))\n','__length_hint__'),
    ('class Cursor:\n def __iter__(self):return self\n def __next__(self):return 1\n def __len__(self):print(8);return 1\nclass Bag:\n def __iter__(self):return Cursor()\nprint(tuple(Bag()))\n','__next__')):
@@ -195,5 +194,10 @@ class SourceLengthGuards(unittest.TestCase):
     result=transpile(source,TranspileOptions(license='none'))
     self.assertFalse(result.success)
     self.assertIn(fragment,result.diagnostics[0].message)
+
+ def test_inherited_length_drives_truth(self):
+  # An inherited __len__ is found through the static MRO, as CPython does.
+  from native_boundaries import converted_or_positioned
+  converted_or_positioned(self,'class Base:\n def __len__(self):return 0\nclass Bag(Base):pass\nclass Full(Base):\n def __len__(self):return 2\nprint(bool(Bag()),bool(Full()),len(Full()))\n')
 
 if __name__=='__main__':unittest.main()

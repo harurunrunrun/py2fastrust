@@ -104,12 +104,13 @@ class SourceClassCellGuards(unittest.TestCase):
    self.assertFalse(result.success)
    self.assertIn('class-cell',result.diagnostics[0].message)
 
- def test_inheritance_and_super_keep_existing_diagnostics(self):
-  for source in ('class Base:\n def original(self):return __class__\nclass Child(Base):pass\nprint(Child().original())\n',
+ def test_inherited_class_cells_and_bare_super(self):
+  # An inherited method keeps the class cell of the class that defines it; a
+  # bare super() object is either matched with CPython or positioned.
+  from native_boundaries import converted_or_positioned
+  for source in ('class Base:\n def original(self):return __class__\nclass Child(Base):pass\nprint(Child().original() is Base)\n',
                  'class Row:\n def original(self):return super()\nprint(Row().original())\n'):
-   result=transpile(source,TranspileOptions(license='none'))
-   self.assertFalse(result.success)
-   self.assertTrue(result.diagnostics[0].message)
+   converted_or_positioned(self,source)
 
 
 class SourceClassCellModuleTests(unittest.TestCase):

@@ -172,7 +172,7 @@ class Registry:
         from .native_classes import InstanceType,shape
         from .native_module_linking import ClassReferenceType
         if not selected(self.model,owner):raise Unproved('fields are not closed Copy scalar slots or require collection')
-        if owner.node.bases or owner.node.keywords or owner.node.decorator_list or owner.node.type_params:
+        if (owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list or owner.node.type_params:
             raise Unproved('inheritance, metaclasses or class replacement require reference identity')
         if any(name in owner.methods for name in('__new__','__del__','__setattr__','__getattribute__','__getattr__','__delattr__')):
             raise Unproved('custom allocation, attribute protocols or finalizers')

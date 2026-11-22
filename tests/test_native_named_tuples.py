@@ -250,7 +250,7 @@ BOUNDARIES = {'identity': 'from typing import NamedTuple\n'
                   'p=Pair(3,4)\n'
                   'n=int(input())\n'
                   'print(p[n:])\n',
- 'arbitrary_base': 'class Base:pass\nclass Child(Base):pass\nprint(Child())\n',
+ 'arbitrary_base': 'class Base:pass\nclass Other:pass\nclass Child(Base,Other):pass\nprint(Child())\n',
  'effectful_annotation_subscript': 'from typing import NamedTuple\n'
                                    'def marker():\n'
                                    ' print("annotation")\n'

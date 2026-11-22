@@ -49,7 +49,7 @@ class Registry:
                             or not isinstance(parent,ast.Attribute)or parent.value is not node
                             or not isinstance(parent.ctx,ast.Load)):
                         allowed=False;break
-                    member=namespace.members.get((owner.index,model.resolved_name(plan,parent)))
+                    member=namespace.lookup(owner,model.resolved_name(plan,parent))
                     if member is None or member.plan is not None or member.descriptor!='function':
                         allowed=False;break
                     cell=model.records.get((plan.index,id(node)))

@@ -14,7 +14,10 @@ def tag(target):
     from .native_module_calls import BuiltinRef
     from .references import BuiltinIdentity
     if getattr(target,'_native_instance_function_target',False):return 'I'+str(target.definition)+'O'+str(target.class_definition)
-    if isinstance(target,BoundMethodTarget):return 'D'+str(target.definition)
+    if isinstance(target,BoundMethodTarget):
+        from .native_class_descriptors import ClassMethodTarget
+        if isinstance(target,ClassMethodTarget):return 'D'+str(target.definition)+'C'+str(target.class_definition)
+        return 'D'+str(target.definition)
     if isinstance(target,BuiltinRef):return 'M_'+target.module+'_'+target.name
     if isinstance(target,BuiltinIdentity):return 'B_'+target.name
     return 'F'+str(target)
@@ -154,8 +157,14 @@ class Registry:
         declarations=[]
         from .native_bound_methods import BoundMethodTarget
         from .native_class_descriptors import ClassMethodTarget
+        declared=set()
         for target in tuple(self.targets.values()):
             if not isinstance(target,BoundMethodTarget):continue
+            # Classmethod targets of one function bound to different classes
+            # share the payload structure (the class is a runtime field).
+            if isinstance(target,ClassMethodTarget)and not getattr(target,'_native_instance_function_target',False):
+                if target.definition in declared:continue
+                declared.add(target.definition)
             if isinstance(target,ClassMethodTarget):
                 from .native_aot_callables import AotFunctionType
                 function_type=family_type(AotFunctionType((target.definition,)))

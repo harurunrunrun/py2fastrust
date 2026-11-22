@@ -313,8 +313,8 @@ iterative call executor and a logical Python recursion limit. Both call forms
 keep Python argument order and exception frames. Proved stable concrete fields
 can be reused lazily within loops without changing first-read errors.
 This initial class implementation has a separate proof boundary; integrating
-it with common semantic lowering remains required work. Inheritance,
-descriptors, metaclasses, escaped methods, cyclic ownership, heterogeneous
+it with common semantic lowering remains required work. Multiple or dynamic
+inheritance, descriptors, metaclasses, escaped methods, cyclic ownership, heterogeneous
 mutable alternatives and unproved container protocols are not yet implemented.
 
 If the implementation cannot establish a supported direct representation, it

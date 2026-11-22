@@ -73,6 +73,12 @@ def emit(emitter, node, arguments):
                     return f'({classes.code}).definition=={candidate.kind.record.owner.index}'
                 if domain(candidate.kind)!='object':return 'false'
                 owner=emitter.model.classes[candidate.kind.name]
+                if getattr(owner,'base',None)is not None or getattr(owner,'subclassed',False):
+                    # Hierarchy classes are module-level definitions executed
+                    # once, so the class object for each index is unique.
+                    from .native_class_inheritance import mro_indices
+                    matched=str(classes.kind.definition in mro_indices(owner)).lower()
+                    return '{let _=&('+classes.code+');'+matched+'}'
                 if not isinstance(owner.node,ast.ClassDef)or owner.node.bases or owner.node.keywords:
                     from .native_classes import ClassUnsupported
                     raise ClassUnsupported(node,'source-class isinstance needs inheritance/metaclass instance-check dispatch for this class; that protocol is not implemented',types=(('instance',candidate.kind),),proof='source class inheritance and instance-check protocol')

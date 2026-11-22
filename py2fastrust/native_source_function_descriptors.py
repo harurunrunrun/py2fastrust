@@ -56,7 +56,7 @@ def analyze(registry,plan,node,receiver,environment):
     members=[];required=False
     for kind in choices:
         if not isinstance(kind,InstanceType):members.append((kind,None,None));continue
-        owner=registry.model.classes[kind.name];member=registry.members.get((owner.index,name))
+        owner=registry.model.classes[kind.name];member=registry.lookup(owner,name)
         if member is not None:
             value=registry.field(member,node)
             required|=(member.plan is not None and member.descriptor=='function'
@@ -83,7 +83,7 @@ def analyze(registry,plan,node,receiver,environment):
             value=registry.field(member,node)
             if member.plan is not None and member.descriptor!='function':
                 from .native_class_descriptors import analyze_member
-                value=analyze_member(registry,plan,node,member,registry.model.cell_for_kind(kind),environment)
+                value=analyze_member(registry,plan,node,member,registry.model.cell_for_kind(kind),environment,actual=owner)
             else:value=bind_kind(registry,owner,value,node)
         registry.model.namespace.contribute(result,value,node,force=True)
         if field is not None:registry.model.namespace.contribute(result,field.cell,node,force=True)

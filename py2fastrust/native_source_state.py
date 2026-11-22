@@ -153,7 +153,7 @@ class Registry:
         model = self.model
         unit = model.unit.original_unit(owner.node)
         if (not any(n is owner.node for n in unit.tree.body)
-                or owner.node.bases or owner.node.keywords
+                or (owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords
                 or owner.node.decorator_list or owner.node.type_params):
             return False
         key = model.class_key(owner)
@@ -354,7 +354,7 @@ class Registry:
         certificate under generation()'s no-GC/finalizer/observer seal, not a
         claim that construction, defaults or source activation cannot fail.
         """
-        if (not isinstance(owner.node, ast.ClassDef) or owner.node.bases
+        if (not isinstance(owner.node, ast.ClassDef) or (owner.node.bases or getattr(owner,'subclassed',False))
                 or owner.node.keywords or owner.node.decorator_list
                 or owner.node.type_params or any(name in owner.methods for name in
                     ('__new__', '__getattr__', '__getattribute__', '__setattr__', '__delattr__'))):
@@ -362,7 +362,7 @@ class Registry:
         initializer = owner.methods.get('__init__')
         if initializer is None:
             return True
-        member = self.model.class_namespaces.members.get((owner.index, '__init__'))
+        member = self.model.class_namespaces.lookup(owner,'__init__')
         if member is not None and member.descriptor != 'function':
             return False
         original = source(initializer)

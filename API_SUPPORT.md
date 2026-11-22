@@ -299,8 +299,20 @@ name binding. Class aliases, saved methods, nested functions and class-name
 replacement/deletion preserve that lexical identity; local/parameter/global
 uses of the same spelling keep their own bindings. An early method call during
 class-body execution keeps the empty-cell `NameError`. Mutable nonlocal class
-cells, repeated/local class definitions, source inheritance and zero-argument
-`super()` retain explicit implementation boundaries.
+cells and repeated/local class definitions retain explicit implementation
+boundaries.
+
+Single inheritance between module-level source classes is native when a class
+names one base class defined earlier in the same module and that name is never
+rebound. Attribute lookup follows the static MRO: an inherited method is the
+base's function object called with the subclass receiver, an inherited class
+attribute is the base's namespace slot, and special data names stay per class.
+Zero-argument `super()` in plain methods binds the next class's method to the
+receiver (`super().__init__()` without arguments reaches `object`).
+`isinstance` and its branch narrowing match subclass instances. Writing or
+deleting an inherited class attribute through a subclass, `__slots__` in a
+hierarchy, `super()` in nested scopes or static/class methods, and multiple,
+imported or dynamically selected bases remain positioned conversion errors.
 
 Typed source-class namespaces support ordinary nested classes and scalar/list
 class data, including aliases, rebinding, deletion and instance-field precedence.
@@ -881,8 +893,9 @@ Linked native instances support `isinstance(value, source_class)` through their
 captured class-definition references. Saved class/builtin aliases, finite class
 arguments and nested classinfo tuples preserve short-circuit behavior, including
 invalid later members. Matching uses actual class-object identity, including
-same-named classes from different modules. Source inheritance and metaclass
-instance-check protocols still require their own registered adapters. This does
+same-named classes from different modules. Instances of single-inheritance
+subclasses match their base classes through the static class hierarchy;
+metaclass instance-check protocols still require their own registered adapters. This does
 not implement finite class-constructor unions or new class-object admission.
 
 Canonical `functools.cmp_to_key` factories are accepted as `sorted` and
@@ -926,8 +939,9 @@ identity and equality follow the retained function and class identities.
 
 Arbitrary decorator replacement, stacked descriptor composition, raw class-body
 `classmethod` descriptor values, classmethod constructor overrides and mutable
-method-slot replacement remain positioned conversion errors. Inheritance,
-metaclass and descriptor metadata support is not implied by this subset.
+method-slot replacement remain positioned conversion errors. Multiple
+inheritance, metaclass and descriptor metadata support is not implied by this
+subset.
 
 Canonical `@property` and `property(fget, fset, fdel, doc)` retain owned typed
 descriptors over real compiled callbacks. Constructor aliases, captured defaults,

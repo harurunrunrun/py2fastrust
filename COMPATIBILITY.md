@@ -154,6 +154,7 @@ used only inside its handler (sibling handlers may reuse the name), as a `print(
 f-string field. Other uses of the caught object, catch-all
 handlers in programs that call `exit()`, `except*`, suspension inside `try`
 and control transfer out of `finally` remain positioned diagnostics.
+
 A module-level exception class in the main module whose body is only `pass`,
 `...` or a docstring, and whose single base is `Exception`, `LookupError`,
 `IndexError`, `ValueError`, `TypeError`, `RuntimeError` or another such class,
@@ -267,8 +268,20 @@ name binding. Class aliases, saved methods, nested functions and class-name
 replacement/deletion preserve that lexical identity; local/parameter/global
 uses of the same spelling keep their own bindings. An early method call during
 class-body execution keeps the empty-cell `NameError`. Mutable nonlocal class
-cells, repeated/local class definitions, source inheritance and zero-argument
-`super()` retain explicit implementation boundaries.
+cells and repeated/local class definitions retain explicit implementation
+boundaries.
+
+Single inheritance between module-level source classes is native when a class
+names one base class defined earlier in the same module and that name is never
+rebound. Attribute lookup follows the static MRO: an inherited method is the
+base's function object called with the subclass receiver, an inherited class
+attribute is the base's namespace slot, and special data names stay per class.
+Zero-argument `super()` in plain methods binds the next class's method to the
+receiver (`super().__init__()` without arguments reaches `object`).
+`isinstance` and its branch narrowing match subclass instances. Writing or
+deleting an inherited class attribute through a subclass, `__slots__` in a
+hierarchy, `super()` in nested scopes or static/class methods, and multiple,
+imported or dynamically selected bases remain positioned conversion errors.
 
 
 Local `is None` / `is not None` predicates refine the actual official binding

@@ -15,7 +15,7 @@ def alias_slot(name):
 
 def guard_direct_method(model,owner,name,node):
     namespace=getattr(model,'class_namespaces',None)
-    member=None if namespace is None else namespace.members.get((owner.index,name))
+    member=None if namespace is None else namespace.lookup(owner,name)
     if member is None or member.plan is None:return
     if getattr(member,'source_binding_deleted',False):
         from .native_classes import ClassUnsupported

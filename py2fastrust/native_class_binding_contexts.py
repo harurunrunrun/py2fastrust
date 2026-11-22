@@ -155,7 +155,7 @@ class Registry:
         original = self.unit.original_unit(owner.node)
         if owner.node not in original.tree.body:
             raise Unproved('class binding is not one direct original module definition')
-        if owner.node.bases or owner.node.keywords or owner.node.decorator_list or owner.node.type_params:
+        if (owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list or owner.node.type_params:
             raise Unproved('class publication is not plain')
         name = self.model.class_key(owner)
         writes = [row for row in self.rows if row.name == name
@@ -476,7 +476,7 @@ def instance_test(emitter, node):
     kind = emitter.kind(node.args[0])
     if isinstance(kind, InstanceType):
         actual = emitter.model.classes.get(kind.name)
-        if actual is None or actual.node.bases:
+        if actual is None or (actual.node.bases or getattr(actual,'subclassed',False)):
             return None
     elif kind not in {'int', 'bool', 'int_bool', 'float', 'str', 'bytes', 'none'}:
         return None

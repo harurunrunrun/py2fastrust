@@ -61,7 +61,7 @@ class Registry:
         from .native_module_linking import ClassReferenceType
         from .native_class_calls import synchronous
         model=self.model;kind=InstanceType(model.class_key(owner))
-        if owner.node.bases or owner.node.keywords or owner.node.decorator_list or owner.node.type_params:
+        if (owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list or owner.node.type_params:
             raise Unproved('class construction/lookup is not plain')
         if any(name in owner.methods for name in ('__new__','__del__','__getattribute__','__getattr__','__setattr__','__delattr__')):
             raise Unproved('custom allocation, attribute or lifetime protocol')

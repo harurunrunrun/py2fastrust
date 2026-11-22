@@ -61,7 +61,7 @@ class BoundMethods:
                 from .native_source_display import guard_direct_method
                 guard_direct_method(self.model,owner,name,node)
                 registry=getattr(self.model,'class_namespaces',None)
-                member=registry.members.get((owner.index,name))if registry is not None else None
+                member=registry.lookup(owner,name)if registry is not None else None
                 if method is not None:
                     if member is not None and member.descriptor!='function':
                         raise ClassUnsupported(node,'method acquisition across finite receivers includes a nonfunction descriptor; per-alternative descriptor binding is not implemented',types=(('receiver',kind),),proof='finite method descriptor binding')

@@ -18,7 +18,7 @@ def member(model,kind,slots,node):
     owner=model.classes[kind.name]
     namespace=getattr(model,'class_namespaces',None)
     for slot in slots:
-        value=None if namespace is None else namespace.members.get((owner.index,slot))
+        value=None if namespace is None else namespace.lookup(owner,slot)
         if value is None:
             if slot in owner.methods:
                 raise ClassUnsupported(node,'source '+slot+' needs its canonical class namespace and current function binding',proof='source special-method lookup identity')
@@ -30,7 +30,7 @@ def member(model,kind,slots,node):
         from .native_source_display import guard_direct_method
         guard_direct_method(model,owner,slot,node)
         return value
-    if owner.node.bases:
+    if (owner.node.bases or getattr(owner,'subclassed',False)):
         raise ClassUnsupported(node,'inherited '+ '/'.join(slots)+' lookup needs a proved class MRO; absence from this class namespace does not establish a missing inherited slot',proof='source inherited special-method lookup')
     return None
 
@@ -140,7 +140,7 @@ def _checked_length(emitter,node,value):
         if isinstance(kind,InstanceType):
             owner=emitter.model.classes[kind.name]
             namespace=getattr(emitter.model,'class_namespaces',None)
-            if owner.node.bases or '__index__'in owner.methods or namespace is not None and(owner.index,'__index__')in namespace.members:
+            if (owner.node.bases or getattr(owner,'subclassed',False)) or '__index__'in owner.methods or namespace is not None and(owner.index,'__index__')in namespace.members:
                 raise ClassUnsupported(node,'source __len__ returned an object requiring its __index__ method; that integer-index callback adapter is not implemented',types=(('__len__ result',kind),),proof='source length result integer-index conversion')
         actual=_type_name(emitter,current,node)
         return emitter.at('Err::<usize,String>(format!("TypeError: \'{}\' object cannot be interpreted as an integer",'+actual+'))',node)

@@ -314,7 +314,7 @@ class ClassParameterContextProofs(unittest.TestCase):
         self.assertTrue(all(not summary.incoming_module for summary in summaries))
 
     def test_unimplemented_protocol_boundaries_keep_exact_diagnostics(self):
-        for name in ("saved_class_global_rebound", "inherited_classmethod_boundary", "custom_descriptor_boundary", "frame_observer_boundary"):
+        for name in ("saved_class_global_rebound", "custom_descriptor_boundary", "frame_observer_boundary"):
             for integer in ("i64", "i128", "bigint"):
                 with self.subTest(case=name, integer=integer):
                     result, _, _ = convert(name, integer)
@@ -338,6 +338,9 @@ class ClassParameterContextExecution(unittest.TestCase):
 
     def test_deleted_attribute_error_is_not_elided(self):
         self.exercise("deleted_attribute_error")
+
+    def test_inherited_classmethod_binds_the_subclass(self):
+        self.exercise("inherited_classmethod_boundary")
 
     def test_later_argument_mutates_current_attribute(self):
         self.exercise("argument_mutates_attribute")

@@ -40,6 +40,8 @@ class ClassNamespaces:
         self.name_reads={}
         self.attribute_reads={}
         self.instance_reads={}
+        self.own_names={}
+        self.read_owners={}
         from .native_named_tuples import NamedTuples
         self.named_tuples=NamedTuples(self)
 
@@ -52,8 +54,17 @@ class ClassNamespaces:
         identity=owner.index,name
         result=self.members.get(identity)
         if result is None:
-            result=ClassMember(owner,name,self.key(owner,name))
+            from .native_class_inheritance import inherited_member
+            result=inherited_member(self,owner,name)or ClassMember(owner,name,self.key(owner,name))
             self.members[identity]=result
+        return result
+
+    def lookup(self,owner,name):
+        """The member ``name`` resolves to on ``owner`` (its MRO), or None; never invents one."""
+        result=self.members.get((owner.index,name))
+        if result is None and getattr(owner,'base',None)is not None:
+            from .native_class_inheritance import defined_in_chain
+            if defined_in_chain(self,owner,name):result=self.member(owner,name)
         return result
 
     def field(self,member,node):
@@ -71,8 +82,9 @@ class ClassNamespaces:
         self.scopes[self.unit.scope_for(owner.node).ordinal]=owner
         self.keys[id(owner.node)]=self.model.class_key(owner)
         scope=self.unit.scope_for(owner.node).ordinal
-        for binding in self.unit.bindings:
-            if binding.owner==scope and binding.role in {'definition','store','delete'}:self.member(owner,binding.name)
+        own=self.__dict__.setdefault('own_names',{})[owner.index]={binding.name for binding in self.unit.bindings
+                                          if binding.owner==scope and binding.role in {'definition','store','delete'}}
+        for name in own:self.member(owner,name)
         if parent is not None:self.parents[owner.index]=parent
 
     def defer_member(self,plan,node,receiver):
@@ -82,7 +94,7 @@ class ClassNamespaces:
         for kind in alternatives(shape(receiver)):
             if not isinstance(kind,InstanceType):continue
             owner=self.model.classes[kind.name]
-            member=self.members.get((owner.index,self.model.resolved_name(plan,node)))
+            member=self.lookup(owner,self.model.resolved_name(plan,node))
             if member is None:continue
             pending=member.descriptor=='pending'or member.descriptor=='property'and not hasattr(member,'property_cell')
             pending|=member.plan is None and shape(self.field(member,node))is None
@@ -211,7 +223,9 @@ class ClassNamespaces:
 
     def prepare_definition(self,plan,node,environment):
         if isinstance(node,ast.ClassDef):
-            self.named_tuples.prepare_definition(plan,node,environment)
+            from .native_class_inheritance import prepare_base
+            if not prepare_base(self.model,plan,node,environment):
+                self.named_tuples.prepare_definition(plan,node,environment)
             return
         if plan.class_body is None or not isinstance(node,ast.FunctionDef):return
         from .native_class_descriptors import prepare_definition
@@ -219,7 +233,9 @@ class ClassNamespaces:
         prepare_definition(self,plan,node,member,environment)
 
     def emit_prepare_definition(self,emitter,node):
-        if isinstance(node,ast.ClassDef):return self.named_tuples.emit_prepare_definition(emitter,node)
+        if isinstance(node,ast.ClassDef):
+            from .native_class_inheritance import emit_base
+            return emit_base(emitter,node)or self.named_tuples.emit_prepare_definition(emitter,node)
         if emitter.plan.class_body is None or not isinstance(node,ast.FunctionDef):return ""
         from .native_class_descriptors import emit_prepare_definition
         member=self.member(emitter.plan.class_body,self.model.resolved_name(emitter.plan,node))
@@ -254,13 +270,13 @@ class ClassNamespaces:
         receiver_kind=shape(receiver)
         if isinstance(receiver_kind,InstanceType):
             owner=self.model.classes[receiver_kind.name]
-            member=self.members.get((owner.index,self.model.resolved_name(plan,node)))
+            member=self.lookup(owner,self.model.resolved_name(plan,node))
             if member is None or member.plan is not None and member.descriptor=="function":return None
             self.check_metadata(member,node)
             if member.plan is not None:
                 self.observe_method(member,node)
                 from .native_class_descriptors import analyze_member
-                value=analyze_member(self,plan,node,member,receiver,environment)
+                value=analyze_member(self,plan,node,member,receiver,environment,actual=owner)
                 if value is None:return None
             else:value=self.field(member,node)
             field=owner.fields.get(member.name)
@@ -272,7 +288,11 @@ class ClassNamespaces:
                 value=result
             self.attribute_reads[(plan.index,id(node))]=(member,)
             self.instance_reads[(plan.index,id(node))]=written
+            self.__dict__.setdefault('read_owners',{})[(plan.index,id(node))]=(owner.index,)
             return self.model.remember(plan,node,value)
+        from .native_class_inheritance import analyze_union_instance_attribute
+        union=analyze_union_instance_attribute(self,plan,node,receiver_kind)
+        if union is not None:return union
         choices=self.class_choices(receiver_kind)
         if not choices:return None
         result=Cell()
@@ -287,12 +307,13 @@ class ClassNamespaces:
             if member.plan is not None:
                 self.observe_method(member,node)
                 from .native_class_descriptors import analyze_member
-                value=analyze_member(self,plan,node,member,receiver,environment)
+                value=analyze_member(self,plan,node,member,receiver,environment,actual=self.owners[choice.definition])
                 if value is None:value=self.field(member,node)
             else:value=self.field(member,node)
             self.model.namespace.contribute(result,value,node,force=True)
             records.append(member)
         self.attribute_reads[(plan.index,id(node))]=tuple(records)
+        self.__dict__.setdefault('read_owners',{})[(plan.index,id(node))]=tuple(choice.definition for choice in choices)
         return self.model.remember(plan,node,result)
 
     def assign_attribute(self,plan,node,receiver,value,environment):
@@ -301,6 +322,8 @@ class ClassNamespaces:
         if not choices:return False
         for choice in choices:
             member=self.member(self.owners[choice.definition],self.model.resolved_name(plan,node))
+            from .native_class_inheritance import own_write_guard
+            own_write_guard(member,choice.definition,node)
             from .native_properties import PropertyType
             from .native_types import alternatives
             if any(isinstance(kind,PropertyType)for kind in alternatives(shape(self.field(member,node))))or any(isinstance(kind,PropertyType)for kind in alternatives(shape(value))):
@@ -349,6 +372,8 @@ class ClassNamespaces:
         if not choices:return False
         for choice in choices:
             member=self.member(self.owners[choice.definition],self.model.resolved_name(plan,node))
+            from .native_class_inheritance import own_write_guard
+            own_write_guard(member,choice.definition,node)
             from .native_properties import PropertyType
             from .native_types import alternatives
             if member.descriptor=='property'or any(isinstance(kind,PropertyType)for kind in alternatives(shape(self.field(member,node)))):
@@ -426,7 +451,7 @@ class ClassNamespaces:
               +f"match {value}{{Some(value)=>{narrow_binding(emitter,node,stored,wanted,'value').code},None=>{failure}}}}}")
         return Expression(code,wanted)
 
-    def emit_get(self,emitter,node,reference,member,*,instance=False):
+    def emit_get(self,emitter,node,reference,member,*,instance=False,owner=None):
         from .native_classes import Expression
         from .native import _string
         index=self.model.namespace.index(member.key)
@@ -434,11 +459,35 @@ class ClassNamespaces:
         from .native_immutable_class_functions import emit
         immutable=emit(self,emitter,node,reference,member,stored)
         if immutable is not None:return immutable
-        recipient=(f"'{member.owner.node.name}' object"if instance else
-                   f"type object '{member.owner.node.name}'")
+        owner=owner or(getattr(self,'owners',{}).get(reference.kind.definition,member.owner)if isinstance(reference.kind,ClassReferenceType)else member.owner)
+        recipient=(f"'{owner.node.name}' object"if instance else
+                   f"type object '{owner.node.name}'")
         message=f"AttributeError: {recipient} has no attribute '{member.name}'"
         loaded=emitter.at(f'{{let value={reference.code}.module.borrow().value_{index}.clone();value.ok_or_else(||{_string(message)}.to_owned())}}',node)
         return Expression(loaded,stored)
+
+    def emit_instance_read(self,emitter,node,receiver,member,actual,written,wanted):
+        """Read ``member`` through one instance of class ``actual`` (instance dictionary first)."""
+        from .native_classes import Expression,shape
+        reference=emitter.fresh()
+        setup=f"let {reference}={{{receiver.code}.borrow().class_definition.clone()}};"
+        class_reference=Expression(reference,ClassReferenceType(actual.index))
+        loaded=self.emit_get(emitter,node,class_reference,member,instance=True,owner=actual)
+        if member.plan is not None:
+            from .native_class_descriptors import emit_member
+            before,function=emitter.capture(loaded)
+            setup+=before
+            result=emit_member(self,emitter,node,member,class_reference,function)
+            if result is not None:loaded=result
+        fallback=emitter.coerce(loaded,wanted,node)
+        if written:
+            field=actual.fields[member.name]
+            index=list(actual.fields).index(member.name)
+            current=emitter.fresh()
+            from .native_copy_scalar_fields import load
+            setup+=f"let {current}={{{load(self.model,actual,receiver.code,index)}}};"
+            fallback=(f"match {current}{{Some(value)=>{emitter.coerce(Expression('value',shape(field.cell)),wanted,node)},None=>{fallback}}}")
+        return "{"+setup+fallback+"}"
 
     def emit_attribute(self,emitter,node,receiver):
         from .native_classes import Expression
@@ -446,31 +495,21 @@ class ClassNamespaces:
         records=self.attribute_reads.get((emitter.plan.index,id(node)))
         if records is None:return None
         wanted=emitter.kind(node)
-        instance=(emitter.plan.index,id(node))in self.instance_reads
+        site=(emitter.plan.index,id(node))
+        instance=site in self.instance_reads
+        owners=getattr(self,'read_owners',{}).get(site)
+        if instance and owners and len(owners)>1:
+            written=self.instance_reads[site]
+            def alternative(kind,code):
+                position=owners.index(self.model.classes[kind.name].index)
+                return self.emit_instance_read(emitter,node,Expression(code,kind),records[position],self.owners[owners[position]],written[position],wanted)
+            return Expression(project(receiver.kind,receiver.code,alternative),wanted)
         if instance:
             member=records[0]
-            reference=emitter.fresh()
-            setup=f"let {reference}={{{receiver.code}.borrow().class_definition.clone()}};"
-            class_reference=Expression(reference,ClassReferenceType(member.owner.index))
-            loaded=self.emit_get(emitter,node,class_reference,member,instance=True)
-            if member.plan is not None:
-                from .native_class_descriptors import emit_member
-                before,function=emitter.capture(loaded)
-                setup+=before
-                result=emit_member(self,emitter,node,member,class_reference,function)
-                if result is not None:loaded=result
-            fallback=emitter.coerce(loaded,wanted,node)
-            if self.instance_reads[(emitter.plan.index,id(node))]:
-                from .native_classes import shape
-                field=member.owner.fields[member.name]
-                index=list(member.owner.fields).index(member.name)
-                current=emitter.fresh()
-                from .native_copy_scalar_fields import load
-                setup+=f"let {current}={{{load(self.model,member.owner,receiver.code,index)}}};"
-                fallback=(f"match {current}{{Some(value)=>{emitter.coerce(Expression('value',shape(field.cell)),wanted,node)},None=>{fallback}}}")
-            return Expression("{"+setup+fallback+"}",wanted)
+            actual=self.owners[owners[0]]if owners else member.owner
+            return Expression(self.emit_instance_read(emitter,node,receiver,member,actual,self.instance_reads[site],wanted),wanted)
         def branch(kind,code):
-            member=next(member for member in records if member.owner.index==kind.definition)
+            member=records[owners.index(kind.definition)]if owners else next(member for member in records if member.owner.index==kind.definition)
             from .native_immediate_classmethod import direct_payload
             direct=direct_payload(emitter,node,Expression(code,kind),member)
             if direct is not None:return direct.code

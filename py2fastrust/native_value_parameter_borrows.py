@@ -38,7 +38,7 @@ class Registry:
                     from .native_copy_scalar_fields import selected as copy_selected
                     from .native_namespace_read_places import lifetime_closed
                     shared = (copy_selected(model, owner) and lifetime_closed(model)
-                              and not (owner.node.bases or owner.node.keywords
+                              and not ((owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords
                                        or owner.node.decorator_list or owner.node.type_params)
                               and not any(method in owner.methods for method in
                                   ('__new__', '__del__', '__setattr__', '__delattr__',

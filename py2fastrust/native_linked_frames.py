@@ -184,7 +184,8 @@ class LinkedModel(Model):
                     if discover_exception(self,unit,node):continue
                     key=self.definition_name(node)
                     if key in self.classes or key in self.functions:raise ClassUnsupported(node)
-                    owner=self.discover_class(node,key)
+                    from .native_class_inheritance import static_base
+                    owner=self.discover_class(node,key,base=static_base(self,unit,node))
                     self.namespace.incoming.setdefault(key,{})[("class_definition",self.unit.ordinal(node))]=Cell(ClassReferenceType(owner.index))
                     self.namespace.active.add(key)
                 elif isinstance(node,ast.FunctionDef):
@@ -232,7 +233,7 @@ class LinkedModel(Model):
         if value is not None:return value
         if receiver.root().tag=='object':
             owner=self.classes[receiver.root().args[0]]
-            member=self.class_namespaces.members.get((owner.index,self.resolved_name(plan,node)))
+            member=self.class_namespaces.lookup(owner,self.resolved_name(plan,node))
             if member is not None and member.plan is not None and member.descriptor!="function":
                 value=self.class_namespaces.analyze_attribute(plan,node,receiver,environment)
                 if value is not None:return value
@@ -256,7 +257,7 @@ class LinkedModel(Model):
         from .native_classes import InstanceType
         if isinstance(shape(receiver),InstanceType)and not self.final:
             owner=self.classes[shape(receiver).name]
-            member=self.class_namespaces.members.get((owner.index,self.resolved_name(plan,node)))
+            member=self.class_namespaces.lookup(owner,self.resolved_name(plan,node))
             if member is not None and(member.descriptor=='pending'or member.descriptor=='property'and not hasattr(member,'property_cell')):
                 from .native_guard_flow import AnalysisPending
                 raise AnalysisPending()
@@ -312,6 +313,9 @@ class LinkedModel(Model):
 
     def call(self,plan,node,environment):
         from .call_semantics import normalize_call,CallBindingError
+        from .native_class_inheritance import analyze_super_call
+        inherited=analyze_super_call(self,plan,node,environment)
+        if inherited is not None:return inherited
         # The callable can widen during the fixed-point analysis. A direct
         # constructor certificate belongs to the current visit, not an earlier
         # iteration that had fewer possible bindings.
@@ -625,6 +629,9 @@ class LinkedEmitter(Emitter):
         return Expression(code,wanted)
 
     def call(self,node):
+        from .native_class_inheritance import emit_super_call
+        inherited=emit_super_call(self,node)
+        if inherited is not None:return inherited
         record=self.model.class_namespaces.named_tuples.emit_call(self,node)
         if record is not None:return record
         owner=self.model.module_linker.class_calls.get((self.plan.index,id(node)))

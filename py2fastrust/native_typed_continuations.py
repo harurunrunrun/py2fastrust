@@ -76,7 +76,7 @@ class Registry:
                 if(len(writes)!=1 or writes[0].role!='definition'
                         or writes[0].node!=self.model.unit.ordinal(owner.node)):
                     raise Unproved('the source class binding has another producer/generation')
-                if(owner.node not in self.model.tree.body or owner.node.bases or owner.node.keywords
+                if(owner.node not in self.model.tree.body or (owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords
                         or owner.node.decorator_list or owner.node.type_params
                         or any(not isinstance(child,(ast.FunctionDef,ast.Pass))for child in owner.node.body)):
                     raise Unproved('class publication effects need their own invocation control producer')

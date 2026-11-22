@@ -11,6 +11,9 @@ class ClassMethodTarget(BoundMethodTarget):
     class_definition:int
 
     @property
+    def _native_kind_tag(self):return 'bound_method_'+str(self.definition)+'_class_'+str(self.class_definition)
+
+    @property
     def _native_receiver_kind(self):
         from .native_module_linking import ClassReferenceType
         return ClassReferenceType(self.class_definition)
@@ -71,7 +74,7 @@ def emit_prepare_definition(registry,emitter,node,member):
     return "let _="+emitter.expression(node.decorator_list[0]).code+";"
 
 
-def analyze_member(registry,plan,node,member,receiver,environment):
+def analyze_member(registry,plan,node,member,receiver,environment,actual=None):
     if member.descriptor=='pending':
         if not registry.model.final:
             from .native_guard_flow import AnalysisPending
@@ -88,7 +91,13 @@ def analyze_member(registry,plan,node,member,receiver,environment):
         return member.property_cell
     if member.descriptor!="classmethod":return None
     from .native_classes import Cell
-    target=ClassMethodTarget(registry.model.callable_cells.definition(member.plan),registry.model.class_key(member.owner),member.owner.index)
+    # A classmethod binds the class the lookup started from: an inherited
+    # classmethod reached through a subclass receives the subclass.
+    owner=actual or member.owner
+    if owner is not member.owner and member.plan.parameters:
+        from .native_module_linking import ClassReferenceType
+        registry.model.contribute(member.plan.arguments[member.plan.parameters[0]],Cell(ClassReferenceType(owner.index)),node)
+    target=ClassMethodTarget(registry.model.callable_cells.definition(member.plan),registry.model.class_key(owner),owner.index)
     registry.model.callable_cells.bound_methods.used.add(target)
     return Cell('function',(target,))
 
@@ -98,7 +107,10 @@ def emit_member(registry,emitter,node,member,class_reference,function):
     if member.descriptor!="classmethod":return None
     from .native_classes import Expression
     from .native_aot_callables import AotFunctionType
-    target=ClassMethodTarget(registry.model.callable_cells.definition(member.plan),registry.model.class_key(member.owner),member.owner.index)
+    from .native_module_linking import ClassReferenceType
+    owner=member.owner
+    if isinstance(class_reference.kind,ClassReferenceType):owner=getattr(registry,'owners',{}).get(class_reference.kind.definition,owner)
+    target=ClassMethodTarget(registry.model.callable_cells.definition(member.plan),registry.model.class_key(owner),owner.index)
     fields='receiver:('+class_reference.code+').clone(),function:('+function.code+').clone()'
     from .native_immediate_classmethod import stack_payload
     code=stack_payload(emitter,node,target,fields)

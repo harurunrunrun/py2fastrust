@@ -43,7 +43,7 @@ def iterable_origin(kind,model,counter=False):
     if domain(kind)=='tuple':return not getattr(kind,'_native_named_tuple',False)
     if isinstance(kind,InstanceType)and model is not None:
         owner=model.classes[kind.name]
-        if owner.node.bases:return False
+        if (owner.node.bases or getattr(owner,'subclassed',False)):return False
         members=model.class_namespaces.members
         dynamic={'__getattr__','__getattribute__','__class__'}
         if dynamic.intersection(owner.methods)or dynamic.intersection(owner.fields)or any((owner.index,name)in members for name in dynamic):return False

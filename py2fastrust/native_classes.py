@@ -229,6 +229,10 @@ class ClassPlan:
     source_unit: object = None
     module_name: str = "__main__"
     canonical_name: str | None = None
+    # Single source-class inheritance: the statically proved base ClassPlan,
+    # and whether any source class names this one as its base.
+    base: object = None
+    subclassed: bool = False
 
 
 @dataclass(eq=False)
@@ -534,7 +538,7 @@ class Model:
     def field(self, owner, name, node, writing=False):
         if name in owner.methods:
             registry=getattr(self,'class_namespaces',None)
-            member=registry.members.get((owner.index,name))if registry is not None else None
+            member=registry.lookup(owner,name)if registry is not None else None
             if not(writing and member is not None and member.descriptor=='function'and not registry.special_name(name)):
                 if writing:
                     raise ClassUnsupported(node,"shadowing this decorated/special method requires its instance descriptor replacement protocol",proof="special instance method replacement")
@@ -661,19 +665,23 @@ class Model:
             if isinstance(value, ast.arg) and value.arg in names:
                 if self.unit is None or binding_owners.get(self.unit.ordinal(value))==0:raise ClassUnsupported(value)
 
-    def discover_class(self,node,key,*,parent=None):
+    def discover_class(self,node,key,*,parent=None,base=None):
         """Register one original class AST under its canonical definition key."""
         registry=getattr(self,"class_namespaces",None)
         if node.bases and registry is None or node.keywords or node.decorator_list or node.type_params:
             raise ClassUnsupported(node)
-        owner=ClassPlan(node,len(self.classes),canonical_name=key)
+        owner=ClassPlan(node,len(self.classes),canonical_name=key,base=base)
+        ancestor=base
+        while ancestor is not None:
+            ancestor.subclassed=True;ancestor.used=True
+            ancestor=ancestor.base
         if self.unit is not None:
             owner.source_unit=self.unit.original_unit(node)if hasattr(self.unit,"original_unit")else self.unit
             owner.module_name=owner.source_unit.name
         self.classes[key]=owner
         registry=getattr(self,"class_namespaces",None)
         if registry is not None:registry.register(owner,parent)
-        if node.bases:registry.named_tuples.plan(owner)
+        if node.bases and base is None:registry.named_tuples.plan(owner)
         from .native_annotations import class_body_statement,class_body_effect
         for member in node.body:
             if isinstance(member,ast.Pass)or isinstance(member,ast.Expr)and isinstance(member.value,ast.Constant)and(type(member.value.value)is str or member.value.value is Ellipsis):
@@ -698,6 +706,10 @@ class Model:
             receiver_kind=registry.receiver_kind(owner,member)if registry is not None else None
             owner.methods[name]=self.function(member,owner,receiver_kind=receiver_kind)
             if registry is not None:registry.register_method(owner,name,owner.methods[name])
+        if base is not None:
+            # Attribute lookup continues in the base class: an inherited method
+            # is the base's one function object, called with this receiver.
+            for name,method in base.methods.items():owner.methods.setdefault(name,method)
         from .native_source_display import plan_aliases as plan_display_aliases
         plan_display_aliases(self,owner)
         if (registry is not None or any(name not in method.default_literals for method in owner.methods.values()for name in method.defaults)
@@ -2051,7 +2063,7 @@ class Emitter:
         if tag == "object":
             owner=self.model.classes[value.kind.name]
             methods=sorted({"__bool__","__len__"}.intersection(owner.methods))
-            if owner.node.bases or methods:
+            if owner.node.bases and owner.base is None or methods:
                 required="/".join(methods)if methods else"inherited __bool__/__len__ slots"
                 raise ClassUnsupported(None,f"class {owner.node.name!r} requires {required} truth-value dispatch; this native path only implements default object truth and does not yet invoke overridden/inherited truth methods",operation=f"truth-value test of class {owner.node.name!r}",types=(("value",value.kind),),proof="Python special-method truth dispatch")
             return "true"

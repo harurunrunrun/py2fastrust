@@ -34,7 +34,7 @@ def comparison_closed(left, operator, right):
 
 def _plain_owner(model, owner):
     return (owner is not None and isinstance(owner.node, ast.ClassDef)
-            and not owner.node.bases and not owner.node.keywords
+            and not (owner.node.bases or getattr(owner,'subclassed',False)) and not owner.node.keywords
             and not owner.node.decorator_list and not owner.node.type_params
             and not any(name in owner.methods for name in
                         ('__getattribute__', '__getattr__', '__instancecheck__')))

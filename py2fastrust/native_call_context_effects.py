@@ -127,11 +127,11 @@ class Registry:
                 method=(None if owner is None else owner.methods.get(model.resolved_name(plan,node)))
                 direct_method=(id(node)in called_attributes and method is not None and not method.node.decorator_list)
                 if (owner is None or model.resolved_name(plan,node)not in owner.fields and not direct_method
-                        or not isinstance(node.ctx,ast.Load)or owner.node.bases or owner.node.keywords or owner.node.decorator_list
+                        or not isinstance(node.ctx,ast.Load)or (owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list
                         or any(name in owner.methods for name in ('__getattribute__','__getattr__'))):
                     raise Unproved('attribute lookup has no plain parameter-field capability')
                 namespace=getattr(model,'class_namespaces',None)
-                member=None if namespace is None else namespace.members.get((owner.index,model.resolved_name(plan,node)))
+                member=None if namespace is None else namespace.lookup(owner,model.resolved_name(plan,node))
                 if direct_method and member is not None and (member.plan is not method or member.descriptor!='function'):
                     raise Unproved('a method lookup has an unproved descriptor binding')
                 if not direct_method and namespace is not None and(owner.index,model.resolved_name(plan,node))in namespace.members:
@@ -150,7 +150,7 @@ class Registry:
                     owner=model.classes.get(receiver.name)if isinstance(receiver,InstanceType)else None
                     target=None if owner is None else owner.methods.get(model.resolved_name(plan,node.func))
                     method=(target is not None and not target.node.decorator_list
-                            and not(owner.node.bases or owner.node.keywords or owner.node.decorator_list)
+                            and not((owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list)
                             and not any(name in owner.methods for name in ('__getattribute__','__getattr__')))
                 if not(captured or method):
                     raise Unproved('a call has no actual source callable or plain receiver context')
@@ -197,7 +197,7 @@ class Registry:
                  if member.plan is not None and source_plan(member.plan)is plan]
         if len(members)!=1 or members[0].descriptor!='classmethod':return False
         owner=members[0].owner
-        if (owner.node.bases or owner.node.keywords or owner.node.decorator_list
+        if ((owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list
                 or owner.node.type_params or owner.body_plan is None
                 or len(plan.node.decorator_list)!=1):return False
         # Descriptor registration starts provisionally. Require the actual
@@ -212,7 +212,7 @@ class Registry:
         namespace=getattr(self.model,'class_namespaces',None)
         if namespace is None:return False
         owner=namespace.owners.get(kind.definition)
-        if (owner is None or owner.node.bases or owner.node.keywords
+        if (owner is None or (owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords
                 or owner.node.decorator_list or owner.node.type_params):return False
         records=namespace.attribute_reads.get((plan.index,id(node)))
         if records is None or len(records)!=1:return False

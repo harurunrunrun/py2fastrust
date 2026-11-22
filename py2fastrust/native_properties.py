@@ -94,14 +94,14 @@ class Properties:
             for branch in alternatives(kind):
                 if not isinstance(branch,InstanceType):continue
                 declaration=self.model.classes[branch.name]
-                member=self.model.class_namespaces.members.get((declaration.index,self.model.resolved_name(plan,node)))
+                member=self.model.class_namespaces.lookup(declaration,self.model.resolved_name(plan,node))
                 if member is None:continue
                 current=self.model.namespace.cells.get(member.key)
                 if member.descriptor=='property'or current is not None and any(isinstance(item,PropertyType)for item in alternatives(shape(current))):
                     raise ClassUnsupported(node,'this finite receiver union includes a property data descriptor; per-receiver getter/setter/deleter projection and missing-attribute alternatives are not implemented',types=(('receiver',kind),),proof='finite receiver property descriptor projection')
             return None
         declaration=self.model.classes[kind.name]
-        member=self.model.class_namespaces.members.get((declaration.index,self.model.resolved_name(plan,node)))
+        member=self.model.class_namespaces.lookup(declaration,self.model.resolved_name(plan,node))
         if member is None:return None
         value=self.model.class_namespaces.field(member,node)
         kinds=alternatives(shape(value))
@@ -192,7 +192,7 @@ class Properties:
         from .native import _string
         code=''
         for name in self.final_names(owner):
-            member=emitter.model.class_namespaces.members.get((owner.index,name))
+            member=emitter.model.class_namespaces.lookup(owner,name)
             if member is None:continue
             if member.key not in emitter.model.namespace.active:continue
             stored=shape(emitter.model.namespace.cells[member.key])

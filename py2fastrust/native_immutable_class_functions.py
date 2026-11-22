@@ -12,7 +12,7 @@ def sealed_member(model, member):
     if lifetime is None or lifetime.model is not model or lifetime.barrier is not None:
         return False
     owner = member.owner
-    if (owner.node.bases or owner.node.keywords or owner.node.decorator_list
+    if ((owner.node.bases or getattr(owner,'subclassed',False)) or owner.node.keywords or owner.node.decorator_list
             or owner.node.type_params or owner.node not in model.unit.original_unit(owner.node).tree.body):
         return False
     namespace = model.namespace.incoming.get(member.key, {})
