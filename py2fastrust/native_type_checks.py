@@ -62,7 +62,7 @@ def emit(emitter, node, arguments):
             def exception_match(candidate):
                 if union_kind(candidate.kind):
                     return project(candidate.kind,candidate.code,lambda kind,code:exception_match(Expression(code,kind)))
-                return str(getattr(candidate.kind,'_native_exception_value',False)and exception_subclass(candidate.kind.record.owner.name,classes.kind.name)).lower()
+                return str(getattr(candidate.kind,'_native_exception_value',False)and exception_subclass(candidate.kind.record.owner,classes.kind)).lower()
             return exception_match(value)
         from .native_module_linking import ClassReferenceType
         if isinstance(classes.kind,ClassReferenceType):

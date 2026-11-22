@@ -268,7 +268,7 @@ class CallableCells:
     def candidate(self,plan,node,environment):
         function=node.func
         from .native_exception_values import NAMES
-        if isinstance(function,ast.Name)and function.id in NAMES and self.model.exceptions.name(plan,function,environment)is not None:return True
+        if isinstance(function,ast.Name)and self.model.exceptions.name(plan,function,environment)is not None:return True
         from .native_builtin_singletons import canonical_kind
         if canonical_kind(self.model,plan,function,environment)is not None:return True
         if isinstance(function,ast.Name):

@@ -444,7 +444,7 @@ CASES = [('raise_builtin_class_0',
 UNSUPPORTED = {'bare_raise_without_active_exception_0': 'print("before")\nraise\n',
  'explicit_cause_boundary_0': 'raise ValueError("outer")from TypeError("inner")\n',
  'exception_args_observation_0': 'error=ValueError("x",3)\nprint(error.args)\nraise error\n',
- 'custom_exception_subclass_boundary_0': 'class Error(ValueError):pass\nraise Error("custom")\n',
+ 'custom_exception_subclass_boundary_0': 'class Error(ValueError):\n def code(self):return 1\nraise Error("custom")\n',
  'review_exception_argument_cycle': 'items=[]\n'
                                     'error=ValueError(items)\n'
                                     'items.append(error)\n'
@@ -514,7 +514,7 @@ class NativeRaiseBoundaryTests(unittest.TestCase):
                     self.assertEqual(result.diagnostics[0].code,'E006')
                     self.assertGreater(result.diagnostics[0].line,0)
                     message=result.diagnostics[0].message
-                    words=('frame-root','traceback frames')if 'local_identity'in name else ('active exception',)if 'bare_raise'in name else ('cause',)if 'cause'in name else ('inheritance',)if 'subclass'in name else ('class-object address',)if name=='identity_class_identity_id'else ('builtins',)if name=='identity_builtin_alias'else ('exception','recursive','ownership')
+                    words=('frame-root','traceback frames')if 'local_identity'in name else ('active exception',)if 'bare_raise'in name else ('cause',)if 'cause'in name else ('inheritance','exception subclass')if 'subclass'in name else ('class-object address',)if name=='identity_class_identity_id'else ('builtins',)if name=='identity_builtin_alias'else ('exception','recursive','ownership')
                     self.assertTrue(any(word in message for word in words),message)
 
 

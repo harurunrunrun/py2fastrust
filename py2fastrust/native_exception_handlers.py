@@ -42,7 +42,12 @@ def _handler_names(model,plan,handler,environment):
     if handler.type is None:return None
     items=handler.type.elts if isinstance(handler.type,ast.Tuple)else[handler.type]
     names=set()
+    from .native_user_exceptions import user_class,covered
     for item in items:
+        user=user_class(model,plan,item)if isinstance(item,ast.Name)else None
+        if user is not None:
+            names|=covered(model,{user.name})
+            continue
         reference=model.builtin_identity(plan,item,environment)if isinstance(item,ast.Name)else None
         canonical=isinstance(reference,BuiltinIdentity)or isinstance(reference,UnboundReference)and not reference.local
         spelling=model.display_name(reference.name)if canonical else None
@@ -56,7 +61,7 @@ def _handler_names(model,plan,handler,environment):
         if spelling=='BaseException':return None
         if spelling in _TERMINATION:
             raise ClassUnsupported(item,'catching process termination or interruption needs native SystemExit/KeyboardInterrupt objects; only Exception subclasses are matched natively',operation='exception handler type',proof='native termination exception objects')
-        names|=covered_names(spelling)
+        names|=covered(model,covered_names(spelling))
     return frozenset(names-_TERMINATION)
 
 

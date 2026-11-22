@@ -151,9 +151,16 @@ limits. `return`, `break` and `continue` leave protected regions after
 error as its context. Exit requests are not caught by `except Exception`.
 `except ... as name` binds the caught error's `str()` text when the name is
 used only inside its handler (sibling handlers may reuse the name), as a `print()` argument, `str(name)` or a plain
-f-string field. Other uses of the caught object, user-defined exception classes, catch-all
+f-string field. Other uses of the caught object, catch-all
 handlers in programs that call `exit()`, `except*`, suspension inside `try`
 and control transfer out of `finally` remain positioned diagnostics.
+A module-level exception class in the main module whose body is only `pass`,
+`...` or a docstring, and whose single base is `Exception`, `LookupError`,
+`IndexError`, `ValueError`, `TypeError`, `RuntimeError` or another such class,
+is a native exception class: raising, `except` clauses (including builtin
+handlers that cover it), `isinstance`, `str`, `repr`, class display and the
+traceback line follow CPython. Exception subclasses with their own methods or
+attributes, other bases, and rebound class names remain positioned diagnostics.
 
 Ordinary typed lists support `in` / `not in` for integer, boolean, text,
 bytes, tuple and `None` elements after evaluating the item and then the list.

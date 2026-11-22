@@ -10,6 +10,15 @@ NAMES=frozenset(PARENTS)
 
 
 def exception_subclass(name,parent):
+    """Whether exception class ``name`` derives from ``parent`` (names or ExceptionClass values)."""
+    if isinstance(name,ExceptionClass):
+        while name.parent is not None:
+            if name==parent:return True
+            name=name.parent
+        name=name.name
+    if isinstance(parent,ExceptionClass):
+        if parent.parent is not None:return False
+        parent=parent.name
     while name is not None:
         if name==parent:return True
         name=PARENTS.get(name)
@@ -19,13 +28,20 @@ def exception_subclass(name,parent):
 @dataclass(frozen=True)
 class ExceptionClass:
     name:str
+    # A source exception class (``class E(ValueError): pass``) carries its
+    # parent ExceptionClass and a per-program number; builtin classes do not.
+    parent:object=None
+    ordinal:int|None=None
     _native_exception_class=True
     _native_reference_cloneable=True
     _native_stored_reference=True
     _native_python_type_name='type'
 
     @property
-    def _native_kind_tag(self):return 'exception_class_'+self.name
+    def rust_name(self):return self.name if self.ordinal is None else 'User'+str(self.ordinal)
+
+    @property
+    def _native_kind_tag(self):return 'exception_class_'+self.rust_name
 
 
 CLASSES={name:ExceptionClass(name)for name in NAMES}
@@ -124,6 +140,12 @@ class Exceptions:
 
     def name(self,plan,node,environment):
         from .native_classes import ClassUnsupported
+        if isinstance(node,ast.Name):
+            from .native_user_exceptions import user_class
+            user=user_class(self.model,plan,node)
+            if user is not None:
+                self.names[(plan.index,id(node))]=user
+                return self.model.cell(plan,node,user)
         if not isinstance(node,ast.Name)or node.id not in NAMES:return None
         name=self.model.resolved_name(plan,node)
         binding=self.model.namespace.owners.get(self.model.unit.ordinal(node))
@@ -142,7 +164,7 @@ class Exceptions:
     def read(self,emitter,node):
         from .native_classes import Expression
         kind=self.names.get((emitter.plan.index,id(node)))
-        return None if kind is None else Expression('ClassExceptionClass'+kind.name,kind)
+        return None if kind is None else Expression('ClassExceptionClass'+kind.rust_name,kind)
 
     def construct(self,plan,node,owner,positional,keywords):
         from .native_classes import Cell,ClassUnsupported,shape
@@ -210,7 +232,7 @@ class Exceptions:
         from .native_classes import Expression,shape
         from .native_types import TupleType
         from .native import _string
-        classes={kind.name for kind in self.names.values()}|{record.owner.name for record in self.records}
+        classes={kind.rust_name for kind in self.names.values()}|{record.owner.rust_name for record in self.records}
         result=['#[derive(Clone,Copy)]\nstruct ClassExceptionClass'+name+';'for name in sorted(classes)]
         for record in self.records:
             kinds=tuple(shape(value)for value in record.arguments)
@@ -228,14 +250,16 @@ class Exceptions:
                 represented=[emitter.show(value,record.node,True)for value in arguments]
                 repr_args='vec!['+','.join(represented)+'].join(", ")'if represented else'String::new()'
                 repr_method='fn class_repr(&self)->String{format!("'+record.owner.name+'({})",'+repr_args+')}'
-            result.append(f'impl ClassExceptionPayload for ClassExceptionPayload{record.index}{{fn class_kind(&self)->ClassExceptionKind{{ClassExceptionKind::'+record.owner.name+'}fn class_name(&self)->&\'static str{'+_string(record.owner.name)+'}fn class_str(&self)->String{'+text+'}'+repr_method+'}')
+            result.append(f'impl ClassExceptionPayload for ClassExceptionPayload{record.index}{{fn class_kind(&self)->ClassExceptionKind{{ClassExceptionKind::'+record.owner.rust_name+'}fn class_name(&self)->&\'static str{'+_string(record.owner.name)+'}fn class_str(&self)->String{'+text+'}'+repr_method+'}')
             result.append(f'struct ClassExceptionValue{record.index}{{payload:Rc<ClassExceptionPayload{record.index}>,trace:Rc<RefCell<Option<NativeError>>>}}')
         return '\n'.join(result)
 
 
 def show(emitter,value,node,representation=False):
     from .native import _string
-    if isinstance(value.kind,ExceptionClass):return _string("<class '"+value.kind.name+"'>")+'.to_owned()'
+    if isinstance(value.kind,ExceptionClass):
+        qualified=value.kind.name if value.kind.ordinal is None else '__main__.'+value.kind.name
+        return _string("<class '"+qualified+"'>")+'.to_owned()'
     if representation:emitter.model.exceptions.repr_records.add(value.kind.record.index)
     return value.code+'.payload.class_'+('repr'if representation else'str')+'()'
 

@@ -49,7 +49,7 @@ def runtime(source,model):
     frames=print_frames('error.frames.iter().rev().map(|&(line,function)|('+frame+'))','if error.origin_visible{Some(('+origin+'))}else{None}',optional=True)
     helpers=r'''
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-enum ClassExceptionKind{BaseException,Exception,LookupError,IndexError,ValueError,TypeError,RuntimeError,StopIteration}
+enum ClassExceptionKind{BaseException,Exception,LookupError,IndexError,ValueError,TypeError,RuntimeError,StopIteration__USER_EXCEPTION_KINDS__}
 trait ClassExceptionPayload:std::fmt::Debug{
  fn class_kind(&self)->ClassExceptionKind;
  fn class_name(&self)->&'static str;
@@ -125,6 +125,8 @@ fn class_exception_render_inner(error:&NativeError,seen:&mut std::collections::H
     if model.exceptions.records:
         helpers+=GC_RUNTIME
     exit_hook='if let Some(message)=exit_context_message(error){return message;}'if getattr(model,'native_exit_used',False)else''
+    users=''.join(','+kind.rust_name for kind in sorted(getattr(model,'user_exceptions',{}).values(),key=lambda kind:kind.ordinal))
+    helpers=helpers.replace('__USER_EXCEPTION_KINDS__',users)
     return source+helpers.replace('__LOCATION__',location).replace('__FRAMES__',frames).replace('__EXIT_MESSAGE_HOOK__',exit_hook)
 
 

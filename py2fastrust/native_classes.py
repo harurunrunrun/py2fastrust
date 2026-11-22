@@ -1621,6 +1621,8 @@ class Model:
             if isinstance(node,(ast.Import,ast.ImportFrom))and self.import_statement(plan,node,environment):
                 continue
             if isinstance(node,(ast.ClassDef,ast.FunctionDef)):
+                from .native_user_exceptions import is_definition
+                if is_definition(self,node):continue
                 defined=self.functions.definitions.get(node)if isinstance(node,ast.FunctionDef)else None
                 if getattr(defined,'cache_decorator',None)is not None:
                     from .native_function_cache import validate as validate_cache
@@ -1885,7 +1887,7 @@ class Emitter:
         if getattr(value,'_native_item_getter',False):return value.rust
         if getattr(value,'_native_bytearray',False):return value.rust
         if getattr(value,"_native_array",False):return value.rust
-        if getattr(value,'_native_exception_class',False):return 'ClassExceptionClass'+value.name
+        if getattr(value,'_native_exception_class',False):return 'ClassExceptionClass'+value.rust_name
         if getattr(value,'_native_exception_value',False):return 'Rc<ClassExceptionValue'+str(value.record.index)+'>'
         if getattr(value,"_native_builtin_singleton",False):return "NativeNotImplemented"
         if getattr(value,'_native_cmp_key',False):return 'Rc<NativeCmpKey_'+str(value.record.index)+'>'

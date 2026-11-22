@@ -180,6 +180,8 @@ class LinkedModel(Model):
         for unit in self.unit.executable_source_units:
             for node in unit.tree.body:
                 if isinstance(node,ast.ClassDef):
+                    from .native_user_exceptions import discover as discover_exception
+                    if discover_exception(self,unit,node):continue
                     key=self.definition_name(node)
                     if key in self.classes or key in self.functions:raise ClassUnsupported(node)
                     owner=self.discover_class(node,key)
@@ -640,6 +642,8 @@ class LinkedEmitter(Emitter):
         return super().call(node)
 
     def statement(self,node):
+        from .native_user_exceptions import is_definition
+        if is_definition(self.model,node):return ""
         result=self.model.class_namespaces.emit_prepare_definition(self,node)+super().statement(node)
         result+=self.model.class_namespaces.emit_definition(self,node)
         if isinstance(node,ast.ClassDef):
