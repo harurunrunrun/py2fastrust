@@ -288,6 +288,9 @@ imported or dynamically selected bases remain positioned conversion errors.
 `__name__`, `__qualname__` and `__module__` of a source class, read through the
 class or through `type(instance)`, are constants of its class statement unless
 the class body binds that name itself.
+`__name__` and `__qualname__` of source functions and lambdas are the compiler's
+names of their definitions (including `<locals>` and class prefixes); writing
+them, and reading them through bound methods, remain positioned diagnostics.
 
 
 Local `is None` / `is not None` predicates refine the actual official binding

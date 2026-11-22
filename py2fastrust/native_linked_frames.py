@@ -220,6 +220,9 @@ class LinkedModel(Model):
 
     def attribute_value(self,plan,node,receiver,environment):
         self.class_namespaces.defer_member(plan,node,receiver)
+        from .native_function_metadata import analyze as function_metadata
+        metadata=function_metadata(self,plan,node,shape(receiver))
+        if metadata is not None:return metadata
         from .native_classes import InstanceType
         if isinstance(shape(receiver),InstanceType)and node.attr=='__dict__':
             raise ClassUnsupported(node,'instance __dict__ mapping access and overrides are not implemented; property data descriptors cannot be replaced by a fabricated instance dictionary',proof='real instance dictionary and data-descriptor precedence')
@@ -440,6 +443,10 @@ class LinkedEmitter(Emitter):
             if value is not None:return value
             value=self.model.class_namespaces.emit_name(self,node)
             if value is not None:return value
+        if isinstance(node,ast.Attribute):
+            from .native_function_metadata import emit as emit_function_metadata
+            metadata=emit_function_metadata(self,node)
+            if metadata is not None:return metadata
         if isinstance(node,ast.Attribute)and((self.plan.index,id(node))in self.model.class_namespaces.attribute_reads
                 or(self.plan.index,id(node))in getattr(self.model.class_namespaces,'metadata_reads',{})):
             before,receiver=self.capture(self.expression(node.value))
