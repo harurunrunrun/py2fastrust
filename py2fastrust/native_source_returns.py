@@ -94,6 +94,11 @@ def _narrow(emitter,node,stored,wanted,code):
             target=targets[0];temporary=emitter.fresh()
             fields=[_narrow(emitter,node,old,new,temporary+'.'+str(index)+'.clone()')
                     for index,(old,new)in enumerate(zip(stored.fields,target.fields))]
+            if any(field.startswith('unreachable!(')for field in fields):
+                # One impossible field makes the whole tuple impossible; a
+                # tuple of diverging fields would have type (!, ..), which
+                # rustc 1.85 does not unify with the other match arms.
+                return 'unreachable!("local binding contradicts solved control flow")'
             result=emitter.coerce(Expression(tuple_code(fields),target),wanted,node)
             return '{let '+temporary+'='+code+';'+result+'}'
     if getattr(stored,'_native_function_reference',False):
