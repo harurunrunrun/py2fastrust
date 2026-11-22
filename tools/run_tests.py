@@ -38,7 +38,10 @@ def assign(names, shards):
 
 def run(name, timeout):
     started = time.monotonic()
-    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    # Tests import shared helpers as the ``tests`` package, so the repository
+    # root must be importable regardless of the caller's environment.
+    path = os.pathsep.join(filter(None, (str(ROOT), os.environ.get("PYTHONPATH"))))
+    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": path}
     try:
         result = subprocess.run([sys.executable, "-m", "unittest", "-v", name], cwd=TESTS, env=environment,
                                 capture_output=True, text=True, timeout=timeout)
