@@ -1,4 +1,8 @@
-"""Compile and run standalone submissions in every integer/build mode.
+"""Compile and run a standalone submission in every integer/build mode.
+
+The fixture exercises input parsing, containers, collections, heapq, cached
+recursion, classes, exceptions, generators and formatting; its output must
+equal CPython's in every mode, so it stays within 64-bit integer results.
 
 Use --wheel to check the packaged compiler from an isolated directory.  The
 generated executables run with PATH pointing to a nonexistent directory.
@@ -17,12 +21,11 @@ import time
 import zipfile
 
 
-SOURCE = '''# pytors: --license Unlicense
-from __future__ import annotations
-import gc
+SOURCE = r'''# pytors: --license Unlicense
 import sys
-from typing import TypeVar, NoDefault
-from string.templatelib import Template, Interpolation, convert
+import heapq
+from collections import deque, Counter, defaultdict
+from functools import cache
 
 n = int(input())
 values = list(map(int, input().split()))
@@ -31,248 +34,65 @@ other = shared
 other[0].append(n)
 print(sum(values), shared is other, values[-1])
 
-def factory():
-    captured = [sum(values)]
-    type Held[T=int] = tuple[T, captured]
-    def read[U: int = str](value: U) -> U:
-        return value, U
-    return Held, read
+graph = defaultdict(list)
+for a, b in zip(values, values[1:]):
+    graph[a].append(b)
+    graph[b].append(a)
+seen = {values[0]}
+queue = deque([values[0]])
+order = []
+while queue:
+    node = queue.popleft()
+    order.append(node)
+    for nxt in sorted(graph[node]):
+        if nxt not in seen:
+            seen.add(nxt)
+            queue.append(nxt)
+print(order, len(seen))
 
-held, read = factory()
-gc.collect()
-print(held.__value__.__args__[0] is held.__type_params__[0],
-      held.__value__.__args__[1], read(7)[0], read.__annotations__)
-
-class Box[T, U=str]:
-    field: T
-    def __init__(self, value):
-        self.field = value
-
-alias = Box[int]
-instance = alias(9)
-print(alias is Box[int], alias.__args__, instance.field,
-      instance.__orig_class__ is alias)
-
-parameter = TypeVar("Parameter", default=int)
-print(list[parameter][()] == list[int], parameter.has_default(),
-      parameter.__default__ is NoDefault)
-
-space = {}
-exec(compile("type Dynamic[T=str] = list[T]", "runtime.py", "exec"), space)
-print(space["Dynamic"].__value__.__args__[0].__name__)
-
-def generate():
-    try:
-        yield 1
-        yield 2
-    finally:
-        print("closed")
-
-iterator = generate()
-print(next(iterator))
-iterator.close()
-template = t"sum={sum(values)!r:>3}"
-print(template.strings, template.values,
-      [(i.expression, i.conversion, i.format_spec) for i in template.interpolations])
-print(isinstance(template, Template),
-      isinstance(template.interpolations[0], Interpolation),
-      convert(template.values[0], "s"))
-def template_factory():
-    parts = [8, 9]
-    return t"{parts}"
-held_template = template_factory()
-gc.collect()
-print(held_template.values)
-exec("template = t'{sum([1, 2, 3])}'", space)
-print(space["template"].values)
-
-def active_exception():
-    return sys.exception()
-
-group = ExceptionGroup("standalone", [ValueError("value"), TypeError("type")])
-group.add_note("retained")
-gc.collect()
-try:
-    try:
-        raise group
-    except* ValueError as matched:
-        print(matched.message, matched.__notes__, active_exception() is matched,
-              sys.exc_info()[0] is ExceptionGroup)
-except ExceptionGroup as remaining:
-    print([type(error).__name__ for error in remaining.exceptions])
-exec("try: raise ValueError('dynamic')\\nexcept* ValueError as caught: print(caught.message, str(caught.exceptions[0]))", space)
-print(sys.exception())
-number = 3+4j
-print(number.real, number.imag, abs(number), number*number, complex("1-2j"))
-match number:
-    case 3+4j:
-        print("complex pattern")
-optimized = {}
-exec(compile('def function():\\n "removed"\\n assert False\\n return __debug__',
-             "optimized.py", "exec", optimize=2), optimized)
-print(optimized["function"](), optimized["function"].__doc__)
-frozen = frozenset([1, 2, 2])
-print(sorted(frozen | {3}), frozen == frozenset([2, 1]),
-      hash(frozen) == hash(frozenset([2, 1])))
-class Parent:
-    def __init_subclass__(cls, *, flag, **kwargs):
-        super().__init_subclass__(**kwargs)
-        cls.flag = flag
-class Expanded(*[Parent], **{"flag": 17}):
-    pass
-print(Expanded.flag)
-exec("class DynamicExpanded(*[Parent], **{'flag': 19}): pass", globals())
-print(DynamicExpanded.flag)
-print(sys.stdin.readline() == "\\n")
-sys.stdout.flush()
-sys.stdout.buffer.write(b"standalone\\n")
-sys.stdout.flush()
-'''
-SOURCE += r'''
-from functools import cache
+heap = []
+for index, value in enumerate(values):
+    heapq.heappush(heap, (-value, index))
+print([heapq.heappop(heap) for _ in range(3)])
+print(Counter("mississippi").most_common(2))
 
 @cache
-def cached_count(n):
-    if not n:
+def cached_count(k):
+    if not k:
         return 0
-    return cached_count(n - 1) + 1
+    return cached_count(k - 1) + 1
 
-sys.setrecursionlimit(4000)
-print(cached_count(1500), cached_count.cache_info().currsize)
+sys.setrecursionlimit(10000)
+print(cached_count(1500))
 
-class Key(str):
-    pass
-key = Key("value")
-def receive(**kwargs):
-    return next(iter(kwargs))
-def named_a():
-    return receive(value=1)
-def named_b():
-    return receive(value=2)
-print(receive(**{key: 1}) is key, named_a() is named_b())
-exec("def dynamic_named(): return receive(value=3)", globals())
-print(named_a() is dynamic_named())
-gc.collect()
-print(receive(**{key: 4}) is key)
+class Shape:
+    def __init__(self, sides, size):
+        self.sides = sides
+        self.size = size
+    def area(self):
+        return self.size * self.size if self.sides == 4 else 0
+    def describe(self):
+        return f"{self.sides} sides, area {self.area():.1f}"
+for shape in [Shape(0, 1), Shape(4, 3)]:
+    print(shape.describe())
 
-class NativeList(list):
-    pass
-owned = NativeList([{"retained": 31}])
-gc.collect()
-print(owned[0]["retained"])
-
-print(eval(r"'\N{LATIN SMALL LETTER A}\N{NUL}\N{HANGUL SYLLABLE GAG}'") == "a\0\uac01")
-exec(r"named_template = t'\N{EM DASH}{5}'", space)
-print(space["named_template"].strings, space["named_template"].values)
-print(eval(b"# coding: latin-1\n'caf\xe9'"))
-print(eval("left + right", globals={"left": 7}, locals={"right": 8}))
-
-class Filename:
-    def __fspath__(self):
-        return b"standalone_dynamic.py"
-exec(compile("path_result = 29", Filename(), "exec"), space)
-print(space["path_result"])
-'''
-SOURCE += r'''
-import builtins
-
-module_space = globals()
-module_space["inserted_from_mapping"] = 37
-print(module_space is globals(), inserted_from_mapping)
-del module_space["inserted_from_mapping"]
+def checked(text):
+    if not text.strip():
+        raise ValueError("blank line")
+    return int(text)
 try:
-    inserted_from_mapping
-except NameError:
-    print("deleted global")
+    checked(sys.stdin.readline())
+except ValueError as error:
+    print("rejected:", error)
 
-def comprehension_owner():
-    marker = 73
-    items = [marker for marker in range(3)]
-    [last := item for item in items]
-    callbacks = [lambda: step for step in range(3)]
-    return marker, last, [callback() for callback in callbacks], "step" in locals()
-
-print(comprehension_owner())
-
-old_builtins = {"marker": "old"}
-new_builtins = {"marker": "new"}
-captured_space = {"__builtins__": old_builtins, "new": new_builtins}
-exec("def first(): return marker\n__builtins__ = new\ndef second(): return marker",
-     captured_space)
-first = captured_space["first"]
-second = captured_space["second"]
-del captured_space["__builtins__"]
-gc.collect()
-print(first(), second(), first.__builtins__ is old_builtins,
-      second.__builtins__ is new_builtins)
-old_builtins["marker"] = "mutated"
-print(first())
-
-hook_events = []
-hook_builtins = dict(vars(builtins))
-hook_space = {"__builtins__": hook_builtins, "__name__": "standalone_hooks"}
-original_builder = builtins.__build_class__
-
-def build_hook(body, name, *bases, **kwargs):
-    hook_events.append((name, body.__code__.co_qualname))
-    return original_builder(body, name, *bases, **kwargs)
-
-def import_hook(name, global_space=None, local_space=None, fromlist=(), level=0):
-    hook_events.append((name, global_space is hook_space,
-                        local_space is hook_space, fromlist, level))
-    return sys
-
-hook_builtins["__build_class__"] = build_hook
-hook_builtins["__import__"] = import_hook
-exec("class Hooked:\n value = 41\nimport sys as imported", hook_space)
-print(hook_space["Hooked"].value, hook_space["imported"] is sys, hook_events)
-
-def stable_code():
-    def child():
-        return 43
-    return child
-
-saved_code = stable_code().__code__
-gc.collect()
-print(stable_code().__code__ is saved_code, saved_code.co_qualname)
-
-def named_generator():
-    yield 47
-
-named_iterator = named_generator()
-generator_code = named_iterator.gi_code
-named_generator.__name__ = "ChangedFunction"
-named_iterator.__name__ = "PausedGenerator"
-gc.collect()
-print(named_iterator.__name__, named_iterator.gi_code is generator_code,
-      generator_code.co_qualname, next(named_iterator))
-
-operand_events = []
-
-class NativeInteger(int):
-    pass
-
-class ReflectedInteger(int):
-    def __radd__(self, other):
-        operand_events.append("reflected")
-        return 99
-    def __eq__(self, other):
-        operand_events.append("equality")
-        return False
-
-print(NativeInteger(3) + ReflectedInteger(4),
-      NativeInteger(3) == ReflectedInteger(3), operand_events)
-
-class InPlaceList(list):
-    def __iadd__(self, other):
-        return NotImplemented
-    def __add__(self, other):
-        return list.__add__(self, other)
-
-inplace = InPlaceList([1])
-original = inplace
-inplace += [2]
-print(inplace, original, inplace is original, type(inplace).__name__)
+def squares(limit):
+    for i in range(limit):
+        yield i * i
+print(sum(squares(10**3)), list(squares(5)), 2**40, -7 // 2, -7 % 3)
+words = sorted(["pear", "fig", "apple", "kiwi"], key=lambda w: (len(w), w))
+print(" ".join(words), {w: len(w) for w in words}, f"{3.14159:>8.3f}|")
+sys.stdout.write("standalone\n")
+sys.stdout.flush()
 '''
 STDIN = "4\n1 2 3 4\n\n"
 

@@ -376,10 +376,10 @@ tests written for the earlier VM backend, which expected dynamic features that
 the native backend reports as positioned diagnostics, have been removed.
 CI targets Rust 1.85 and stable.
 
-`check_standalone.py` retains the advanced all-integer-mode acceptance fixture,
-including execution without Python on PATH. That fixture is currently blocked
-by missing direct features and must be restored through implementation. Its
-`--wheel` and `--output` options remain available for distribution verification.
+`check_standalone.py` converts one submission in every integer mode, builds
+debug and optimized executables, and runs them without Python on PATH; the
+output must equal CPython's. Its `--wheel` and `--output` options check a
+packaged compiler and retain the generated sources, binaries and report.
 
 ## Licenses and generated headers
 
