@@ -246,26 +246,14 @@ PREDICATES={'issubset':ast.LtE(),'issuperset':ast.GtE(),'isdisjoint':None}
 
 
 def _method_call(node):
-    if not(isinstance(node,ast.Call)and isinstance(node.func,ast.Attribute)and not node.keywords):return False
-    if node.func.attr=='copy':return not node.args
-    return(len(node.args)==1 and not isinstance(node.args[0],ast.Starred)
-           and node.func.attr in METHODS.keys()|INPLACE_METHODS.keys()|PREDICATES.keys())
+    return(isinstance(node,ast.Call)and isinstance(node.func,ast.Attribute)and len(node.args)==1 and not node.keywords
+           and not isinstance(node.args[0],ast.Starred)and node.func.attr in METHODS.keys()|INPLACE_METHODS.keys()|PREDICATES.keys())
 
 
 def analyze_method(model,plan,node,receiver,arguments,keywords,environment):
     """Named set methods with one set argument share the operator algorithms."""
-    if not _method_call(node)or keywords:return None
-    name=node.func.attr
-    if name=='copy':
-        # set_copy: a new set filled by set_merge from the receiver's table.
-        kinds=_set_kinds(receiver)
-        if kinds is None or arguments:return None
-        model.mappings.set_method_algebra[(plan.index,id(node))]=name
-        record=model.mappings.record(plan,node,'set','operator')
-        for kind in kinds:model.mappings.contribute_key(record,kind.record.key,node)
-        return model.cell(plan,node,record.kind)
-    if len(arguments)!=1:return None
-    other=arguments[0]
+    if not _method_call(node)or len(arguments)!=1 or keywords:return None
+    name=node.func.attr;other=arguments[0]
     if _set_kinds(receiver)is None or _set_kinds(other)is None:return None
     model.mappings.set_method_algebra[(plan.index,id(node))]=name
     if name in METHODS:return analyze(model,plan,node,METHODS[name],receiver,other,None,form='binary')
@@ -280,9 +268,6 @@ def emit_method(emitter,node):
     if not _method_call(node)or emitter.model.mappings.set_method_algebra.get((emitter.plan.index,id(node)))is None:return None
     name=node.func.attr
     before,receiver=emitter.capture(emitter.expression(node.func.value))
-    if name=='copy':
-        result=_copy(emitter,receiver,node)
-        return None if result is None else Expression('{'+before+result.code+'}',result.kind)
     more,other=emitter.capture(emitter.expression(node.args[0]))
     wanted=emitter.kind(node)
     if name in METHODS:result=emit(emitter,METHODS[name],receiver,other,node,wanted,form='binary')
@@ -312,20 +297,3 @@ def _disjoint(emitter,left,right,node):
     code=('{let '+a+'=('+left.code+').clone();let '+b+'=('+right.code+').clone();if '+b+'.borrow().len()>'+a+'.borrow().len(){'
           +scan(A,B)+'}else{'+scan(B,A)+'}}')
     return Expression(code,'bool')
-
-
-def _copy(emitter,receiver,node):
-    from .native_classes import Expression
-    from .native_unions import project,union_kind
-    record=emitter.model.mappings.sites.get((emitter.plan.index,id(node),'set','set'))
-    if record is None or not _admitted(emitter,receiver.kind):return None
-    sets=emitter.model.mappings.cpython_sets
-    own=record.kind;record.emitted=True
-    def build(kind,code):
-        source,owner=emitter.fresh(),emitter.fresh()
-        return (f'{{let {source}=({code}).clone();let {owner}={sets.new(emitter,record)};'
-                +sets.merge(emitter,node,Expression(owner,own),Expression(source,kind))+owner+'}')
-    code=project(receiver.kind,receiver.code,build)if union_kind(receiver.kind)else build(receiver.kind,receiver.code)
-    wanted=emitter.kind(node)
-    result=Expression(code,own)
-    return result if wanted==own else Expression(emitter.coerce(result,wanted,node),wanted)

@@ -42,6 +42,10 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
             return TranspileResult(None, (Diagnostic("integer must be i64, i128, or bigint", options.filename, code="E004"),))
         if options.string_mode not in ("ascii", "unicode"):
             return TranspileResult(None, (Diagnostic("string_mode must be ascii or unicode", options.filename, code="E004"),))
+        if options.string_mode == "ascii" and _non_ascii_text_literal(source):
+            # The ASCII profile assumes ASCII text; a non-ASCII str literal
+            # proves otherwise, so the program needs the Unicode text model.
+            options = replace(options, string_mode="unicode")
         try:
             options = replace(options, license=license_name(options.license))
         except ValueError as exc:
@@ -72,3 +76,13 @@ def transpile(source: str, options: TranspileOptions | None = None) -> Transpile
         return TranspileResult(None, (exc.diagnostic,))
     except (OSError, UnicodeError) as exc:
         return TranspileResult(None, (Diagnostic(str(exc), options.filename, code="E005"),))
+
+
+def _non_ascii_text_literal(source):
+    import ast
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return any(isinstance(node, ast.Constant) and isinstance(node.value, str) and not node.value.isascii()
+               for node in ast.walk(tree))

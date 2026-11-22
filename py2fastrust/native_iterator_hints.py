@@ -114,6 +114,14 @@ class IndexedOwnerHint:
     def emit(self, emitter, node, value):
         retained, state, owner = emitter.fresh(), emitter.fresh(), emitter.fresh()
         length = owner + '.0.borrow().len()'
+        from .native_classes import shape
+        from .native_unions import union_kind, project
+        record = getattr(value.kind, 'record', None)
+        source_kind = shape(record.source) if record is not None and getattr(record, 'source', None) is not None else None
+        if union_kind(source_kind):
+            # Alternative indexed owners (for example arrays of different
+            # typecodes) share the layout but not the Rust type.
+            length = project(source_kind, owner, lambda kind, code: '{let len=(' + code + ').0.borrow().len();len}')
         count = state + '.index'
         remaining = ('if ' + count + '<=(' + length + '){' + count + '}else{0_usize}'
                      if self.reverse else '(' + length + ').saturating_sub(' + count + ')')

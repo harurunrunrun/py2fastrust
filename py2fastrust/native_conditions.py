@@ -39,7 +39,9 @@ def lower(g,node,environment=None):
         return _Expression('(if '+test.code+'{'+yes.code+'}else{'+no.code+'})','bool',constant)
     if environment is None:
         return g.condition_leaf(node)
-    value=g.expression(node,environment)
+    # Truth only inspects a named value; a borrowed read avoids an owned copy.
+    read=getattr(g,'read_expression',None)
+    value=read(node,environment)if read is not None and isinstance(node,ast.Name)else g.expression(node,environment)
     constant=(False if value.kind=='none'else bool(value.constant)if value.constant is not None else None)
     return _Expression(g.truth(value),'bool',constant)
 

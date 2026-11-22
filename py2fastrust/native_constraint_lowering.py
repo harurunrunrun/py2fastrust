@@ -129,6 +129,9 @@ def reset_statement(g,node,environment):
     if callee.operation!="attribute" or callee.data!="clear" or callee.operands[0].operation!="name":raise _Unsupported
     name=callee.operands[0].data;binding=environment.get(name)
     if not isinstance(binding,_Binding) or is_maybe(binding.kind):raise _Unsupported
+    from .native_unions import union_kind
+    if union_kind(binding.kind):
+        raise _Unsupported(f"clearing {name!r} while it holds a loop-carried union of container layouts needs a per-alternative storage transition, which is not implemented",node=node,types=((name,binding.kind),),proof="union container clear transition")
     if name in g.iterating_lists or binding.slot in g.borrowed_slots:
         raise _Unsupported(f"clearing {name!r} changes its element representation while an iterator or borrow still observes its storage; this shared storage transition is not implemented",node=node,types=((name,binding.kind),),proof="no live borrows during storage transition")
     if any(other!=name and isinstance(value,_Binding) and value.slot==binding.slot for other,value in environment.items()):
@@ -327,6 +330,16 @@ def finish_loop(g,node,entry,header,context,body,remaining,nonempty,may_repeat,z
                 if source.slot in retained or source.slot in moved:
                     raise _Unsupported("this loop transfer would both retain and move, or move twice, the same mutable value; alias-preserving shared loop carriers are not implemented for this merge",node=node,operation="loop state transfer",types=(("value",source.kind),),proof="single transfer of mutable identity")
                 moved.add(source.slot)
-        replacements[marker]="\n".join(transfer.render(g) for transfer in destinations.values())
+        exit_slots={value.slot for value in joined.values() if isinstance(value,_Binding)}
+        def render(transfer):
+            source=transfer.source
+            # A mutable value that the loop exit still reads by its own slot
+            # (a proved nonempty loop) is copied into the backedge carrier
+            # instead of moved, so the next iteration and the exit keep it.
+            if (source is not None and source.slot in exit_slots and source.slot!=transfer.destination
+                    and not immutable(unmaybe(source.kind)) and not isinstance(unmaybe(source.kind),SharedListType)):
+                return f"{transfer.destination} = {g.coerce(_Expression(source.slot+'.clone()',source.kind),transfer.kind)};"
+            return transfer.render(g)
+        replacements[marker]="\n".join(render(transfer) for transfer in destinations.values())
     body="\n".join(replacements.get(line,line) for line in body.split("\n"))
     return "\n".join(initializers),body,g.after_loop(joined)

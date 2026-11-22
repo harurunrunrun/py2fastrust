@@ -412,7 +412,11 @@ class Iterators:
         handle=emitter.fresh()
         with context(emitter)as(marker,owner),demand_context(emitter,demand_node):
             pulled=self._pull(emitter,node,Expression(handle,value.kind),active)
-        pulled=Expression("{let "+handle+"=&("+value.code+");"+pulled.code+"}",pulled.kind)
+        from .native_statement_lifetimes import _single_block
+        # A pulled block as the tail of this block would be reported by rustc
+        # as unnecessary braces; its statements can share this block's scope.
+        inner=pulled.code[1:-1]if pulled.code.startswith('{')and _single_block(pulled.code)else pulled.code
+        pulled=Expression("{let "+handle+"=&("+value.code+");"+inner+"}",pulled.kind)
         if stop is None:stop='clear'if owner else'propagate'
         assert stop in {'clear','propagate'}
         clear=clear_stop_if if clear_stop_if is not None else stop=='clear'

@@ -335,6 +335,9 @@ def _type_name(emitter,value,node):
     from .native_classes import domain
     from .native import _string
     from .native_module_linking import ClassReferenceType,ModuleType
+    from .native_types import EmptyType
+    # An operand that always raises never reaches the type-name observer.
+    if isinstance(value.kind,EmptyType):return 'native_empty::<&str>('+value.code+')'
     if isinstance(value.kind,ClassReferenceType):return '"type"'
     if isinstance(value.kind,ModuleType):return '"module"'
     if hasattr(value.kind,'_native_python_type_name'):return _string(value.kind._native_python_type_name)

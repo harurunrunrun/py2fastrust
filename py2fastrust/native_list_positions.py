@@ -235,6 +235,23 @@ def closed(kind):
     return kind in {'int','bool','int_bool','float','str','bytes','none','range'}
 
 
+def _pending(model,kind):
+    """A shape that an earlier inference pass has not resolved yet.
+
+    The unknown-heap loss is persistent, so it waits until the argument shape
+    is known; after_call runs again on later passes, and an argument that is
+    still unresolved in the final pass is treated as unknown.
+    """
+    if getattr(model,'final',False):return False
+    from .native_types import ListType, TupleType, TupleSequenceType, UnionType, NullableType
+    if kind is None:return True
+    if isinstance(kind,(ListType,TupleSequenceType)):return _pending(model,kind.element)
+    if isinstance(kind,TupleType):return any(_pending(model,x)for x in kind.fields)
+    if isinstance(kind,UnionType):return any(_pending(model,x)for x in kind.alternatives)
+    if isinstance(kind,NullableType):return _pending(model,kind.value)
+    return False
+
+
 def after_call(model, plan, node):
     """Unknown whole-value uses cannot preserve a private record contract."""
     from .native_classes import shape
@@ -262,7 +279,7 @@ def after_call(model, plan, node):
             tag=receiver.root().tag
             if tag=='list':
                 invalidate(model, receiver)
-            if tag in {'list','tuple','tuple_sequence'}and not modeled and not closed(shape(receiver)):
+            if tag in {'list','tuple','tuple_sequence'}and not modeled and not closed(shape(receiver))and not _pending(model,shape(receiver)):
                 unknown_heap(model)
     seen = set()
     def escape(value):
@@ -278,7 +295,7 @@ def after_call(model, plan, node):
     for argument in (*node.args, *(x.value for x in node.keywords)):
         value = model.records.get((plan.index, id(argument)))
         if value is not None:
-            if not modeled and not closed(shape(value)):
+            if not modeled and not closed(shape(value))and not _pending(model,shape(value)):
                 unknown_heap(model)
             if not readonly_length:
                 escape(value)
