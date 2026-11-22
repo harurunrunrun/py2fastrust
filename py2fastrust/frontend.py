@@ -202,6 +202,11 @@ def _scope_metadata(table):
         for symbol in current.get_symbols():
             flags = frozenset(name[3:] for name in dir(symbol)
                               if name.startswith("is_") and callable(getattr(symbol, name)) and getattr(symbol, name)())
+            # symtable.Symbol.is_global() treats a function named "top" like the
+            # module table and reports its locals as global; a name local to a
+            # function scope is global only through an explicit declaration.
+            if current.get_type() != "module" and "global" in flags and "local" in flags and "declared_global" not in flags:
+                flags = flags - {"global"}
             symbols.append(Symbol(symbol.get_name(), flags))
         kind = current.get_type()
         scopes[ordinal] = Scope(ordinal, parent, current.get_name(), getattr(kind, "value", str(kind)),
