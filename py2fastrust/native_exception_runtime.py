@@ -45,6 +45,8 @@ def runtime(source,model):
     location="(&'static str,&'static str)"if hasattr(model,'module_linker')else"&'static str"
     frame=( 'function.0,line,function.1'if hasattr(model,'module_linker')else'"'+model.filename.replace('\\','\\\\').replace('"','\\"')+'",line,function')
     origin=( 'error.function.0,error.line,error.function.1'if hasattr(model,'module_linker')else'"'+model.filename.replace('\\','\\\\').replace('"','\\"')+'",error.line,error.function')
+    from .native_traceback import print_frames
+    frames=print_frames('error.frames.iter().rev().map(|&(line,function)|('+frame+'))','if error.origin_visible{Some(('+origin+'))}else{None}',optional=True)
     helpers=r'''
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 enum ClassExceptionKind{BaseException,Exception,LookupError,IndexError,ValueError,TypeError,RuntimeError,StopIteration}
@@ -114,17 +116,16 @@ fn class_exception_render_inner(error:&NativeError,seen:&mut std::collections::H
  }
  if error.origin_visible||!error.frames.is_empty(){
   eprintln!("Traceback (most recent call last):");
-  for &(line,function)in error.frames.iter().rev(){eprintln!("  File {:?}, line {}, in {}",__FRAME__);}
+  __FRAMES__
  }
- if error.origin_visible{eprintln!("  File {:?}, line {}, in {}\n{}",__ORIGIN__,class_exception_message(error));}
- else{eprintln!("{}",class_exception_message(error));}
+ eprintln!("{}",class_exception_message(error));
  true
 }
 '''
     if model.exceptions.records:
         helpers+=GC_RUNTIME
     exit_hook='if let Some(message)=exit_context_message(error){return message;}'if getattr(model,'native_exit_used',False)else''
-    return source+helpers.replace('__LOCATION__',location).replace('__FRAME__',frame).replace('__ORIGIN__',origin).replace('__EXIT_MESSAGE_HOOK__',exit_hook)
+    return source+helpers.replace('__LOCATION__',location).replace('__FRAMES__',frames).replace('__EXIT_MESSAGE_HOOK__',exit_hook)
 
 
 GC_RUNTIME=r'''

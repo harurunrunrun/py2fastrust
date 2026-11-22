@@ -261,8 +261,8 @@ fn class_with_attach_context(error:&mut NativeError,previous:NativeError){
 fn class_with_render_error(error:&NativeError){
  if let Some(context)=&error.context{class_with_render_error(context);eprintln!("\\nDuring handling of the above exception, another exception occurred:\\n");}
  eprintln!("Traceback (most recent call last):");
- for &(line,function)in error.frames.iter().rev(){eprintln!("  File {:?}, line {}, in {}",function.0,line,function.1);}
- eprintln!("  File {:?}, line {}, in {}\\n{}",error.function.0,error.line,error.function.1,error.message);
+ {let native_frames:Vec<(&str,usize,&str)>=error.frames.iter().rev().map(|&(line,function)|(function.0,line,function.1)).chain(std::iter::once((error.function.0,error.line,error.function.1))).collect();let mut native_last:Option<(&str,usize,&str)>=None;let mut native_count=0_usize;for &native_frame in native_frames.iter(){if native_last!=Some(native_frame){if native_count>3{let native_more=native_count-3;eprintln!("  [Previous line repeated {} more time{}]",native_more,if native_more>1{"s"}else{""});}native_last=Some(native_frame);native_count=0;}native_count+=1;if native_count>3{continue;}eprintln!("  File {:?}, line {}, in {}",native_frame.0,native_frame.1,native_frame.2);}if native_count>3{let native_more=native_count-3;eprintln!("  [Previous line repeated {} more time{}]",native_more,if native_more>1{"s"}else{""});}}
+ eprintln!("{}",error.message.as_str());
 }
 '''
     return source

@@ -701,6 +701,9 @@ def render_linked_runtime(model,source):
                           'function: ClassLocation)->NativeError')
     source=source.replace("caller:&'static str",'caller:ClassLocation').replace("caller: &'static str",'caller:ClassLocation')
     source=source.replace(f'{_string(model.filename)},line,function);','function.0,line,function.1);')
+    # Shared traceback printer (native_traceback.print_frames): frames carry (file, function).
+    source=source.replace(f'({_string(model.filename)},line,function))','(function.0,line,function.1))')
+    source=source.replace(f'({_string(model.filename)},error.line,error.function)','(error.function.0,error.line,error.function.1)')
     source=source.replace(f'{_string(model.filename)},error.line,error.function,error.message);',
                           'error.function.0,error.line,error.function.1,error.message);')
     implicit={module.number:[]for module in linker.modules.values()}

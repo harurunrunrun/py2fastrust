@@ -471,6 +471,7 @@ class BigIntGenerator(BigIntText, BigIntLists, _Generator):
 def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=None,trusted_imports=frozenset(),unit=None,
                         string_mode="ascii",type_analysis=None):
     """Return a complete direct-Rust program only after a full scalar proof."""
+    from .native_traceback import print_frames
     from .native_annotations import executable_nodes
     from .frontend import build_program, native_namespace_diagnostic
     from .diagnostics import CompilationError
@@ -600,10 +601,8 @@ def try_generate_bigint(source, filename, *, prune_output=True, diagnostic_out=N
     result += [body,"Ok(())\n})();\nstd::io::stdout().write_all(native_output.as_bytes()).unwrap();\n",
                "if let Err(error)=native_result{\n"
                'eprintln!("Traceback (most recent call last):");\n'
-               "for &(line,function) in error.frames.iter().rev(){\n"
-               f'eprintln!("  File {{:?}}, line {{}}, in {{}}",{_string(filename)},line,function);\n'
-               "}\n"
-               f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);\n'
+               +print_frames(f'error.frames.iter().rev().map(|&(line,function)|({_string(filename)},line,function))',f'({_string(filename)},error.line,error.function)')+'\n'
+               'eprintln!("{}",error.message);\n'
                "std::process::exit(1);\n}\n}\n"]
     source = "\n".join(result)
     from .native_text_policy import apply_text_policy

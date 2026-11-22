@@ -3947,12 +3947,12 @@ def try_generate_classes(source,filename,integer,*,trusted_imports=frozenset(),p
     from .native_class_calls import entry_result
     entry=("scope.control.borrow_mut().depth=1;let result=class_function_0(scope.clone());"if entry_result(model,model.module)
            else "let result=class_execute(scope.clone(),class_function_0(scope.clone()));")
+    from .native_traceback import print_frames
     pieces.append("fn main(){use std::io::Write as _;"+model.mappings.cpython_sets.entry()+"let scope=ClassScope::new();"+entry+"\n"
                   "std::io::stdout().write_all(scope.io.borrow().output.as_bytes()).unwrap();\n"
                   'if let Err(error)=result {eprintln!("Traceback (most recent call last):");\n'
-                  'for &(line,function)in error.frames.iter().rev(){\n'
-                  f'eprintln!("  File {{:?}}, line {{}}, in {{}}",{_string(filename)},line,function);}}\n'
-                  f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}",{_string(filename)},error.line,error.function,error.message);std::process::exit(1);}}}}')
+                  +print_frames(f'error.frames.iter().rev().map(|&(line,function)|({_string(filename)},line,function))',f'({_string(filename)},error.line,error.function)')+'\n'
+                  'eprintln!("{}",error.message);std::process::exit(1);}}')
     result=model.finish_runtime(model.generators.runtime("\n".join(pieces)))
     from .native_integer_digit_limits import runtime as integer_digit_runtime
     result=integer_digit_runtime(result,model)

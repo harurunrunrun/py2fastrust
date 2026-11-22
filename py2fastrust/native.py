@@ -2288,22 +2288,19 @@ def try_generate_native(source: str, filename: str, integer: str, *, trusted_imp
     result.append(_declarations(generator))
     result.append(body + "\nOk(())\n})();\n")
     result.append("std::io::stdout().write_all(native_output.as_bytes()).unwrap();\n")
+    from .native_traceback import print_frames
     if wrapper:
         function_name, call_line = wrapper
         result.append("if let Err(error) = native_result {\n"
-                      f'eprintln!("Traceback (most recent call last):\\n  File {{:?}}, line {call_line}, in <module>", {_string(filename)});\n'
-                      "for &(line, function) in error.frames.iter().rev() {\n"
-                      f'eprintln!("  File {{:?}}, line {{}}, in {{}}", {_string(filename)}, line, function);\n'
-                      "}\n"
-                      f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}", {_string(filename)}, error.line, error.function, error.message);\n'
+                      'eprintln!("Traceback (most recent call last):");\n'
+                      +print_frames(f'std::iter::once(({_string(filename)},{call_line}_usize,"<module>")).chain(error.frames.iter().rev().map(|&(line,function)|({_string(filename)},line,function)))',f'({_string(filename)},error.line,error.function)')+'\n'
+                      'eprintln!("{}", error.message);\n'
                       "std::process::exit(1);\n}\n}\n")
     elif functions or generator.has_iterator_frames or generator.has_callback_frames:
         result.append("if let Err(error) = native_result {\n"
                       'eprintln!("Traceback (most recent call last):");\n'
-                      "for &(line, function) in error.frames.iter().rev() {\n"
-                      f'eprintln!("  File {{:?}}, line {{}}, in {{}}", {_string(filename)}, line, function);\n'
-                      "}\n"
-                      f'eprintln!("  File {{:?}}, line {{}}, in {{}}\\n{{}}", {_string(filename)}, error.line, error.function, error.message);\n'
+                      +print_frames(f'error.frames.iter().rev().map(|&(line,function)|({_string(filename)},line,function))',f'({_string(filename)},error.line,error.function)')+'\n'
+                      'eprintln!("{}", error.message);\n'
                       "std::process::exit(1);\n}\n}\n")
     else:
         result.append("if let Err(error) = native_result {\n"

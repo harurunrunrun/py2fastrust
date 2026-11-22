@@ -179,6 +179,7 @@ def runtime(source,model):
     # The legacy cleanup renderer has an error message field; exit payloads
     # must be rendered after cleanup, because they can retain shared lists.
     source=source.replace('error.function.1,error.message);','error.function.1,exit_context_message(&error).unwrap_or_else(||error.message.clone()));')
+    source=source.replace('eprintln!("{}",error.message.as_str());','eprintln!("{}",exit_context_message(&error).unwrap_or_else(||error.message.clone()));')
     source+='''
 #[derive(Clone)]
 struct NativeExit{status:i32,print_payload:bool,context_value:bool,render:Rc<dyn Fn()->String>}
