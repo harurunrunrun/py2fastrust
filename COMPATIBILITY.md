@@ -283,6 +283,10 @@ deleting an inherited class attribute through a subclass, `__slots__` in a
 hierarchy, `super()` in nested scopes or static/class methods, and multiple,
 imported or dynamically selected bases remain positioned conversion errors.
 
+`__name__`, `__qualname__` and `__module__` of a source class, read through the
+class or through `type(instance)`, are constants of its class statement unless
+the class body binds that name itself.
+
 
 Local `is None` / `is not None` predicates refine the actual official binding
 within each `if` branch. Direct local truth guards exclude `None` only from

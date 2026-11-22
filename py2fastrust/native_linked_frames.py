@@ -440,7 +440,8 @@ class LinkedEmitter(Emitter):
             if value is not None:return value
             value=self.model.class_namespaces.emit_name(self,node)
             if value is not None:return value
-        if isinstance(node,ast.Attribute)and(self.plan.index,id(node))in self.model.class_namespaces.attribute_reads:
+        if isinstance(node,ast.Attribute)and((self.plan.index,id(node))in self.model.class_namespaces.attribute_reads
+                or(self.plan.index,id(node))in getattr(self.model.class_namespaces,'metadata_reads',{})):
             before,receiver=self.capture(self.expression(node.value))
             value=self.model.class_namespaces.emit_attribute(self,node,receiver)
             return Expression("{"+before+value.code+"}",value.kind)

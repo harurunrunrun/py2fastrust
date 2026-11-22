@@ -293,6 +293,9 @@ class ClassNamespaces:
         from .native_class_inheritance import analyze_union_instance_attribute
         union=analyze_union_instance_attribute(self,plan,node,receiver_kind)
         if union is not None:return union
+        from .native_class_metadata import analyze as analyze_class_metadata
+        metadata=analyze_class_metadata(self,plan,node,receiver_kind)
+        if metadata is not None:return metadata
         choices=self.class_choices(receiver_kind)
         if not choices:return None
         result=Cell()
@@ -492,6 +495,9 @@ class ClassNamespaces:
     def emit_attribute(self,emitter,node,receiver):
         from .native_classes import Expression
         from .native_unions import project,union_kind
+        from .native_class_metadata import emit as emit_class_metadata
+        metadata=emit_class_metadata(self,emitter,node,receiver)
+        if metadata is not None:return metadata
         records=self.attribute_reads.get((emitter.plan.index,id(node)))
         if records is None:return None
         wanted=emitter.kind(node)

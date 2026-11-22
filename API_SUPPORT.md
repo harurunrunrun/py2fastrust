@@ -314,6 +314,10 @@ deleting an inherited class attribute through a subclass, `__slots__` in a
 hierarchy, `super()` in nested scopes or static/class methods, and multiple,
 imported or dynamically selected bases remain positioned conversion errors.
 
+`__name__`, `__qualname__` and `__module__` of a source class, read through the
+class or through `type(instance)`, are constants of its class statement unless
+the class body binds that name itself.
+
 Typed source-class namespaces support ordinary nested classes and scalar/list
 class data, including aliases, rebinding, deletion and instance-field precedence.
 They retain the original scope owners and captured defining-module references.
