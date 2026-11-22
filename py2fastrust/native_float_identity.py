@@ -176,9 +176,9 @@ def container_comparison(emitter,operator,left,right,node):
         return '!('+code+')'if isinstance(operator,ast.NotIn)else code
     if isinstance(operator,(ast.Eq,ast.Lt)):return _builtin(emitter,operator,left,right,node)
     if isinstance(operator,ast.NotEq):return '!('+_builtin(emitter,ast.Eq(),left,right,node)+')'
-    if isinstance(operator,ast.LtE):return '('+_builtin(emitter,ast.Eq(),left,right,node)+')||('+_builtin(emitter,ast.Lt(),left,right,node)+')'
-    if isinstance(operator,ast.Gt):return _builtin(emitter,ast.Lt(),right,left,node)
-    if isinstance(operator,ast.GtE):return '('+_builtin(emitter,ast.Eq(),left,right,node)+')||('+_builtin(emitter,ast.Lt(),right,left,node)+')'
+    if isinstance(operator,ast.LtE):return '('+_builtin(emitter,ast.Eq(),left,right,node)+')||('+_builtin(emitter,ast.Lt(),left,right,node,('<=',False))+')'
+    if isinstance(operator,ast.Gt):return _builtin(emitter,ast.Lt(),right,left,node,('>',True))
+    if isinstance(operator,ast.GtE):return '('+_builtin(emitter,ast.Eq(),left,right,node)+')||('+_builtin(emitter,ast.Lt(),right,left,node,('>=',True))+')'
     return None
 
 

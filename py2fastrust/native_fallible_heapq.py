@@ -44,12 +44,13 @@ def analyze(model,plan,node,name,heap,environment):
  raise ClassUnsupported(node,'heap item ordering needs an unimplemented nested source comparison, floating-container identity/NaN, key-wrapper or other object protocol; direct source rich comparisons and finite builtin integer/text/list/tuple keys are implemented',types=(('element',kind),),proof='typed fallible heap comparison protocol')
 
 
-def _builtin(emitter,operator,left,right,node):
+def _builtin(emitter,operator,left,right,node,display=('<',False)):
+ """display: the source operator and whether left/right were swapped to express it with '<'."""
  from .native_classes import Expression,ClassUnsupported
  from .native_unions import union_kind,project
  from .native_class_builtins import _type_name
- if union_kind(left.kind):return project(left.kind,left.code,lambda kind,code:_builtin(emitter,operator,Expression('('+code+').clone()',kind),right,node))
- if union_kind(right.kind):return project(right.kind,right.code,lambda kind,code:_builtin(emitter,operator,left,Expression('('+code+').clone()',kind),node))
+ if union_kind(left.kind):return project(left.kind,left.code,lambda kind,code:_builtin(emitter,operator,Expression('('+code+').clone()',kind),right,node,display))
+ if union_kind(right.kind):return project(right.kind,right.code,lambda kind,code:_builtin(emitter,operator,left,Expression('('+code+').clone()',kind),node,display))
  a,b=left.kind,right.kind
  from .native_float_identity import scalar_comparison
  identity=scalar_comparison(emitter,operator,left,right,node,identity=True)
@@ -68,7 +69,7 @@ def _builtin(emitter,operator,left,right,node):
   for index in reversed(range(min(len(a.fields),len(b.fields)))):
    x=Expression('('+left.code+').'+str(index)+'.clone()',a.fields[index]);y=Expression('('+right.code+').'+str(index)+'.clone()',b.fields[index])
    same=_builtin(emitter,ast.Eq(),x,y,node)
-   result='('+same+')&&('+result+')'if equal else'if '+same+'{'+result+'}else{'+_builtin(emitter,ast.Lt(),x,y,node)+'}'
+   result='('+same+')&&('+result+')'if equal else'if '+same+'{'+result+'}else{'+_builtin(emitter,ast.Lt(),x,y,node,display)+'}'
   return '{'+result+'}'
  elif (isinstance(a,ListType)and isinstance(b,ListType))or(isinstance(a,TupleSequenceType)and isinstance(b,TupleSequenceType)):
   first,second,read_a,read_b,x,y,outcome=(emitter.fresh()for _ in range(7))
@@ -78,10 +79,12 @@ def _builtin(emitter,operator,left,right,node):
   access_b=second+'.borrow()'if isinstance(b,ListType)else second+'.as_slice()'
   setup='let '+first+'=('+left.code+').clone();let '+second+'=('+right.code+').clone();let '+read_a+'='+access_a+';let '+read_b+'='+access_b+';'
   if equal:return '{'+setup+read_a+'.len()=='+read_b+'.len()&&'+read_a+'.iter().zip('+read_b+'.iter()).all(|('+x+','+y+')|'+same+')}'
-  less=_builtin(emitter,ast.Lt(),item_a,item_b,node)
+  less=_builtin(emitter,ast.Lt(),item_a,item_b,node,display)
   return '{'+setup+'let mut '+outcome+'='+read_a+'.len()<'+read_b+'.len();for('+x+','+y+')in '+read_a+'.iter().zip('+read_b+'.iter()){if !('+same+'){'+outcome+'='+less+';break;}}'+outcome+'}'
  if equal:return 'false'
- return emitter.at('Err::<bool,String>(format!("TypeError: \'<\' not supported between instances of \'{}\' and \'{}\'",'+_type_name(emitter,left,node)+','+_type_name(emitter,right,node)+'))',node)
+ symbol,swapped=display
+ first,second=(right,left)if swapped else(left,right)
+ return emitter.at('Err::<bool,String>(format!("TypeError: \''+symbol+'\' not supported between instances of \'{}\' and \'{}\'",'+_type_name(emitter,first,node)+','+_type_name(emitter,second,node)+'))',node)
 
 
 def emit(emitter,node,name,heap,arguments,wanted,comparison):
