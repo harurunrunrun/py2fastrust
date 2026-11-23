@@ -376,7 +376,8 @@ class ExpandedCalls:
                 return reserve+';'+f'{vector}.push({e.coerce(item,element,node)});'
             return self.model.generators.consume(emitter,node,'expanded_arguments',source,[],{},'none',append_item=append_item).code+';'
         callback = lambda value:self._not_iterable(emitter, node, site, callee, value)
-        iterator = self.model.iterators.construct(emitter, node, source, kind=part.iterator, not_iterable=callback)
+        # Analysis registered the iterator source at the starred argument node.
+        iterator = self.model.iterators.construct(emitter, part.node, source, kind=part.iterator, not_iterable=callback)
         before, iterator = emitter.capture(iterator)
         pulled = self.model.iterators.pull(emitter, node, iterator)
         current = emitter.fresh()
