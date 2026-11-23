@@ -35,13 +35,13 @@ def check_key(node):
         raise ClassUnsupported(node.slice,'source item access with a slice key needs a Python slice-object carrier; native source __getitem__/__setitem__ currently pass ordinary values and tuple keys',proof='source item slice object identity')
 
 
-def analyze(model,plan,node,owner,key,environment,value=None):
+def analyze(model,plan,node,owner,key,environment,value=None,slot=None):
     from .native_classes import ClassUnsupported
     from .native_aot_callables import analyze_values
     declaration=source_owner(model,owner)
     if declaration is None:return None
     check_key(node)
-    slot='__getitem__'if value is None else'__setitem__'
+    slot=slot or('__getitem__'if value is None else'__setitem__')
     if slot not in declaration.methods:
         raise ClassUnsupported(node,'source item access requires '+slot+'; this class has no registered ordinary source '+slot+' protocol',proof='source item method availability')
     from .native_source_display import guard_direct_method
@@ -59,6 +59,7 @@ def analyze(model,plan,node,owner,key,environment,value=None):
     # rebind its original primary names. They are not additional evaluations.
     sites(model)[plan.index,id(node),slot]=ItemSite(member,callback,captured_owner,captured_key)
     if value is not None:model.remember(plan,node,value)
+    if slot=='__delitem__':return callback.result
     return model.remember(plan,node,callback.result)if value is None else callback.result
 
 
@@ -70,25 +71,44 @@ def captured_store(model,plan,node,value,environment):
     return True
 
 
-def emit(emitter,node,owner,key,wanted=None,value=None):
+def emit(emitter,node,owner,key,wanted=None,value=None,slot=None):
     from .native_classes import Expression,InstanceType,shape,ClassUnsupported
     from .native_module_linking import ClassReferenceType
     from .native_class_binding_contexts import CapturedClassContext
     from .native_aot_callables import emit_values
     if not isinstance(owner.kind,InstanceType):return None
-    slot='__getitem__'if value is None else'__setitem__'
+    slot=slot or('__getitem__'if value is None else'__setitem__')
     site=sites(emitter.model).get((emitter.plan.index,id(node),slot))
     if site is None:
         raise ClassUnsupported(node,'source '+slot+' has no matching analyzed item callback site',proof='source item evaluation/effect site')
     reference=emitter.fresh()
     setup='let '+reference+'={'+owner.code+'.borrow().class_definition.clone()};'
-    context=Expression(reference,ClassReferenceType(site.member.owner.index))
+    # The receiver's own class: an inherited slot reached through a subclass.
+    context=Expression(reference,ClassReferenceType(emitter.model.classes[owner.kind.name].index))
     function=emitter.model.class_namespaces.emit_get(emitter,node,context,site.member)
     before,function=emitter.capture(function);setup+=before
     arguments=[Expression('('+item.code+').clone()',item.kind)for item in (owner,key)]+([]if value is None else[value])
     result=emit_values(emitter,node,site.callback,function,arguments,[],shape(site.callback.result),
         captured_class_context=CapturedClassContext(site.member,context))
-    if value is not None:
-        # Python ignores __setitem__'s result, including a non-None result.
+    if value is not None or slot=='__delitem__':
+        # Python ignores __setitem__'s and __delitem__'s results.
         return Expression('{'+setup+result.code+';}', 'none')
     return Expression('{'+setup+emitter.coerce(result,wanted,node)+'}',wanted)
+
+
+def analyze_delete(model,plan,target,environment):
+    """``del obj[key]`` on a source instance calls its __delitem__."""
+    if not isinstance(target,ast.Subscript):return False
+    owner=model.expression(plan,target.value,environment)
+    if source_owner(model,owner)is None:return False
+    key=model.expression(plan,target.slice,environment)
+    analyze(model,plan,target,owner,key,environment,slot='__delitem__')
+    return True
+
+
+def emit_delete(emitter,target):
+    from .native_classes import InstanceType
+    if not isinstance(target,ast.Subscript)or(emitter.plan.index,id(target),'__delitem__')not in sites(emitter.model):return None
+    before,owner=emitter.capture(emitter.expression(target.value))
+    middle,key=emitter.capture(emitter.expression(target.slice))
+    return '{'+before+middle+emit(emitter,target,owner,key,slot='__delitem__').code+';}'

@@ -18,6 +18,8 @@ def analyze(model,plan,target,environment):
                 if not model.lexical.delete(plan,child,environment):model.namespace.delete(plan,child,environment)
         return True
     if isinstance(target,ast.Subscript):
+        from .native_source_items import analyze_delete as source_item_delete
+        if source_item_delete(model,plan,target,environment):return True
         from .native_mapping_deletion import analyze as mapping_delete
         from .native_list_deletion import analyze as list_delete
         return (list_delete(model,plan,target,environment)or mapping_delete(model,plan,target,environment)
@@ -59,6 +61,9 @@ def lower(emitter,target):
             pieces.append(code)
         return ''.join(pieces)
     if isinstance(target,ast.Subscript):
+        from .native_source_items import emit_delete as source_item_delete
+        code=source_item_delete(emitter,target)
+        if code is not None:return code
         from .native_list_deletion import emit as list_delete
         code=list_delete(emitter,target)
         if code is not None:return code
