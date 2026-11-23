@@ -12,4 +12,4 @@ TARGET_BUILTIN_MODULES = frozenset(sys.builtin_module_names) & BUILTIN_MODULES
 VENDORED_MODULES = frozenset({"heapq", "bisect", "collections", "functools", "__future__"})
 
 # Sources are data for the official frontend, never imported into the converter.
-VENDORED_PACKAGES = {"atcoder": ("vendor", "ac_library_python", "atcoder")}
+VENDORED_PACKAGES = {"atcoder": ("vendor", "ac_library_python", "atcoder"), "sortedcontainers": ("vendor", "sortedcontainers", "sortedcontainers")}

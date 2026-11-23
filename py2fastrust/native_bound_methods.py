@@ -150,6 +150,8 @@ class BoundMethods:
         self.used.add(target)
         try:binding=method.signature.plan(arguments,implicit_count=1,allow_variadic=True)
         except CallBindingError as error:
+            from .native_vendored_guards import check_binding
+            check_binding(self.model,method,node,error)
             site.errors[target]=binding_error(method,arguments,error,implicit_count=1)
             return
         site.targets[target]=binding

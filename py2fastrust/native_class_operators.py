@@ -100,6 +100,10 @@ class Operators:
         for first in branches(left):
             for second in branches(right):
                 a,b=shape(first),shape(second)
+                from .native_vendored_guards import check_slot
+                if isinstance(a,InstanceType)and not(isinstance(node,ast.AugAssign)and'__i'+name+'__'in self.model.classes[a.name].methods):
+                    check_slot(self.model,plan,node,self.model.classes[a.name],'__'+name+'__')
+                if isinstance(b,InstanceType)and a!=b:check_slot(self.model,plan,node,self.model.classes[b.name],'__r'+name+'__')
                 branch=Branch(first,second);site.branches[(a,b)]=branch
                 candidates=[]
                 if isinstance(node,ast.AugAssign):candidates.append((a,'__i'+name+'__',False))

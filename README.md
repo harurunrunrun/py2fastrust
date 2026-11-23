@@ -119,6 +119,15 @@ Bundled `atcoder` modules are resolved automatically, without installing a host
 Python package. Their algorithms still require supported language operations;
 this is not a claim that every AtCoder Library module already compiles.
 
+`sortedcontainers` is also resolved without a host package: an independent
+implementation of `SortedList`, `SortedSet` and `SortedDict` (sortedcontainers
+2.4 behavior for values without a key function) is bundled and compiled like
+other source modules. Bisection, positional access and deletion, `irange`,
+`islice`, set algebra, sorted dictionary views, comparisons, `repr` and error
+messages follow the upstream package. Key functions, slicing, sequence
+arithmetic and other upstream methods outside this implementation are
+positioned conversion errors rather than different runtime behavior.
+
 `--include-module` remains a recognized but unsupported option: runtime
 `compile`/`eval`/`exec` and their access to prebundled modules still require
 implementation. Requests receive a diagnostic even when ordinary static imports

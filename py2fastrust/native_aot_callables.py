@@ -508,6 +508,8 @@ def analyze_values(provider,plan,node,callee,arguments,positional,keywords,envir
         self.used.add(definition)
         try:binding=target.signature.plan(arguments,allow_variadic=True)
         except CallBindingError as error:
+            from .native_vendored_guards import check_binding
+            check_binding(self.model,target,node,error)
             site.errors[definition]=binding_error(target,arguments,error)
             continue
         site.targets[definition]=binding

@@ -220,6 +220,11 @@ class LinkedModel(Model):
 
     def attribute_value(self,plan,node,receiver,environment):
         self.class_namespaces.defer_member(plan,node,receiver)
+        from .native_classes import InstanceType
+        from .native_types import alternatives
+        from .native_vendored_guards import check_attribute
+        for kind in alternatives(shape(receiver)):
+            if isinstance(kind,InstanceType):check_attribute(self,plan,node,self.classes[kind.name],self.resolved_name(plan,node))
         from .native_function_metadata import analyze as function_metadata
         metadata=function_metadata(self,plan,node,shape(receiver))
         if metadata is not None:return metadata

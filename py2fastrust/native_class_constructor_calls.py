@@ -22,7 +22,10 @@ def analyze(provider,plan,node,kind,arguments,positional,keywords,environment,*,
     failure=None
     if constructor is not None:
         try:constructor.signature.plan(arguments,implicit_count=1,allow_variadic=True)
-        except CallBindingError as error:failure=binding_error(constructor,arguments,error,implicit_count=1)
+        except CallBindingError as error:
+            from .native_vendored_guards import check_binding
+            check_binding(model,constructor,node,error)
+            failure=binding_error(constructor,arguments,error,implicit_count=1)
     elif positional or keywords:
         failure=f'TypeError: {owner.node.name}() takes no arguments'
     if failure:return ConstructorSite(owner,Cell(EMPTY),failure)
