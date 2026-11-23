@@ -30,7 +30,7 @@ def member(model,kind,slots,node):
         from .native_source_display import guard_direct_method
         guard_direct_method(model,owner,slot,node)
         return value
-    if (owner.node.bases or getattr(owner,'subclassed',False)):
+    if owner.node.bases and getattr(owner,'base',None)is None:
         raise ClassUnsupported(node,'inherited '+ '/'.join(slots)+' lookup needs a proved class MRO; absence from this class namespace does not establish a missing inherited slot',proof='source inherited special-method lookup')
     return None
 

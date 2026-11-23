@@ -108,6 +108,23 @@ tips = [Tip(250), Tip.whole(1), Tip(75)]
 print(sorted(tips), Tip(5) == Tip(5), Tip(1) < Tip(2), Tip(250).units)
 ''', '')
 
+    def test_truth_and_length_follow_the_mro(self):
+        compare(self, '''class Plain:
+    pass
+class Child(Plain):
+    pass
+class Sized:
+    def __init__(self, n):
+        self.n = n
+    def __len__(self):
+        return self.n
+class Bag(Sized):
+    pass
+for value in [Child(), Bag(0), Bag(3)]:
+    print(bool(value), "yes" if value else "no")
+print(len(Bag(5)))
+''', '')
+
     def test_inherited_classmethods_bind_the_receiving_class(self):
         compare(self, '''class Unit:
     symbol = "u"
