@@ -8,7 +8,7 @@ struct NativeText {
 #[derive(Clone)]
 enum NativeTextRepr {
     Inline {
-        bytes: [u8; 4],
+        bytes: [u8; 22],
         length: u8,
         ascii: bool,
     },
@@ -37,10 +37,12 @@ struct NativeTextData {
 
 impl NativeText {
     fn inline(text: &str, ascii: bool) -> Option<Self> {
-        if text.len() > 4 || !ascii && text.chars().next().map_or(0, char::len_utf8) != text.len() {
+        // ASCII text up to 22 bytes and single non-ASCII characters avoid a heap
+        // allocation; the enum stays 24 bytes.
+        if text.len() > 22 || !ascii && text.chars().next().map_or(0, char::len_utf8) != text.len() {
             return None;
         }
-        let mut bytes = [0; 4];
+        let mut bytes = [0; 22];
         bytes[..text.len()].copy_from_slice(text.as_bytes());
         Some(Self { repr: NativeTextRepr::Inline { bytes, length: text.len() as u8, ascii } })
     }
@@ -60,7 +62,7 @@ impl NativeText {
         match &self.repr {
             NativeTextRepr::Inline { bytes, length, .. } => {
                 // Inline buffers are populated exclusively from valid UTF-8.
-                std::str::from_utf8(&bytes[..*length as usize]).unwrap()
+                unsafe { std::str::from_utf8_unchecked(&bytes[..*length as usize]) }
             }
             NativeTextRepr::Shared(data) => &data.text,
             NativeTextRepr::Static(data) => data.text,
@@ -174,7 +176,7 @@ impl NativeText {
 
 impl Default for NativeText {
     fn default() -> Self {
-        Self { repr: NativeTextRepr::Inline { bytes: [0; 4], length: 0, ascii: true } }
+        Self { repr: NativeTextRepr::Inline { bytes: [0; 22], length: 0, ascii: true } }
     }
 }
 impl From<String> for NativeText {
@@ -196,7 +198,7 @@ impl From<&String> for NativeText {
 }
 impl From<char> for NativeText {
     fn from(character: char) -> Self {
-        let mut bytes = [0; 4];
+        let mut bytes = [0; 22];
         let length = character.encode_utf8(&mut bytes).len() as u8;
         Self { repr: NativeTextRepr::Inline { bytes, length, ascii: character.is_ascii() } }
     }

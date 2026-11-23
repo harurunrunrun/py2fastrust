@@ -4,7 +4,7 @@ struct NativeText { repr:NativeTextRepr }
 
 #[derive(Clone)]
 enum NativeTextRepr {
-    Inline {bytes:[u8;4],length:u8},
+    Inline {bytes:[u8;22],length:u8},
     Shared(std::rc::Rc<NativeTextData>),
     Static(&'static NativeTextLiteral),
 }
@@ -19,8 +19,9 @@ impl NativeTextLiteral {
 
 impl NativeText {
     fn inline(text:&str)->Option<Self> {
-        if text.len()>4{return None;}
-        let mut bytes=[0;4];bytes[..text.len()].copy_from_slice(text.as_bytes());
+        // Up to 22 bytes stay inline: no heap allocation, 24-byte enum.
+        if text.len()>22{return None;}
+        let mut bytes=[0;22];bytes[..text.len()].copy_from_slice(text.as_bytes());
         Some(Self{repr:NativeTextRepr::Inline{bytes,length:text.len()as u8}})
     }
     fn new()->Self {Self::default()}
@@ -28,7 +29,7 @@ impl NativeText {
     fn as_str(&self)->&str {
         match &self.repr {
             // Constructors only copy complete, valid Rust strings.
-            NativeTextRepr::Inline{bytes,length}=>std::str::from_utf8(&bytes[..*length as usize]).unwrap(),
+            NativeTextRepr::Inline{bytes,length}=>unsafe{std::str::from_utf8_unchecked(&bytes[..*length as usize])},
             NativeTextRepr::Shared(data)=>data.text.as_str(),
             NativeTextRepr::Static(value)=>value.text,
         }
@@ -48,7 +49,7 @@ impl NativeText {
     }
 }
 impl Default for NativeText {
-    fn default()->Self {Self{repr:NativeTextRepr::Inline{bytes:[0;4],length:0}}}
+    fn default()->Self {Self{repr:NativeTextRepr::Inline{bytes:[0;22],length:0}}}
 }
 impl From<String> for NativeText {
     fn from(text:String)->Self {
@@ -65,7 +66,7 @@ impl From<&String> for NativeText {
 }
 impl From<char> for NativeText {
     fn from(character:char)->Self {
-        let mut bytes=[0;4];let length=character.encode_utf8(&mut bytes).len()as u8;
+        let mut bytes=[0;22];let length=character.encode_utf8(&mut bytes).len()as u8;
         Self{repr:NativeTextRepr::Inline{bytes,length}}
     }
 }
